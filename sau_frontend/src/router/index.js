@@ -4,6 +4,7 @@ import AccountManagement from '../views/AccountManagement.vue'
 import MaterialManagement from '../views/MaterialManagement.vue'
 import PublishCenter from '../views/PublishCenter.vue'
 import YoutubeResearch from '../views/YoutubeResearch.vue'
+import WorkflowStatistics from '../views/WorkflowStatistics.vue'
 import About from '../views/About.vue'
 
 const routes = [
@@ -26,6 +27,11 @@ const routes = [
     path: '/publish-center',
     name: 'PublishCenter',
     component: PublishCenter
+  },
+  {
+    path: '/workflow-statistics',
+    name: 'WorkflowStatistics',
+    component: WorkflowStatistics
   },
   {
     path: '/youtube-research',

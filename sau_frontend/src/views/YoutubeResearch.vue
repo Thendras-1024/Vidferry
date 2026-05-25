@@ -1,170 +1,337 @@
 <template>
   <div class="youtube-research">
-    <div class="page-header">
-      <div>
-        <h1>YouTube 视频线索查询</h1>
-        <p>查询视频链接，按行下载到本地素材库，后续可继续字幕处理和发布。</p>
+    <section class="workspace-hero">
+      <div class="hero-copy">
+        <span class="eyebrow">VIDFERRY PIPELINE</span>
+        <h1>Vidferry 视频采集处理</h1>
+        <p>集中管理 YouTube 视频线索，按链接导入、批量查询、下载处理，并跟踪后续发布任务。</p>
       </div>
-      <div class="header-actions">
-        <el-button :loading="jobsLoading" @click="loadJobs">
+
+      <div class="metric-strip" aria-label="视频线索概览">
+        <button
+          v-for="stat in summaryStats"
+          :key="stat.label"
+          class="metric-card"
+          :class="[stat.tone, { 'is-active': videoFilter.status === stat.filter }]"
+          type="button"
+          @click="setStatusFilter(stat.filter)"
+        >
+          <span class="metric-label">{{ stat.label }}</span>
+          <strong>{{ stat.value }}</strong>
+          <span class="metric-meta">{{ stat.meta }}</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="pipeline-strip" aria-label="Vidferry 线索流水线">
+      <div v-for="stage in pipelineStages" :key="stage.label" class="pipeline-stage">
+        <div class="stage-icon">
+          <el-icon><component :is="stage.icon" /></el-icon>
+        </div>
+        <div>
+          <span class="stage-label">{{ stage.label }}</span>
+          <strong>{{ stage.value }}</strong>
+        </div>
+      </div>
+    </section>
+
+    <el-card class="command-card" shadow="never">
+      <div class="command-header">
+        <div>
+          <span class="panel-kicker">线索入口</span>
+          <h2>导入与查询</h2>
+        </div>
+        <el-button :loading="jobsLoading" @click="loadJobs()">
           <el-icon><Refresh /></el-icon>
           <span>刷新任务</span>
         </el-button>
-        <el-button type="primary" :loading="loading" @click="handleSearch">
-          <el-icon><Search /></el-icon>
-          <span>开始查询</span>
-        </el-button>
       </div>
-    </div>
 
-    <el-card class="query-card" shadow="never">
-      <el-form :inline="true" :model="form" class="query-form">
-        <el-form-item label="关键词">
-          <el-input
-            v-model="form.query"
-            class="query-input"
-            clearable
-            placeholder="foreigner China travel vlog first time in China"
-          />
-        </el-form-item>
-        <el-form-item label="数量">
-          <el-input-number v-model="form.limit" :min="1" :max="30" controls-position="right" />
-        </el-form-item>
-        <el-form-item label="发抖音">
-          <el-switch v-model="workflowForm.publishToDouyin" />
-        </el-form-item>
-        <el-form-item label="抖音账号" v-if="workflowForm.publishToDouyin">
-          <el-input v-model="workflowForm.account" class="account-input" clearable placeholder="creator" />
-        </el-form-item>
-        <el-form-item label="发B站">
-          <el-switch v-model="workflowForm.publishToBilibili" />
-        </el-form-item>
-        <el-form-item label="B站账号" v-if="workflowForm.publishToBilibili">
-          <el-input v-model="workflowForm.bilibiliAccount" class="account-input" clearable placeholder="creator" />
-        </el-form-item>
-        <el-form-item label="B站分区" v-if="workflowForm.publishToBilibili">
-          <el-input-number v-model="workflowForm.bilibiliTid" :min="1" :max="999" controls-position="right" />
-        </el-form-item>
-        <el-form-item label="默认话题">
-          <el-input v-model="workflowForm.tags" class="tag-input" clearable placeholder="中国旅行,外国人在中国" />
-        </el-form-item>
+      <el-form :model="form" label-position="top" class="command-grid">
+        <div class="entry-panel import-panel">
+          <div class="entry-heading">
+            <el-icon><Link /></el-icon>
+            <div>
+              <h3>单条链接导入</h3>
+              <span>适合已经明确要处理的视频</span>
+            </div>
+          </div>
+          <div class="entry-control">
+            <el-form-item label="YouTube 视频链接">
+              <el-input
+                v-model="manualForm.url"
+                clearable
+                placeholder="https://www.youtube.com/watch?v=..."
+              />
+            </el-form-item>
+            <el-button type="success" :loading="importing" @click="importVideo">
+              <el-icon><Link /></el-icon>
+              <span>导入链接</span>
+            </el-button>
+          </div>
+        </div>
+
+        <div class="entry-panel search-panel">
+          <div class="entry-heading">
+            <el-icon><Search /></el-icon>
+            <div>
+              <h3>关键词批量查询</h3>
+              <span>从 YouTube 搜索候选视频并入库</span>
+            </div>
+          </div>
+          <div class="entry-control search-control">
+            <el-form-item label="搜索关键词" class="keyword-field">
+              <el-input
+                v-model="form.query"
+                clearable
+                placeholder="foreigner China travel vlog first time in China"
+              />
+            </el-form-item>
+            <el-form-item label="数量" class="limit-field">
+              <el-input-number v-model="form.limit" :min="1" :max="30" controls-position="right" />
+            </el-form-item>
+            <el-button type="primary" :loading="loading" @click="handleSearch">
+              <el-icon><Search /></el-icon>
+              <span>开始查询</span>
+            </el-button>
+          </div>
+        </div>
       </el-form>
+
+      <div class="workflow-config">
+        <div class="config-title">
+          <span class="panel-kicker">任务默认配置</span>
+          <span>用于下载后创建处理任务</span>
+        </div>
+        <div class="config-items">
+          <label class="config-item">
+            <span>发抖音</span>
+            <el-switch v-model="workflowForm.publishToDouyin" />
+          </label>
+          <el-input
+            v-if="workflowForm.publishToDouyin"
+            v-model="workflowForm.account"
+            class="compact-input"
+            clearable
+            placeholder="抖音账号"
+          />
+          <label class="config-item">
+            <span>发B站</span>
+            <el-switch v-model="workflowForm.publishToBilibili" />
+          </label>
+          <el-input
+            v-if="workflowForm.publishToBilibili"
+            v-model="workflowForm.bilibiliAccount"
+            class="compact-input"
+            clearable
+            placeholder="B站账号"
+          />
+          <el-input-number
+            v-if="workflowForm.publishToBilibili"
+            v-model="workflowForm.bilibiliTid"
+            :min="1"
+            :max="999"
+            controls-position="right"
+            class="tid-input"
+          />
+          <el-input
+            v-model="workflowForm.tags"
+            class="tag-input"
+            clearable
+            placeholder="默认话题：中国旅行,外国人在中国"
+          />
+        </div>
+      </div>
+
       <div class="query-meta" v-if="lastResult">
-        <span>查询来源：{{ lastResult.source }}</span>
+        <span>来源：{{ lastResult.source }}</span>
         <span>查询时间：{{ lastResult.searchedAt }}</span>
-        <span>本次入库/更新：{{ lastResult.total }}</span>
+        <span>入库/更新：{{ lastResult.total }}</span>
       </div>
     </el-card>
 
-    <el-card class="result-card" shadow="never">
-      <el-table :data="items" v-loading="loading" empty-text="暂无视频记录，点击开始查询获取视频链接" style="width: 100%">
-        <el-table-column label="视频" min-width="360">
+    <el-card class="result-card data-panel" shadow="never">
+      <template #header>
+        <div class="panel-header">
+          <div>
+            <span class="panel-kicker">线索列表</span>
+            <h2>候选视频</h2>
+          </div>
+          <div class="list-tools">
+            <el-select v-model="videoFilter.status" class="status-select" size="small" aria-label="显示状态">
+              <el-option label="全部状态" value="all" />
+              <el-option label="未下载" value="notDownloaded" />
+              <el-option label="已下载" value="downloaded" />
+              <el-option label="未翻译" value="notTranslated" />
+              <el-option label="已翻译" value="translated" />
+              <el-option label="已跳过翻译" value="translationSkipped" />
+              <el-option label="未发布" value="notPublished" />
+              <el-option label="已发布" value="published" />
+              <el-option label="运行中" value="running" />
+            </el-select>
+            <el-select v-model="videoFilter.sort" class="sort-select" size="small" aria-label="排序方式">
+              <el-option label="默认顺序" value="default" />
+              <el-option label="待处理优先" value="pendingFirst" />
+              <el-option label="已下载优先" value="downloadedFirst" />
+              <el-option label="已翻译优先" value="translatedFirst" />
+              <el-option label="已发布优先" value="publishedFirst" />
+            </el-select>
+            <span class="panel-count">{{ filteredItems.length }} / {{ items.length }} 条</span>
+          </div>
+        </div>
+      </template>
+
+      <el-table
+        :data="filteredItems"
+        v-loading="loading"
+        empty-text="暂无匹配的视频记录"
+        class="research-table"
+        style="width: 100%"
+      >
+        <el-table-column label="视频" min-width="420">
           <template #default="{ row }">
             <div class="video-cell">
               <img v-if="row.thumbnail" :src="row.thumbnail" alt="" class="thumbnail">
+              <div v-else class="thumbnail thumbnail-empty">
+                <el-icon><VideoCamera /></el-icon>
+              </div>
               <div class="video-info">
-                <a :href="row.url" target="_blank" rel="noopener noreferrer" class="video-title">
-                  {{ row.title || '未获取到标题' }}
-                </a>
+                <div class="title-line">
+                  <span class="stage-badge" :class="currentStage(row).className">{{ currentStage(row).label }}</span>
+                  <a :href="row.url" target="_blank" rel="noopener noreferrer" class="video-title">
+                    {{ row.title || '未获取到标题' }}
+                  </a>
+                </div>
+                <div class="video-meta">
+                  <span>{{ row.channel || '未知博主' }}</span>
+                  <span>{{ row.subscribers || '粉丝数未知' }}</span>
+                  <span>{{ row.publishedAt || '发布时间未知' }}</span>
+                  <span>{{ row.duration || '时长未知' }}</span>
+                </div>
+                <div class="workflow-track" aria-label="视频处理流程">
+                  <span
+                    v-for="step in rowWorkflowSteps(row)"
+                    :key="step.key"
+                    class="workflow-step"
+                    :class="step.className"
+                  >
+                    <span class="step-dot"></span>
+                    <span>{{ step.label }}</span>
+                  </span>
+                </div>
+                <div v-if="activeJobForVideo(row)" class="inline-job">
+                  <el-progress :percentage="displayProgress(activeJobForVideo(row))" :stroke-width="6" />
+                  <span>{{ activeJobForVideo(row).message || jobStatusText(activeJobForVideo(row).status) }}</span>
+                </div>
                 <span class="video-url">{{ row.url }}</span>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="channel" label="博主名称" width="180" />
-        <el-table-column label="博主粉丝数" width="160">
+        <el-table-column label="操作" width="320">
           <template #default="{ row }">
-            {{ row.subscribers || '未获取到' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="发布时间" width="160">
-          <template #default="{ row }">
-            {{ row.publishedAt || '未获取到' }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="duration" label="时长" width="100" />
-        <el-table-column label="下载状态" width="130">
-          <template #default="{ row }">
-            <el-tag :type="row.downloadStatus === 1 ? 'success' : 'info'" effect="plain">
-              {{ row.downloadStatus === 1 ? '已下载' : '未下载' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="翻译状态" width="130">
-          <template #default="{ row }">
-            <el-tag :type="row.translateStatus === 1 ? 'success' : 'info'" effect="plain">
-              {{ row.translateStatus === 1 ? '已翻译' : '未翻译' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="发布状态" width="130">
-          <template #default="{ row }">
-            <el-tag :type="row.publishStatus === 1 ? 'success' : 'info'" effect="plain">
-              {{ row.publishStatus === 1 ? '已发布' : '未发布' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="420" fixed="right">
-          <template #default="{ row }">
-            <el-button text type="primary" @click="copyUrl(row.url)">
-              <el-icon><DocumentCopy /></el-icon>
-              <span>复制</span>
-            </el-button>
-            <el-button
-              text
-              type="primary"
-              :disabled="row.downloadStatus === 1"
-              :loading="downloadingId === row.id"
-              @click="downloadVideo(row)"
-            >
-              <el-icon><Download /></el-icon>
-              <span>下载</span>
-            </el-button>
-            <el-button
-              text
-              type="warning"
-              :disabled="row.downloadStatus !== 1"
-              :loading="translatingId === row.id"
-              @click="translateVideo(row)"
-            >
-              <el-icon><VideoCamera /></el-icon>
-              <span>翻译</span>
-            </el-button>
-            <el-button text type="success" :loading="creatingJobId === row.id" @click="createJob(row)">
-              <el-icon><VideoPlay /></el-icon>
-              <span>一键处理</span>
-            </el-button>
-            <el-button text type="danger" :loading="deletingId === row.id" @click="deleteVideo(row)">
-              <el-icon><Delete /></el-icon>
-              <span>删除</span>
-            </el-button>
+            <div class="action-row">
+              <el-button
+                v-if="row.downloadStatus !== 1"
+                size="small"
+                type="primary"
+                :loading="downloadingId === row.id"
+                @click="downloadVideo(row)"
+              >
+                <el-icon><Download /></el-icon>
+                <span>下载</span>
+              </el-button>
+              <el-button
+                v-if="row.downloadStatus === 1 && Number(row.translateStatus) !== 1"
+                size="small"
+                type="warning"
+                :disabled="row.downloadStatus !== 1 || Number(row.translateStatus) === 1"
+                :loading="translatingId === row.id"
+                @click="translateVideo(row)"
+              >
+                <el-icon><VideoCamera /></el-icon>
+                <span>翻译</span>
+              </el-button>
+              <el-button
+                size="small"
+                type="success"
+                plain
+                :loading="creatingJobId === row.id"
+                @click="createJob(row)"
+              >
+                <el-icon><VideoPlay /></el-icon>
+                <span>一键处理</span>
+              </el-button>
+              <el-dropdown trigger="click">
+                <el-button size="small" text class="more-button">
+                  更多
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item @click="copyUrl(row.url)">
+                      <el-icon><DocumentCopy /></el-icon>
+                      <span>复制链接</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="Number(row.translateStatus) === 1 || Number(row.translateStatus) === 2"
+                      @click="resetProcessing(row)"
+                    >
+                      <el-icon><Refresh /></el-icon>
+                      <span>{{ resettingId === row.id ? '回退中' : '重新处理' }}</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item class="danger-item" @click="deleteVideo(row)">
+                      <el-icon><Delete /></el-icon>
+                      <span>{{ deletingId === row.id ? '删除中' : '删除线索' }}</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
-    <el-card class="job-card" shadow="never">
+    <el-card class="job-card data-panel" shadow="never">
       <template #header>
-        <div class="job-card-header">
-          <span>工作流任务</span>
-          <el-button text type="primary" :loading="jobsLoading" @click="loadJobs">刷新</el-button>
+        <div class="panel-header">
+          <div>
+            <span class="panel-kicker">任务监控</span>
+            <h2>工作流任务</h2>
+          </div>
+          <div class="job-tools">
+            <el-select v-model="jobFilter.status" class="job-status-select" size="small" aria-label="任务状态筛选">
+              <el-option label="全部任务" value="all" />
+              <el-option label="执行中" value="running" />
+              <el-option label="成功" value="success" />
+              <el-option label="失败" value="failed" />
+            </el-select>
+            <span class="panel-count">{{ filteredJobs.length }} / {{ jobs.length }} 个</span>
+            <el-button text type="primary" :loading="jobsLoading" @click="loadJobs()">刷新</el-button>
+          </div>
         </div>
       </template>
-      <el-table :data="jobs" v-loading="jobsLoading" empty-text="暂无任务" style="width: 100%">
-        <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="account" label="抖音账号" width="120" />
-        <el-table-column prop="status" label="状态" width="110">
+
+      <el-table :data="filteredJobs" empty-text="暂无匹配任务" class="job-table" style="width: 100%">
+        <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="account" label="抖音账号" width="110" />
+        <el-table-column prop="status" label="状态" width="105">
           <template #default="{ row }">
-            <el-tag :type="jobStatusType(row.status)">{{ jobStatusText(row.status) }}</el-tag>
+            <el-tag :type="jobStatusType(row.status)" effect="light">{{ jobStatusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="step" label="步骤" width="110" />
-        <el-table-column label="进度" width="180">
+        <el-table-column label="进度" width="190">
           <template #default="{ row }">
-            <el-progress :percentage="Number(row.progress || 0)" :stroke-width="8" />
+            <el-progress :percentage="displayProgress(row)" :stroke-width="8" :status="progressStatus(row)" />
           </template>
         </el-table-column>
-        <el-table-column label="速率" width="120">
+        <el-table-column label="耗时/预计" width="150">
+          <template #default="{ row }">
+            {{ jobTimeText(row) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="速率" width="115">
           <template #default="{ row }">
             {{ row.speed || '-' }}
           </template>
@@ -174,33 +341,128 @@
             {{ row.eta || '-' }}
           </template>
         </el-table-column>
-        <el-table-column prop="message" label="消息" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="updatedAt" label="更新时间" width="170" />
+        <el-table-column prop="message" label="消息" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="updatedAt" label="更新时间" width="165" />
       </el-table>
     </el-card>
+
+    <el-button class="process-settings-button" type="primary" round @click="settingsDialogVisible = true" aria-label="设置">
+      <el-icon><Setting /></el-icon>
+      <span>设置</span>
+    </el-button>
+
+    <el-dialog
+      v-model="settingsDialogVisible"
+      title="设置"
+      width="460px"
+      class="process-settings-dialog"
+    >
+      <div class="settings-panel">
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="panel-kicker">基础设置</span>
+            <h3>字幕与处理方式</h3>
+          </div>
+        <div class="settings-field">
+          <span class="settings-label">字幕语言</span>
+          <el-select v-model="workflowForm.subtitleLanguage" class="process-version-select">
+            <el-option
+              v-for="language in subtitleLanguages"
+              :key="language.value"
+              :label="language.label"
+              :value="language.value"
+            />
+          </el-select>
+        </div>
+        <div class="settings-field">
+          <span class="settings-label">处理版本</span>
+          <el-select v-model="workflowForm.processVersion" class="process-version-select">
+            <el-option
+              v-for="version in processVersions"
+              :key="version.value"
+              :label="version.label"
+              :value="version.value"
+            />
+          </el-select>
+        </div>
+        <div class="version-note">
+          <strong>{{ currentProcessVersion.label }}</strong>
+          <span>{{ currentProcessVersion.description }}</span>
+        </div>
+        <div class="version-note">
+          <strong>当前字幕语言：{{ currentSubtitleLanguage.label }}</strong>
+          <span>系统会把识别到的字幕翻译成该语言后再烧录到视频中。</span>
+        </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="panel-kicker">烧录设置</span>
+            <h3>FFmpeg 输出预设</h3>
+          </div>
+          <div class="settings-field">
+            <span class="settings-label">烧录预设</span>
+            <el-select v-model="workflowForm.burnProfile" class="process-version-select">
+              <el-option
+                v-for="profile in burnProfiles"
+                :key="profile.value"
+                :label="profile.label"
+                :value="profile.value"
+              />
+            </el-select>
+          </div>
+          <div class="version-note">
+            <strong>{{ currentBurnProfile.label }}</strong>
+            <span>{{ currentBurnProfile.description }}</span>
+          </div>
+          <div class="burn-params">
+            <div v-for="param in currentBurnProfile.params" :key="param.name" class="burn-param">
+              <span class="param-name">{{ param.name }}</span>
+              <strong>{{ param.value }}</strong>
+              <p>{{ param.description }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="settingsDialogVisible = false">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Download, Refresh, Search, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { Delete, DocumentCopy, Download, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
+import { useNotificationStore } from '@/stores/notification'
 
 const loading = ref(false)
 const jobsLoading = ref(false)
+const importing = ref(false)
 const downloadingId = ref('')
 const translatingId = ref('')
 const creatingJobId = ref('')
 const deletingId = ref('')
+const resettingId = ref('')
+const settingsDialogVisible = ref(false)
 const items = ref([])
 const jobs = ref([])
 const lastResult = ref(null)
+const nowTick = ref(Date.now())
+const notificationStore = useNotificationStore()
 let jobsTimer = null
+let clockTimer = null
+let jobsRequesting = false
 
 const form = reactive({
   query: 'foreigner China travel vlog first time in China',
   limit: 12
+})
+
+const manualForm = reactive({
+  url: ''
 })
 
 const workflowForm = reactive({
@@ -209,8 +471,233 @@ const workflowForm = reactive({
   publishToBilibili: false,
   bilibiliAccount: 'creator',
   bilibiliTid: 249,
-  tags: '中国旅行,外国人在中国'
+  tags: '中国旅行,外国人在中国',
+  processVersion: 'translation_v1',
+  subtitleLanguage: 'zh-CN',
+  burnProfile: 'stable'
 })
+
+const subtitleLanguages = [
+  { value: 'zh-CN', label: '中文' },
+  { value: 'en', label: '英文' },
+  { value: 'ja', label: '日文' },
+  { value: 'ko', label: '韩文' },
+  { value: 'es', label: '西班牙语' },
+  { value: 'fr', label: '法语' },
+  { value: 'de', label: '德语' },
+  { value: 'ru', label: '俄语' }
+]
+
+const processVersions = [
+  {
+    value: 'translation_v1',
+    label: '处理版本一：翻译',
+    description: '保留当前处理方式：生成中文字幕，并添加左上角原作者信息。'
+  }
+]
+
+const burnProfiles = [
+  {
+    value: 'stable',
+    label: '稳定优先（推荐）',
+    description: '适合长视频和来源帧率不稳定的视频，优先减少烧录后画面局部卡顿。',
+    params: [
+      { name: 'preset', value: 'medium', description: 'H.264 编码速度和压缩质量的平衡档，比 veryfast 慢，但画面稳定性和压缩质量更好。' },
+      { name: 'crf', value: '20', description: '画质系数，数值越低画质越高、文件越大。20 是偏清晰的推荐值。' },
+      { name: 'fps_mode', value: 'cfr', description: '输出固定帧率，减少长视频可变帧率导致的局部卡顿。' },
+      { name: 'genpts', value: '开启', description: '重建视频时间戳，修复部分源视频时间轴不连续的问题。' },
+      { name: 'audio async', value: '开启', description: '音频按时间轴重采样，降低音画时间轴漂移风险。' }
+    ]
+  },
+  {
+    value: 'fast',
+    label: '速度优先',
+    description: '适合短视频或确认源视频稳定的素材，烧录更快，但画质和长视频稳定性略弱。',
+    params: [
+      { name: 'preset', value: 'veryfast', description: '更快的 H.264 编码档位，处理时间更短。' },
+      { name: 'crf', value: '22', description: '画质略低于稳定优先，文件更小，速度更快。' },
+      { name: 'fps_mode', value: 'cfr', description: '仍保留固定帧率，避免明显时间戳卡顿。' },
+      { name: 'genpts', value: '开启', description: '仍保留时间戳重建，保证基础稳定性。' },
+      { name: 'audio async', value: '开启', description: '仍保留音频时间轴修正。' }
+    ]
+  }
+]
+
+const currentProcessVersion = computed(() => {
+  return processVersions.find(version => version.value === workflowForm.processVersion) || processVersions[0]
+})
+
+const currentSubtitleLanguage = computed(() => {
+  return subtitleLanguages.find(language => language.value === workflowForm.subtitleLanguage) || subtitleLanguages[0]
+})
+
+const currentBurnProfile = computed(() => {
+  return burnProfiles.find(profile => profile.value === workflowForm.burnProfile) || burnProfiles[0]
+})
+
+const videoFilter = reactive({
+  status: 'all',
+  sort: 'default'
+})
+
+const jobFilter = reactive({
+  status: 'all'
+})
+
+const isDownloaded = (item) => item.downloadStatus === 1
+const isTranslated = (item) => Number(item.translateStatus) === 1
+const isTranslationSkipped = (item) => Number(item.translateStatus) === 2
+const isPublished = (item) => item.publishStatus === 1
+const isRunningJob = (job) => job.status === 'queued' || job.status === 'running'
+
+const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
+const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
+
+const currentStage = (item) => {
+  const runningJob = activeJobForVideo(item)
+  if (runningJob) {
+    const stepMap = {
+      queued: '排队中',
+      download: '下载中',
+      subtitle: '翻译中',
+      publish: '发布中',
+      done: '收尾中'
+    }
+    return { label: stepMap[runningJob.step] || '执行中', className: 'is-running' }
+  }
+
+  const latestJob = latestJobForVideo(item)
+  if (latestJob?.status === 'failed') return { label: '任务失败', className: 'is-failed' }
+  if (!isDownloaded(item)) return { label: '待下载', className: 'is-pending' }
+  if (!isTranslated(item) && !isTranslationSkipped(item)) return { label: '待翻译', className: 'is-warning' }
+  if (isTranslationSkipped(item)) return { label: '已跳过', className: 'is-warning' }
+  if (!isPublished(item)) return { label: '待发布', className: 'is-ready' }
+  return { label: '已完成', className: 'is-complete' }
+}
+
+const rowWorkflowSteps = (item) => {
+  const runningJob = activeJobForVideo(item)
+  const runningStep = runningJob?.step || ''
+  const failed = latestJobForVideo(item)?.status === 'failed'
+  const steps = [
+    { key: 'lead', label: '线索', done: true },
+    { key: 'download', label: '下载', done: isDownloaded(item), running: runningStep === 'download' },
+    {
+      key: 'translate',
+      label: isTranslationSkipped(item) ? '跳过' : '翻译',
+      done: isTranslated(item) || isTranslationSkipped(item),
+      skipped: isTranslationSkipped(item),
+      running: runningStep === 'subtitle'
+    },
+    { key: 'publish', label: '发布', done: isPublished(item), running: runningStep === 'publish' }
+  ]
+  return steps.map(step => ({
+    ...step,
+    className: {
+      'is-done': step.done && !step.skipped,
+      'is-running': step.running,
+      'is-muted': !step.done && !step.running,
+      'is-warning': step.skipped,
+      'is-failed': failed && step.running
+    }
+  }))
+}
+
+const matchesVideoStatus = (item) => {
+  const status = videoFilter.status
+  if (status === 'notDownloaded') return !isDownloaded(item)
+  if (status === 'downloaded') return isDownloaded(item)
+  if (status === 'notTranslated') return !isTranslated(item) && !isTranslationSkipped(item)
+  if (status === 'translated') return isTranslated(item)
+  if (status === 'translationSkipped') return isTranslationSkipped(item)
+  if (status === 'notPublished') return !isPublished(item)
+  if (status === 'published') return isPublished(item)
+  if (status === 'running') return Boolean(activeJobForVideo(item))
+  return true
+}
+
+const scoreVideo = (item, sort) => {
+  if (sort === 'pendingFirst') {
+    return [
+      isDownloaded(item) && isTranslated(item) ? 1 : 0,
+      isDownloaded(item) ? 1 : 0,
+      isTranslated(item) ? 1 : 0,
+      isPublished(item) ? 1 : 0
+    ]
+  }
+  if (sort === 'downloadedFirst') return [isDownloaded(item) ? 0 : 1, isTranslated(item) ? 0 : 1]
+  if (sort === 'translatedFirst') return [isTranslated(item) ? 0 : 1, isDownloaded(item) ? 0 : 1]
+  if (sort === 'publishedFirst') return [isPublished(item) ? 0 : 1, isTranslated(item) ? 0 : 1]
+  return [0]
+}
+
+const compareScore = (left, right) => {
+  const maxLength = Math.max(left.length, right.length)
+  for (let index = 0; index < maxLength; index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+const filteredItems = computed(() => {
+  const sort = videoFilter.sort
+  return items.value
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => matchesVideoStatus(item))
+    .sort((left, right) => {
+      if (sort === 'default') return left.index - right.index
+      return compareScore(scoreVideo(left.item, sort), scoreVideo(right.item, sort)) || left.index - right.index
+    })
+    .map(({ item }) => item)
+})
+
+const getJobTimeValue = (job) => {
+  return parseJobTime(job.updatedAt) || parseJobTime(job.createdAt)
+}
+
+const matchesJobStatus = (job) => {
+  if (jobFilter.status === 'running') return isRunningJob(job)
+  if (jobFilter.status === 'success') return job.status === 'success'
+  if (jobFilter.status === 'failed') return job.status === 'failed'
+  return true
+}
+
+const filteredJobs = computed(() => {
+  return jobs.value
+    .filter(matchesJobStatus)
+    .sort((left, right) => {
+      const leftRank = isRunningJob(left) ? 0 : 1
+      const rightRank = isRunningJob(right) ? 0 : 1
+      if (leftRank !== rightRank) return leftRank - rightRank
+      return getJobTimeValue(right) - getJobTimeValue(left)
+    })
+})
+
+const summaryStats = computed(() => {
+  const total = items.value.length
+  const pendingDownload = items.value.filter(item => !isDownloaded(item)).length
+  const pendingTranslate = items.value.filter(item => isDownloaded(item) && !isTranslated(item) && !isTranslationSkipped(item)).length
+  const readyPublish = items.value.filter(item => isTranslated(item) && !isPublished(item)).length
+  const running = jobs.value.filter(job => job.status === 'queued' || job.status === 'running').length
+  const completed = items.value.filter(item => isPublished(item)).length
+
+  return [
+    { label: '全部线索', value: total, meta: '当前入库', tone: 'tone-primary', filter: 'all' },
+    { label: '待下载', value: pendingDownload, meta: pendingDownload ? '需要获取素材' : '无待下载', tone: 'tone-info', filter: 'notDownloaded' },
+    { label: '待翻译', value: pendingTranslate, meta: pendingTranslate ? '需要生成字幕' : '无待翻译', tone: 'tone-warning', filter: 'notTranslated' },
+    { label: '待发布', value: readyPublish, meta: readyPublish ? '可进入发布' : '无待发布', tone: 'tone-ready', filter: 'notPublished' },
+    { label: '运行中', value: running, meta: running ? '执行中' : '暂无队列', tone: 'tone-running', filter: 'running' },
+    { label: '已完成', value: completed, meta: completed ? '已发布' : '等待完成', tone: 'tone-success', filter: 'published' }
+  ]
+})
+
+const pipelineStages = computed(() => [
+  { label: '导入/查询', value: `${items.value.length} 条线索`, icon: Search },
+  { label: '下载', value: `${items.value.filter(item => item.downloadStatus === 1).length} 个素材`, icon: Download },
+  { label: '翻译', value: `${items.value.filter(item => Number(item.translateStatus) === 1).length} 条字幕`, icon: VideoCamera },
+  { label: '发布', value: `${items.value.filter(item => item.publishStatus === 1).length} 条完成`, icon: VideoPlay }
+])
 
 const handleSearch = async () => {
   loading.value = true
@@ -221,11 +708,45 @@ const handleSearch = async () => {
     })
     lastResult.value = res.data
     await loadVideos(false)
-    ElMessage.success(`查询完成，入库/更新 ${res.data.total} 条视频`)
+    showImportResultMessage(res.data, '查询完成')
   } catch (error) {
   } finally {
     loading.value = false
   }
+}
+
+const setStatusFilter = (filter) => {
+  videoFilter.status = videoFilter.status === filter ? 'all' : filter
+}
+
+const importVideo = async () => {
+  const url = manualForm.url.trim()
+  if (!url) {
+    ElMessage.warning('请先粘贴 YouTube 视频链接')
+    return
+  }
+  importing.value = true
+  try {
+    const res = await youtubeApi.importVideo({ url })
+    lastResult.value = res.data
+    manualForm.url = ''
+    await loadVideos(false)
+    showImportResultMessage(res.data, '导入完成')
+  } finally {
+    importing.value = false
+  }
+}
+
+const showImportResultMessage = (result = {}, title = '处理完成') => {
+  const created = Number(result.created ?? result.total ?? 0)
+  const duplicate = Number(result.duplicate || 0)
+
+  if (duplicate > 0) {
+    ElMessage.warning(`${title}，发现 ${duplicate} 条重复链接，实际导入 ${created} 条视频`)
+    return
+  }
+
+  ElMessage.success(`${title}，实际导入 ${created} 条视频`)
 }
 
 const loadVideos = async (showLoading = true) => {
@@ -238,13 +759,28 @@ const loadVideos = async (showLoading = true) => {
   }
 }
 
-const loadJobs = async () => {
-  jobsLoading.value = true
+const loadJobs = async ({ silent = false } = {}) => {
+  if (jobsRequesting) return
+  jobsRequesting = true
+  if (!silent) jobsLoading.value = true
   try {
     const res = await youtubeApi.listWorkflowJobs({ limit: 50 })
-    jobs.value = res.data.items || []
+    const nextJobs = res.data.items || []
+    const previousStatuses = new Map(jobs.value.map(job => [job.id, job.status]))
+    const shouldNotifyFailures = jobs.value.length > 0
+
+    if (shouldNotifyFailures) {
+      nextJobs.forEach(job => {
+        if (job.status === 'failed' && previousStatuses.get(job.id) !== 'failed') {
+          notificationStore.addWorkflowFailureMessage(job)
+        }
+      })
+    }
+
+    jobs.value = nextJobs
   } finally {
-    jobsLoading.value = false
+    jobsRequesting = false
+    if (!silent) jobsLoading.value = false
   }
 }
 
@@ -252,10 +788,56 @@ const startJobsPolling = () => {
   if (jobsTimer) return
   jobsTimer = window.setInterval(() => {
     if (jobs.value.some(job => job.status === 'queued' || job.status === 'running')) {
-      loadJobs()
+      loadJobs({ silent: true })
       loadVideos(false)
     }
   }, 1500)
+}
+
+const startClock = () => {
+  if (clockTimer) return
+  clockTimer = window.setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
+}
+
+const parseJobTime = (value) => {
+  const time = Date.parse(value || '')
+  return Number.isNaN(time) ? 0 : time
+}
+
+const formatDuration = (seconds) => {
+  const safeSeconds = Math.max(0, Math.floor(seconds || 0))
+  const minutes = Math.floor(safeSeconds / 60)
+  const remainSeconds = safeSeconds % 60
+  if (minutes <= 0) return `${remainSeconds}s`
+  return `${minutes}m${String(remainSeconds).padStart(2, '0')}s`
+}
+
+const displayProgress = (job) => {
+  const rawProgress = Number(job.progress || 0)
+  const boundedProgress = Math.max(0, Math.min(100, rawProgress))
+  if (job.status !== 'running') return boundedProgress
+  return Math.max(0, Math.min(99, boundedProgress))
+}
+
+const jobTimeText = (job) => {
+  const startedAt = parseJobTime(job.createdAt)
+  if (!startedAt) return job.status === 'running' ? '计时中' : '-'
+
+  const endedAt = job.status === 'running'
+    ? nowTick.value
+    : (parseJobTime(job.updatedAt) || nowTick.value)
+  const elapsedSeconds = (endedAt - startedAt) / 1000
+
+  if (job.status !== 'running') return `耗时 ${formatDuration(elapsedSeconds)}`
+
+  const progress = displayProgress(job)
+  if (progress <= 0) return `已用 ${formatDuration(elapsedSeconds)}`
+
+  const estimatedTotal = elapsedSeconds / (progress / 100)
+  const remainingSeconds = Math.max(0, estimatedTotal - elapsedSeconds)
+  return `已用 ${formatDuration(elapsedSeconds)} / 约 ${formatDuration(remainingSeconds)}`
 }
 
 const createJob = async (row) => {
@@ -275,7 +857,10 @@ const createJob = async (row) => {
       title: row.title || 'YouTube 视频',
       description: '',
       tags: workflowForm.tags,
-      schedule: ''
+      schedule: '',
+      processVersion: workflowForm.processVersion,
+      subtitleLanguage: workflowForm.subtitleLanguage,
+      burnProfile: workflowForm.burnProfile
     })
     jobs.value.unshift(res.data)
     ElMessage.success('工作流任务已创建')
@@ -304,7 +889,7 @@ const downloadVideo = async (row) => {
     ElMessage.success('下载任务已创建')
     startJobsPolling()
     setTimeout(() => {
-      loadJobs()
+      loadJobs({ silent: true })
       loadVideos(false)
     }, 1500)
   } finally {
@@ -337,9 +922,46 @@ const deleteVideo = async (row) => {
   }
 }
 
+const resetProcessing = async (row) => {
+  if (activeJobForVideo(row)) {
+    ElMessage.warning('该视频还有任务执行中，结束后再重新处理')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${row.title || row.url}」当前处理后视频，并回退到可重新翻译状态吗？下载原视频会保留。`,
+      '重新处理视频',
+      {
+        confirmButtonText: '删除成品并回退',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch (error) {
+    return
+  }
+
+  resettingId.value = row.id
+  try {
+    const res = await youtubeApi.resetProcessing(row.id, { deleteProcessed: true })
+    const updatedVideo = res.data.video
+    items.value = items.value.map(item => item.id === row.id ? updatedVideo : item)
+    await loadVideos(false)
+    await loadJobs({ silent: true })
+    ElMessage.success(`已回退为可重新处理状态，删除处理后素材 ${res.data.deletedMaterialCount || 0} 个`)
+  } finally {
+    resettingId.value = ''
+  }
+}
+
 const translateVideo = async (row) => {
   if (row.downloadStatus !== 1) {
     ElMessage.warning('请先下载视频，再进行翻译')
+    return
+  }
+  if (Number(row.translateStatus) === 1) {
+    ElMessage.info('该视频已翻译')
     return
   }
   translatingId.value = row.id
@@ -351,13 +973,16 @@ const translateVideo = async (row) => {
       subscribers: row.subscribers,
       publishedAt: row.publishedAt,
       title: row.title || 'YouTube 视频',
-      tags: workflowForm.tags
+      tags: workflowForm.tags,
+      processVersion: workflowForm.processVersion,
+      subtitleLanguage: workflowForm.subtitleLanguage,
+      burnProfile: workflowForm.burnProfile
     })
     jobs.value.unshift(res.data)
     ElMessage.success('翻译任务已创建')
     startJobsPolling()
     setTimeout(() => {
-      loadJobs()
+      loadJobs({ silent: true })
       loadVideos(false)
     }, 1500)
   } finally {
@@ -385,6 +1010,35 @@ const jobStatusType = (status) => {
   return map[status] || 'info'
 }
 
+const progressStatus = (job) => {
+  const map = {
+    success: 'success',
+    failed: 'exception'
+  }
+  return map[job.status] || undefined
+}
+
+const translateStatusText = (status) => {
+  const map = {
+    1: '已翻译',
+    2: '已跳过'
+  }
+  return map[Number(status)] || '未翻译'
+}
+
+const translateStatusType = (status) => {
+  const map = {
+    1: 'success',
+    2: 'warning'
+  }
+  return map[Number(status)] || 'info'
+}
+
+const statusChipClass = (type, status) => {
+  if (type === 'translate' && Number(status) === 2) return 'is-warning'
+  return translateStatusType(status) === 'success' ? 'is-success' : 'is-muted'
+}
+
 const copyUrl = async (url) => {
   if (!url) return
   try {
@@ -399,6 +1053,7 @@ onMounted(() => {
   loadVideos()
   loadJobs()
   startJobsPolling()
+  startClock()
 })
 
 onBeforeUnmount(() => {
@@ -406,149 +1061,878 @@ onBeforeUnmount(() => {
     window.clearInterval(jobsTimer)
     jobsTimer = null
   }
+  if (clockTimer) {
+    window.clearInterval(clockTimer)
+    clockTimer = null
+  }
 })
 </script>
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
+$panel-border: #dce6f2;
+$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
+$accent-blue: #2563eb;
+$accent-teal: #0f9f8f;
+$accent-amber: #d97706;
+$surface-soft: #f7faff;
+$ink-strong: #172033;
+
 .youtube-research {
-  .page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 16px;
+  display: grid;
+  gap: 16px;
 
-    h1 {
-      margin: 0;
-      font-size: 24px;
-      color: $text-primary;
-    }
-
-    p {
-      margin: 8px 0 0;
-      color: $text-secondary;
-      font-size: 14px;
-    }
+  :deep(.el-card) {
+    border: 1px solid $panel-border;
+    border-radius: 8px;
+    box-shadow: $panel-shadow;
   }
 
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
+  :deep(.el-card__header) {
+    padding: 14px 16px;
+    border-bottom: 1px solid $border-lighter;
   }
 
-  .query-card {
-    margin-bottom: 16px;
-    border-radius: 6px;
+  :deep(.el-card__body) {
+    padding: 16px;
   }
 
-  .query-form {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-
-    :deep(.el-form-item) {
-      margin-bottom: 0;
-    }
+  :deep(.el-form-item) {
+    margin-bottom: 0;
   }
 
-  .query-input {
-    width: min(520px, 60vw);
-  }
-
-  .account-input {
-    width: 160px;
-  }
-
-  .tag-input {
-    width: 260px;
-  }
-
-  .query-meta {
-    display: flex;
-    gap: 18px;
-    flex-wrap: wrap;
-    margin-top: 14px;
-    color: $text-secondary;
-    font-size: 13px;
-  }
-
-  .result-card {
-    margin-bottom: 16px;
-    border-radius: 6px;
-  }
-
-  .job-card {
-    border-radius: 6px;
-  }
-
-  .job-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .video-cell {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .thumbnail {
-    width: 112px;
-    height: 63px;
-    object-fit: cover;
-    border-radius: 4px;
-    background: $border-extra-light;
-    flex: 0 0 auto;
-  }
-
-  .video-info {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .video-title {
-    color: $text-primary;
+  :deep(.el-table th.el-table__cell) {
+    background: #f8fbff;
+    color: #5c6678;
     font-weight: 600;
-    line-height: 1.4;
-    text-decoration: none;
-
-    &:hover {
-      color: $primary-color;
-    }
   }
 
-  .video-url {
-    color: $text-secondary;
-    font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 560px;
+  :deep(.el-table td.el-table__cell) {
+    padding: 10px 0;
   }
 }
 
-@media (max-width: 760px) {
-  .youtube-research {
-    .page-header {
-      align-items: flex-start;
-      flex-direction: column;
-    }
+.workspace-hero {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(460px, 1.4fr);
+  gap: 16px;
+  align-items: stretch;
+  padding: 18px;
+  border: 1px solid $panel-border;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.92)),
+    #fff;
+  box-shadow: $panel-shadow;
+}
 
-    .query-input {
-      width: 100%;
-    }
+.hero-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
 
-    .video-url {
-      max-width: 240px;
+  h1 {
+    margin: 4px 0 8px;
+    color: $ink-strong;
+    font-size: 25px;
+    line-height: 1.25;
+    font-weight: 700;
+  }
+
+  p {
+    max-width: 680px;
+    color: #5b667a;
+    font-size: 14px;
+    line-height: 1.7;
+  }
+}
+
+.eyebrow,
+.panel-kicker {
+  color: $accent-blue;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 4px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+
+  &:hover,
+  &.is-active {
+    border-color: rgba(37, 99, 235, 0.45);
+    box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12);
+    transform: translateY(-1px);
+  }
+
+  strong {
+    color: $ink-strong;
+    font-size: 26px;
+    line-height: 1;
+  }
+
+  &.tone-success {
+    border-color: rgba(15, 159, 143, 0.2);
+  }
+
+  &.tone-warning {
+    border-color: rgba(217, 119, 6, 0.2);
+  }
+
+  &.tone-running {
+    border-color: rgba(37, 99, 235, 0.25);
+  }
+
+  &.tone-ready {
+    border-color: rgba(124, 58, 237, 0.18);
+  }
+}
+
+.metric-label {
+  color: #5b667a;
+  font-size: 13px;
+}
+
+.metric-meta {
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.pipeline-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid $panel-border;
+  border-radius: 8px;
+  background: $panel-border;
+  box-shadow: 0 8px 18px rgba(28, 55, 90, 0.05);
+}
+
+.pipeline-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 66px;
+  padding: 12px 14px;
+  background: #fff;
+
+  &:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    width: 18px;
+    height: 1px;
+    background: #b7c3d6;
+  }
+
+  strong {
+    display: block;
+    margin-top: 2px;
+    color: $ink-strong;
+    font-size: 13px;
+  }
+}
+
+.stage-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: $accent-blue;
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.stage-label {
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.command-card {
+  :deep(.el-card__body) {
+    display: grid;
+    gap: 14px;
+  }
+}
+
+.command-header,
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  h2 {
+    margin: 2px 0 0;
+    color: $ink-strong;
+    font-size: 18px;
+    line-height: 1.3;
+  }
+}
+
+.command-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.25fr);
+  gap: 14px;
+}
+
+.entry-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: $surface-soft;
+}
+
+.entry-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  > .el-icon {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    color: #fff;
+    background: $accent-blue;
+  }
+
+  h3 {
+    margin: 0;
+    color: $ink-strong;
+    font-size: 15px;
+    line-height: 1.3;
+  }
+
+  span {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+}
+
+.import-panel .entry-heading > .el-icon {
+  background: $accent-teal;
+}
+
+.entry-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.search-control {
+  grid-template-columns: minmax(220px, 1fr) 110px auto;
+}
+
+.limit-field {
+  :deep(.el-input-number) {
+    width: 100%;
+  }
+}
+
+.workflow-config {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid #e2eaf5;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.config-title {
+  display: grid;
+  gap: 2px;
+  flex: 0 0 auto;
+
+  span:last-child {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+}
+
+.config-items {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.config-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: $text-regular;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.compact-input {
+  width: 140px;
+}
+
+.tid-input {
+  width: 108px;
+}
+
+.tag-input {
+  width: 260px;
+}
+
+.query-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.data-panel {
+  overflow: hidden;
+}
+
+.panel-count {
+  color: $text-secondary;
+  font-size: 13px;
+}
+
+.list-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.job-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.status-select {
+  width: 132px;
+}
+
+.sort-select {
+  width: 128px;
+}
+
+.job-status-select {
+  width: 120px;
+}
+
+.video-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.thumbnail {
+  width: 116px;
+  height: 65px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: $border-extra-light;
+  flex: 0 0 auto;
+}
+
+.thumbnail-empty {
+  display: grid;
+  place-items: center;
+  color: $text-secondary;
+  border: 1px dashed $border-base;
+}
+
+.video-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #d5deec;
+  border-radius: 6px;
+  color: #69758a;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+
+  &.is-running {
+    color: #1d4ed8;
+    border-color: rgba(37, 99, 235, 0.26);
+    background: rgba(37, 99, 235, 0.1);
+  }
+
+  &.is-warning {
+    color: $accent-amber;
+    border-color: rgba(217, 119, 6, 0.24);
+    background: rgba(245, 158, 11, 0.12);
+  }
+
+  &.is-ready {
+    color: #6d28d9;
+    border-color: rgba(109, 40, 217, 0.22);
+    background: rgba(124, 58, 237, 0.1);
+  }
+
+  &.is-complete {
+    color: #047857;
+    border-color: rgba(4, 120, 87, 0.22);
+    background: rgba(16, 185, 129, 0.1);
+  }
+
+  &.is-failed {
+    color: #b91c1c;
+    border-color: rgba(185, 28, 28, 0.24);
+    background: rgba(239, 68, 68, 0.1);
+  }
+}
+
+.video-title {
+  min-width: 0;
+  color: $ink-strong;
+  font-weight: 650;
+  line-height: 1.45;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &:hover {
+    color: $accent-blue;
+  }
+}
+
+.video-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: #6b7484;
+  font-size: 12px;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+
+    &:not(:last-child)::after {
+      content: '';
+      width: 3px;
+      height: 3px;
+      margin-left: 8px;
+      border-radius: 50%;
+      background: #b7c3d6;
     }
+  }
+}
+
+.video-url {
+  max-width: 560px;
+  color: $text-secondary;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.workflow-track {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+
+.workflow-step {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: #8a94a6;
+  font-size: 12px;
+  font-weight: 600;
+
+  &:not(:last-child) {
+    padding-right: 18px;
+  }
+
+  &:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    right: 5px;
+    width: 8px;
+    height: 1px;
+    background: #ccd6e5;
+  }
+
+  &.is-done {
+    color: #047857;
+
+    .step-dot,
+    &::after {
+      background: #10b981;
+    }
+  }
+
+  &.is-running {
+    color: #1d4ed8;
+
+    .step-dot {
+      background: #2563eb;
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+    }
+  }
+
+  &.is-warning {
+    color: $accent-amber;
+
+    .step-dot {
+      background: #f59e0b;
+    }
+  }
+
+  &.is-failed {
+    color: #b91c1c;
+
+    .step-dot {
+      background: #ef4444;
+    }
+  }
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c8d2e2;
+  flex: 0 0 auto;
+}
+
+.inline-job {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  max-width: 620px;
+  padding: 6px 8px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  border-radius: 6px;
+  color: #4b5a70;
+  background: #f8fbff;
+  font-size: 12px;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid #d5deec;
+  color: #69758a;
+  background: #f8fafc;
+  font-size: 12px;
+  line-height: 1;
+
+  &.is-success {
+    color: #047857;
+    border-color: rgba(4, 120, 87, 0.22);
+    background: rgba(16, 185, 129, 0.1);
+  }
+
+  &.is-warning {
+    color: $accent-amber;
+    border-color: rgba(217, 119, 6, 0.22);
+    background: rgba(245, 158, 11, 0.12);
+  }
+}
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+
+  :deep(.el-button + .el-button) {
+    margin-left: 0;
+  }
+}
+
+.more-button {
+  color: $text-secondary;
+}
+
+:deep(.danger-item) {
+  color: $danger-color;
+}
+
+.job-card {
+  margin-bottom: 4px;
+}
+
+.process-settings-button {
+  position: fixed;
+  left: 18px;
+  bottom: 22px;
+  z-index: 10;
+  height: 44px;
+  padding: 0 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, #2563eb, #0f9f8f);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.24);
+
+  :deep(.el-icon) {
+    margin-right: 5px;
+  }
+}
+
+.settings-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-section + .settings-section {
+  padding-top: 14px;
+  border-top: 1px solid #e2eaf5;
+}
+
+.settings-section-header {
+  display: grid;
+  gap: 2px;
+
+  h3 {
+    margin: 0;
+    color: $ink-strong;
+    font-size: 16px;
+    line-height: 1.35;
+  }
+}
+
+.settings-field {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-label {
+  color: $text-regular;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.process-version-select {
+  width: 100%;
+}
+
+.version-note {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #dce6f2;
+  border-radius: 8px;
+  background: #f7faff;
+
+  strong {
+    color: $ink-strong;
+    font-size: 14px;
+  }
+
+  span {
+    color: $text-secondary;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
+
+.burn-params {
+  display: grid;
+  gap: 8px;
+}
+
+.burn-param {
+  display: grid;
+  grid-template-columns: 92px 88px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid #edf2f8;
+  border-radius: 8px;
+  background: #fff;
+
+  .param-name {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+
+  strong {
+    color: $ink-strong;
+    font-size: 13px;
+  }
+
+  p {
+    margin: 0;
+    color: $text-secondary;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+@media (max-width: 1200px) {
+  .workspace-hero,
+  .command-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .metric-strip {
+    grid-template-columns: repeat(4, minmax(130px, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .metric-strip,
+  .pipeline-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pipeline-stage:not(:last-child)::after {
+    display: none;
+  }
+
+  .entry-control,
+  .search-control {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-config {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .config-items {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .panel-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .list-tools,
+  .job-tools {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace-hero {
+    padding: 14px;
+  }
+
+  .hero-copy h1 {
+    font-size: 22px;
+  }
+
+  .metric-strip,
+  .pipeline-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .compact-input,
+  .tag-input,
+  .tid-input {
+    width: 100%;
+  }
+
+  .config-items {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .status-select,
+  .sort-select,
+  .job-status-select {
+    width: 100%;
+  }
+
+  .burn-param {
+    grid-template-columns: 1fr;
+  }
+
+  .video-cell {
+    align-items: flex-start;
+  }
+
+  .thumbnail {
+    width: 96px;
+    height: 54px;
+  }
+
+  .video-url {
+    max-width: 220px;
   }
 }
 </style>

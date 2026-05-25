@@ -22,7 +22,7 @@
             </el-menu-item>
             <el-menu-item index="/youtube-research">
               <el-icon><Search /></el-icon>
-              <span>视频线索查询</span>
+              <span>视频采集处理</span>
             </el-menu-item>
             <el-menu-item index="/account-management">
               <el-icon><User /></el-icon>
@@ -35,6 +35,10 @@
             <el-menu-item index="/publish-center">
               <el-icon><Upload /></el-icon>
               <span>发布中心</span>
+            </el-menu-item>
+            <el-menu-item index="/workflow-statistics">
+              <el-icon><DataAnalysis /></el-icon>
+              <span>处理统计</span>
             </el-menu-item>
             <el-menu-item index="/about">
               <el-icon><DataAnalysis /></el-icon>

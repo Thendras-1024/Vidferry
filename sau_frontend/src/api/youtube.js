@@ -9,8 +9,16 @@ export const youtubeApi = {
     return request.get('/youtube/videos')
   },
 
+  importVideo(data) {
+    return request.post('/youtube/videos/import', data)
+  },
+
   updateStatus(videoId, data) {
     return request.patch(`/youtube/videos/${videoId}/status`, data)
+  },
+
+  resetProcessing(videoId, data = {}) {
+    return request.post(`/youtube/videos/${videoId}/reset-processing`, data)
   },
 
   deleteVideo(videoId) {
@@ -35,5 +43,9 @@ export const youtubeApi = {
 
   getWorkflowJob(jobId) {
     return request.get(`/youtube/workflow/jobs/${jobId}`)
+  },
+
+  getWorkflowStatistics(params = {}) {
+    return request.get('/youtube/workflow/statistics', { params })
   }
 }
