@@ -32,6 +32,7 @@ const writeStorage = (key, value) => {
 }
 
 const getAccountMessageKey = (account) => `account-abnormal:${account.id}`
+const getWorkflowFailureMessageKey = (job) => `workflow-failed:${job.id}`
 
 const buildAccountMessage = (account, previousMessage) => {
   const now = Date.now()
@@ -49,6 +50,26 @@ const buildAccountMessage = (account, previousMessage) => {
     updatedAt: now,
     acknowledged: previousMessage?.acknowledged || false,
     acknowledgedAt: previousMessage?.acknowledgedAt || null
+  }
+}
+
+const buildWorkflowFailureMessage = (job) => {
+  const now = Date.now()
+  const title = job.title || job.videoTitle || job.videoId || '未命名任务'
+  const message = job.message || '任务执行失败，请在工作流任务中查看具体原因。'
+
+  return {
+    id: getWorkflowFailureMessageKey(job),
+    key: getWorkflowFailureMessageKey(job),
+    type: 'workflow-failed',
+    title: '工作流任务失败',
+    content: `${title} 执行失败：${message}`,
+    jobId: job.id,
+    videoId: job.videoId,
+    createdAt: now,
+    updatedAt: now,
+    acknowledged: false,
+    acknowledgedAt: null
   }
 }
 
@@ -72,7 +93,10 @@ export const useNotificationStore = defineStore('notification', () => {
   }
 
   const maybeShowAccountPopup = () => {
-    if (!isBrowser || unreadCount.value === 0) return
+    if (!isBrowser) return
+
+    const abnormalMessages = messages.value.filter(message => message.type === 'account-abnormal' && !message.acknowledged)
+    if (abnormalMessages.length === 0) return
 
     const lastPopupAt = Number(window.localStorage.getItem(POPUP_STORAGE_KEY) || 0)
     const now = Date.now()
@@ -80,7 +104,6 @@ export const useNotificationStore = defineStore('notification', () => {
 
     window.localStorage.setItem(POPUP_STORAGE_KEY, String(now))
 
-    const abnormalMessages = messages.value.filter(message => !message.acknowledged)
     const names = abnormalMessages
       .slice(0, 5)
       .map(message => `${message.platform}-${message.accountName}`)
@@ -101,14 +124,37 @@ export const useNotificationStore = defineStore('notification', () => {
     const abnormalKeys = new Set(abnormalAccounts.map(getAccountMessageKey))
     const previousMessages = new Map(messages.value.map(message => [message.key, message]))
 
-    handledKeys.value = handledKeys.value.filter(key => abnormalKeys.has(key))
+    handledKeys.value = handledKeys.value.filter(key => !key.startsWith('account-abnormal:') || abnormalKeys.has(key))
 
-    messages.value = abnormalAccounts
+    const accountMessages = abnormalAccounts
       .filter(account => !handledKeys.value.includes(getAccountMessageKey(account)))
       .map(account => buildAccountMessage(account, previousMessages.get(getAccountMessageKey(account))))
+    const otherMessages = messages.value.filter(message => message.type !== 'account-abnormal')
+
+    messages.value = [...otherMessages, ...accountMessages]
 
     persist()
     maybeShowAccountPopup()
+  }
+
+  const addWorkflowFailureMessage = (job) => {
+    if (!job?.id) return
+
+    const key = getWorkflowFailureMessageKey(job)
+    if (handledKeys.value.includes(key)) return
+    if (messages.value.some(message => message.key === key)) return
+
+    const message = buildWorkflowFailureMessage(job)
+    messages.value.unshift(message)
+    persist()
+
+    ElNotification({
+      title: message.title,
+      message: message.content,
+      type: 'error',
+      position: 'top-right',
+      duration: 6000
+    })
   }
 
   const acknowledgeMessage = (id) => {
@@ -138,6 +184,7 @@ export const useNotificationStore = defineStore('notification', () => {
     unreadCount,
     hasUnread,
     syncAccountAbnormalMessages,
+    addWorkflowFailureMessage,
     acknowledgeMessage,
     resolveMessage
   }
