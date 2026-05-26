@@ -47,6 +47,13 @@ except ImportError:
 YOUTUBE_DOWNLOAD_DIR = Path(os.environ.get("YOUTUBE_DOWNLOAD_DIR", str(YOUTUBE_DOWNLOAD_DIR)))
 YOUTUBE_PROCESSED_DIR = Path(os.environ.get("YOUTUBE_PROCESSED_DIR", str(YOUTUBE_PROCESSED_DIR)))
 YOUTUBE_TRANSCRIPT_DIR = Path(os.environ.get("YOUTUBE_TRANSCRIPT_DIR", str(BASE_DIR / "videos" / "transcripts")))
+YTDLP_JS_RUNTIME = os.environ.get("YTDLP_JS_RUNTIME", "").strip()
+YTDLP_JS_RUNTIME_PATH = os.environ.get("YTDLP_JS_RUNTIME_PATH", "").strip()
+YTDLP_REMOTE_COMPONENTS = [
+    item.strip()
+    for item in os.environ.get("YTDLP_REMOTE_COMPONENTS", "").split(",")
+    if item.strip()
+]
 
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")

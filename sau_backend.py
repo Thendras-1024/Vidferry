@@ -5,6 +5,7 @@ import datetime
 import html
 import json
 import os
+import random
 import re
 import signal
 import shutil
@@ -54,6 +55,9 @@ from app.config import (
     YOUTUBE_FALLBACK_QUERIES,
     YOUTUBE_PROCESSED_DIR,
     YOUTUBE_TRANSCRIPT_DIR,
+    YTDLP_JS_RUNTIME,
+    YTDLP_JS_RUNTIME_PATH,
+    YTDLP_REMOTE_COMPONENTS,
 )
 
 try:
@@ -76,6 +80,20 @@ except ImportError as optional_import_error:
 
 active_queues = {}
 app = Flask(__name__)
+
+
+def _bootstrap_local_tool_path():
+    scripts_dir = Path(BASE_DIR / ".venv" / "Scripts")
+    if not scripts_dir.is_dir():
+        return
+    current_path = os.environ.get("PATH", "")
+    paths = [item for item in current_path.split(os.pathsep) if item]
+    scripts_text = str(scripts_dir)
+    if not any(Path(item).resolve() == scripts_dir.resolve() for item in paths if Path(item).exists()):
+        os.environ["PATH"] = scripts_text + os.pathsep + current_path
+
+
+_bootstrap_local_tool_path()
 
 #允许所有来源跨域访问
 CORS(app)
@@ -164,6 +182,18 @@ def _json_response(code=200, msg="success", data=None, status=200):
     return jsonify({"code": code, "msg": msg, "data": data}), status
 
 
+def _clean_unique_list(values):
+    cleaned = []
+    seen = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    return cleaned
+
+
 class WorkflowConflictError(ValueError):
     def __init__(self, message, error_code, error_type="WORKFLOW_CONFLICT", data=None):
         super().__init__(message)
@@ -183,6 +213,59 @@ def _error_response(status, message, error_code, error_type="", data=None):
 
 def _now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _parse_json_object(raw_value):
+    if isinstance(raw_value, dict):
+        return raw_value
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {"raw": str(raw_value)}
+
+
+def _clean_topic_list(value):
+    if not isinstance(value, list):
+        return []
+    topics = []
+    for item in value:
+        topic = str(item or "").strip().lstrip("#")
+        if topic and topic not in topics:
+            topics.append(topic)
+    return topics
+
+
+def _build_default_publish_draft(analysis_result):
+    result = analysis_result if isinstance(analysis_result, dict) else {}
+    title_options = [
+        str(title or "").strip()
+        for title in (result.get("title_options") if isinstance(result.get("title_options"), list) else [])
+        if str(title or "").strip()
+    ]
+    selected_title = random.choice(title_options) if title_options else ""
+    return {
+        "title": selected_title,
+        "description": str(result.get("publish_copy") or "").strip(),
+        "tags": _clean_topic_list(result.get("tags")),
+        "source": "llm_default",
+        "updatedAt": _now_iso(),
+    }
+
+
+def _parse_publish_draft(raw_value, analysis_result=None):
+    draft = _parse_json_object(raw_value)
+    if not draft:
+        return {}
+    return {
+        "title": str(draft.get("title") or "").strip(),
+        "description": str(draft.get("description") or "").strip(),
+        "tags": _clean_topic_list(draft.get("tags")),
+        "source": str(draft.get("source") or "").strip(),
+        "updatedAt": str(draft.get("updatedAt") or "").strip(),
+    }
 
 
 def init_database_tables():
@@ -297,6 +380,55 @@ def init_database_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_job_id ON youtube_workflow_events(job_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_video_id ON youtube_workflow_events(video_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_stage ON youtube_workflow_events(stage)")
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS published_youtube_materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT,
+            source_url TEXT,
+            title TEXT,
+            platform TEXT,
+            account_count INTEGER DEFAULT 0,
+            material_id INTEGER,
+            filename TEXT,
+            file_path TEXT,
+            filesize REAL DEFAULT 0,
+            thumbnail TEXT,
+            channel TEXT,
+            subscribers TEXT,
+            source_published_at TEXT,
+            publish_title TEXT,
+            metadata TEXT DEFAULT '{}',
+            published_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        cursor.execute("PRAGMA table_info(published_youtube_materials)")
+        existing_published_columns = {row[1] for row in cursor.fetchall()}
+        published_columns = {
+            "video_id": "TEXT",
+            "source_url": "TEXT",
+            "title": "TEXT",
+            "platform": "TEXT",
+            "account_count": "INTEGER DEFAULT 0",
+            "material_id": "INTEGER",
+            "filename": "TEXT",
+            "file_path": "TEXT",
+            "filesize": "REAL DEFAULT 0",
+            "thumbnail": "TEXT",
+            "channel": "TEXT",
+            "subscribers": "TEXT",
+            "source_published_at": "TEXT",
+            "publish_title": "TEXT",
+            "metadata": "TEXT DEFAULT '{}'",
+            "published_at": "DATETIME",
+            "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+        }
+        for column, definition in published_columns.items():
+            if column not in existing_published_columns:
+                cursor.execute(f"ALTER TABLE published_youtube_materials ADD COLUMN {column} {definition}")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_video_id ON published_youtube_materials(video_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_source_url ON published_youtube_materials(source_url)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_published_at ON published_youtube_materials(published_at)")
         conn.commit()
 
 
@@ -326,6 +458,7 @@ def init_youtube_video_table():
             transcript_language TEXT,
             analysis_status INTEGER DEFAULT 0,
             analysis_result TEXT,
+            publish_draft TEXT,
             analysis_updated_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -341,6 +474,7 @@ def init_youtube_video_table():
             "transcript_language": "TEXT",
             "analysis_status": "INTEGER DEFAULT 0",
             "analysis_result": "TEXT",
+            "publish_draft": "TEXT",
             "analysis_updated_at": "DATETIME",
         }
         for column, definition in video_columns.items():
@@ -441,6 +575,8 @@ def init_youtube_workflow_table():
 
 def _row_to_youtube_video(row):
     item = dict(row)
+    analysis_result = _parse_json_object(item.get("analysis_result"))
+    publish_draft = _parse_publish_draft(item.get("publish_draft"), analysis_result)
     return {
         "dbId": item.get("id"),
         "id": item.get("video_id"),
@@ -462,6 +598,8 @@ def _row_to_youtube_video(row):
         "transcriptLanguage": item.get("transcript_language") or "",
         "analysisStatus": int(item.get("analysis_status") or 0),
         "hasAnalysis": int(item.get("analysis_status") or 0) == 1,
+        "analysisResult": analysis_result,
+        "publishDraft": publish_draft,
         "analysisUpdatedAt": item.get("analysis_updated_at") or "",
         "createdAt": item.get("created_at") or "",
         "updatedAt": item.get("updated_at") or "",
@@ -492,7 +630,20 @@ def save_new_youtube_videos(videos, query):
         placeholders = ",".join("?" for _ in ids)
         cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", ids)
         existing_ids = {row["video_id"] for row in cursor.fetchall()}
-        new_videos = [video for video in normalized_videos if video.get("id") not in existing_ids]
+        published_ids, published_urls = _published_youtube_identity_sets(cursor)
+        published_duplicate_count = sum(
+            1
+            for video in normalized_videos
+            if video.get("id") in published_ids
+            or _canonical_youtube_url(video.get("url") or "", video.get("id") or "") in published_urls
+        )
+        new_videos = [
+            video
+            for video in normalized_videos
+            if video.get("id") not in existing_ids
+            and video.get("id") not in published_ids
+            and _canonical_youtube_url(video.get("url") or "", video.get("id") or "") not in published_urls
+        ]
 
         for video in new_videos:
             video_id = video.get("id")
@@ -520,6 +671,7 @@ def save_new_youtube_videos(videos, query):
                 "items": [],
                 "created": 0,
                 "duplicate": len(normalized_videos),
+                "publishedDuplicate": published_duplicate_count,
                 "requested": len(videos),
             }
 
@@ -534,6 +686,7 @@ def save_new_youtube_videos(videos, query):
             "items": [_row_to_youtube_video(row) for row in cursor.fetchall()],
             "created": len(new_videos),
             "duplicate": len(normalized_videos) - len(new_videos),
+            "publishedDuplicate": published_duplicate_count,
             "requested": len(videos),
         }
 
@@ -550,7 +703,7 @@ def list_youtube_videos():
         cursor = conn.cursor()
         cursor.execute('''
         SELECT * FROM youtube_videos
-        ORDER BY updated_at DESC, id DESC
+        ORDER BY created_at DESC, id DESC
         ''')
         videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
         for video in videos:
@@ -618,10 +771,29 @@ def delete_youtube_video_record(video_id):
             raise LookupError("视频线索不存在")
         video_record = dict(video)
         _assert_no_active_youtube_job(cursor, video_id)
+        published_ids, _ = _published_youtube_identity_sets(cursor)
+        has_publish_status = int(video_record.get("publish_status") or 0) == 1
+        if has_publish_status and video_id not in published_ids:
+            legacy_material = (
+                _find_latest_youtube_material(cursor, video_id, "youtube_processed")
+                or _find_latest_youtube_material(cursor, video_id, "youtube_download")
+                or {}
+            )
+            _archive_published_material(
+                cursor,
+                _row_to_material(legacy_material) if legacy_material else {},
+                _row_to_youtube_video(video),
+                "历史发布",
+                _now_iso(),
+                publish_title=video_record.get("title") or "",
+                account_count=0,
+            )
+            published_ids.add(video_id)
+        is_published_archived = video_id in published_ids or has_publish_status
 
         processed_material = _find_latest_youtube_material(cursor, video_id, "youtube_processed")
         processed_path = Path(video_record["processed_file_path"]) if video_record["processed_file_path"] else None
-        if processed_material or (processed_path and processed_path.exists()):
+        if not is_published_archived and (processed_material or (processed_path and processed_path.exists())):
             raise WorkflowConflictError(
                 "该视频已存在处理后视频，请先删除对应处理后视频，再删除视频线索。",
                 WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,
@@ -631,7 +803,7 @@ def delete_youtube_video_record(video_id):
         download_material = _find_latest_youtube_material(cursor, video_id, "youtube_download")
         downloaded_file_path = video_record.get("downloaded_file_path") or ""
         download_status = int(video_record.get("download_status") or 0)
-        if download_material or downloaded_file_path or download_status == 1:
+        if not is_published_archived and (download_material or downloaded_file_path or download_status == 1):
             raise WorkflowConflictError(
                 "该视频已存在下载视频，请先删除对应下载视频，再删除视频线索。",
                 WORKFLOW_ERROR_DELETE_DOWNLOAD_EXISTS,
@@ -650,6 +822,37 @@ def delete_youtube_video_record(video_id):
     if not deleted:
         raise LookupError("视频线索不存在")
     return {"videoId": video_id}
+
+
+def delete_youtube_video_records(video_ids):
+    results = []
+    for video_id in video_ids:
+        try:
+            results.append({
+                "videoId": video_id,
+                "success": True,
+                "data": delete_youtube_video_record(video_id),
+            })
+        except WorkflowConflictError as exc:
+            results.append({
+                "videoId": video_id,
+                "success": False,
+                "message": str(exc),
+                "errorCode": exc.error_code,
+                "errorType": exc.error_type,
+            })
+        except Exception as exc:
+            results.append({
+                "videoId": video_id,
+                "success": False,
+                "message": str(exc),
+            })
+    return {
+        "total": len(video_ids),
+        "success": sum(1 for item in results if item.get("success")),
+        "failed": sum(1 for item in results if not item.get("success")),
+        "items": results,
+    }
 
 
 def reset_youtube_video_processing(video_id, delete_processed=True, process_version=""):
@@ -701,7 +904,9 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
                     (video_id,),
                 )
 
-        _sync_youtube_processed_state(cursor, video_id)
+        sync_result = _sync_youtube_processed_state(cursor, video_id)
+        if deleted_materials and not sync_result.get("analysisCleared"):
+            sync_result.update(_clear_youtube_analysis_state(cursor, video_id))
         conn.commit()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
         updated_video = _row_to_youtube_video(cursor.fetchone())
@@ -711,6 +916,7 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
         "deletedMaterials": deleted_materials,
         "deletedMaterialCount": len(deleted_materials),
         "processVersion": process_version,
+        "sync": sync_result,
     }
 
 
@@ -1144,6 +1350,15 @@ def finish_workflow_event(event_id, status="success", message="", output_file_pa
     init_database_tables()
     now = _now_iso()
     cloud_usage = cloud_usage or {}
+    prompt_tokens = int(cloud_usage.get("promptTokens") or cloud_usage.get("prompt_tokens") or 0)
+    completion_tokens = int(cloud_usage.get("completionTokens") or cloud_usage.get("completion_tokens") or 0)
+    total_tokens = int(
+        cloud_usage.get("totalTokens")
+        or cloud_usage.get("total_tokens")
+        or cloud_usage.get("tokens")
+        or (prompt_tokens + completion_tokens)
+        or 0
+    )
     metadata = metadata or {}
     with sqlite3.connect(_db_path()) as conn:
         conn.row_factory = sqlite3.Row
@@ -1178,9 +1393,9 @@ def finish_workflow_event(event_id, status="success", message="", output_file_pa
             now,
             round(duration, 2),
             cloud_usage.get("model") or "",
-            int(cloud_usage.get("promptTokens") or 0),
-            int(cloud_usage.get("completionTokens") or 0),
-            int(cloud_usage.get("totalTokens") or 0),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
             float(cloud_usage.get("latencyMs") or 0),
             json.dumps(metadata, ensure_ascii=False),
             event_id,
@@ -1249,6 +1464,8 @@ def get_workflow_statistics(limit=200):
     events = list_workflow_events(limit)
     jobs = list_youtube_workflow_jobs(limit)
     total_duration = sum(event["durationSeconds"] for event in events)
+    prompt_tokens = sum(event["promptTokens"] for event in events)
+    completion_tokens = sum(event["completionTokens"] for event in events)
     total_tokens = sum(event["totalTokens"] for event in events)
     cloud_events = [event for event in events if event["cloudLatencyMs"] > 0 or event["totalTokens"] > 0]
     stage_map = {}
@@ -1264,6 +1481,8 @@ def get_workflow_statistics(limit=200):
             "avgDurationSeconds": 0,
             "inputSizeMb": 0,
             "outputSizeMb": 0,
+            "promptTokens": 0,
+            "completionTokens": 0,
             "totalTokens": 0,
             "avgCloudLatencyMs": 0,
         })
@@ -1275,6 +1494,8 @@ def get_workflow_statistics(limit=200):
         bucket["durationSeconds"] += event["durationSeconds"]
         bucket["inputSizeMb"] += event["inputSizeMb"]
         bucket["outputSizeMb"] += event["outputSizeMb"]
+        bucket["promptTokens"] += event["promptTokens"]
+        bucket["completionTokens"] += event["completionTokens"]
         bucket["totalTokens"] += event["totalTokens"]
         bucket["avgCloudLatencyMs"] += event["cloudLatencyMs"]
     for bucket in stage_map.values():
@@ -1290,6 +1511,8 @@ def get_workflow_statistics(limit=200):
             "jobCount": len(jobs),
             "totalDurationSeconds": round(total_duration, 2),
             "avgDurationSeconds": round(total_duration / len(events), 2) if events else 0,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
             "totalTokens": total_tokens,
             "cloudCallCount": len(cloud_events),
             "avgCloudLatencyMs": round(sum(event["cloudLatencyMs"] for event in cloud_events) / len(cloud_events), 2) if cloud_events else 0,
@@ -1353,17 +1576,41 @@ def save_youtube_video_analysis(video_id, result):
     if not video_id:
         raise ValueError("视频 ID 不能为空")
     init_youtube_video_table()
+    default_draft = _build_default_publish_draft(result)
     with sqlite3.connect(_db_path()) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
-        UPDATE youtube_videos
-        SET analysis_status = 1,
-            analysis_result = ?,
-            analysis_updated_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ?
-        ''', (json.dumps(result, ensure_ascii=False), video_id))
+        SELECT publish_draft FROM youtube_videos WHERE video_id = ?
+        ''', (video_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise LookupError("视频线索不存在")
+
+        current_draft = _parse_publish_draft(row["publish_draft"] if "publish_draft" in row.keys() else "", result)
+        if current_draft:
+            cursor.execute('''
+            UPDATE youtube_videos
+            SET analysis_status = 1,
+                analysis_result = ?,
+                analysis_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = ?
+            ''', (json.dumps(result, ensure_ascii=False), video_id))
+        else:
+            cursor.execute('''
+            UPDATE youtube_videos
+            SET analysis_status = 1,
+                analysis_result = ?,
+                publish_draft = ?,
+                analysis_updated_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = ?
+            ''', (
+                json.dumps(result, ensure_ascii=False),
+                json.dumps(default_draft, ensure_ascii=False),
+                video_id,
+            ))
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
@@ -1371,36 +1618,56 @@ def save_youtube_video_analysis(video_id, result):
         return _row_to_youtube_video(cursor.fetchone())
 
 
-def update_youtube_video_analysis_result(video_id, payload):
+def update_youtube_video_publish_draft(video_id, payload):
     current = get_youtube_video_analysis(video_id)
-    result = dict(current.get("result") or {})
-    if current.get("status") not in {1, 3}:
-        result = {}
-
-    allowed_keys = {
-        "summary",
-        "china_view_angle",
-        "title_options",
-        "publish_copy",
-        "tags",
-        "highlight_segments",
-        "risk_notes",
+    current_draft = dict(current.get("draft") or {})
+    title = payload.get("title", payload.get("selectedTitle", current_draft.get("title", "")))
+    description = payload.get("description", payload.get("publish_copy", current_draft.get("description", "")))
+    tags = payload.get("tags", current_draft.get("tags", []))
+    draft = {
+        "title": str(title or "").strip(),
+        "description": str(description or "").strip(),
+        "tags": _clean_topic_list(tags),
+        "source": "user_saved",
+        "updatedAt": _now_iso(),
     }
-    for key in allowed_keys:
-        if key not in payload:
-            continue
-        value = payload.get(key)
-        if key in {"title_options", "tags", "highlight_segments", "risk_notes"}:
-            if isinstance(value, list) and value:
-                result[key] = value
-        else:
-            text_value = str(value or "").strip()
-            if text_value:
-                result[key] = text_value
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+        UPDATE youtube_videos
+        SET publish_draft = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE video_id = ?
+        ''', (json.dumps(draft, ensure_ascii=False), video_id))
+        if cursor.rowcount == 0:
+            raise LookupError("视频线索不存在")
+        conn.commit()
+    return get_youtube_video_analysis(video_id)
 
-    result["editedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
-    result["editedBy"] = "local-user"
-    return save_youtube_video_analysis(video_id, result)
+
+def update_youtube_video_analysis_result(video_id, payload):
+    return update_youtube_video_publish_draft(video_id, payload)
+
+
+def ensure_youtube_publish_draft(video_id):
+    analysis = get_youtube_video_analysis(video_id)
+    if analysis.get("draft"):
+        return analysis
+    result = analysis.get("result") or {}
+    if not result:
+        return analysis
+    draft = _build_default_publish_draft(result)
+    with sqlite3.connect(_db_path()) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+        UPDATE youtube_videos
+        SET publish_draft = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE video_id = ?
+        ''', (json.dumps(draft, ensure_ascii=False), video_id))
+        conn.commit()
+    return get_youtube_video_analysis(video_id)
 
 
 def get_youtube_video_analysis(video_id):
@@ -1413,17 +1680,15 @@ def get_youtube_video_analysis(video_id):
         if not row:
             raise LookupError("视频线索不存在")
         raw_result = row["analysis_result"] if "analysis_result" in row.keys() else ""
-        result = {}
-        if raw_result:
-            try:
-                result = json.loads(raw_result)
-            except (TypeError, ValueError):
-                result = {"raw": raw_result}
+        result = _parse_json_object(raw_result)
+        raw_draft = row["publish_draft"] if "publish_draft" in row.keys() else ""
+        draft = _parse_publish_draft(raw_draft, result)
         return {
             "videoId": video_id,
             "status": int(row["analysis_status"] or 0),
             "updatedAt": row["analysis_updated_at"] or "",
             "result": result,
+            "draft": draft,
             "error": result.get("error") or {},
         }
 
@@ -1473,6 +1738,28 @@ def _replace_file_with_backup(source_file, output_file):
     return output_file
 
 
+def _replace_output_file(tmp_output_file, output_file):
+    tmp_output_file = Path(tmp_output_file)
+    output_file = Path(output_file)
+    backup_file = None
+    if output_file.exists():
+        backup_file = output_file.with_name(f"{output_file.stem}.previous{output_file.suffix}")
+        if backup_file.exists():
+            backup_file.unlink()
+        output_file.replace(backup_file)
+    try:
+        tmp_output_file.replace(output_file)
+        if backup_file and backup_file.exists():
+            backup_file.unlink()
+    except Exception:
+        if output_file.exists():
+            output_file.unlink()
+        if backup_file and backup_file.exists():
+            backup_file.replace(output_file)
+        raise
+    return output_file
+
+
 def _resolve_ffmpeg_command():
     configured = str(FFMPEG_COMMAND or "").strip()
     if configured and (shutil.which(configured) or Path(configured).exists()):
@@ -1484,6 +1771,37 @@ def _resolve_ffmpeg_command():
         raise RuntimeError(
             "未找到 FFmpeg。请安装 ffmpeg，或安装 imageio-ffmpeg，或在 conf.py/.env 配置 FFMPEG_COMMAND。"
         ) from exc
+
+
+def _resolve_ytdlp_js_runtimes():
+    runtime = str(YTDLP_JS_RUNTIME or "").strip().lower()
+    runtime_path = str(YTDLP_JS_RUNTIME_PATH or "").strip()
+    if runtime:
+        config = {}
+        if runtime_path:
+            config["path"] = runtime_path
+        return {runtime: config}
+
+    deno_path = shutil.which("deno")
+    if deno_path:
+        return {"deno": {"path": deno_path}}
+
+    node_path = shutil.which("node")
+    if node_path:
+        return {"node": {"path": node_path}}
+
+    return {}
+
+
+def _base_ytdlp_opts(include_ffmpeg=False):
+    opts = {
+        "js_runtimes": _resolve_ytdlp_js_runtimes(),
+    }
+    if YTDLP_REMOTE_COMPONENTS:
+        opts["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
+    if include_ffmpeg:
+        opts["ffmpeg_location"] = _resolve_ffmpeg_command()
+    return opts
 
 
 def _render_command_template(template, **values):
@@ -2018,6 +2336,7 @@ def _download_youtube_video(job):
         raise RuntimeError("未安装 yt-dlp，请先执行 `uv pip install -e .` 更新依赖。") from exc
 
     ydl_opts = {
+        **_base_ytdlp_opts(),
         "format": "bv*+ba/b",
         "merge_output_format": "mp4",
         "outtmpl": output_template,
@@ -2045,6 +2364,9 @@ def _download_youtube_video(job):
 def _update_translate_progress(job_id, progress, message, step="subtitle"):
     if not job_id:
         return
+    job = get_youtube_workflow_job(job_id) or {}
+    if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING and step == "subtitle":
+        progress = 60 + (float(progress or 0) * 0.25)
     update_youtube_workflow_job(
         job_id,
         step=step,
@@ -2110,6 +2432,126 @@ def _process_subtitles(job, source_file):
     result = _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=duration, job_id=job_id)
     _update_translate_progress(job_id, 98, "视频已生成，正在写入素材库")
     return {"path": result, "skipped": False}
+
+
+def _select_intro_highlight_segments(analysis_result, max_segments=3):
+    raw_segments = (analysis_result or {}).get("highlight_segments") or []
+    selected = []
+    for segment in _normalize_highlight_segments(raw_segments):
+        try:
+            start = max(0.0, float(segment.get("start") or 0))
+            end = max(start + 1, float(segment.get("end") or 0))
+        except (TypeError, ValueError):
+            continue
+        if end - start < 2:
+            continue
+        selected.append({
+            **segment,
+            "start": round(start, 2),
+            "end": round(end, 2),
+        })
+        if len(selected) >= max_segments:
+            break
+    return selected
+
+
+def _ffmpeg_concat_file_path(path):
+    return Path(path).resolve().as_posix().replace("'", "'\\''")
+
+
+def _build_editing_intro_video(job, source_file, processed_file, analysis_result, work_dir):
+    segments = _select_intro_highlight_segments(analysis_result, max_segments=3)
+    if not segments:
+        return {
+            "path": Path(processed_file),
+            "segments": [],
+            "skipped": True,
+            "reason": "未找到可用于开头混剪的高光片段",
+        }
+
+    job_id = job.get("id")
+    ffmpeg = _resolve_ffmpeg_command()
+    _, burn_config = _burn_profile_config(job.get("burnProfile"))
+    processed_info = _get_video_info(processed_file)
+    width = int(processed_info.get("width") or 0)
+    height = int(processed_info.get("height") or 0)
+    fps = float(processed_info.get("fps") or 30.0)
+    if fps <= 0:
+        fps = 30.0
+    max_fps = float(burn_config.get("max_fps") or 60.0)
+    if fps > max_fps:
+        fps = max_fps
+
+    work_dir = _ensure_dir(work_dir)
+    output_file = Path(processed_file)
+    clip_files = []
+    normalized_main = work_dir / f"{output_file.stem}_main_normalized.mp4"
+    final_tmp = work_dir / f"{output_file.stem}_editing_concat.mp4"
+    concat_file = work_dir / f"{output_file.stem}_concat.txt"
+
+    def encode_clip(input_file, output_clip, start=None, end=None):
+        command = [ffmpeg, "-y"]
+        if start is not None:
+            command.extend(["-ss", f"{start:.3f}"])
+        if end is not None and start is not None:
+            command.extend(["-t", f"{max(0.5, end - start):.3f}"])
+        command.extend(["-i", str(input_file)])
+        video_filters = []
+        if width and height:
+            video_filters.extend([
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+                "setsar=1",
+            ])
+        command.extend([
+            "-vf", ",".join(video_filters) if video_filters else "setsar=1",
+            "-fps_mode", "cfr",
+            "-r", f"{fps:.3f}".rstrip("0").rstrip("."),
+            "-c:v", "libx264",
+            "-preset", burn_config["preset"],
+            "-crf", burn_config["crf"],
+            "-maxrate", burn_config["maxrate"],
+            "-bufsize", burn_config["bufsize"],
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "high",
+            "-level:v", "4.1",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "48000",
+            "-ac", "2",
+            "-af", "aresample=async=1:first_pts=0",
+            "-movflags", "+faststart",
+            str(output_clip),
+        ])
+        _run_command(command, cwd=BASE_DIR)
+
+    _update_translate_progress(job_id, 86, "处理版本二：正在截取前三个高光片段", step="editing")
+    for index, segment in enumerate(segments, start=1):
+        clip_file = work_dir / f"{output_file.stem}_intro_{index}.mp4"
+        encode_clip(source_file, clip_file, start=segment["start"], end=segment["end"])
+        clip_files.append(clip_file)
+
+    _update_translate_progress(job_id, 91, "处理版本二：正在拼接高光开头与正片", step="editing")
+    encode_clip(processed_file, normalized_main)
+    concat_lines = [f"file '{_ffmpeg_concat_file_path(path)}'" for path in [*clip_files, normalized_main]]
+    concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
+    _run_command([
+        ffmpeg,
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_file),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(final_tmp),
+    ], cwd=BASE_DIR)
+    _replace_output_file(final_tmp, output_file)
+    return {
+        "path": output_file,
+        "segments": segments,
+        "skipped": False,
+        "reason": "",
+    }
 
 
 def _format_segment_time(seconds):
@@ -2210,11 +2652,13 @@ def _call_llm_json(messages, max_tokens=1800):
     message = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
     result = _extract_json_object(message)
     usage = data.get("usage") or {}
+    total_tokens = int(usage.get("total_tokens") or 0)
     return result, {
         "provider": "openai-compatible",
         "model": LLM_MODEL,
         "latencyMs": round((time.time() - started_at) * 1000, 2),
-        "tokens": int(usage.get("total_tokens") or 0),
+        "tokens": total_tokens,
+        "totalTokens": total_tokens,
         "promptTokens": int(usage.get("prompt_tokens") or 0),
         "completionTokens": int(usage.get("completion_tokens") or 0),
     }
@@ -2228,6 +2672,9 @@ def _editing_analysis_system_prompt():
         "尤其关注中外对比、认知反转和可做钩子的片段。"
         "高光片段必须短而明确，每个片段时长控制在 5-10 秒，禁止返回超过 10 秒的片段；"
         "如果原始亮点更长，需要拆分成多个 5-10 秒片段或选取最有冲击力的 5-10 秒。"
+        "所有高光片段必须严格按照视频时间轴升序排列，即 start 从小到大输出。"
+        "publish_copy 只写正文文案，禁止包含 #话题、标签列表、标题类型话题或 hashtags；"
+        "所有话题必须只放在 tags 数组中，因为各平台会以独立字段上传话题。"
         "只输出严格 JSON，不要输出 Markdown。"
     )
 
@@ -2245,11 +2692,13 @@ def _editing_analysis_user_prompt(job, transcript_text, chunk_context=""):
         f"{chunk_context}\n"
         "请生成处理版本二的剪辑方案。输出 JSON 字段必须包含："
         "summary 字符串；china_view_angle 字符串；title_options 字符串数组；"
-        "publish_copy 字符串；tags 字符串数组；"
+        "publish_copy 字符串，必须是不带 #话题/标签的正文文案；tags 字符串数组，单独存放话题；"
         "highlight_segments 数组，每项包含 start 数字秒、end 数字秒、type 字符串、reason 字符串、suggested_caption 字符串；"
         "risk_notes 字符串数组；editing_focus 字符串。"
+        "不要在 publish_copy 末尾追加 #中国旅行 #老外看中国 这类话题，也不要把话题写成正文的一部分；"
         "highlight_segments 控制在 5-8 个，优先外国人震惊点和中外对比点；"
-        "每个片段 end - start 必须在 5 到 10 秒之间，没有明确时间也要根据转写时间估计。\n"
+        "每个片段 end - start 必须在 5 到 10 秒之间，没有明确时间也要根据转写时间估计；"
+        "highlight_segments 必须按 start 从小到大排序，方便后续按时间顺序进行高光剪辑。\n"
         f"转写内容：\n{transcript_text}"
     )
 
@@ -2261,7 +2710,7 @@ def _summarize_transcript_chunks(job, transcript_text):
         return transcript_text, None
 
     summaries = []
-    usage_total = {"tokens": 0, "latencyMs": 0}
+    usage_total = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0, "latencyMs": 0}
     for index, chunk in enumerate(chunks, start=1):
         result, usage = _call_llm_json([
             {"role": "system", "content": _editing_analysis_system_prompt()},
@@ -2277,6 +2726,9 @@ def _summarize_transcript_chunks(job, transcript_text):
         ], max_tokens=1200)
         summaries.append(result)
         usage_total["tokens"] += int(usage.get("tokens") or 0)
+        usage_total["totalTokens"] += int(usage.get("totalTokens") or usage.get("tokens") or 0)
+        usage_total["promptTokens"] += int(usage.get("promptTokens") or 0)
+        usage_total["completionTokens"] += int(usage.get("completionTokens") or 0)
         usage_total["latencyMs"] += float(usage.get("latencyMs") or 0)
     return json.dumps(summaries, ensure_ascii=False), usage_total
 
@@ -2309,7 +2761,19 @@ def _normalize_highlight_segments(segments):
             "start": round(start, 2),
             "end": round(end, 2),
         })
-    return normalized
+    return sorted(normalized, key=lambda item: (item.get("start") or 0, item.get("end") or 0))
+
+
+def _strip_topics_from_publish_copy(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    text = re.sub(r"[ \t]*(?:#[\w\u4e00-\u9fff-]+[ \t]*)+$", "", text).strip()
+    lines = [line.rstrip() for line in text.splitlines()]
+    while lines and re.fullmatch(r"\s*(?:#[\w\u4e00-\u9fff-]+[\s,，、]*)+\s*", lines[-1]):
+        lines.pop()
+    return "\n".join(lines).strip()
 
 
 def _generate_editing_plan(job, segments):
@@ -2327,13 +2791,18 @@ def _generate_editing_plan(job, segments):
         {"role": "user", "content": _editing_analysis_user_prompt(job, compact_text, chunk_context)},
     ], max_tokens=2200)
     if chunk_usage:
-        usage["tokens"] = int(usage.get("tokens") or 0) + int(chunk_usage.get("tokens") or 0)
+        base_tokens = int(usage.get("tokens") or 0)
+        usage["tokens"] = base_tokens + int(chunk_usage.get("tokens") or 0)
+        usage["totalTokens"] = base_tokens + int(chunk_usage.get("totalTokens") or chunk_usage.get("tokens") or 0)
+        usage["promptTokens"] = int(usage.get("promptTokens") or 0) + int(chunk_usage.get("promptTokens") or 0)
+        usage["completionTokens"] = int(usage.get("completionTokens") or 0) + int(chunk_usage.get("completionTokens") or 0)
         usage["latencyMs"] = round(float(usage.get("latencyMs") or 0) + float(chunk_usage.get("latencyMs") or 0), 2)
 
     result.setdefault("summary", "")
     result.setdefault("china_view_angle", "")
     result.setdefault("title_options", [])
     result.setdefault("publish_copy", "")
+    result["publish_copy"] = _strip_topics_from_publish_copy(result.get("publish_copy"))
     result.setdefault("tags", [])
     result.setdefault("highlight_segments", [])
     result["highlight_segments"] = _normalize_highlight_segments(result.get("highlight_segments"))
@@ -2373,14 +2842,6 @@ def _process_editing_plan(job, source_file):
         "transcriptFilePath": str(transcript_file),
         "generatedAt": datetime.datetime.now().isoformat(timespec="seconds"),
     })
-    update_youtube_workflow_job(
-        job_id,
-        step="done",
-        message="处理版本二剪辑方案已生成，可在视频线索中查看",
-        progress=100,
-        speed="",
-        eta="",
-    )
     return result, usage
 
 
@@ -2614,6 +3075,10 @@ def _sync_youtube_processed_state(cursor, video_id):
     SET translate_status = 0,
         publish_status = 0,
         processed_file_path = '',
+        analysis_status = 0,
+        analysis_result = '',
+        publish_draft = '',
+        analysis_updated_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     WHERE video_id = ?
     ''', (video_id,))
@@ -2622,6 +3087,24 @@ def _sync_youtube_processed_state(cursor, video_id):
         "translateStatus": 0,
         "publishStatus": 0,
         "processedFilePath": "",
+        "analysisStatus": 0,
+        "analysisCleared": True,
+    }
+
+
+def _clear_youtube_analysis_state(cursor, video_id):
+    cursor.execute('''
+    UPDATE youtube_videos
+    SET analysis_status = 0,
+        analysis_result = '',
+        publish_draft = '',
+        analysis_updated_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE video_id = ?
+    ''', (video_id,))
+    return {
+        "analysisStatus": 0,
+        "analysisCleared": cursor.rowcount > 0,
     }
 
 
@@ -2649,6 +3132,57 @@ def _delete_material_files(record):
             except Exception as exc:
                 print(f"⚠️ 删除素材文件失败: {path} {exc}")
     return deleted_files
+
+
+def delete_material_record(cursor, file_id):
+    cursor.execute("SELECT * FROM file_records WHERE id = ?", (file_id,))
+    record = cursor.fetchone()
+    if not record:
+        raise LookupError("File not found")
+
+    record = dict(record)
+    source_video_id = _material_source_video_id(record)
+    if source_video_id:
+        _assert_no_active_youtube_job(cursor, source_video_id)
+
+    deleted_files = _delete_material_files(record)
+    cursor.execute("DELETE FROM file_records WHERE id = ?", (file_id,))
+    sync_result = _sync_youtube_video_after_material_delete(cursor, record)
+    return {
+        "id": record["id"],
+        "filename": record["filename"],
+        "deletedFiles": deleted_files,
+        "sync": sync_result,
+    }
+
+
+def delete_material_records(file_ids):
+    init_database_tables()
+    results = []
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        for file_id in file_ids:
+            try:
+                result = delete_material_record(cursor, file_id)
+                results.append({"id": file_id, "success": True, "data": result})
+            except WorkflowConflictError as exc:
+                results.append({
+                    "id": file_id,
+                    "success": False,
+                    "message": str(exc),
+                    "errorCode": exc.error_code,
+                    "errorType": exc.error_type,
+                })
+            except Exception as exc:
+                results.append({"id": file_id, "success": False, "message": str(exc)})
+        conn.commit()
+    return {
+        "total": len(file_ids),
+        "success": sum(1 for item in results if item.get("success")),
+        "failed": sum(1 for item in results if not item.get("success")),
+        "items": results,
+    }
 
 
 def _delete_youtube_download_materials_for_video(cursor, video_id, video_row=None):
@@ -2704,6 +3238,8 @@ def _sync_youtube_video_after_material_delete(cursor, deleted_record):
 
     if source_type == "youtube_processed":
         sync_result.update(_sync_youtube_processed_state(cursor, video_id))
+        if not sync_result.get("analysisCleared"):
+            sync_result.update(_clear_youtube_analysis_state(cursor, video_id))
     elif source_type == "youtube_download":
         if remaining:
             cursor.execute('''
@@ -2821,6 +3357,10 @@ def verify_youtube_file_consistency():
                         SET translate_status = 0,
                             publish_status = 0,
                             processed_file_path = '',
+                            analysis_status = 0,
+                            analysis_result = '',
+                            publish_draft = '',
+                            analysis_updated_at = NULL,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE video_id = ?
                         ''', (video_id,))
@@ -2911,12 +3451,112 @@ def _row_to_material(row):
     item["subtitleLanguageLabel"] = metadata.get("subtitleLanguageLabel") or (language_meta or {}).get("label") or ""
     item["analysisStatus"] = int((source_video or {}).get("analysisStatus") or 0)
     item["analysisResult"] = {}
+    item["publishDraft"] = {}
     if item["source_type"] == "youtube_processed" and video_id:
         try:
-            item["analysisResult"] = get_youtube_video_analysis(video_id).get("result") or {}
+            analysis = get_youtube_video_analysis(video_id)
+            item["analysisResult"] = analysis.get("result") or {}
+            item["publishDraft"] = analysis.get("draft") or {}
         except Exception:
             item["analysisResult"] = {}
+            item["publishDraft"] = {}
     return item
+
+
+def _row_to_published_material(row):
+    item = dict(row)
+    try:
+        metadata = json.loads(item.get("metadata") or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    return {
+        "id": item.get("id"),
+        "videoId": item.get("video_id") or "",
+        "sourceUrl": item.get("source_url") or "",
+        "title": item.get("title") or "",
+        "platform": item.get("platform") or "",
+        "accountCount": int(item.get("account_count") or 0),
+        "materialId": item.get("material_id"),
+        "filename": item.get("filename") or "",
+        "filePath": item.get("file_path") or "",
+        "filesize": float(item.get("filesize") or 0),
+        "thumbnail": item.get("thumbnail") or "",
+        "channel": item.get("channel") or "",
+        "subscribers": item.get("subscribers") or "",
+        "sourcePublishedAt": item.get("source_published_at") or "",
+        "publishTitle": item.get("publish_title") or "",
+        "metadata": metadata,
+        "publishedAt": item.get("published_at") or item.get("created_at") or "",
+        "createdAt": item.get("created_at") or "",
+    }
+
+
+def list_published_youtube_materials(limit=50):
+    init_database_tables()
+    limit = max(1, min(int(limit or 50), 200))
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+        SELECT * FROM published_youtube_materials
+        ORDER BY published_at DESC, id DESC
+        LIMIT ?
+        ''', (limit,))
+        return [_row_to_published_material(row) for row in cursor.fetchall()]
+
+
+def _published_youtube_identity_sets(cursor):
+    cursor.execute("SELECT video_id, source_url FROM published_youtube_materials")
+    published_ids = set()
+    published_urls = set()
+    for row in cursor.fetchall():
+        video_id = row["video_id"] or ""
+        source_url = row["source_url"] or ""
+        extracted_id = _extract_youtube_video_id(source_url)
+        if video_id:
+            published_ids.add(video_id)
+        if extracted_id:
+            published_ids.add(extracted_id)
+        canonical_url = _canonical_youtube_url(source_url, video_id or extracted_id)
+        if canonical_url:
+            published_urls.add(canonical_url)
+    return published_ids, published_urls
+
+
+def _archive_published_material(cursor, material, video, platform_name, published_at, publish_title="", account_count=0):
+    video_id = material.get("source_video_id") or _material_source_video_id(material) or (video or {}).get("id") or ""
+    source_url = _canonical_youtube_url((video or {}).get("url") or material.get("displayUrl") or "", video_id)
+    title = (video or {}).get("title") or material.get("displayTitle") or material.get("original_filename") or material.get("filename") or ""
+    metadata = {
+        "materialMetadata": material.get("metadata") or {},
+        "sourceVideo": video or {},
+        "archivedFrom": "publish_success",
+    }
+    cursor.execute('''
+    INSERT INTO published_youtube_materials (
+        video_id, source_url, title, platform, account_count, material_id,
+        filename, file_path, filesize, thumbnail, channel, subscribers,
+        source_published_at, publish_title, metadata, published_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        video_id,
+        source_url,
+        title,
+        platform_name or "",
+        int(account_count or 0),
+        material.get("id"),
+        material.get("filename") or "",
+        str(_material_file_path(material) or material.get("file_path") or ""),
+        float(material.get("filesize") or 0),
+        material.get("displayThumbnail") or (video or {}).get("thumbnail") or "",
+        material.get("displayChannel") or (video or {}).get("channel") or "",
+        material.get("displaySubscribers") or (video or {}).get("subscribers") or "",
+        material.get("displayPublishedAt") or (video or {}).get("publishedAt") or "",
+        publish_title or "",
+        json.dumps(metadata, ensure_ascii=False),
+        published_at,
+    ))
 
 
 def _list_processed_versions_for_video(cursor, video_id):
@@ -3135,6 +3775,16 @@ def _mark_published_materials(file_list, platform_type=None, title="", account_c
             if not video_id:
                 continue
 
+            video = _get_youtube_video_record(video_id) or {}
+            _archive_published_material(
+                cursor,
+                material,
+                video,
+                platform_name,
+                published_at,
+                publish_title=title,
+                account_count=account_count,
+            )
             cursor.execute(
                 """
                 UPDATE youtube_videos
@@ -3249,9 +3899,12 @@ def run_youtube_download_job(job_id):
 
 def run_youtube_translate_job(job_id):
     event_id = None
+    analysis_event_id = None
+    editing_event_id = None
     try:
         initial_job = get_youtube_workflow_job(job_id) or {}
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
+        process_version = _normalize_process_version(initial_job.get("processVersion"))
         job = update_youtube_workflow_job(
             job_id,
             status="running",
@@ -3262,29 +3915,88 @@ def run_youtube_translate_job(job_id):
             eta="",
         )
         source_file = _resolve_downloaded_source_file(job)
+
+        analysis_result = None
+        editing_result = None
+        if process_version == PROCESS_VERSION_EDITING:
+            analysis_event_id = start_workflow_event(job, "analysis", "处理版本二：开始生成剪辑方案", input_file_path=source_file)
+            job = update_youtube_workflow_job(
+                job_id,
+                source_file_path=str(source_file),
+                step="analysis",
+                message="处理版本二：正在提取震惊点和中外对比高光片段",
+                progress=10,
+                speed="",
+                eta="",
+            )
+            analysis_result, usage = _process_editing_plan(job, source_file)
+            finish_workflow_event(
+                analysis_event_id,
+                "success",
+                "处理版本二剪辑方案已生成",
+                output_file_path="",
+                cloud_usage={
+                    "provider": usage.get("provider") or "openai-compatible",
+                    "model": usage.get("model") or LLM_MODEL,
+                    "tokens": int(usage.get("tokens") or 0),
+                    "totalTokens": int(usage.get("totalTokens") or usage.get("tokens") or 0),
+                    "promptTokens": int(usage.get("promptTokens") or 0),
+                    "completionTokens": int(usage.get("completionTokens") or 0),
+                    "latencyMs": float(usage.get("latencyMs") or 0),
+                },
+                metadata={"highlightCount": len(analysis_result.get("highlight_segments") or [])},
+            )
+
         event_id = start_workflow_event(job, "subtitle", f"开始{language_meta['label']}字幕处理", input_file_path=source_file)
         job = update_youtube_workflow_job(
             job_id,
             source_file_path=str(source_file),
             message="已找到下载视频，正在启动转写和处理",
-            progress=5,
+            step="subtitle",
+            progress=60 if process_version == PROCESS_VERSION_EDITING else 5,
         )
         subtitle_result = _process_subtitles(job, source_file)
-        maybe_start_youtube_analysis_job(job, source_file)
+        if process_version != PROCESS_VERSION_EDITING:
+            maybe_start_youtube_analysis_job(job, source_file)
         processed_file = subtitle_result["path"]
         finish_workflow_event(event_id, "success", f"{language_meta['label']}字幕处理完成", output_file_path=processed_file)
         skipped_subtitles = bool(subtitle_result.get("skipped"))
+
+        if process_version == PROCESS_VERSION_EDITING:
+            editing_event_id = start_workflow_event(job, "editing", "处理版本二：开始拼接高光开头", input_file_path=processed_file)
+            editing_work_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{Path(processed_file).stem}_editing_intro_work")
+            editing_result = _build_editing_intro_video(job, source_file, processed_file, analysis_result or {}, editing_work_dir)
+            processed_file = editing_result["path"]
+            highlight_count = len(editing_result.get("segments") or [])
+            editing_message = (
+                f"处理版本二高光开头已生成，已拼接 {highlight_count} 个片段"
+                if not editing_result.get("skipped")
+                else f"处理版本二未拼接高光开头：{editing_result.get('reason') or '无可用片段'}"
+            )
+            finish_workflow_event(
+                editing_event_id,
+                "success",
+                editing_message,
+                output_file_path=processed_file,
+                metadata={"highlightCount": highlight_count},
+            )
+
         material = _save_processed_video_to_material(processed_file, job)
         update_youtube_video_artifacts(
             job["videoId"],
             translate_status=2 if skipped_subtitles else 1,
             processed_file_path=str(processed_file),
         )
+        final_message = "未检测到可识别人声，已跳过字幕处理并保存到素材库" if skipped_subtitles else f"{language_meta['label']}字幕视频已生成并保存到素材库"
+        if process_version == PROCESS_VERSION_EDITING and editing_result and not editing_result.get("skipped"):
+            final_message = f"{final_message}；已拼接前三个高光片段到视频开头"
+        elif process_version == PROCESS_VERSION_EDITING and editing_result and editing_result.get("skipped"):
+            final_message = f"{final_message}；未找到可拼接的高光片段"
         update_youtube_workflow_job(
             job_id,
             status="success",
             step="done",
-            message="未检测到可识别人声，已跳过字幕处理并保存到素材库" if skipped_subtitles else f"{language_meta['label']}字幕视频已生成并保存到素材库",
+            message=final_message,
             processed_file_path=str(processed_file),
             publish_command=f"material_id={material.get('id')}",
             progress=100,
@@ -3292,7 +4004,7 @@ def run_youtube_translate_job(job_id):
             eta="",
         )
     except Exception as exc:
-        finish_workflow_event(event_id, "failed", str(exc))
+        finish_workflow_event(editing_event_id or event_id or analysis_event_id, "failed", str(exc))
         update_youtube_workflow_job(
             job_id,
             status="failed",
@@ -3332,6 +4044,9 @@ def run_youtube_analysis_job(job_id, source_file_override=""):
                 "provider": usage.get("provider") or "openai-compatible",
                 "model": usage.get("model") or LLM_MODEL,
                 "tokens": int(usage.get("tokens") or 0),
+                "totalTokens": int(usage.get("totalTokens") or usage.get("tokens") or 0),
+                "promptTokens": int(usage.get("promptTokens") or 0),
+                "completionTokens": int(usage.get("completionTokens") or 0),
                 "latencyMs": float(usage.get("latencyMs") or 0),
             },
             metadata={"highlightCount": len(result.get("highlight_segments") or [])},
@@ -3467,6 +4182,8 @@ def _publish_center_to_bilibili(title, description, file_list, tags, account_lis
 def run_youtube_workflow(job_id):
     workflow_event_id = None
     download_event_id = None
+    analysis_event_id = None
+    editing_event_id = None
     subtitle_event_id = None
     publish_event_id = None
     try:
@@ -3491,7 +4208,10 @@ def run_youtube_workflow(job_id):
             downloaded_file_path=str(source_file),
         )
 
-        if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING:
+        process_version = _normalize_process_version(job.get("processVersion"))
+        analysis_result = None
+        editing_result = None
+        if process_version == PROCESS_VERSION_EDITING:
             analysis_event_id = start_workflow_event(job, "analysis", "处理版本二：开始生成剪辑方案", input_file_path=source_file)
             job = update_youtube_workflow_job(
                 job_id,
@@ -3512,31 +4232,20 @@ def run_youtube_workflow(job_id):
                     "provider": usage.get("provider") or "openai-compatible",
                     "model": usage.get("model") or LLM_MODEL,
                     "tokens": int(usage.get("tokens") or 0),
+                    "totalTokens": int(usage.get("totalTokens") or usage.get("tokens") or 0),
+                    "promptTokens": int(usage.get("promptTokens") or 0),
+                    "completionTokens": int(usage.get("completionTokens") or 0),
                     "latencyMs": float(usage.get("latencyMs") or 0),
                 },
                 metadata={"highlightCount": len(analysis_result.get("highlight_segments") or [])},
             )
-            final_message = "处理版本二剪辑方案已生成，处理版本一链路未执行"
-            finish_workflow_event(workflow_event_id, "success", final_message)
-            update_youtube_workflow_job(
-                job_id,
-                status="success",
-                step="done",
-                message=final_message,
-                processed_file_path="",
-                publish_command="",
-                progress=100,
-                speed="",
-                eta="",
-            )
-            return
 
         job = update_youtube_workflow_job(
             job_id,
             source_file_path=str(source_file),
             step="subtitle",
             message=f"视频已下载，正在处理{language_meta['label']}字幕",
-            progress=8,
+            progress=60 if process_version == PROCESS_VERSION_EDITING else 8,
             speed="",
             eta="",
         )
@@ -3546,6 +4255,26 @@ def run_youtube_workflow(job_id):
         processed_file = subtitle_result["path"]
         finish_workflow_event(subtitle_event_id, "success", f"{language_meta['label']}字幕处理完成", output_file_path=processed_file)
         skipped_subtitles = bool(subtitle_result.get("skipped"))
+
+        if process_version == PROCESS_VERSION_EDITING:
+            editing_event_id = start_workflow_event(job, "editing", "处理版本二：开始拼接高光开头", input_file_path=processed_file)
+            editing_work_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{Path(processed_file).stem}_editing_intro_work")
+            editing_result = _build_editing_intro_video(job, source_file, processed_file, analysis_result or {}, editing_work_dir)
+            processed_file = editing_result["path"]
+            highlight_count = len(editing_result.get("segments") or [])
+            editing_message = (
+                f"处理版本二高光开头已生成，已拼接 {highlight_count} 个片段"
+                if not editing_result.get("skipped")
+                else f"处理版本二未拼接高光开头：{editing_result.get('reason') or '无可用片段'}"
+            )
+            finish_workflow_event(
+                editing_event_id,
+                "success",
+                editing_message,
+                output_file_path=processed_file,
+                metadata={"highlightCount": highlight_count},
+            )
+
         material = _save_processed_video_to_material(processed_file, job)
         update_youtube_workflow_job(
             job_id,
@@ -3574,6 +4303,10 @@ def run_youtube_workflow(job_id):
         final_message = "任务完成"
         if not publish_commands:
             final_message = "任务完成，已保存到素材库，未配置抖音账号所以未发布"
+        if process_version == PROCESS_VERSION_EDITING and editing_result and not editing_result.get("skipped"):
+            final_message = f"{final_message}；已拼接前三个高光片段到视频开头"
+        elif process_version == PROCESS_VERSION_EDITING and editing_result and editing_result.get("skipped"):
+            final_message = f"{final_message}；未找到可拼接的高光片段"
         if skipped_subtitles:
             final_message = f"{final_message}；未检测到可识别人声，已跳过字幕处理"
         finish_workflow_event(publish_event_id, "success", final_message, output_file_path=processed_file)
@@ -3591,7 +4324,7 @@ def run_youtube_workflow(job_id):
         if publish_commands:
             update_youtube_video_artifacts(job["videoId"], publish_status=1)
     except Exception as exc:
-        finish_workflow_event(publish_event_id or subtitle_event_id or download_event_id or workflow_event_id, "failed", str(exc))
+        finish_workflow_event(publish_event_id or editing_event_id or subtitle_event_id or analysis_event_id or download_event_id or workflow_event_id, "failed", str(exc))
         if workflow_event_id:
             finish_workflow_event(workflow_event_id, "failed", str(exc))
         update_youtube_workflow_job(
@@ -3667,6 +4400,7 @@ def _search_youtube_with_ytdlp(query, limit):
         return []
 
     ydl_opts = {
+        **_base_ytdlp_opts(include_ffmpeg=True),
         "extract_flat": False,
         "quiet": True,
         "skip_download": True,
@@ -3710,6 +4444,13 @@ def _extract_youtube_video_id(url):
     return ""
 
 
+def _canonical_youtube_url(url, video_id=""):
+    normalized_video_id = video_id or _extract_youtube_video_id(url or "")
+    if normalized_video_id:
+        return f"https://www.youtube.com/watch?v={normalized_video_id}"
+    return (url or "").strip()
+
+
 def _video_from_ytdlp_info(item, fallback_url=""):
     video_id = item.get("id") or _extract_youtube_video_id(fallback_url)
     url = item.get("webpage_url") or item.get("original_url") or fallback_url
@@ -3734,6 +4475,7 @@ def _import_youtube_video_by_url(url):
         raise RuntimeError("未安装 yt-dlp，请先安装依赖。") from exc
 
     ydl_opts = {
+        **_base_ytdlp_opts(include_ffmpeg=True),
         "quiet": True,
         "skip_download": True,
         "noplaylist": True,
@@ -4080,6 +4822,7 @@ def youtube_search():
                 "total": save_result["created"],
                 "created": save_result["created"],
                 "duplicate": save_result["duplicate"],
+                "publishedDuplicate": save_result.get("publishedDuplicate", 0),
                 "requested": save_result["requested"],
                 "items": save_result["items"],
             }
@@ -4134,6 +4877,7 @@ def import_youtube_video():
             "total": save_result["created"],
             "created": save_result["created"],
             "duplicate": save_result["duplicate"],
+            "publishedDuplicate": save_result.get("publishedDuplicate", 0),
             "requested": save_result["requested"],
             "items": save_result["items"],
         })
@@ -4189,6 +4933,17 @@ def update_youtube_video_analysis(video_id):
         return _json_response(500, f"更新发布文案失败: {str(e)}", None, 500)
 
 
+@app.route('/youtube/videos/<video_id>/publish-draft', methods=['PATCH'])
+def update_youtube_publish_draft(video_id):
+    try:
+        payload = request.get_json(silent=True) or {}
+        return _json_response(data=update_youtube_video_publish_draft(video_id, payload))
+    except LookupError as e:
+        return _json_response(404, str(e), None, 404)
+    except Exception as e:
+        return _json_response(500, f"更新发布稿失败: {str(e)}", None, 500)
+
+
 @app.route('/youtube/videos/<video_id>', methods=['DELETE'])
 def delete_youtube_video(video_id):
     try:
@@ -4201,6 +4956,23 @@ def delete_youtube_video(video_id):
         return _json_response(409, str(e), None, 409)
     except Exception as e:
         return _json_response(500, f"删除视频线索失败: {str(e)}", None, 500)
+
+
+@app.route('/youtube/videos/batch-delete-items', methods=['POST'])
+@app.route('/youtube/videos:batch-delete', methods=['POST'])
+def batch_delete_youtube_videos():
+    try:
+        payload = request.get_json(silent=True) or {}
+        video_ids = [
+            str(item or "").strip()
+            for item in (payload.get("videoIds") or payload.get("ids") or [])
+            if str(item or "").strip()
+        ]
+        if not video_ids:
+            return _json_response(400, "请选择要删除的视频线索", None, 400)
+        return _json_response(data=delete_youtube_video_records(video_ids))
+    except Exception as e:
+        return _json_response(500, f"批量删除视频线索失败: {str(e)}", None, 500)
 
 
 @app.route('/youtube/workflow/jobs', methods=['GET'])
@@ -4431,43 +5203,21 @@ def delete_file():
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            # 查询要删除的记录
-            cursor.execute("SELECT * FROM file_records WHERE id = ?", (file_id,))
-            record = cursor.fetchone()
-
-            if not record:
-                return jsonify({
-                    "code": 404,
-                    "msg": "File not found",
-                    "data": None
-                }), 404
-
-            record = dict(record)
-            source_video_id = _material_source_video_id(record)
-            if source_video_id:
-                _assert_no_active_youtube_job(cursor, source_video_id)
-
-            deleted_files = _delete_material_files(record)
-            if deleted_files:
-                print(f"✅ 实际文件已删除: {deleted_files}")
-            else:
-                print(f"⚠️ 未找到可删除的实际文件: {_material_file_path(record)}")
-
-            # 删除数据库记录
-            cursor.execute("DELETE FROM file_records WHERE id = ?", (file_id,))
-            sync_result = _sync_youtube_video_after_material_delete(cursor, record)
+            data = delete_material_record(cursor, int(file_id))
             conn.commit()
 
         return jsonify({
             "code": 200,
             "msg": "File deleted successfully",
-            "data": {
-                "id": record['id'],
-                "filename": record['filename'],
-                "deletedFiles": deleted_files,
-                "sync": sync_result
-            }
+            "data": data
         }), 200
+
+    except LookupError as e:
+        return jsonify({
+            "code": 404,
+            "msg": str(e),
+            "data": None
+        }), 404
 
     except WorkflowConflictError as e:
         return jsonify({
@@ -4486,6 +5236,40 @@ def delete_file():
             "msg": str("delete failed!"),
             "data": None
         }), 500
+
+
+@app.route('/deleteFiles', methods=['POST'])
+def batch_delete_files():
+    try:
+        payload = request.get_json(silent=True) or {}
+        file_ids = [
+            int(item)
+            for item in (payload.get("ids") or payload.get("fileIds") or [])
+            if str(item).isdigit()
+        ]
+        if not file_ids:
+            return jsonify({"code": 400, "msg": "请选择要删除的素材", "data": None}), 400
+        return jsonify({
+            "code": 200,
+            "msg": "Files deleted",
+            "data": delete_material_records(file_ids)
+        }), 200
+    except Exception as e:
+        return jsonify({"code": 500, "msg": f"batch delete failed: {str(e)}", "data": None}), 500
+
+
+@app.route('/published-materials', methods=['GET'])
+def published_materials():
+    try:
+        limit = int(request.args.get("limit", 50))
+        return jsonify({
+            "code": 200,
+            "msg": "success",
+            "data": list_published_youtube_materials(limit)
+        }), 200
+    except Exception as e:
+        return jsonify({"code": 500, "msg": f"获取已发布素材失败: {str(e)}", "data": None}), 500
+
 
 @app.route('/deleteAccount', methods=['GET'])
 def delete_account():
@@ -4819,7 +5603,7 @@ def postVideo():
 
     # 从JSON数据中提取fileList和accountList
     file_list = data.get('fileList', [])
-    account_list = data.get('accountList', [])
+    account_list = _clean_unique_list(data.get('accountList', []))
     type = data.get('type')
     title = data.get('title')
     description = data.get('description') or ''
@@ -4957,7 +5741,7 @@ def postVideoBatch():
     for data in data_list:
         # 从JSON数据中提取fileList和accountList
         file_list = data.get('fileList', [])
-        account_list = data.get('accountList', [])
+        account_list = _clean_unique_list(data.get('accountList', []))
         type = data.get('type')
         title = data.get('title')
         tags = data.get('tags')

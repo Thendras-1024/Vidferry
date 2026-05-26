@@ -25,6 +25,10 @@ export const youtubeApi = {
     return request.delete(`/youtube/videos/${videoId}`)
   },
 
+  deleteVideos(videoIds) {
+    return request.post('/youtube/videos/batch-delete-items', { videoIds })
+  },
+
   createWorkflowJob(data) {
     return request.post('/youtube/workflow/jobs', data)
   },
@@ -47,6 +51,10 @@ export const youtubeApi = {
 
   updateVideoAnalysis(videoId, data) {
     return request.patch(`/youtube/videos/${videoId}/analysis`, data)
+  },
+
+  updatePublishDraft(videoId, data) {
+    return request.patch(`/youtube/videos/${videoId}/publish-draft`, data)
   },
 
   listWorkflowJobs(params = {}) {

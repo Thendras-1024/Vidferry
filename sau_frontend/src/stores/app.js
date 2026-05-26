@@ -13,6 +13,7 @@ export const useAppStore = defineStore('app', () => {
 
   // 素材列表数据
   const materials = ref([])
+  const publishedMaterials = ref([])
   
   // 设置账号管理页面已访问
   const setAccountManagementVisited = () => {
@@ -35,6 +36,10 @@ export const useAppStore = defineStore('app', () => {
     materials.value = materialList
   }
 
+  const setPublishedMaterials = (materialList) => {
+    publishedMaterials.value = materialList
+  }
+
   // 添加新素材
   const addMaterial = (material) => {
     materials.value.push(material)
@@ -47,6 +52,11 @@ export const useAppStore = defineStore('app', () => {
       materials.value.splice(index, 1)
     }
   }
+
+  const removeMaterials = (materialIds) => {
+    const idSet = new Set(materialIds.map(id => String(id)))
+    materials.value = materials.value.filter(m => !idSet.has(String(m.id)))
+  }
   
   // 设置账号管理页面刷新状态
   const setAccountRefreshing = (status) => {
@@ -58,12 +68,15 @@ export const useAppStore = defineStore('app', () => {
     isFirstTimeMaterialManagement,
     isAccountRefreshing,
     materials,
+    publishedMaterials,
     setAccountManagementVisited,
     setMaterialManagementVisited,
     resetVisitStatus,
     setMaterials,
+    setPublishedMaterials,
     addMaterial,
     removeMaterial,
+    removeMaterials,
     setAccountRefreshing
   }
 })

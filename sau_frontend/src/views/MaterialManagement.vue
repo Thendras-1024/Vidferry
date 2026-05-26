@@ -33,6 +33,14 @@
       />
       <div class="action-buttons">
         <el-button type="primary" @click="handleUploadMaterial">上传素材</el-button>
+        <el-button
+          type="danger"
+          plain
+          :disabled="selectedMaterials.length === 0"
+          @click="handleBatchDelete"
+        >
+          批量删除 {{ selectedMaterials.length || '' }}
+        </el-button>
         <el-button type="info" @click="fetchMaterials" :loading="isRefreshing">
           <el-icon :class="{ 'is-loading': isRefreshing }"><Refresh /></el-icon>
           <span>刷新</span>
@@ -54,15 +62,17 @@
         :data="processedMaterials"
         class="material-table"
         style="width: 100%"
+        @selection-change="handleProcessedSelectionChange"
       >
+        <el-table-column type="selection" width="44" />
         <el-table-column label="视频信息" min-width="420">
           <template #default="{ row }">
             <MaterialIdentity :material="row" />
           </template>
         </el-table-column>
-        <el-table-column label="处理类型" width="150">
+        <el-table-column label="烧录预设" width="130">
           <template #default="{ row }">
-            <el-tag type="warning" effect="light">{{ row.processType || '字幕处理/信息烧录' }}</el-tag>
+            <el-tag :type="burnProfileTagType(row)" effect="light">{{ burnProfileLabel(row) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="处理版本" width="130">
@@ -86,6 +96,7 @@
           <template #default="{ row }">
             <div class="table-actions">
               <el-button size="small" @click="handlePreview(row)">预览</el-button>
+              <el-button size="small" type="primary" plain @click="handleEditPublishDraft(row)">文案</el-button>
               <el-button size="small" type="danger" plain @click="handleDelete(row)">删除</el-button>
             </div>
           </template>
@@ -108,7 +119,9 @@
         :data="downloadedMaterials"
         class="material-table"
         style="width: 100%"
+        @selection-change="handleDownloadedSelectionChange"
       >
+        <el-table-column type="selection" width="44" />
         <el-table-column label="视频信息" min-width="420">
           <template #default="{ row }">
             <MaterialIdentity :material="row" />
@@ -266,6 +279,28 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog v-model="publishDraftDialogVisible" title="编辑发布稿" width="min(760px, calc(100vw - 32px))">
+      <el-form label-position="top" class="publish-draft-form">
+        <el-form-item label="发布标题">
+          <el-input v-model="publishDraftForm.title" maxlength="100" show-word-limit />
+        </el-form-item>
+        <el-form-item label="发布文案">
+          <el-input v-model="publishDraftForm.description" type="textarea" :rows="6" maxlength="800" show-word-limit />
+        </el-form-item>
+        <el-form-item label="话题">
+          <el-select v-model="publishDraftForm.tags" multiple filterable allow-create default-first-option placeholder="输入后回车添加话题">
+            <el-option v-for="tag in publishDraftForm.tags" :key="tag" :label="tag" :value="tag" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="publishDraftDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="savingPublishDraft" @click="savePublishDraft">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -274,6 +309,7 @@ import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { InfoFilled, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
 import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'element-plus'
 import { materialApi } from '@/api/material'
+import { youtubeApi } from '@/api/youtube'
 import { useAppStore } from '@/stores/app'
 
 const languageMap = {
@@ -300,6 +336,17 @@ const fileList = ref([])
 const customFilename = ref('')
 const customFilenameDisabled = computed(() => fileList.value.length > 1)
 const uploadProgress = ref({})
+const selectedProcessedMaterials = ref([])
+const selectedDownloadedMaterials = ref([])
+const selectedMaterials = computed(() => [...selectedProcessedMaterials.value, ...selectedDownloadedMaterials.value])
+const publishDraftDialogVisible = ref(false)
+const savingPublishDraft = ref(false)
+const currentDraftMaterial = ref(null)
+const publishDraftForm = ref({
+  title: '',
+  description: '',
+  tags: []
+})
 
 const materialTitle = (material) => {
   return material?.displayTitle || material?.metadata?.title || material?.original_filename || material?.filename || '未命名素材'
@@ -349,6 +396,23 @@ const materialSubtitleLanguageLabel = (material) => {
   return material?.subtitleLanguageLabel || material?.metadata?.subtitleLanguageLabel || languageLabel(inferSubtitleLanguage(material))
 }
 
+const materialBurnProfile = (material) => {
+  return String(
+    material?.burnProfile ||
+    material?.metadata?.burnProfile ||
+    material?.workflowBurnProfile ||
+    ''
+  ).toLowerCase()
+}
+
+const burnProfileLabel = (material) => {
+  return materialBurnProfile(material) === 'fast' ? '速度优先' : '兼容优先'
+}
+
+const burnProfileTagType = (material) => {
+  return materialBurnProfile(material) === 'fast' ? 'warning' : 'success'
+}
+
 const materialVideoId = (material) => {
   return material?.metadata?.videoId || material?.source_video_id || ''
 }
@@ -362,6 +426,26 @@ const materialThumbnail = (material) => {
 
 const materialDuration = (material) => {
   return material?.duration || material?.metadata?.duration || '-'
+}
+
+const cleanTopicList = (topics = []) => {
+  const values = Array.isArray(topics) ? topics : String(topics || '').split(/[，,\s]+/)
+  return Array.from(new Set(values.map(tag => String(tag || '').trim().replace(/^#+/, '')).filter(Boolean)))
+}
+
+const buildPublishDraftFromMaterial = (material) => {
+  const savedDraft = material?.publishDraft || {}
+  const result = material?.analysisResult || {}
+  const titleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
+  return {
+    title: savedDraft.title || titleOptions[0] || '',
+    description: savedDraft.description || result.publish_copy || '',
+    tags: cleanTopicList(savedDraft.tags?.length ? savedDraft.tags : result.tags)
+  }
+}
+
+const materialVideoIdForDraft = (material) => {
+  return material?.source_video_id || material?.metadata?.videoId || ''
 }
 
 const workflowStatusText = (status) => {
@@ -565,6 +649,14 @@ const fetchMaterials = async () => {
 
 const handleSearch = () => {}
 
+const handleProcessedSelectionChange = (rows) => {
+  selectedProcessedMaterials.value = rows
+}
+
+const handleDownloadedSelectionChange = (rows) => {
+  selectedDownloadedMaterials.value = rows
+}
+
 const handleUploadMaterial = () => {
   fileList.value = []
   customFilename.value = ''
@@ -671,6 +763,44 @@ const handlePreview = async (material) => {
   }
 }
 
+const handleEditPublishDraft = (material) => {
+  const videoId = materialVideoIdForDraft(material)
+  if (!videoId) {
+    ElMessage.warning('该素材没有绑定视频线索，无法保存发布稿')
+    return
+  }
+  currentDraftMaterial.value = material
+  publishDraftForm.value = buildPublishDraftFromMaterial(material)
+  publishDraftDialogVisible.value = true
+}
+
+const savePublishDraft = async () => {
+  const material = currentDraftMaterial.value
+  const videoId = materialVideoIdForDraft(material)
+  if (!material || !videoId) return
+
+  savingPublishDraft.value = true
+  try {
+    const response = await youtubeApi.updatePublishDraft(videoId, {
+      title: publishDraftForm.value.title,
+      description: publishDraftForm.value.description,
+      tags: cleanTopicList(publishDraftForm.value.tags)
+    })
+    material.publishDraft = response.data?.draft || {
+      title: publishDraftForm.value.title,
+      description: publishDraftForm.value.description,
+      tags: cleanTopicList(publishDraftForm.value.tags)
+    }
+    publishDraftDialogVisible.value = false
+    ElMessage.success('发布稿已保存')
+  } catch (error) {
+    console.error('保存发布稿失败:', error)
+    ElMessage.error('保存发布稿失败')
+  } finally {
+    savingPublishDraft.value = false
+  }
+}
+
 const stopPreviewVideo = () => {
   const video = previewVideoRef.value
   if (!video) return
@@ -718,6 +848,47 @@ const handleDelete = (material) => {
       }
     })
     .catch(() => {})
+}
+
+const handleBatchDelete = async () => {
+  const rows = selectedMaterials.value
+  if (rows.length === 0) {
+    ElMessage.warning('请先选择要删除的视频素材')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${rows.length} 个视频素材吗？对应实际文件也会删除。已发布归档不会被删除。`,
+      '批量删除素材',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch (error) {
+    return
+  }
+
+  try {
+    const response = await materialApi.deleteMaterials(rows.map(row => row.id))
+    const result = response.data || {}
+    const successIds = (result.items || [])
+      .filter(item => item.success)
+      .map(item => item.id)
+    appStore.removeMaterials(successIds)
+    selectedProcessedMaterials.value = []
+    selectedDownloadedMaterials.value = []
+    if (result.failed > 0) {
+      ElMessage.warning(`已删除 ${result.success} 个，${result.failed} 个删除失败`)
+    } else {
+      ElMessage.success(`已删除 ${result.success} 个素材`)
+    }
+  } catch (error) {
+    console.error('批量删除素材出错:', error)
+    ElMessage.error('批量删除失败')
+  }
 }
 
 const getPreviewUrl = (filePath) => {

@@ -5,7 +5,7 @@
         <div class="sidebar">
           <div class="logo">
             <img v-show="isCollapse" src="/vite.svg" alt="Logo" class="logo-img">
-            <h2 v-show="!isCollapse">自媒体自动化运营系统</h2>
+            <h2 v-show="!isCollapse">Vidferry V1.0</h2>
           </div>
           <el-menu
             :router="true"
