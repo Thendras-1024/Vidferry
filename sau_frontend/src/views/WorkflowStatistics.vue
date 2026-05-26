@@ -30,8 +30,8 @@
       </div>
       <div class="metric-card">
         <span>Token 消耗</span>
-        <strong>{{ summary.totalTokens }}</strong>
-        <small>云端模型预留统计</small>
+        <strong>{{ formatNumber(summary.totalTokens) }}</strong>
+        <small>输入 {{ formatNumber(summary.promptTokens) }} / 输出 {{ formatNumber(summary.completionTokens) }}</small>
       </div>
       <div class="metric-card">
         <span>云端调用</span>
@@ -69,8 +69,8 @@
         <el-table-column label="输出大小" width="120">
           <template #default="{ row }">{{ formatMb(row.outputSizeMb) }}</template>
         </el-table-column>
-        <el-table-column label="Token" width="110">
-          <template #default="{ row }">{{ row.totalTokens || '-' }}</template>
+        <el-table-column label="Token 输入/输出/总计" width="170">
+          <template #default="{ row }">{{ formatTokenUsage(row) }}</template>
         </el-table-column>
         <el-table-column label="云端延迟" width="120">
           <template #default="{ row }">{{ formatMs(row.avgCloudLatencyMs) }}</template>
@@ -117,9 +117,9 @@
             {{ processVersionText(row.processVersion) }} / {{ languageText(row.subtitleLanguage) }} / {{ burnProfileText(row.burnProfile) }}
           </template>
         </el-table-column>
-        <el-table-column label="Token/延迟" width="150">
+        <el-table-column label="Token/延迟" width="210">
           <template #default="{ row }">
-            {{ row.totalTokens || 0 }} / {{ formatMs(row.cloudLatencyMs) }}
+            {{ formatTokenUsage(row) }} / {{ formatMs(row.cloudLatencyMs) }}
           </template>
         </el-table-column>
         <el-table-column prop="startedAt" label="开始时间" width="165" />
@@ -188,6 +188,19 @@ const formatMb = (value) => {
 const formatMs = (value) => {
   const number = Number(value || 0)
   return number > 0 ? `${number.toFixed(0)} ms` : '-'
+}
+
+const formatNumber = (value) => {
+  const number = Number(value || 0)
+  return number > 0 ? number.toLocaleString('zh-CN') : '0'
+}
+
+const formatTokenUsage = (row) => {
+  const prompt = Number(row?.promptTokens || 0)
+  const completion = Number(row?.completionTokens || 0)
+  const total = Number(row?.totalTokens || 0)
+  if (!prompt && !completion && !total) return '-'
+  return `${formatNumber(prompt)} / ${formatNumber(completion)} / ${formatNumber(total)}`
 }
 
 const languageText = (value) => languageMap[value] || value || '-'

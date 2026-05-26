@@ -27,7 +27,7 @@
       <button class="metric-card" type="button" @click="navigateTo('/account-management')">
         <span>已接入平台</span>
         <strong>{{ platformStats.total }}</strong>
-        <small>抖音 {{ platformStats.douyin }} · 快手 {{ platformStats.kuaishou }} · 小红书 {{ platformStats.xiaohongshu }}</small>
+        <small>抖音 {{ platformStats.douyin }} · B站 {{ platformStats.bilibili }} · 快手 {{ platformStats.kuaishou }} · 小红书 {{ platformStats.xiaohongshu }}</small>
       </button>
       <button class="metric-card" type="button" @click="navigateTo('/material-management')">
         <span>素材总数</span>
@@ -56,30 +56,30 @@
       <template #header>
         <div class="panel-header">
           <div>
-            <span class="panel-kicker">RECENT MATERIALS</span>
-            <h2>最近上传素材</h2>
+            <span class="panel-kicker">PUBLISHED MATERIALS</span>
+            <h2>已发布素材</h2>
           </div>
-          <el-button text type="primary" @click="navigateTo('/material-management')">查看全部</el-button>
+          <el-button text type="primary" @click="navigateTo('/publish-center')">查看发布中心</el-button>
         </div>
       </template>
 
-      <el-table :data="recentMaterials" style="width: 100%" v-loading="loading" empty-text="暂无素材数据">
+      <el-table :data="recentPublishedMaterials" style="width: 100%" v-loading="loading" empty-text="暂无已发布素材">
         <el-table-column label="素材" min-width="320">
           <template #default="{ row }">
             <div class="material-cell">
-              <strong>{{ row.displayTitle || row.original_filename || row.filename }}</strong>
-              <span>{{ row.filename }}</span>
+              <strong>{{ row.title || row.publishTitle || row.filename }}</strong>
+              <span>{{ row.filename || row.sourceUrl }}</span>
             </div>
           </template>
         </el-table-column>
         <el-table-column prop="filesize" label="大小" width="110">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="上传时间" width="180" />
-        <el-table-column label="类型" width="100">
+        <el-table-column prop="publishedAt" label="发布时间" width="180" />
+        <el-table-column label="平台" width="120">
           <template #default="{ row }">
-            <el-tag :type="getFileTypeTag(row.filename)" effect="plain" size="small">
-              {{ getFileType(row.filename) }}
+            <el-tag type="success" effect="plain" size="small">
+              {{ row.platform || '已发布' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -124,10 +124,11 @@ const platformStats = computed(() => {
   const accounts = accountStore.accounts
   const kuaishou = accounts.filter(a => a.platform === '快手').length
   const douyin = accounts.filter(a => a.platform === '抖音').length
+  const bilibili = accounts.filter(a => a.platform === 'B站').length
   const channels = accounts.filter(a => a.platform === '视频号').length
   const xiaohongshu = accounts.filter(a => a.platform === '小红书').length
-  const total = [kuaishou, douyin, channels, xiaohongshu].filter(n => n > 0).length
-  return { total, kuaishou, douyin, channels, xiaohongshu }
+  const total = [kuaishou, douyin, bilibili, channels, xiaohongshu].filter(n => n > 0).length
+  return { total, kuaishou, douyin, bilibili, channels, xiaohongshu }
 })
 
 const videoExtensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv']
@@ -140,9 +141,9 @@ const contentStats = computed(() => {
   return { total: materials.length, videos, images, others: materials.length - videos - images }
 })
 
-const recentMaterials = computed(() => {
-  return [...appStore.materials]
-    .sort((a, b) => new Date(b.upload_time) - new Date(a.upload_time))
+const recentPublishedMaterials = computed(() => {
+  return [...appStore.publishedMaterials]
+    .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
     .slice(0, 6)
 })
 
@@ -164,9 +165,10 @@ const navigateTo = (path) => {
 const fetchDashboardData = async () => {
   loading.value = true
   try {
-    const [accountRes, materialRes] = await Promise.allSettled([
+    const [accountRes, materialRes, publishedRes] = await Promise.allSettled([
       accountApi.getAccounts(),
-      materialApi.getAllMaterials()
+      materialApi.getAllMaterials(),
+      materialApi.getPublishedMaterials({ limit: 20 })
     ])
 
     if (accountRes.status === 'fulfilled' && accountRes.value.code === 200) {
@@ -174,6 +176,9 @@ const fetchDashboardData = async () => {
     }
     if (materialRes.status === 'fulfilled' && materialRes.value.code === 200) {
       appStore.setMaterials(materialRes.value.data)
+    }
+    if (publishedRes.status === 'fulfilled' && publishedRes.value.code === 200) {
+      appStore.setPublishedMaterials(publishedRes.value.data || [])
     }
   } catch (error) {
     console.error('获取仪表盘数据失败:', error)

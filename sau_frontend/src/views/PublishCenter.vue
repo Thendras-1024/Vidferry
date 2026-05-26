@@ -108,14 +108,15 @@
               <span class="step-index">4</span>
               <div>
                 <h3>发布内容</h3>
-                <p>填写标题、话题和平台扩展信息。</p>
+                <p>优先读取视频绑定的已保存发布稿，可在这里继续修改并保存回视频。</p>
               </div>
+              <el-button size="small" type="primary" plain :disabled="tab.fileList.length === 0" @click="saveTabPublishDraft(tab)">保存发布稿</el-button>
             </div>
-            <el-input v-model="tab.title" type="textarea" :rows="3" placeholder="请输入标题" maxlength="100" show-word-limit />
-            <el-input v-model="tab.description" type="textarea" :rows="4" placeholder="作品描述，可由视频分析结果自动填充" maxlength="800" show-word-limit />
+            <el-input v-model="tab.title" type="textarea" :rows="3" placeholder="选择素材后自动填充标题，可修改后保存" maxlength="100" show-word-limit />
+            <el-input v-model="tab.description" type="textarea" :rows="4" placeholder="选择素材后自动填充文案，可修改后保存" maxlength="800" show-word-limit />
             <div class="tag-cloud topic-cloud">
-              <el-tag v-for="(topic, index) in tab.selectedTopics" :key="index" closable @close="removeTopic(tab, index)">#{{ topic }}</el-tag>
-              <el-button type="primary" plain @click="openTopicDialog(tab)">添加话题</el-button>
+              <el-tag v-for="(topic, index) in tab.selectedTopics" :key="index">#{{ topic }}</el-tag>
+              <el-tag v-if="tab.selectedTopics.length === 0" type="info" effect="plain">暂无已保存话题</el-tag>
             </div>
             <div v-if="tab.selectedPlatform === 3" class="two-col">
               <el-input v-model="tab.productTitle" placeholder="商品名称" maxlength="200" />
@@ -281,6 +282,23 @@
                   <span>{{ material.displaySubscribers || '粉丝未知' }}</span>
                   <span>{{ material.displayPublishedAt || '发布时间未知' }}</span>
                 </div>
+                <div class="material-publish-draft">
+                  <span class="draft-label">发布标题</span>
+                  <strong>{{ materialPublishDraft(material).title || '暂无已保存发布标题' }}</strong>
+                </div>
+                <div class="material-topic-list">
+                  <span class="draft-label">话题</span>
+                  <el-tag
+                    v-for="tag in materialPublishDraft(material).tags"
+                    :key="tag"
+                    size="small"
+                    type="success"
+                    effect="plain"
+                  >
+                    #{{ tag }}
+                  </el-tag>
+                  <span v-if="materialPublishDraft(material).tags.length === 0" class="empty-topic">暂无话题</span>
+                </div>
                 <div class="material-badges">
                   <el-tag size="small" type="warning" effect="light">{{ material.processType || '处理后视频' }}</el-tag>
                   <el-tag size="small" type="success" effect="plain">{{ material.subtitleLanguageLabel || '字幕语言未知' }}</el-tag>
@@ -343,6 +361,7 @@ const PUBLISH_DRAFT_STORAGE_KEY = 'vidferry:publish-center:draft:v1'
 
 // 获取应用状态管理
 const appStore = useAppStore()
+const accountStore = useAccountStore()
 
 // 上传相关状态
 const materialLibraryVisible = ref(false)
@@ -386,6 +405,7 @@ const defaultTabInit = {
   productLink: '', // 商品链接
   productTitle: '', // 商品名称
   selectedTopics: [], // 话题列表（不带#号）
+  contentLocked: false,
   scheduleEnabled: false, // 定时发布开关
   videosPerDay: 1, // 每天发布视频数量
   dailyTimes: ['10:00'], // 每天发布时间点列表
@@ -404,6 +424,19 @@ const makeNewTab = () => {
   } catch (e) {
     return JSON.parse(JSON.stringify(defaultTabInit))
   }
+}
+
+const normalizeSelectedAccounts = (accounts = []) => {
+  const existingAccountIds = new Set(accountStore.accounts.map(account => String(account.id)))
+  const seen = new Set()
+  return (Array.isArray(accounts) ? accounts : [])
+    .filter(accountId => existingAccountIds.has(String(accountId)))
+    .filter(accountId => {
+      const key = String(accountId)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
 }
 
 const readPublishDraft = () => {
@@ -425,7 +458,7 @@ const normalizePublishTab = (tab, index) => {
     name: tab?.name || `tab${index + 1}`,
     label: tab?.label || `发布${index + 1}`,
     fileList: Array.isArray(tab?.fileList) ? tab.fileList : [],
-    selectedAccounts: Array.isArray(tab?.selectedAccounts) ? tab.selectedAccounts : [],
+    selectedAccounts: normalizeSelectedAccounts(tab?.selectedAccounts),
     selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
     dailyTimes: Array.isArray(tab?.dailyTimes) && tab.dailyTimes.length > 0 ? tab.dailyTimes : ['10:00'],
     publishStatus: null,
@@ -443,13 +476,14 @@ const serializePublishTab = (tab) => ({
   label: tab.label,
   fileList: tab.fileList,
   displayFileList: tab.displayFileList,
-  selectedAccounts: tab.selectedAccounts,
+  selectedAccounts: normalizeSelectedAccounts(tab.selectedAccounts),
   selectedPlatform: tab.selectedPlatform,
   title: tab.title,
   description: tab.description,
   productLink: tab.productLink,
   productTitle: tab.productTitle,
   selectedTopics: tab.selectedTopics,
+  contentLocked: Boolean(tab.contentLocked),
   scheduleEnabled: tab.scheduleEnabled,
   videosPerDay: tab.videosPerDay,
   dailyTimes: tab.dailyTimes,
@@ -494,9 +528,6 @@ watch(tabs, savePublishDraft, { deep: true })
 const accountDialogVisible = ref(false)
 const tempSelectedAccounts = ref([])
 const currentTab = ref(null)
-
-// 获取账号状态管理
-const accountStore = useAccountStore()
 
 // 根据选择的平台获取可用账号列表
 const availableAccounts = computed(() => {
@@ -564,22 +595,74 @@ const normalizeAnalysisTags = (tags = []) => {
     : []
 }
 
-const applyAnalysisToPublishTab = (tab, analysisResults = []) => {
-  const firstResult = analysisResults.find(result => result && Object.keys(result).length > 0)
-  if (!firstResult) return
-
-  const titleOptions = Array.isArray(firstResult.title_options) ? firstResult.title_options.filter(Boolean) : []
-  if (!tab.title.trim() && titleOptions.length > 0) {
-    tab.title = titleOptions[0]
+const normalizePublishDraft = (material) => {
+  const draft = material?.publishDraft || {}
+  if (draft && Object.keys(draft).length > 0) {
+    return {
+      title: draft.title || '',
+      description: draft.description || '',
+      tags: normalizeAnalysisTags(draft.tags),
+      fromSavedDraft: true
+    }
   }
 
-  if (!tab.description.trim() && firstResult.publish_copy) {
-    tab.description = firstResult.publish_copy
+  const result = material?.analysisResult || {}
+  const titleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
+  return {
+    title: titleOptions[0] || '',
+    description: result.publish_copy || '',
+    tags: normalizeAnalysisTags(result.tags),
+    fromSavedDraft: false
   }
+}
 
-  const nextTags = normalizeAnalysisTags(firstResult.tags)
-  if (tab.selectedTopics.length === 0 && nextTags.length > 0) {
-    tab.selectedTopics = nextTags
+const materialPublishDraft = (material) => normalizePublishDraft(material)
+
+const applyPublishDraftToPublishTab = (tab, drafts = []) => {
+  const firstDraft = drafts.find(draft => draft && (draft.title || draft.description || draft.tags.length > 0))
+  if (!firstDraft) return
+
+  tab.title = firstDraft.title || ''
+  tab.description = firstDraft.description || ''
+  tab.selectedTopics = firstDraft.tags || []
+  tab.contentLocked = true
+
+  if (!firstDraft.fromSavedDraft) {
+    ElMessage.warning('该素材还没有保存发布稿，已用 LLM 原稿临时填充；修改后请点击保存发布稿。')
+  }
+}
+
+const saveTabPublishDraft = async (tab) => {
+  const targetFile = tab.fileList.find(file => file.videoId)
+  if (!targetFile) {
+    ElMessage.warning('当前批次没有绑定视频线索的素材，无法保存发布稿')
+    return
+  }
+  try {
+    const response = await youtubeApi.updatePublishDraft(targetFile.videoId, {
+      title: tab.title,
+      description: tab.description,
+      tags: tab.selectedTopics
+    })
+    const savedDraft = response.data?.draft || {
+      title: tab.title,
+      description: tab.description,
+      tags: tab.selectedTopics
+    }
+    tab.fileList.forEach(file => {
+      if (file.videoId === targetFile.videoId) {
+        file.publishDraft = savedDraft
+      }
+    })
+    const material = appStore.materials.find(item => String(item.id) === String(targetFile.materialId))
+    if (material) {
+      material.publishDraft = savedDraft
+    }
+    tab.contentLocked = true
+    ElMessage.success('发布稿已保存到视频')
+  } catch (error) {
+    console.error('保存发布稿失败:', error)
+    ElMessage.error('保存发布稿失败')
   }
 }
 
@@ -619,6 +702,10 @@ const toggleRecommendedTopic = (topic) => {
 
 // 删除话题
 const removeTopic = (tab, index) => {
+  if (tab.contentLocked) {
+    ElMessage.info('发布内容需在视频采集处理页修改并保存')
+    return
+  }
   tab.selectedTopics.splice(index, 1)
 }
 
@@ -641,7 +728,7 @@ const openAccountDialog = (tab) => {
 // 确认账号选择
 const confirmAccountSelection = () => {
   if (currentTab.value) {
-    currentTab.value.selectedAccounts = [...tempSelectedAccounts.value]
+    currentTab.value.selectedAccounts = normalizeSelectedAccounts(tempSelectedAccounts.value)
   }
   accountDialogVisible.value = false
   currentTab.value = null
@@ -651,6 +738,8 @@ const confirmAccountSelection = () => {
 // 删除选中的账号
 const removeAccount = (tab, index) => {
   tab.selectedAccounts.splice(index, 1)
+  tab.selectedAccounts = normalizeSelectedAccounts(tab.selectedAccounts)
+  savePublishDraft()
 }
 
 // 获取账号显示名称
@@ -772,9 +861,9 @@ const confirmPublish = async (tab) => {
     throw new Error('发布中心只支持处理后视频')
   }
   if (!tab.title.trim()) {
-    ElMessage.error('请输入标题')
+    ElMessage.error('发布标题为空，请回到视频采集处理页保存发布稿')
     tab.publishing = false
-    throw new Error('请输入标题')
+    throw new Error('发布标题为空')
   }
   if (!tab.selectedPlatform) {
     ElMessage.error('请选择发布平台')
@@ -786,6 +875,13 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error('请选择发布账号')
   }
+  const normalizedAccounts = normalizeSelectedAccounts(tab.selectedAccounts)
+  if (normalizedAccounts.length === 0) {
+    ElMessage.error('已选账号不存在或已被移除，请重新选择账号')
+    tab.publishing = false
+    throw new Error('已选账号不存在')
+  }
+  tab.selectedAccounts = normalizedAccounts
 
   // 构造发布数据，符合后端API格式
   const publishData = {
@@ -794,10 +890,10 @@ const confirmPublish = async (tab) => {
     description: tab.description,
     tags: tab.selectedTopics, // 不带#号的话题列表
     fileList: tab.fileList.map(file => file.path), // 只发送文件路径
-    accountList: tab.selectedAccounts.map(accountId => {
+    accountList: normalizedAccounts.map(accountId => {
       const account = accountStore.accounts.find(acc => acc.id === accountId)
       return account ? account.filePath : accountId
-    }), // 发送账号的文件路径
+    }).filter(Boolean), // 发送当前保留账号的文件路径
     enableTimer: tab.scheduleEnabled ? 1 : 0,
     videosPerDay: tab.scheduleEnabled ? tab.videosPerDay || 1 : 1,
     dailyTimes: tab.scheduleEnabled ? tab.dailyTimes || ['10:00'] : ['10:00'],
@@ -822,6 +918,7 @@ const confirmPublish = async (tab) => {
     tab.title = ''
     tab.description = ''
     tab.selectedTopics = []
+    tab.contentLocked = false
     tab.selectedAccounts = []
     tab.scheduleEnabled = false
   } catch (error) {
@@ -867,13 +964,11 @@ const confirmMaterialSelection = () => {
   
   if (currentUploadTab.value) {
     // 将选中的素材添加到当前tab的文件列表
-    const selectedAnalysisResults = []
+    const selectedPublishDrafts = []
     selectedMaterials.value.forEach(materialId => {
       const material = publishableMaterials.value.find(m => m.id === materialId)
       if (material) {
-        if (material.analysisResult && Object.keys(material.analysisResult).length > 0) {
-          selectedAnalysisResults.push(material.analysisResult)
-        }
+        selectedPublishDrafts.push(normalizePublishDraft(material))
         const fileInfo = {
           name: material.displayTitle || material.filename,
           displayTitle: material.displayTitle || material.filename,
@@ -885,6 +980,8 @@ const confirmMaterialSelection = () => {
           subtitleLanguageLabel: material.subtitleLanguageLabel || '',
           sourceType: material.source_type,
           analysisResult: material.analysisResult || {},
+          publishDraft: material.publishDraft || {},
+          videoId: material.source_video_id || material.metadata?.videoId || '',
           materialId: material.id,
           url: materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()),
           path: material.file_path,
@@ -900,7 +997,7 @@ const confirmMaterialSelection = () => {
       }
     })
 
-    applyAnalysisToPublishTab(currentUploadTab.value, selectedAnalysisResults)
+    applyPublishDraftToPublishTab(currentUploadTab.value, selectedPublishDrafts)
     
     // 更新显示列表
     currentUploadTab.value.displayFileList = [...currentUploadTab.value.fileList.map(item => ({
@@ -1186,6 +1283,40 @@ $ink-strong: #172033;
 .selected-video-meta,
 .material-details,
 .material-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: $text-secondary; font-size: 12px; }
+
+.material-publish-draft,
+.material-topic-list {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  color: #435168;
+  font-size: 12px;
+}
+
+.material-publish-draft strong {
+  min-width: 0;
+  color: $ink-strong;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-label {
+  flex: 0 0 auto;
+  color: $accent-blue;
+  font-weight: 650;
+}
+
+.material-topic-list {
+  flex-wrap: wrap;
+}
+
+.empty-topic {
+  color: $text-secondary;
+}
 
 .tag-cloud { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 32px; }
 .topic-cloud { margin-top: 4px; }

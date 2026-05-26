@@ -17,6 +17,14 @@ export const materialApi = {
   deleteMaterial: (id) => {
     return http.get(`/deleteFile?id=${id}`)
   },
+
+  deleteMaterials: (ids) => {
+    return http.post('/deleteFiles', { ids })
+  },
+
+  getPublishedMaterials: (params = {}) => {
+    return http.get('/published-materials', params)
+  },
   
   // 下载素材
   downloadMaterial: (filePath) => {

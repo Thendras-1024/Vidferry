@@ -94,6 +94,13 @@
               <span>开始查询</span>
             </el-button>
           </div>
+          <div v-if="searchProgress.visible" class="search-progress-panel">
+            <div class="search-progress-text">
+              <span>{{ searchProgress.message }}</span>
+              <strong>{{ searchProgress.loaded }} / {{ searchProgress.total }}</strong>
+            </div>
+            <el-progress :percentage="searchProgressPercent" :stroke-width="8" :status="loading ? undefined : 'success'" />
+          </div>
         </div>
       </el-form>
 
@@ -157,6 +164,15 @@
             <h2>候选视频</h2>
           </div>
           <div class="list-tools">
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :disabled="selectedVideos.length === 0"
+              @click="batchDeleteVideos"
+            >
+              批量删除 {{ selectedVideos.length || '' }}
+            </el-button>
             <el-select v-model="videoFilter.status" class="status-select" size="small" aria-label="显示状态">
               <el-option label="全部状态" value="all" />
               <el-option label="未下载" value="notDownloaded" />
@@ -175,18 +191,20 @@
               <el-option label="已处理优先" value="translatedFirst" />
               <el-option label="已发布优先" value="publishedFirst" />
             </el-select>
-            <span class="panel-count">{{ filteredItems.length }} / {{ items.length }} 条</span>
+            <span class="panel-count">第 {{ videoPagination.page }} 页 · {{ filteredItems.length }} / {{ items.length }} 条</span>
           </div>
         </div>
       </template>
 
       <el-table
-        :data="filteredItems"
+        :data="pagedItems"
         v-loading="loading"
         empty-text="暂无匹配的视频记录"
         class="research-table"
         style="width: 100%"
+        @selection-change="handleVideoSelectionChange"
       >
+        <el-table-column type="selection" width="44" />
         <el-table-column label="视频" min-width="420">
           <template #default="{ row }">
             <div class="video-cell">
@@ -200,6 +218,10 @@
                   <a :href="row.url" target="_blank" rel="noopener noreferrer" class="video-title">
                     {{ row.title || '未获取到标题' }}
                   </a>
+                </div>
+                <div v-if="showInlinePublishDraft(row) && !isPublishDraftEditing(row)" class="publish-title-line">
+                  <span></span>
+                  <strong>{{ row.analysisDraft.selectedTitle || '暂无发布标题' }}</strong>
                 </div>
                 <div class="video-meta">
                   <span>{{ row.channel || '未知博主' }}</span>
@@ -237,45 +259,81 @@
                 <div v-else-if="analysisHint(row)" class="analysis-hint" :class="analysisHint(row).className">
                   {{ analysisHint(row).label }}
                 </div>
-                <div v-if="showInlinePublishDraft(row)" class="publish-draft-card">
-                  <div class="draft-row">
-                    <span>标题</span>
-                    <el-select v-model="row.analysisDraft.selectedTitle" placeholder="选择或编辑标题" filterable allow-create default-first-option>
-                      <el-option
-                        v-for="title in row.analysisDraft.titleOptions"
-                        :key="title"
-                        :label="title"
-                        :value="title"
-                      />
-                    </el-select>
-                  </div>
-                  <div class="draft-row">
-                    <span>描述</span>
-                    <el-input v-model="row.analysisDraft.publishCopy" type="textarea" :rows="2" maxlength="500" show-word-limit />
-                  </div>
-                  <div class="draft-row">
-                    <span>话题</span>
-                    <el-select v-model="row.analysisDraft.tags" multiple filterable allow-create default-first-option placeholder="添加话题">
-                      <el-option
-                        v-for="tag in row.analysisDraft.tags"
-                        :key="tag"
-                        :label="tag"
-                        :value="tag"
-                      />
-                    </el-select>
-                  </div>
-                  <div class="draft-summary">{{ row.analysisDraft.summary || '暂无视频总结' }}</div>
+                <span class="video-url">{{ row.url }}</span>
+              </div>
+              <div
+                v-if="showInlinePublishDraft(row)"
+                class="publish-draft-card"
+                :class="{ 'is-editing': isPublishDraftEditing(row) }"
+              >
+                  <template v-if="isPublishDraftEditing(row)">
+                    <div class="draft-editor-grid">
+                      <div class="draft-editor-primary">
+                        <div class="draft-row">
+                          <span>标题</span>
+                          <el-select v-model="row.analysisDraft.selectedTitle" placeholder="选择或编辑标题" filterable allow-create default-first-option>
+                            <el-option
+                              v-for="title in row.analysisDraft.titleOptions"
+                              :key="title"
+                              :label="title"
+                              :value="title"
+                            />
+                          </el-select>
+                        </div>
+                        <div class="draft-row">
+                          <span>话题</span>
+                          <el-select v-model="row.analysisDraft.tags" multiple filterable allow-create default-first-option placeholder="选择或新增话题">
+                            <el-option
+                              v-for="tag in row.analysisDraft.tagOptions"
+                              :key="tag"
+                              :label="tag"
+                              :value="tag"
+                            />
+                          </el-select>
+                        </div>
+                      </div>
+                      <div class="draft-row draft-description-row">
+                        <span>描述</span>
+                        <el-input v-model="row.analysisDraft.publishCopy" type="textarea" :rows="5" maxlength="500" show-word-limit />
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="draft-readonly">
+                      <div class="draft-content-grid">
+                        <div>
+                          <span class="draft-label">文案</span>
+                          <p>{{ row.analysisDraft.publishCopy || '暂无发布文案' }}</p>
+                        </div>
+                        <div>
+                          <span class="draft-label">话题</span>
+                          <div class="draft-topic-tags">
+                            <el-tag v-for="tag in row.analysisDraft.tags" :key="tag" size="small" type="success" effect="plain">#{{ tag }}</el-tag>
+                            <span v-if="row.analysisDraft.tags.length === 0">暂无话题</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
                   <div class="draft-actions">
-                    <el-button size="small" type="primary" text :loading="savingAnalysisId === row.id" @click="saveInlineAnalysis(row)">保存修改</el-button>
+                    <el-button
+                      v-if="isPublishDraftEditing(row)"
+                      size="small"
+                      type="primary"
+                      text
+                      :loading="savingAnalysisId === row.id"
+                      @click="saveInlineAnalysis(row)"
+                    >
+                      保存修改
+                    </el-button>
+                    <el-button v-else size="small" type="primary" text @click="startPublishDraftEditing(row)">编辑文案</el-button>
                     <el-button size="small" text @click="showAnalysis(row)">查看详情</el-button>
                   </div>
-                </div>
-                <span class="video-url">{{ row.url }}</span>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="340">
+        <el-table-column label="操作" width="260">
           <template #default="{ row }">
             <div class="action-row">
               <el-button
@@ -342,6 +400,15 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="table-pagination" v-if="filteredItems.length > videoPagination.pageSize">
+        <el-pagination
+          v-model:current-page="videoPagination.page"
+          :page-size="videoPagination.pageSize"
+          :total="filteredItems.length"
+          layout="total, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </el-card>
 
     <el-card class="job-card data-panel" shadow="never">
@@ -359,13 +426,13 @@
               <el-option label="失败" value="failed" />
               <el-option label="异常" value="abnormal" />
             </el-select>
-            <span class="panel-count">{{ filteredJobs.length }} / {{ jobs.length }} 个</span>
+            <span class="panel-count">第 {{ jobPagination.page }} 页 · {{ filteredJobs.length }} / {{ jobs.length }} 个</span>
             <el-button text type="primary" :loading="jobsLoading" @click="loadJobs()">刷新</el-button>
           </div>
         </div>
       </template>
 
-      <el-table :data="filteredJobs" empty-text="暂无匹配任务" class="job-table" style="width: 100%">
+      <el-table :data="pagedJobs" empty-text="暂无匹配任务" class="job-table" style="width: 100%">
         <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
         <el-table-column prop="account" label="抖音账号" width="110" />
         <el-table-column prop="status" label="状态" width="105">
@@ -403,6 +470,15 @@
         </el-table-column>
         <el-table-column prop="updatedAt" label="更新时间" width="165" />
       </el-table>
+      <div class="table-pagination" v-if="filteredJobs.length > jobPagination.pageSize">
+        <el-pagination
+          v-model:current-page="jobPagination.page"
+          :page-size="jobPagination.pageSize"
+          :total="filteredJobs.length"
+          layout="total, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </el-card>
 
     <el-dialog
@@ -445,7 +521,7 @@
         </div>
         <div class="version-note">
           <strong>当前字幕语言：{{ currentSubtitleLanguage.label }}</strong>
-          <span>处理版本一会把识别到的字幕翻译成该语言后再烧录到视频中；处理版本二会优先用于剪辑方案生成。</span>
+          <span>处理版本一会把识别到的字幕翻译成该语言后再烧录到视频中；处理版本二会在此基础上提取前三个高光片段并拼接到视频开头。</span>
         </div>
         </div>
 
@@ -486,19 +562,30 @@
             />
           </div>
           <div class="version-note">
-            <strong>{{ currentBurnProfile.label }}</strong>
-            <span>{{ currentBurnProfile.description }}</span>
+            <div class="version-note-title">
+              <strong>{{ currentBurnProfile.label }}</strong>
+              <el-popover placement="left" trigger="click" width="340">
+                <div class="profile-popover">
+                  <p>{{ currentBurnProfile.description }}</p>
+                  <dl>
+                    <template v-for="param in currentBurnProfile.params" :key="param.name">
+                      <dt>{{ param.name }}：{{ param.value }}</dt>
+                      <dd>{{ param.description }}</dd>
+                    </template>
+                  </dl>
+                </div>
+                <template #reference>
+                  <el-button class="param-info-button" text circle aria-label="查看预设参数说明">
+                    <el-icon><InfoFilled /></el-icon>
+                  </el-button>
+                </template>
+              </el-popover>
+            </div>
+            <span>点击感叹号查看该预设的编码参数和说明。</span>
           </div>
           <div class="version-note">
             <strong>{{ currentSubtitleSize.label }}</strong>
             <span>{{ currentSubtitleSize.description }}</span>
-          </div>
-          <div class="burn-params">
-            <div v-for="param in currentBurnProfile.params" :key="param.name" class="burn-param">
-              <span class="param-name">{{ param.name }}</span>
-              <strong>{{ param.value }}</strong>
-              <p>{{ param.description }}</p>
-            </div>
           </div>
         </div>
       </div>
@@ -595,7 +682,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Download, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { Delete, DocumentCopy, Download, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { useNotificationStore } from '@/stores/notification'
 
@@ -621,10 +708,20 @@ const items = ref([])
 const jobs = ref([])
 const lastResult = ref(null)
 const nowTick = ref(Date.now())
+const editingPublishDraftIds = ref(new Set())
+const selectedVideos = ref([])
+const searchProgress = reactive({
+  visible: false,
+  loaded: 0,
+  total: 0,
+  message: ''
+})
 const notificationStore = useNotificationStore()
 let jobsTimer = null
 let clockTimer = null
 let jobsRequesting = false
+let workflowSettingsLoaded = false
+let loadingWorkflowSettings = false
 
 const openSettingsFromLayout = () => {
   settingsDialogVisible.value = true
@@ -660,6 +757,8 @@ const workflowForm = reactive({
   translatorLabel: 'AI中文字幕'
 })
 
+const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
+
 const subtitleLanguages = [
   { value: 'zh-CN', label: '中文' },
   { value: 'en', label: '英文' },
@@ -680,7 +779,7 @@ const processVersions = [
   {
     value: 'editing_v1',
     label: '处理版本二：剪辑',
-    description: '先生成剪辑方案，重点提取外国人震惊点、中外对比和适合做钩子的高光片段。'
+    description: '保留字幕处理链路，并把外国人震惊点、中外对比等前三个高光片段拼接到视频开头。'
   }
 ]
 
@@ -749,9 +848,80 @@ const currentSubtitleSize = computed(() => {
   return subtitleSizes.find(size => size.value === workflowForm.subtitleSize) || subtitleSizes[2]
 })
 
+const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
+  const settings = rawSettings && typeof rawSettings === 'object' ? rawSettings : {}
+  const next = {}
+  if (processVersions.some(version => version.value === settings.processVersion)) {
+    next.processVersion = settings.processVersion
+  }
+  if (subtitleLanguages.some(language => language.value === settings.subtitleLanguage)) {
+    next.subtitleLanguage = settings.subtitleLanguage
+  }
+  if (burnProfiles.some(profile => profile.value === settings.burnProfile)) {
+    next.burnProfile = settings.burnProfile
+  }
+  if (subtitleSizes.some(size => size.value === settings.subtitleSize)) {
+    next.subtitleSize = settings.subtitleSize
+  }
+  if (typeof settings.translatorLabel === 'string' && settings.translatorLabel.trim()) {
+    next.translatorLabel = settings.translatorLabel.trim().slice(0, 32)
+  }
+  return next
+}
+
+const loadWorkflowSettings = () => {
+  try {
+    const raw = localStorage.getItem(WORKFLOW_SETTINGS_STORAGE_KEY)
+    if (!raw) return
+    Object.assign(workflowForm, normalizeStoredWorkflowSettings(JSON.parse(raw)))
+  } catch (error) {
+    console.warn('读取处理设置失败', error)
+  }
+}
+
+const saveWorkflowSettings = () => {
+  try {
+    const settings = {
+      processVersion: workflowForm.processVersion,
+      subtitleLanguage: workflowForm.subtitleLanguage,
+      burnProfile: workflowForm.burnProfile,
+      subtitleSize: workflowForm.subtitleSize,
+      translatorLabel: workflowForm.translatorLabel
+    }
+    localStorage.setItem(WORKFLOW_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch (error) {
+    console.warn('保存处理设置失败', error)
+  }
+}
+
 const processVersionLabel = (value) => {
   return processVersions.find(version => version.value === value)?.label?.split('：')[0] || value || '未知版本'
 }
+
+watch(() => workflowForm.processVersion, (nextVersion, previousVersion) => {
+  if (!previousVersion || nextVersion === previousVersion) return
+  if (!workflowSettingsLoaded || loadingWorkflowSettings) return
+  const label = processVersionLabel(nextVersion)
+  ElMessage({
+    type: 'info',
+    message: `已切换到${label}，不影响当前已经提交的任务。`,
+    showClose: true,
+    duration: 3600,
+    offset: 72
+  })
+})
+
+watch(
+  () => ({
+    processVersion: workflowForm.processVersion,
+    subtitleLanguage: workflowForm.subtitleLanguage,
+    burnProfile: workflowForm.burnProfile,
+    subtitleSize: workflowForm.subtitleSize,
+    translatorLabel: workflowForm.translatorLabel
+  }),
+  saveWorkflowSettings,
+  { deep: true }
+)
 
 const hasCurrentProcessVersion = (item) => {
   return Array.isArray(item.processedVersions) && item.processedVersions.some(version => version.processVersion === workflowForm.processVersion)
@@ -770,8 +940,18 @@ const videoFilter = reactive({
   sort: 'default'
 })
 
+const videoPagination = reactive({
+  page: 1,
+  pageSize: 10
+})
+
 const jobFilter = reactive({
   status: 'all'
+})
+
+const jobPagination = reactive({
+  page: 1,
+  pageSize: 10
 })
 
 const isDownloaded = (item) => Number(item.downloadStatus) === 1
@@ -795,6 +975,7 @@ const hasProcessedVideo = (item) => {
 
 const deleteBlockReason = (item) => {
   if (activeJobForVideo(item)) return '该视频存在运行中任务，请等待任务结束后再删除线索。'
+  if (isPublished(item)) return ''
   if (hasProcessedVideo(item)) return '该视频已存在处理后视频，请先到素材管理删除对应处理后视频，再删除线索。'
   if (hasDownloadedVideo(item)) return '该视频已存在下载视频，请先到素材管理删除对应下载视频，再删除线索。'
   return ''
@@ -820,13 +1001,32 @@ const analysisActionText = (item) => {
   return '生成发布文案'
 }
 
-const buildAnalysisDraft = (result = {}) => {
-  const titleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
+const cleanTopicList = (topics = []) => {
+  const values = Array.isArray(topics) ? topics : String(topics || '').split(/[，,\s]+/)
+  return Array.from(new Set(
+    values
+      .map(tag => String(tag || '').trim().replace(/^#+/, ''))
+      .filter(Boolean)
+  ))
+}
+
+const defaultWorkflowTopics = computed(() => cleanTopicList(workflowForm.tags))
+
+const buildAnalysisDraft = (draft = {}, result = {}) => {
+  const llmTitleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
+  const draftTitleOptions = Array.isArray(draft.title_options) ? draft.title_options.filter(Boolean) : []
+  const selectedTitle = draft.title || draft.selectedTitle || draftTitleOptions[0] || llmTitleOptions[0] || ''
+  const titleOptions = Array.from(new Set([selectedTitle, ...draftTitleOptions, ...llmTitleOptions].filter(Boolean)))
+  const draftTags = cleanTopicList(draft.tags)
+  const resultTags = cleanTopicList(result.tags)
+  const selectedTags = draftTags.length ? draftTags : resultTags
+  const tagOptions = Array.from(new Set([...selectedTags, ...resultTags, ...defaultWorkflowTopics.value]))
   return {
     titleOptions,
-    selectedTitle: titleOptions[0] || '',
-    publishCopy: result.publish_copy || '',
-    tags: Array.isArray(result.tags) ? result.tags.filter(Boolean) : [],
+    selectedTitle,
+    publishCopy: draft.description || draft.publish_copy || result.publish_copy || '',
+    tags: selectedTags,
+    tagOptions,
     summary: result.summary || '',
     chinaViewAngle: result.china_view_angle || ''
   }
@@ -834,14 +1034,27 @@ const buildAnalysisDraft = (result = {}) => {
 
 const normalizeVideoItem = (item) => {
   const result = item.analysisResult || {}
+  const draft = item.publishDraft && Object.keys(item.publishDraft).length > 0 ? item.publishDraft : result
   return {
     ...item,
-    analysisDraft: Number(item.analysisStatus) === 1 ? buildAnalysisDraft(result) : null
+    analysisDraft: Number(item.analysisStatus) === 1 ? buildAnalysisDraft(draft, result) : null
   }
 }
 
 const showInlinePublishDraft = (item) => {
   return Number(item.translateStatus) === 1 && Number(item.publishStatus) !== 1 && Number(item.analysisStatus) === 1 && item.analysisDraft
+}
+
+const isPublishDraftEditing = (item) => editingPublishDraftIds.value.has(item.id)
+
+const startPublishDraftEditing = (item) => {
+  editingPublishDraftIds.value = new Set([...editingPublishDraftIds.value, item.id])
+}
+
+const stopPublishDraftEditing = (item) => {
+  const nextIds = new Set(editingPublishDraftIds.value)
+  nextIds.delete(item.id)
+  editingPublishDraftIds.value = nextIds
 }
 
 const currentStage = (item) => {
@@ -946,6 +1159,20 @@ const filteredItems = computed(() => {
     .map(({ item }) => item)
 })
 
+watch(
+  () => [videoFilter.status, videoFilter.sort],
+  () => {
+    videoPagination.page = 1
+  }
+)
+
+const pagedItems = computed(() => {
+  const totalPages = Math.max(1, Math.ceil(filteredItems.value.length / videoPagination.pageSize))
+  const page = Math.min(videoPagination.page, totalPages)
+  const start = (page - 1) * videoPagination.pageSize
+  return filteredItems.value.slice(start, start + videoPagination.pageSize)
+})
+
 const getJobTimeValue = (job) => {
   return parseJobTime(job.updatedAt) || parseJobTime(job.createdAt)
 }
@@ -967,6 +1194,20 @@ const filteredJobs = computed(() => {
       if (leftRank !== rightRank) return leftRank - rightRank
       return getJobTimeValue(right) - getJobTimeValue(left)
     })
+})
+
+watch(
+  () => jobFilter.status,
+  () => {
+    jobPagination.page = 1
+  }
+)
+
+const pagedJobs = computed(() => {
+  const totalPages = Math.max(1, Math.ceil(filteredJobs.value.length / jobPagination.pageSize))
+  const page = Math.min(jobPagination.page, totalPages)
+  const start = (page - 1) * jobPagination.pageSize
+  return filteredJobs.value.slice(start, start + jobPagination.pageSize)
 })
 
 const summaryStats = computed(() => {
@@ -994,17 +1235,31 @@ const pipelineStages = computed(() => [
   { label: '发布', value: `${items.value.filter(item => item.publishStatus === 1).length} 条完成`, icon: VideoPlay }
 ])
 
+const searchProgressPercent = computed(() => {
+  if (!searchProgress.total) return 0
+  return Math.min(100, Math.round((searchProgress.loaded / searchProgress.total) * 100))
+})
+
 const handleSearch = async () => {
   loading.value = true
+  searchProgress.visible = true
+  searchProgress.loaded = 0
+  searchProgress.total = Number(form.limit || 0)
+  searchProgress.message = '正在向 YouTube 请求候选视频'
   try {
     const res = await youtubeApi.search({
       query: form.query,
       limit: form.limit
     })
     lastResult.value = res.data
+    const loadedCount = Array.isArray(res.data?.items) ? res.data.items.length : Number(res.data?.created || 0) + Number(res.data?.duplicate || 0)
+    searchProgress.loaded = loadedCount
+    searchProgress.total = Number(res.data?.requested || form.limit || loadedCount)
+    searchProgress.message = `查询完成，实际加载 ${searchProgress.loaded} 条`
     await loadVideos(false)
     showImportResultMessage(res.data, '查询完成')
   } catch (error) {
+    searchProgress.message = '查询失败，请检查网络或关键词后重试'
   } finally {
     loading.value = false
   }
@@ -1012,6 +1267,10 @@ const handleSearch = async () => {
 
 const setStatusFilter = (filter) => {
   videoFilter.status = videoFilter.status === filter ? 'all' : filter
+}
+
+const handleVideoSelectionChange = (rows) => {
+  selectedVideos.value = rows
 }
 
 const importVideo = async () => {
@@ -1035,7 +1294,12 @@ const importVideo = async () => {
 const showImportResultMessage = (result = {}, title = '处理完成') => {
   const created = Number(result.created ?? result.total ?? 0)
   const duplicate = Number(result.duplicate || 0)
+  const publishedDuplicate = Number(result.publishedDuplicate || 0)
 
+  if (publishedDuplicate > 0) {
+    ElMessage.warning(`${title}，${publishedDuplicate} 条已发布链接已跳过，实际导入 ${created} 条视频`)
+    return
+  }
   if (duplicate > 0) {
     ElMessage.warning(`${title}，发现 ${duplicate} 条重复链接，实际导入 ${created} 条视频`)
     return
@@ -1300,7 +1564,11 @@ const handleAnalysisAction = async (row) => {
     ElMessage.info('发布文案正在生成中')
     return
   }
-  if (row.hasAnalysis || Number(row.analysisStatus) === 1 || Number(row.analysisStatus) === 3) {
+  if (Number(row.analysisStatus) === 3) {
+    await createAnalysisJob(row)
+    return
+  }
+  if (row.hasAnalysis || Number(row.analysisStatus) === 1) {
     await showAnalysis(row)
     return
   }
@@ -1330,12 +1598,8 @@ const createAnalysisJob = async (row) => {
     })
     jobs.value.unshift(res.data)
     items.value = items.value.map(item => item.id === row.id ? { ...item, analysisStatus: 2, hasAnalysis: false, analysisDraft: null } : item)
-    ElMessage.success('发布文案生成任务已创建')
+    ElMessage.success(Number(row.analysisStatus) === 3 ? '发布文案重新生成任务已创建' : '发布文案生成任务已创建')
     startJobsPolling()
-  } catch (error) {
-    if (Number(row.analysisStatus) === 3) {
-      await showAnalysis(row)
-    }
   } finally {
     analyzingId.value = ''
   }
@@ -1351,6 +1615,11 @@ const showAnalysis = async (row) => {
     const res = await youtubeApi.getVideoAnalysis(row.id)
     analysisStatus.value = Number(res.data.status || 0)
     analysisResult.value = res.data.result || null
+    row.analysisResult = res.data.result || row.analysisResult || {}
+    row.publishDraft = res.data.draft || row.publishDraft || {}
+    row.analysisDraft = Number(res.data.status || 0) === 1
+      ? buildAnalysisDraft(row.publishDraft && Object.keys(row.publishDraft).length > 0 ? row.publishDraft : row.analysisResult, row.analysisResult)
+      : row.analysisDraft
     if (!analysisResult.value || analysisStatus.value === 0) {
       ElMessage.info('该视频还没有生成发布文案')
     } else if (analysisStatus.value === 3) {
@@ -1373,27 +1642,17 @@ const saveInlineAnalysis = async (row) => {
     const nextTitleOptions = row.analysisDraft.selectedTitle
       ? Array.from(new Set([row.analysisDraft.selectedTitle, ...row.analysisDraft.titleOptions].filter(Boolean)))
       : row.analysisDraft.titleOptions.filter(Boolean)
-    const payload = {}
-    if (nextTitleOptions.length) payload.title_options = nextTitleOptions
-    if (row.analysisDraft.publishCopy.trim()) payload.publish_copy = row.analysisDraft.publishCopy.trim()
-    if (row.analysisDraft.tags.length) payload.tags = row.analysisDraft.tags.filter(Boolean)
-    if (row.analysisDraft.summary.trim()) payload.summary = row.analysisDraft.summary.trim()
-    if (row.analysisDraft.chinaViewAngle.trim()) payload.china_view_angle = row.analysisDraft.chinaViewAngle.trim()
-
-    if (Object.keys(payload).length === 0) {
-      ElMessage.info('没有可保存的修改，已保留原详情内容')
-      return
+    const payload = {
+      title: row.analysisDraft.selectedTitle || nextTitleOptions[0] || '',
+      description: row.analysisDraft.publishCopy || '',
+      tags: row.analysisDraft.tags.filter(Boolean)
     }
-
-    const mergedResult = {
-      ...row.analysisResult,
-      ...payload
-    }
-    const response = await youtubeApi.updateVideoAnalysis(row.id, payload)
-    const savedResult = response.data?.result || response.data || mergedResult
-    row.analysisResult = savedResult
-    row.analysisDraft = buildAnalysisDraft(savedResult)
-    ElMessage.success('发布文案已保存')
+    const response = await youtubeApi.updatePublishDraft(row.id, payload)
+    const savedDraft = response.data?.draft || payload
+    row.publishDraft = savedDraft
+    row.analysisDraft = buildAnalysisDraft(savedDraft, row.analysisResult || {})
+    stopPublishDraftEditing(row)
+    ElMessage.success('发布稿已保存')
   } finally {
     savingAnalysisId.value = ''
   }
@@ -1421,11 +1680,9 @@ const processVideo = async (row) => {
       subtitleSize: workflowForm.subtitleSize,
       translatorLabel: workflowForm.translatorLabel
     }
-    const res = workflowForm.processVersion === 'editing_v1'
-      ? await youtubeApi.createAnalysisJob(payload)
-      : await youtubeApi.createTranslateJob(payload)
+    const res = await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)
-    ElMessage.success(workflowForm.processVersion === 'editing_v1' ? '剪辑方案任务已创建' : '处理任务已创建')
+    ElMessage.success(workflowForm.processVersion === 'editing_v1' ? '剪辑处理任务已创建' : '处理任务已创建')
     startJobsPolling()
     setTimeout(() => {
       loadJobs({ silent: true })
@@ -1521,7 +1778,12 @@ const copyText = async (text) => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  loadingWorkflowSettings = true
+  loadWorkflowSettings()
+  await nextTick()
+  loadingWorkflowSettings = false
+  workflowSettingsLoaded = true
   loadVideos()
   loadJobs()
   startJobsPolling()
@@ -1833,6 +2095,29 @@ $ink-strong: #172033;
   grid-template-columns: minmax(220px, 1fr) 110px auto;
 }
 
+.search-progress-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dce6f2;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.search-progress-text {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: $text-secondary;
+  font-size: 12px;
+
+  strong {
+    color: $accent-blue;
+    font-size: 13px;
+  }
+}
+
 .limit-field {
   :deep(.el-input-number) {
     width: 100%;
@@ -1924,6 +2209,12 @@ $ink-strong: #172033;
   flex-wrap: wrap;
 }
 
+.table-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 4px 2px;
+}
+
 .status-select {
   width: 132px;
 }
@@ -1937,7 +2228,8 @@ $ink-strong: #172033;
 }
 
 .video-cell {
-  display: flex;
+  display: grid;
+  grid-template-columns: 116px minmax(300px, 0.72fr) minmax(520px, 1.28fr);
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -2029,6 +2321,31 @@ $ink-strong: #172033;
 
   &:hover {
     color: $accent-blue;
+  }
+}
+
+.publish-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+
+  span {
+    flex: 0 0 auto;
+    color: #ef4444;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  strong {
+    min-width: 0;
+    color: #b91c1c;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.45;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -2314,36 +2631,44 @@ $ink-strong: #172033;
   }
 }
 
-.burn-params {
-  display: grid;
-  gap: 8px;
+.param-info-button {
+  color: $text-secondary;
+
+  &:hover {
+    color: $accent-blue;
+  }
 }
 
-.burn-param {
+.version-note-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:global(.profile-popover) {
   display: grid;
-  grid-template-columns: 92px 88px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  padding: 10px;
-  border: 1px solid #edf2f8;
-  border-radius: 8px;
-  background: #fff;
-
-  .param-name {
-    color: $text-secondary;
-    font-size: 12px;
-  }
-
-  strong {
-    color: $ink-strong;
-    font-size: 13px;
-  }
+  gap: 10px;
+  color: #4b5a70;
+  font-size: 12px;
+  line-height: 1.6;
 
   p {
     margin: 0;
-    color: $text-secondary;
-    font-size: 12px;
-    line-height: 1.5;
+  }
+
+  dl {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+  }
+
+  dt {
+    color: #172033;
+    font-weight: 700;
+  }
+
+  dd {
+    margin: 2px 0 0;
   }
 }
 
@@ -2422,11 +2747,38 @@ $ink-strong: #172033;
 .publish-draft-card {
   display: grid;
   gap: 8px;
-  max-width: 760px;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
   padding: 10px;
   border: 1px solid #dce6f2;
   border-radius: 8px;
   background: #f8fbff;
+}
+
+.publish-draft-card.is-editing {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  padding: 12px;
+  border-color: #bdd3f0;
+  background: linear-gradient(180deg, #fafdff 0%, #f5f9ff 100%);
+  box-shadow: 0 10px 28px rgba(37, 99, 235, 0.08);
+}
+
+.draft-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.68fr) minmax(360px, 1.32fr);
+  gap: 12px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.draft-editor-primary {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
 }
 
 .draft-row {
@@ -2443,6 +2795,77 @@ $ink-strong: #172033;
   }
 }
 
+.draft-description-row {
+  grid-template-columns: 42px minmax(0, 1fr);
+  min-width: 0;
+
+  :deep(.el-textarea__inner) {
+    min-height: 132px !important;
+    resize: vertical;
+    line-height: 1.6;
+  }
+}
+
+.publish-draft-card.is-editing :deep(.el-select),
+.publish-draft-card.is-editing :deep(.el-input),
+.publish-draft-card.is-editing :deep(.el-textarea) {
+  width: 100%;
+}
+
+.publish-draft-card.is-editing :deep(.el-select__wrapper) {
+  min-height: 36px;
+}
+
+.draft-readonly {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+
+  strong,
+  p {
+    min-width: 0;
+    margin: 0;
+    color: $ink-strong;
+    font-size: 13px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+
+  p {
+    color: #4b5a70;
+  }
+}
+
+.draft-content-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+
+  > div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+}
+
+.draft-label {
+  color: $accent-blue;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.55;
+  white-space: nowrap;
+}
+
+.draft-topic-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
 .draft-summary {
   color: #4b5a70;
   font-size: 12px;
@@ -2453,6 +2876,7 @@ $ink-strong: #172033;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
 }
 
 .highlight-list {
@@ -2558,6 +2982,11 @@ $ink-strong: #172033;
     justify-content: flex-start;
     width: 100%;
   }
+
+  .table-pagination {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
 }
 
 @media (max-width: 640px) {
@@ -2591,16 +3020,13 @@ $ink-strong: #172033;
     width: 100%;
   }
 
-  .burn-param {
-    grid-template-columns: 1fr;
-  }
-
   .highlight-item {
     grid-template-columns: 1fr;
   }
 
   .video-cell {
     align-items: flex-start;
+    grid-template-columns: 96px minmax(0, 1fr);
   }
 
   .thumbnail {
@@ -2608,8 +3034,21 @@ $ink-strong: #172033;
     height: 54px;
   }
 
+  .publish-draft-card {
+    grid-column: 1 / -1;
+  }
+
   .video-url {
     max-width: 220px;
+  }
+
+  .publish-draft-card.is-editing {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .draft-editor-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
