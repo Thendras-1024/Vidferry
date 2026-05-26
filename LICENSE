@@ -1,6 +1,5 @@
-MIT License
-
-Copyright (c) 2026 Yao yujie
+MIT-CR License
+Copyright (c) 2026 Thendras
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -11,6 +10,10 @@ furnished to do so, subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
+**Commercial use is strictly prohibited without explicit written permission from the copyright holder.**
+Commercial use includes but is not limited to: selling the software, using it in a paid service,
+integrating it into a commercial product, or using it for any commercial purpose.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
