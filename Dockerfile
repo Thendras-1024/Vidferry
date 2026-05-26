@@ -60,4 +60,4 @@ RUN mkdir -p /app/cookiesFile
 
 EXPOSE 5409
 
-CMD ["python", "sau_backend.py"]
+CMD ["python", "run.py"]

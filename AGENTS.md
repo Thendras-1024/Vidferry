@@ -12,6 +12,7 @@ Prioritize the current Web workflow and the main `sau` CLI path. Do not expand l
 - Put new backend code under `sau_backend/`.
 - Keep routes thin; move state, file, task, account, and publishing logic into services, repositories, workflow, or security modules.
 - Any change touching videos, materials, or workflow jobs must keep their states synchronized.
+- Ask the user for confirmation before any action that restarts or stops the backend service.
 
 ## State Rules
 
@@ -34,11 +35,12 @@ Prioritize the current Web workflow and the main `sau` CLI path. Do not expand l
 - Do not add another UI framework.
 - Keep the current light, compact operations-console style.
 - Frontend actions should call backend APIs and reflect returned state.
+- Do not run `npm run build` or `npm run dev` automatically. After frontend changes, tell the user and let the user restart/run the frontend.
 
 ## Validation
 
 - Backend: `python -m py_compile sau_backend.py`
-- Frontend: `cd sau_frontend && npm run build`
+- Frontend: ask the user to run `cd sau_frontend && npm run dev`; do not run it automatically.
 - For state changes, test lead deletion, material deletion, active-job locks, interrupted jobs, and missing-file recovery.
 
 ## Git Hygiene

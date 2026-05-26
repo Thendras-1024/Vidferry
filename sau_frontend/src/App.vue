@@ -45,6 +45,17 @@
               <span>关于</span>
             </el-menu-item>
           </el-menu>
+          <div class="sidebar-settings">
+            <el-button
+              class="sidebar-settings-button"
+              type="primary"
+              :circle="isCollapse"
+              @click="openProcessSettings"
+            >
+              <el-icon><Setting /></el-icon>
+              <span v-show="!isCollapse">设置</span>
+            </el-button>
+          </div>
         </div>
       </el-aside>
       <el-container>
@@ -141,16 +152,17 @@
 
 <script setup>
 import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   HomeFilled, User, DataAnalysis,
-  Fold, Picture, Upload, Search, Bell
+  Fold, Picture, Upload, Search, Bell, Setting
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 
 const route = useRoute()
+const router = useRouter()
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
@@ -167,6 +179,16 @@ const isCollapse = ref(false)
 // 切换侧边栏折叠状态
 const toggleSidebar = () => {
   isCollapse.value = !isCollapse.value
+}
+
+const openProcessSettings = () => {
+  if (typeof window.__VIDFERRY_OPEN_PROCESS_SETTINGS__ === 'function') {
+    window.__VIDFERRY_OPEN_PROCESS_SETTINGS__()
+    return
+  }
+  if (route.path !== '/youtube-research') {
+    router.push({ path: '/youtube-research', query: { openSettings: '1' } })
+  }
 }
 
 const refreshGlobalAccountMessages = async () => {
@@ -262,6 +284,34 @@ onBeforeUnmount(() => {
         .el-icon {
           margin-right: 10px;
           font-size: 18px;
+        }
+      }
+    }
+
+    .sidebar-settings {
+      padding: 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      background: #001529;
+    }
+
+    .sidebar-settings-button {
+      width: 100%;
+      justify-content: center;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: linear-gradient(135deg, #2563eb, #0f9f8f);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+
+      .el-icon {
+        margin-right: 6px;
+      }
+
+      &.is-circle {
+        width: 40px;
+        height: 40px;
+        margin: 0 auto;
+
+        .el-icon {
+          margin-right: 0;
         }
       }
     }

@@ -65,6 +65,11 @@
             <el-tag type="warning" effect="light">{{ row.processType || '字幕处理/信息烧录' }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="处理版本" width="130">
+          <template #default="{ row }">
+            <el-tag effect="plain">{{ processVersionLabel(row.processVersion || row.metadata?.processVersion) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="字幕语言" width="120">
           <template #default="{ row }">
             <el-tag type="success" effect="plain">{{ materialSubtitleLanguageLabel(row) || '-' }}</el-tag>
@@ -267,7 +272,7 @@
 <script setup>
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { InfoFilled, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
-import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover } from 'element-plus'
+import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'element-plus'
 import { materialApi } from '@/api/material'
 import { useAppStore } from '@/stores/app'
 
@@ -359,6 +364,54 @@ const materialDuration = (material) => {
   return material?.duration || material?.metadata?.duration || '-'
 }
 
+const workflowStatusText = (status) => {
+  const map = {
+    queued: '排队中',
+    running: '处理中',
+    success: '处理成功',
+    failed: '处理失败',
+    abnormal: '任务异常'
+  }
+  return map[status] || status || ''
+}
+
+const materialWorkflowBadge = (material) => {
+  const status = material?.workflowStatus
+  if (!status) return null
+
+  const sameVersion = Boolean(material?.workflowSameProcessVersion)
+  const versionLabel = processVersionLabel(material?.workflowProcessVersion || material?.processVersion)
+  const message = material?.workflowMessage || ''
+
+  if (status === 'queued' || status === 'running') {
+    return {
+      type: sameVersion ? 'primary' : 'info',
+      effect: sameVersion ? 'dark' : 'light',
+      text: sameVersion ? '重新处理中' : `${versionLabel}处理中`,
+      detail: message || workflowStatusText(status)
+    }
+  }
+
+  if (status === 'failed' || status === 'abnormal') {
+    return {
+      type: 'danger',
+      effect: 'light',
+      text: sameVersion ? '重新处理失败' : `${versionLabel}失败`,
+      detail: message || workflowStatusText(status)
+    }
+  }
+
+  return null
+}
+
+const processVersionLabel = (value) => {
+  const labelMap = {
+    translation_v1: '处理版本一',
+    editing_v1: '处理版本二'
+  }
+  return labelMap[value] || value || '版本未知'
+}
+
 const searchableText = (material) => {
   return [
     materialTitle(material),
@@ -367,6 +420,9 @@ const searchableText = (material) => {
     material.displayChannel,
     material.displaySubscribers,
     material.displayPublishedAt,
+    material.processVersion,
+    material.metadata?.processVersion,
+    materialSubtitleLanguageLabel(material),
     material.filename,
     material.original_filename,
     material.uuid,
@@ -402,12 +458,14 @@ const MaterialIdentity = defineComponent({
   },
   setup(props) {
     const thumbFailed = ref(false)
+    const workflowBadge = computed(() => materialWorkflowBadge(props.material))
     const infoRows = computed(() => [
       ['视频名称', materialTitle(props.material)],
       ['UUID', props.material.uuid],
       ['存储路径', props.material.file_path],
       ['来源类型', props.material.source_type],
-      ['状态', props.material.status]
+      ['状态', props.material.status],
+      ['任务状态', workflowBadge.value ? `${workflowBadge.value.text} ${workflowBadge.value.detail}` : '']
     ].filter(([, value]) => value !== undefined && value !== null && value !== ''))
     const previewSource = computed(() => {
       if (thumbFailed.value) return ''
@@ -456,7 +514,16 @@ const MaterialIdentity = defineComponent({
                 h('dd', String(value))
               ]))
             ])
-          })
+          }),
+          workflowBadge.value
+            ? h(ElTag, {
+              class: 'workflow-badge',
+              type: workflowBadge.value.type,
+              effect: workflowBadge.value.effect,
+              size: 'small',
+              title: workflowBadge.value.detail
+            }, { default: () => workflowBadge.value.text })
+            : null
         ]),
         h('div', { class: 'identity-meta' }, [
           h('span', materialChannel(props.material) || '未知博主'),
@@ -894,6 +961,13 @@ $ink-strong: #172033;
   &:hover {
     color: $accent-blue;
   }
+}
+
+:deep(.workflow-badge) {
+  flex: 0 0 auto;
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 :deep(.identity-meta) {
