@@ -33,6 +33,7 @@ const writeStorage = (key, value) => {
 
 const getAccountMessageKey = (account) => `account-abnormal:${account.id}`
 const getWorkflowFailureMessageKey = (job) => `workflow-failed:${job.id}`
+const getWorkflowAbnormalMessageKey = (job) => `workflow-abnormal:${job.id}`
 
 const buildAccountMessage = (account, previousMessage) => {
   const now = Date.now()
@@ -66,6 +67,30 @@ const buildWorkflowFailureMessage = (job) => {
     content: `${title} 执行失败：${message}`,
     jobId: job.id,
     videoId: job.videoId,
+    createdAt: now,
+    updatedAt: now,
+    acknowledged: false,
+    acknowledgedAt: null
+  }
+}
+
+const buildWorkflowAbnormalMessage = (job) => {
+  const now = Date.now()
+  const title = job.title || job.videoTitle || job.videoId || '未命名任务'
+  const errorCode = job.errorCode || 'VF-WF-ABNORMAL'
+  const errorType = job.errorType || 'WORKFLOW_ABNORMAL'
+  const reason = job.errorReason || job.message || '任务被系统标记为异常，请检查后端服务或文件状态。'
+
+  return {
+    id: getWorkflowAbnormalMessageKey(job),
+    key: getWorkflowAbnormalMessageKey(job),
+    type: 'workflow-abnormal',
+    title: '工作流任务异常',
+    content: `${title} 异常中断：${errorCode} / ${errorType}，${reason}`,
+    jobId: job.id,
+    videoId: job.videoId,
+    errorCode,
+    errorType,
     createdAt: now,
     updatedAt: now,
     acknowledged: false,
@@ -157,6 +182,26 @@ export const useNotificationStore = defineStore('notification', () => {
     })
   }
 
+  const addWorkflowAbnormalMessage = (job) => {
+    if (!job?.id) return
+
+    const key = getWorkflowAbnormalMessageKey(job)
+    if (handledKeys.value.includes(key)) return
+    if (messages.value.some(message => message.key === key)) return
+
+    const message = buildWorkflowAbnormalMessage(job)
+    messages.value.unshift(message)
+    persist()
+
+    ElNotification({
+      title: message.title,
+      message: message.content,
+      type: 'warning',
+      position: 'top-right',
+      duration: 7000
+    })
+  }
+
   const acknowledgeMessage = (id) => {
     const message = messages.value.find(item => item.id === id)
     if (!message) return
@@ -185,6 +230,7 @@ export const useNotificationStore = defineStore('notification', () => {
     hasUnread,
     syncAccountAbnormalMessages,
     addWorkflowFailureMessage,
+    addWorkflowAbnormalMessage,
     acknowledgeMessage,
     resolveMessage
   }

@@ -44,6 +44,15 @@ request.interceptors.response.use(
     // 处理HTTP错误状态码
     if (error.response) {
       const { status } = error.response
+      const serverMessage = error.response.data?.msg || error.response.data?.message
+      if (serverMessage) {
+        if (status === 409) {
+          ElMessage.warning(serverMessage)
+        } else {
+          ElMessage.error(serverMessage)
+        }
+        return Promise.reject(new Error(serverMessage))
+      }
       switch (status) {
         case 401:
           ElMessage.error('未授权，请重新登录')

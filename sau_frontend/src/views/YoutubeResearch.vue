@@ -162,9 +162,9 @@
               <el-option label="全部状态" value="all" />
               <el-option label="未下载" value="notDownloaded" />
               <el-option label="已下载" value="downloaded" />
-              <el-option label="未翻译" value="notTranslated" />
-              <el-option label="已翻译" value="translated" />
-              <el-option label="已跳过翻译" value="translationSkipped" />
+              <el-option label="未处理" value="notTranslated" />
+              <el-option label="已处理" value="translated" />
+              <el-option label="已跳过处理" value="translationSkipped" />
               <el-option label="未发布" value="notPublished" />
               <el-option label="已发布" value="published" />
               <el-option label="运行中" value="running" />
@@ -173,7 +173,7 @@
               <el-option label="默认顺序" value="default" />
               <el-option label="待处理优先" value="pendingFirst" />
               <el-option label="已下载优先" value="downloadedFirst" />
-              <el-option label="已翻译优先" value="translatedFirst" />
+              <el-option label="已处理优先" value="translatedFirst" />
               <el-option label="已发布优先" value="publishedFirst" />
             </el-select>
             <span class="panel-count">{{ filteredItems.length }} / {{ items.length }} 条</span>
@@ -228,7 +228,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="320">
+        <el-table-column label="操作" width="340">
           <template #default="{ row }">
             <div class="action-row">
               <el-button
@@ -247,10 +247,10 @@
                 type="warning"
                 :disabled="row.downloadStatus !== 1 || Number(row.translateStatus) === 1"
                 :loading="translatingId === row.id"
-                @click="translateVideo(row)"
+                @click="processVideo(row)"
               >
                 <el-icon><VideoCamera /></el-icon>
-                <span>翻译</span>
+                <span>处理</span>
               </el-button>
               <el-button
                 size="small"
@@ -271,6 +271,11 @@
                     <el-dropdown-item @click="copyUrl(row.url)">
                       <el-icon><DocumentCopy /></el-icon>
                       <span>复制链接</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item @click="handleAnalysisAction(row)">
+                      <el-icon><VideoPlay /></el-icon>
+                      <span v-if="analyzingId === row.id">生成中</span>
+                      <span v-else>{{ row.hasAnalysis ? '查看剪辑方案' : '生成剪辑方案' }}</span>
                     </el-dropdown-item>
                     <el-dropdown-item
                       v-if="Number(row.translateStatus) === 1 || Number(row.translateStatus) === 2"
@@ -305,6 +310,7 @@
               <el-option label="执行中" value="running" />
               <el-option label="成功" value="success" />
               <el-option label="失败" value="failed" />
+              <el-option label="异常" value="abnormal" />
             </el-select>
             <span class="panel-count">{{ filteredJobs.length }} / {{ jobs.length }} 个</span>
             <el-button text type="primary" :loading="jobsLoading" @click="loadJobs()">刷新</el-button>
@@ -342,6 +348,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="message" label="消息" min-width="240" show-overflow-tooltip />
+        <el-table-column label="异常编号" width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.errorCode" class="error-code">{{ row.errorCode }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="updatedAt" label="更新时间" width="165" />
       </el-table>
     </el-card>
@@ -361,7 +373,7 @@
         <div class="settings-section">
           <div class="settings-section-header">
             <span class="panel-kicker">基础设置</span>
-            <h3>字幕与处理方式</h3>
+            <h3>处理方式</h3>
           </div>
         <div class="settings-field">
           <span class="settings-label">字幕语言</span>
@@ -391,7 +403,7 @@
         </div>
         <div class="version-note">
           <strong>当前字幕语言：{{ currentSubtitleLanguage.label }}</strong>
-          <span>系统会把识别到的字幕翻译成该语言后再烧录到视频中。</span>
+          <span>处理版本一会把识别到的字幕翻译成该语言后再烧录到视频中；处理版本二会优先用于剪辑方案生成。</span>
         </div>
         </div>
 
@@ -428,6 +440,78 @@
         <el-button type="primary" @click="settingsDialogVisible = false">确定</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="analysisDialogVisible"
+      title="处理版本二：剪辑方案"
+      width="720px"
+      class="analysis-dialog"
+    >
+      <div v-loading="analysisLoading" class="analysis-panel">
+        <template v-if="analysisResult">
+          <div class="analysis-section">
+            <span class="panel-kicker">内容判断</span>
+            <h3>视频总结</h3>
+            <p>{{ analysisResult.summary || '暂无总结' }}</p>
+            <p v-if="analysisResult.china_view_angle" class="analysis-muted">{{ analysisResult.china_view_angle }}</p>
+          </div>
+
+          <div class="analysis-section">
+            <div class="analysis-title-row">
+              <div>
+                <span class="panel-kicker">发布辅助</span>
+                <h3>标题与文案</h3>
+              </div>
+              <el-button size="small" @click="copyText(analysisResult.publish_copy || '')">复制文案</el-button>
+            </div>
+            <div class="title-options">
+              <el-tag
+                v-for="title in analysisResult.title_options || []"
+                :key="title"
+                effect="plain"
+              >
+                {{ title }}
+              </el-tag>
+            </div>
+            <p class="publish-copy">{{ analysisResult.publish_copy || '暂无文案' }}</p>
+            <div class="tag-list">
+              <el-tag v-for="tag in analysisResult.tags || []" :key="tag" type="success" effect="light">#{{ tag }}</el-tag>
+              <el-button size="small" text type="primary" @click="copyText((analysisResult.tags || []).map(tag => `#${tag}`).join(' '))">复制标签</el-button>
+            </div>
+          </div>
+
+          <div class="analysis-section">
+            <span class="panel-kicker">高光片段</span>
+            <h3>震惊点与中外对比</h3>
+            <div class="highlight-list">
+              <div
+                v-for="segment in analysisResult.highlight_segments || []"
+                :key="`${segment.start}-${segment.end}-${segment.suggested_caption}`"
+                class="highlight-item"
+              >
+                <div class="highlight-time">{{ formatSegmentRange(segment) }}</div>
+                <div class="highlight-body">
+                  <strong>{{ segment.suggested_caption || '建议字幕条待补充' }}</strong>
+                  <p>{{ segment.reason || '暂无理由' }}</p>
+                  <span>{{ segment.type || 'highlight' }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="(analysisResult.risk_notes || []).length" class="analysis-section">
+            <span class="panel-kicker">人工确认</span>
+            <div class="risk-list">
+              <el-tag v-for="note in analysisResult.risk_notes" :key="note" type="warning" effect="light">{{ note }}</el-tag>
+            </div>
+          </div>
+        </template>
+        <el-empty v-else description="暂无剪辑方案" />
+      </div>
+      <template #footer>
+        <el-button @click="analysisDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -444,9 +528,13 @@ const importing = ref(false)
 const downloadingId = ref('')
 const translatingId = ref('')
 const creatingJobId = ref('')
+const analyzingId = ref('')
 const deletingId = ref('')
 const resettingId = ref('')
 const settingsDialogVisible = ref(false)
+const analysisDialogVisible = ref(false)
+const analysisLoading = ref(false)
+const analysisResult = ref(null)
 const items = ref([])
 const jobs = ref([])
 const lastResult = ref(null)
@@ -491,34 +579,43 @@ const subtitleLanguages = [
 const processVersions = [
   {
     value: 'translation_v1',
-    label: '处理版本一：翻译',
-    description: '保留当前处理方式：生成中文字幕，并添加左上角原作者信息。'
+    label: '处理版本一：基础处理',
+    description: '保留当前链路：生成目标语言字幕，并添加左上角原作者信息。'
+  },
+  {
+    value: 'editing_v1',
+    label: '处理版本二：剪辑',
+    description: '先生成剪辑方案，重点提取外国人震惊点、中外对比和适合做钩子的高光片段。'
   }
 ]
 
 const burnProfiles = [
   {
     value: 'stable',
-    label: '稳定优先（推荐）',
-    description: '适合长视频和来源帧率不稳定的视频，优先减少烧录后画面局部卡顿。',
+    label: '兼容优先（推荐）',
+    description: '适合要发布到国内平台或普通播放器预览的视频，优先降低解码压力和播放卡顿。',
     params: [
-      { name: 'preset', value: 'medium', description: 'H.264 编码速度和压缩质量的平衡档，比 veryfast 慢，但画面稳定性和压缩质量更好。' },
-      { name: 'crf', value: '20', description: '画质系数，数值越低画质越高、文件越大。20 是偏清晰的推荐值。' },
-      { name: 'fps_mode', value: 'cfr', description: '输出固定帧率，减少长视频可变帧率导致的局部卡顿。' },
+      { name: 'preset', value: 'fast', description: 'H.264 编码使用更轻的兼容档，避免 medium/slow 输出导致普通设备解码压力过高。' },
+      { name: 'crf', value: '23', description: '通用画质档，文件体积和码率更可控，适合平台二次处理。' },
+      { name: 'fps', value: '最高 30', description: '输出固定帧率并限制到 30fps，降低竖屏和高帧率素材的播放压力。' },
+      { name: '分辨率', value: '最高 1080p', description: '横屏最高 1920x1080，竖屏最高 1080x1920，超过时自动等比缩放。' },
+      { name: '码率峰值', value: '5000k', description: '限制瞬时峰值码率，减少播放器因高码率突增造成的卡顿。' },
       { name: 'genpts', value: '开启', description: '重建视频时间戳，修复部分源视频时间轴不连续的问题。' },
-      { name: 'audio async', value: '开启', description: '音频按时间轴重采样，降低音画时间轴漂移风险。' }
+      { name: 'audio', value: 'AAC', description: '统一转为 AAC，避免 Opus 音频在部分播放器中无法播放。' }
     ]
   },
   {
     value: 'fast',
     label: '速度优先',
-    description: '适合短视频或确认源视频稳定的素材，烧录更快，但画质和长视频稳定性略弱。',
+    description: '适合短视频或临时预览，烧录更快，画质和码率控制比兼容优先略弱。',
     params: [
       { name: 'preset', value: 'veryfast', description: '更快的 H.264 编码档位，处理时间更短。' },
-      { name: 'crf', value: '22', description: '画质略低于稳定优先，文件更小，速度更快。' },
-      { name: 'fps_mode', value: 'cfr', description: '仍保留固定帧率，避免明显时间戳卡顿。' },
+      { name: 'crf', value: '24', description: '画质略低于兼容优先，文件更小，速度更快。' },
+      { name: 'fps', value: '最高 30', description: '仍保留固定帧率和 30fps 限制，避免明显时间戳卡顿。' },
+      { name: '分辨率', value: '最高 1080p', description: '同样限制输出尺寸，保证基础播放兼容性。' },
+      { name: '码率峰值', value: '4500k', description: '使用更低峰值码率，减少临时预览文件体积。' },
       { name: 'genpts', value: '开启', description: '仍保留时间戳重建，保证基础稳定性。' },
-      { name: 'audio async', value: '开启', description: '仍保留音频时间轴修正。' }
+      { name: 'audio', value: 'AAC', description: '仍统一输出 AAC，保证平台和本地播放器兼容性。' }
     ]
   }
 ]
@@ -549,6 +646,7 @@ const isTranslated = (item) => Number(item.translateStatus) === 1
 const isTranslationSkipped = (item) => Number(item.translateStatus) === 2
 const isPublished = (item) => item.publishStatus === 1
 const isRunningJob = (job) => job.status === 'queued' || job.status === 'running'
+const isAbnormalJob = (job) => job.status === 'abnormal'
 
 const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
 const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
@@ -559,7 +657,8 @@ const currentStage = (item) => {
     const stepMap = {
       queued: '排队中',
       download: '下载中',
-      subtitle: '翻译中',
+      subtitle: '处理中',
+      analysis: '分析中',
       publish: '发布中',
       done: '收尾中'
     }
@@ -567,9 +666,10 @@ const currentStage = (item) => {
   }
 
   const latestJob = latestJobForVideo(item)
+  if (latestJob?.status === 'abnormal') return { label: '任务异常', className: 'is-failed' }
   if (latestJob?.status === 'failed') return { label: '任务失败', className: 'is-failed' }
   if (!isDownloaded(item)) return { label: '待下载', className: 'is-pending' }
-  if (!isTranslated(item) && !isTranslationSkipped(item)) return { label: '待翻译', className: 'is-warning' }
+  if (!isTranslated(item) && !isTranslationSkipped(item)) return { label: '待处理', className: 'is-warning' }
   if (isTranslationSkipped(item)) return { label: '已跳过', className: 'is-warning' }
   if (!isPublished(item)) return { label: '待发布', className: 'is-ready' }
   return { label: '已完成', className: 'is-complete' }
@@ -578,16 +678,17 @@ const currentStage = (item) => {
 const rowWorkflowSteps = (item) => {
   const runningJob = activeJobForVideo(item)
   const runningStep = runningJob?.step || ''
-  const failed = latestJobForVideo(item)?.status === 'failed'
+  const latestJob = latestJobForVideo(item)
+  const failed = latestJob?.status === 'failed' || latestJob?.status === 'abnormal'
   const steps = [
     { key: 'lead', label: '线索', done: true },
     { key: 'download', label: '下载', done: isDownloaded(item), running: runningStep === 'download' },
     {
       key: 'translate',
-      label: isTranslationSkipped(item) ? '跳过' : '翻译',
+      label: isTranslationSkipped(item) ? '跳过' : '处理',
       done: isTranslated(item) || isTranslationSkipped(item),
       skipped: isTranslationSkipped(item),
-      running: runningStep === 'subtitle'
+      running: runningStep === 'subtitle' || runningStep === 'analysis'
     },
     { key: 'publish', label: '发布', done: isPublished(item), running: runningStep === 'publish' }
   ]
@@ -660,6 +761,7 @@ const matchesJobStatus = (job) => {
   if (jobFilter.status === 'running') return isRunningJob(job)
   if (jobFilter.status === 'success') return job.status === 'success'
   if (jobFilter.status === 'failed') return job.status === 'failed'
+  if (jobFilter.status === 'abnormal') return isAbnormalJob(job)
   return true
 }
 
@@ -685,7 +787,7 @@ const summaryStats = computed(() => {
   return [
     { label: '全部线索', value: total, meta: '当前入库', tone: 'tone-primary', filter: 'all' },
     { label: '待下载', value: pendingDownload, meta: pendingDownload ? '需要获取素材' : '无待下载', tone: 'tone-info', filter: 'notDownloaded' },
-    { label: '待翻译', value: pendingTranslate, meta: pendingTranslate ? '需要生成字幕' : '无待翻译', tone: 'tone-warning', filter: 'notTranslated' },
+    { label: '待处理', value: pendingTranslate, meta: pendingTranslate ? '需要处理素材' : '无待处理', tone: 'tone-warning', filter: 'notTranslated' },
     { label: '待发布', value: readyPublish, meta: readyPublish ? '可进入发布' : '无待发布', tone: 'tone-ready', filter: 'notPublished' },
     { label: '运行中', value: running, meta: running ? '执行中' : '暂无队列', tone: 'tone-running', filter: 'running' },
     { label: '已完成', value: completed, meta: completed ? '已发布' : '等待完成', tone: 'tone-success', filter: 'published' }
@@ -695,7 +797,7 @@ const summaryStats = computed(() => {
 const pipelineStages = computed(() => [
   { label: '导入/查询', value: `${items.value.length} 条线索`, icon: Search },
   { label: '下载', value: `${items.value.filter(item => item.downloadStatus === 1).length} 个素材`, icon: Download },
-  { label: '翻译', value: `${items.value.filter(item => Number(item.translateStatus) === 1).length} 条字幕`, icon: VideoCamera },
+  { label: '处理', value: `${items.value.filter(item => Number(item.translateStatus) === 1).length} 条完成`, icon: VideoCamera },
   { label: '发布', value: `${items.value.filter(item => item.publishStatus === 1).length} 条完成`, icon: VideoPlay }
 ])
 
@@ -774,6 +876,9 @@ const loadJobs = async ({ silent = false } = {}) => {
         if (job.status === 'failed' && previousStatuses.get(job.id) !== 'failed') {
           notificationStore.addWorkflowFailureMessage(job)
         }
+        if (job.status === 'abnormal' && previousStatuses.get(job.id) !== 'abnormal') {
+          notificationStore.addWorkflowAbnormalMessage(job)
+        }
       })
     }
 
@@ -792,6 +897,14 @@ const startJobsPolling = () => {
       loadVideos(false)
     }
   }, 1500)
+}
+
+const hasActiveWorkflowJobs = () => jobs.value.some(job => job.status === 'queued' || job.status === 'running')
+
+const handleBeforeUnload = (event) => {
+  if (!hasActiveWorkflowJobs()) return
+  event.preventDefault()
+  event.returnValue = '当前有任务正在执行，关闭页面不会停止后端任务，但如果后端服务被关闭，任务会被标记异常。'
 }
 
 const startClock = () => {
@@ -900,7 +1013,7 @@ const downloadVideo = async (row) => {
 const deleteVideo = async (row) => {
   try {
     await ElMessageBox.confirm(
-      `确定删除视频线索「${row.title || row.url}」吗？已下载的素材文件不会被删除。`,
+      `确定删除视频线索「${row.title || row.url}」吗？如果该线索还有处理后视频，需要先删除处理后视频；已下载的原视频素材和本地文件会同步删除。`,
       '删除视频线索',
       {
         confirmButtonText: '删除',
@@ -917,6 +1030,8 @@ const deleteVideo = async (row) => {
     await youtubeApi.deleteVideo(row.id)
     items.value = items.value.filter(item => item.id !== row.id)
     ElMessage.success('视频线索已删除')
+  } catch (error) {
+    console.warn('删除视频线索失败:', error)
   } finally {
     deletingId.value = ''
   }
@@ -930,7 +1045,7 @@ const resetProcessing = async (row) => {
 
   try {
     await ElMessageBox.confirm(
-      `确定删除「${row.title || row.url}」当前处理后视频，并回退到可重新翻译状态吗？下载原视频会保留。`,
+      `确定删除「${row.title || row.url}」当前处理后视频，并回退到可重新处理状态吗？下载原视频会保留。`,
       '重新处理视频',
       {
         confirmButtonText: '删除成品并回退',
@@ -955,18 +1070,68 @@ const resetProcessing = async (row) => {
   }
 }
 
-const translateVideo = async (row) => {
+const handleAnalysisAction = async (row) => {
+  if (row.hasAnalysis) {
+    await showAnalysis(row)
+    return
+  }
+  await createAnalysisJob(row)
+}
+
+const createAnalysisJob = async (row) => {
   if (row.downloadStatus !== 1) {
-    ElMessage.warning('请先下载视频，再进行翻译')
+    ElMessage.warning('请先下载视频，再生成剪辑方案')
+    return
+  }
+  analyzingId.value = row.id
+  try {
+    const res = await youtubeApi.createAnalysisJob({
+      videoId: row.id,
+      url: row.url,
+      channel: row.channel,
+      subscribers: row.subscribers,
+      publishedAt: row.publishedAt,
+      title: row.title || 'YouTube 视频',
+      tags: workflowForm.tags,
+      processVersion: 'editing_v1',
+      subtitleLanguage: workflowForm.subtitleLanguage,
+      burnProfile: workflowForm.burnProfile
+    })
+    jobs.value.unshift(res.data)
+    ElMessage.success('剪辑方案任务已创建')
+    startJobsPolling()
+  } finally {
+    analyzingId.value = ''
+  }
+}
+
+const showAnalysis = async (row) => {
+  analysisDialogVisible.value = true
+  analysisLoading.value = true
+  analysisResult.value = null
+  try {
+    const res = await youtubeApi.getVideoAnalysis(row.id)
+    analysisResult.value = res.data.result || null
+    if (!analysisResult.value || Number(res.data.status || 0) !== 1) {
+      ElMessage.info('该视频还没有生成剪辑方案')
+    }
+  } finally {
+    analysisLoading.value = false
+  }
+}
+
+const processVideo = async (row) => {
+  if (row.downloadStatus !== 1) {
+    ElMessage.warning('请先下载视频，再进行处理')
     return
   }
   if (Number(row.translateStatus) === 1) {
-    ElMessage.info('该视频已翻译')
+    ElMessage.info('该视频已处理')
     return
   }
   translatingId.value = row.id
   try {
-    const res = await youtubeApi.createTranslateJob({
+    const payload = {
       videoId: row.id,
       url: row.url,
       channel: row.channel,
@@ -977,9 +1142,12 @@ const translateVideo = async (row) => {
       processVersion: workflowForm.processVersion,
       subtitleLanguage: workflowForm.subtitleLanguage,
       burnProfile: workflowForm.burnProfile
-    })
+    }
+    const res = workflowForm.processVersion === 'editing_v1'
+      ? await youtubeApi.createAnalysisJob(payload)
+      : await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)
-    ElMessage.success('翻译任务已创建')
+    ElMessage.success(workflowForm.processVersion === 'editing_v1' ? '剪辑方案任务已创建' : '处理任务已创建')
     startJobsPolling()
     setTimeout(() => {
       loadJobs({ silent: true })
@@ -990,12 +1158,23 @@ const translateVideo = async (row) => {
   }
 }
 
+const formatSegmentRange = (segment) => {
+  const format = (value) => {
+    const totalSeconds = Math.max(0, Math.floor(Number(value || 0)))
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    return `${minutes}:${String(seconds).padStart(2, '0')}`
+  }
+  return `${format(segment.start)} - ${format(segment.end)}`
+}
+
 const jobStatusText = (status) => {
   const map = {
     queued: '排队中',
     running: '执行中',
     success: '成功',
-    failed: '失败'
+    failed: '失败',
+    abnormal: '异常'
   }
   return map[status] || status || '-'
 }
@@ -1005,7 +1184,8 @@ const jobStatusType = (status) => {
     queued: 'info',
     running: 'warning',
     success: 'success',
-    failed: 'danger'
+    failed: 'danger',
+    abnormal: 'danger'
   }
   return map[status] || 'info'
 }
@@ -1013,17 +1193,18 @@ const jobStatusType = (status) => {
 const progressStatus = (job) => {
   const map = {
     success: 'success',
-    failed: 'exception'
+    failed: 'exception',
+    abnormal: 'exception'
   }
   return map[job.status] || undefined
 }
 
 const translateStatusText = (status) => {
   const map = {
-    1: '已翻译',
+    1: '已处理',
     2: '已跳过'
   }
-  return map[Number(status)] || '未翻译'
+  return map[Number(status)] || '未处理'
 }
 
 const translateStatusType = (status) => {
@@ -1049,14 +1230,29 @@ const copyUrl = async (url) => {
   }
 }
 
+const copyText = async (text) => {
+  if (!text) {
+    ElMessage.warning('没有可复制的内容')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制')
+  } catch (error) {
+    ElMessage.error('复制失败')
+  }
+}
+
 onMounted(() => {
   loadVideos()
   loadJobs()
   startJobsPolling()
   startClock()
+  window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
   if (jobsTimer) {
     window.clearInterval(jobsTimer)
     jobsTimer = null
@@ -1728,11 +1924,12 @@ $ink-strong: #172033;
 }
 
 .process-settings-button {
-  position: fixed;
+  position: fixed !important;
   left: 18px;
   bottom: 22px;
-  z-index: 10;
+  z-index: 2100;
   height: 44px;
+  min-width: 88px;
   padding: 0 15px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -1839,6 +2036,112 @@ $ink-strong: #172033;
   }
 }
 
+.analysis-panel {
+  display: grid;
+  gap: 14px;
+  min-height: 180px;
+}
+
+.analysis-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #dce6f2;
+  border-radius: 8px;
+  background: #f8fbff;
+
+  h3 {
+    margin: 0;
+    color: $ink-strong;
+    font-size: 16px;
+    line-height: 1.35;
+  }
+
+  p {
+    margin: 0;
+    color: #4b5a70;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+}
+
+.analysis-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analysis-muted {
+  color: $text-secondary;
+}
+
+.title-options,
+.tag-list,
+.risk-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.publish-copy {
+  padding: 10px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.highlight-list {
+  display: grid;
+  gap: 8px;
+}
+
+.highlight-item {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e2eaf5;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.highlight-time {
+  color: $accent-blue;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.highlight-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+
+  strong {
+    color: $ink-strong;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  p {
+    margin: 0;
+    color: #4b5a70;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  span {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+}
+
+.error-code {
+  color: #b42318;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 @media (max-width: 1200px) {
   .workspace-hero,
   .command-grid {
@@ -1919,6 +2222,10 @@ $ink-strong: #172033;
   }
 
   .burn-param {
+    grid-template-columns: 1fr;
+  }
+
+  .highlight-item {
     grid-template-columns: 1fr;
   }
 

@@ -62,13 +62,16 @@
         </el-table-column>
         <el-table-column label="处理类型" width="150">
           <template #default="{ row }">
-            <el-tag type="warning" effect="light">{{ row.processType || '字幕翻译/信息烧录' }}</el-tag>
+            <el-tag type="warning" effect="light">{{ row.processType || '字幕处理/信息烧录' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="字幕语言" width="120">
           <template #default="{ row }">
-            <el-tag type="success" effect="plain">{{ row.subtitleLanguageLabel || languageLabel(row.subtitleLanguage) }}</el-tag>
+            <el-tag type="success" effect="plain">{{ materialSubtitleLanguageLabel(row) || '-' }}</el-tag>
           </template>
+        </el-table-column>
+        <el-table-column label="时长" width="100">
+          <template #default="{ row }">{{ materialDuration(row) }}</template>
         </el-table-column>
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
@@ -111,6 +114,9 @@
             <el-tag type="info" effect="light">原视频下载</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="时长" width="100">
+          <template #default="{ row }">{{ materialDuration(row) }}</template>
+        </el-table-column>
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
@@ -141,6 +147,9 @@
           <template #default="{ row }">
             <MaterialIdentity :material="row" />
           </template>
+        </el-table-column>
+        <el-table-column label="时长" width="100">
+          <template #default="{ row }">{{ materialDuration(row) }}</template>
         </el-table-column>
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
@@ -245,6 +254,7 @@
         >
         <div v-else class="file-info">
           <p>标题: {{ materialTitle(currentMaterial) }}</p>
+          <p>视频时长: {{ materialDuration(currentMaterial) }}</p>
           <p>文件大小: {{ currentMaterial.filesize }} MB</p>
           <p>入库时间: {{ currentMaterial.upload_time }}</p>
           <el-button type="primary" @click="downloadFile(currentMaterial)">下载文件</el-button>
@@ -310,9 +320,49 @@ const languageLabel = (language) => {
   return languageMap[language] || language || '-'
 }
 
+const inferSubtitleLanguage = (material) => {
+  const explicitLanguage = material?.subtitleLanguage || material?.metadata?.subtitleLanguage
+  if (explicitLanguage) return explicitLanguage
+  if (material?.source_type !== 'youtube_processed') return ''
+
+  const filename = material?.filename || material?.original_filename || ''
+  const match = filename.match(/_([a-z]{2}(?:-[A-Z]{2})?)\.[^.]+$/)
+  const suffixMap = {
+    zh: 'zh-CN',
+    en: 'en',
+    ja: 'ja',
+    ko: 'ko',
+    es: 'es',
+    fr: 'fr',
+    de: 'de',
+    ru: 'ru'
+  }
+  return match ? (suffixMap[match[1]] || match[1]) : ''
+}
+
+const materialSubtitleLanguageLabel = (material) => {
+  return material?.subtitleLanguageLabel || material?.metadata?.subtitleLanguageLabel || languageLabel(inferSubtitleLanguage(material))
+}
+
+const materialVideoId = (material) => {
+  return material?.metadata?.videoId || material?.source_video_id || ''
+}
+
+const materialThumbnail = (material) => {
+  if (material?.displayThumbnail) return material.displayThumbnail
+  if (material?.metadata?.thumbnail) return material.metadata.thumbnail
+  const videoId = materialVideoId(material)
+  return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : ''
+}
+
+const materialDuration = (material) => {
+  return material?.duration || material?.metadata?.duration || '-'
+}
+
 const searchableText = (material) => {
   return [
     materialTitle(material),
+    materialDuration(material),
     materialUrl(material),
     material.displayChannel,
     material.displaySubscribers,
@@ -351,22 +401,30 @@ const MaterialIdentity = defineComponent({
     }
   },
   setup(props) {
+    const thumbFailed = ref(false)
     const infoRows = computed(() => [
-      ['素材ID', props.material.id],
+      ['视频名称', materialTitle(props.material)],
       ['UUID', props.material.uuid],
-      ['文件名', props.material.filename],
-      ['原始文件名', props.material.original_filename],
       ['存储路径', props.material.file_path],
-      ['存储Key', props.material.storage_key],
       ['来源类型', props.material.source_type],
-      ['视频ID', props.material.source_video_id],
-      ['处理版本', props.material.processVersion],
       ['状态', props.material.status]
     ].filter(([, value]) => value !== undefined && value !== null && value !== ''))
+    const previewSource = computed(() => {
+      if (thumbFailed.value) return ''
+      if (props.material.source_type === 'youtube_processed' || props.material.source_type === 'youtube_download') {
+        return materialThumbnail(props.material)
+      }
+      return materialThumbnail(props.material) || materialApi.getMaterialPreviewUrl(props.material.file_path)
+    })
 
     return () => h('div', { class: 'material-identity' }, [
-      props.material.displayThumbnail
-        ? h('img', { class: 'material-thumb', src: props.material.displayThumbnail, alt: '' })
+      previewSource.value
+        ? h('img', {
+          class: 'material-thumb',
+          src: previewSource.value,
+          alt: '',
+          onError: () => { thumbFailed.value = true }
+        })
         : h('div', { class: 'material-thumb material-thumb-empty' }, [
           h(ElIcon, null, { default: () => h(VideoCamera) })
         ]),
@@ -389,10 +447,10 @@ const MaterialIdentity = defineComponent({
               class: 'info-button',
               text: true,
               circle: true,
-              'aria-label': '查看隐藏技术信息'
+              'aria-label': '查看基础信息'
             }, { default: () => h(ElIcon, null, { default: () => h(InfoFilled) }) }),
             default: () => h('div', { class: 'technical-popover' }, [
-              h('strong', '隐藏技术信息'),
+              h('strong', '基础信息'),
               h('dl', { class: 'technical-list' }, infoRows.value.flatMap(([label, value]) => [
                 h('dt', label),
                 h('dd', String(value))
@@ -407,7 +465,7 @@ const MaterialIdentity = defineComponent({
         ]),
         props.material.displayUrl
           ? h('span', { class: 'identity-url' }, props.material.displayUrl)
-          : h('span', { class: 'identity-url is-muted' }, '无关联链接')
+          : null
       ])
     ])
   }

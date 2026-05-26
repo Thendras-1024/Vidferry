@@ -1,511 +1,263 @@
 <template>
   <div class="publish-center">
-    <!-- Tab管理区域 -->
-    <div class="tab-management">
-      <div class="tab-header">
-        <div class="tab-list">
-          <div 
-            v-for="tab in tabs" 
+    <section class="page-hero">
+      <div>
+        <span class="eyebrow">PUBLISH DESK</span>
+        <h1>发布中心</h1>
+        <p>按批次准备素材、账号、平台、标题话题和定时发布策略，支持多批次连续发布。</p>
+      </div>
+      <div class="hero-actions">
+        <el-button type="primary" @click="addTab">
+          <el-icon><Plus /></el-icon>
+          <span>新增批次</span>
+        </el-button>
+        <el-button type="success" :loading="batchPublishing" @click="batchPublish">批量发布</el-button>
+      </div>
+    </section>
+
+    <div class="publish-workbench">
+      <aside class="batch-panel">
+        <div class="panel-title">
+          <span class="panel-kicker">BATCHES</span>
+          <h2>发布批次</h2>
+        </div>
+        <div class="batch-list">
+          <button
+            v-for="tab in tabs"
             :key="tab.name"
-            :class="['tab-item', { active: activeTab === tab.name }]"
+            type="button"
+            class="batch-item"
+            :class="{ active: activeTab === tab.name }"
             @click="activeTab = tab.name"
           >
             <span>{{ tab.label }}</span>
-            <el-icon 
-              v-if="tabs.length > 1"
-              class="close-icon" 
-              @click.stop="removeTab(tab.name)"
-            >
-              <Close />
-            </el-icon>
-          </div>
+            <small>{{ tab.fileList.length }} 个素材 · {{ tab.selectedAccounts.length }} 个账号</small>
+            <el-icon v-if="tabs.length > 1" class="close-icon" @click.stop="removeTab(tab.name)"><Close /></el-icon>
+          </button>
         </div>
-        <div class="tab-actions">
-          <el-button 
-            type="primary" 
-            size="small" 
-            @click="addTab"
-            class="add-tab-btn"
-          >
-            <el-icon><Plus /></el-icon>
-            添加Tab
-          </el-button>
-          <el-button 
-            type="success" 
-            size="small" 
-            @click="batchPublish"
-            :loading="batchPublishing"
-            class="batch-publish-btn"
-          >
-            批量发布
-          </el-button>
-        </div>
-      </div>
-    </div>
+      </aside>
 
-    <!-- 内容区域 -->
-    <div class="publish-content">
-      <div class="tab-content-wrapper">
-        <div 
-          v-for="tab in tabs" 
-          :key="tab.name"
-          v-show="activeTab === tab.name"
-          class="tab-content"
-        >
-          <!-- 发布状态提示 -->
-          <div v-if="tab.publishStatus" class="publish-status">
-            <el-alert
-              :title="tab.publishStatus.message"
-              :type="tab.publishStatus.type"
-              :closable="false"
-              show-icon
-            />
-          </div>
+      <main class="compose-panel">
+        <div v-for="tab in tabs" :key="tab.name" v-show="activeTab === tab.name" class="compose-content">
+          <el-alert v-if="tab.publishStatus" :title="tab.publishStatus.message" :type="tab.publishStatus.type" :closable="false" show-icon />
 
-          <!-- 视频上传区域 -->
-          <div class="upload-section">
-            <h3>视频</h3>
-            <div class="upload-options">
-              <el-button type="primary" @click="showUploadOptions(tab)" class="upload-btn">
-                <el-icon><Upload /></el-icon>
-                上传视频
-              </el-button>
-            </div>
-            
-            <!-- 已上传文件列表 -->
-            <div v-if="tab.fileList.length > 0" class="uploaded-files">
-              <h4>已上传文件：</h4>
-              <div class="file-list">
-                <div v-for="(file, index) in tab.fileList" :key="index" class="file-item">
-                  <el-link :href="file.url" target="_blank" type="primary">{{ file.name }}</el-link>
-                  <span class="file-size">{{ (file.size / 1024 / 1024).toFixed(2) }}MB</span>
-                  <el-button type="danger" size="small" @click="removeFile(tab, index)">删除</el-button>
-                </div>
+          <section class="form-section">
+            <div class="section-heading">
+              <span class="step-index">1</span>
+              <div>
+                <h3>视频素材</h3>
+                <p>仅支持选择已完成处理的视频，避免误发布原始下载素材。</p>
               </div>
-            </div>
-          </div>
-
-          <!-- 上传选项弹窗 -->
-          <el-dialog
-            v-model="uploadOptionsVisible"
-            title="选择上传方式"
-            width="400px"
-            class="upload-options-dialog"
-          >
-            <div class="upload-options-content">
-              <el-button type="primary" @click="selectLocalUpload" class="option-btn">
-                <el-icon><Upload /></el-icon>
-                本地上传
-              </el-button>
-              <el-button type="success" @click="selectMaterialLibrary" class="option-btn">
+              <el-button type="primary" @click="selectMaterialLibrary(tab)">
                 <el-icon><Folder /></el-icon>
-                素材库
+                <span>选择处理后视频</span>
               </el-button>
             </div>
-          </el-dialog>
-
-          <!-- 本地上传弹窗 -->
-          <el-dialog
-            v-model="localUploadVisible"
-            title="本地上传"
-            width="600px"
-            class="local-upload-dialog"
-          >
-            <el-upload
-              class="video-upload"
-              drag
-              :auto-upload="true"
-              :action="`${apiBaseUrl}/upload`"
-              :on-success="(response, file) => handleUploadSuccess(response, file, currentUploadTab)"
-              :on-error="handleUploadError"
-              multiple
-              accept="video/*"
-              :headers="authHeaders"
-            >
-              <el-icon class="el-icon--upload"><Upload /></el-icon>
-              <div class="el-upload__text">
-                将视频文件拖到此处，或<em>点击上传</em>
-              </div>
-              <template #tip>
-                <div class="el-upload__tip">
-                  支持MP4、AVI等视频格式，可上传多个文件
-                </div>
-              </template>
-            </el-upload>
-          </el-dialog>
-
-          <!-- 批量发布进度对话框 -->
-          <el-dialog
-            v-model="batchPublishDialogVisible"
-            title="批量发布进度"
-            width="500px"
-            :close-on-click-modal="false"
-            :close-on-press-escape="false"
-            :show-close="false"
-          >
-            <div class="publish-progress">
-              <el-progress 
-                :percentage="publishProgress"
-                :status="publishProgress === 100 ? 'success' : ''"
-              />
-              <div v-if="currentPublishingTab" class="current-publishing">
-                正在发布：{{ currentPublishingTab.label }}
-              </div>
-              
-              <!-- 发布结果列表 -->
-              <div class="publish-results" v-if="publishResults.length > 0">
-                <div 
-                  v-for="(result, index) in publishResults" 
-                  :key="index"
-                  :class="['result-item', result.status]"
-                >
-                  <el-icon v-if="result.status === 'success'"><Check /></el-icon>
-                  <el-icon v-else-if="result.status === 'error'"><Close /></el-icon>
-                  <el-icon v-else><InfoFilled /></el-icon>
-                  <span class="label">{{ result.label }}</span>
-                  <span class="message">{{ result.message }}</span>
-                </div>
-              </div>
-            </div>
-            
-            <template #footer>
-              <div class="dialog-footer">
-                <el-button 
-                  @click="cancelBatchPublish" 
-                  :disabled="publishProgress === 100"
-                >
-                  取消发布
-                </el-button>
-                <el-button 
-                  type="primary" 
-                  @click="batchPublishDialogVisible = false"
-                  v-if="publishProgress === 100"
-                >
-                  关闭
-                </el-button>
-              </div>
-            </template>
-          </el-dialog>
-
-          <!-- 素材库选择弹窗 -->
-          <el-dialog
-            v-model="materialLibraryVisible"
-            title="选择素材"
-            width="800px"
-            class="material-library-dialog"
-          >
-            <div class="material-library-content">
-              <el-checkbox-group v-model="selectedMaterials">
-                <div class="material-list">
-                  <div
-                    v-for="material in materials"
-                    :key="material.id"
-                    class="material-item"
-                  >
-                    <el-checkbox :label="material.id" class="material-checkbox">
-                      <div class="material-info">
-                        <div class="material-name">{{ material.filename }}</div>
-                        <div class="material-details">
-                          <span class="file-size">{{ material.filesize }}MB</span>
-                          <span class="upload-time">{{ material.upload_time }}</span>
-                        </div>
-                      </div>
-                    </el-checkbox>
+            <div v-if="tab.fileList.length > 0" class="file-list">
+              <div v-for="(file, index) in tab.fileList" :key="index" class="file-item">
+                <div class="selected-video-main">
+                  <el-link :href="file.url" target="_blank" type="primary">{{ file.displayTitle || file.name }}</el-link>
+                  <div class="selected-video-meta">
+                    <span>{{ file.channel || '未知博主' }}</span>
+                    <span>{{ file.processType || '处理后视频' }}</span>
+                    <span>{{ file.subtitleLanguageLabel || '字幕语言未知' }}</span>
+                    <span>{{ formatFileSize(file.size) }}</span>
                   </div>
                 </div>
-              </el-checkbox-group>
-            </div>
-            <template #footer>
-              <div class="dialog-footer">
-                <el-button @click="materialLibraryVisible = false">取消</el-button>
-                <el-button type="primary" @click="confirmMaterialSelection">确定</el-button>
+                <el-button type="danger" size="small" text @click="removeFile(tab, index)">删除</el-button>
               </div>
-            </template>
-          </el-dialog>
+            </div>
+            <el-empty v-else description="暂无视频素材" :image-size="72" />
+          </section>
 
-          <!-- 账号选择 -->
-          <div class="account-section">
-            <h3>账号</h3>
-            <div class="account-display">
-              <div class="selected-accounts">
-                <el-tag
-                  v-for="(account, index) in tab.selectedAccounts"
-                  :key="index"
-                  closable
-                  @close="removeAccount(tab, index)"
-                  class="account-tag"
-                >
+          <section class="form-section split-section">
+            <div class="sub-panel">
+              <div class="section-heading compact">
+                <span class="step-index">2</span>
+                <div>
+                  <h3>账号</h3>
+                  <p>选择当前平台可用账号。</p>
+                </div>
+              </div>
+              <div class="tag-cloud">
+                <el-tag v-for="(account, index) in tab.selectedAccounts" :key="index" closable @close="removeAccount(tab, index)">
                   {{ getAccountDisplayName(account) }}
                 </el-tag>
+                <el-button type="primary" plain @click="openAccountDialog(tab)">选择账号</el-button>
               </div>
-              <el-button 
-                type="primary" 
-                plain 
-                @click="openAccountDialog(tab)"
-                class="select-account-btn"
-              >
-                选择账号
-              </el-button>
-            </div>
-          </div>
-
-          <!-- 账号选择弹窗 -->
-          <el-dialog
-            v-model="accountDialogVisible"
-            title="选择账号"
-            width="600px"
-            class="account-dialog"
-          >
-            <div class="account-dialog-content">
-              <el-checkbox-group v-model="tempSelectedAccounts">
-                <div class="account-list">
-                  <el-checkbox
-                    v-for="account in availableAccounts"
-                    :key="account.id"
-                    :label="account.id"
-                    class="account-item"
-                  >
-                    <div class="account-info">
-                      <span class="account-name">{{ account.name }}</span>                      
-                    </div>
-                  </el-checkbox>
-                </div>
-              </el-checkbox-group>
             </div>
 
-            <template #footer>
-              <div class="dialog-footer">
-                <el-button @click="accountDialogVisible = false">取消</el-button>
-                <el-button type="primary" @click="confirmAccountSelection">确定</el-button>
-              </div>
-            </template>
-          </el-dialog>
-
-          <!-- 平台选择 -->
-          <div class="platform-section">
-            <h3>平台</h3>
-            <el-radio-group v-model="tab.selectedPlatform" class="platform-radios">
-              <el-radio 
-                v-for="platform in platforms" 
-                :key="platform.key"
-                :label="platform.key"
-                class="platform-radio"
-              >
-                {{ platform.name }}
-              </el-radio>
-            </el-radio-group>
-          </div>
-
-          <!-- 原创声明 -->
-          <div class="original-section">
-            <el-checkbox
-              v-model="tab.isOriginal"
-              label="声明原创"
-              class="original-checkbox"
-            />
-          </div>
-
-          <!-- 草稿选项 (仅在视频号可见) -->
-          <div v-if="tab.selectedPlatform === 2" class="draft-section">
-            <el-checkbox
-              v-model="tab.isDraft"
-              label="视频号仅保存草稿(用手机发布)"
-              class="draft-checkbox"
-            />
-          </div>
-
-          <!-- 标签 (仅在抖音可见) -->
-          <div v-if="tab.selectedPlatform === 3" class="product-section">
-            <h3>商品链接</h3>
-            <el-input
-              v-model="tab.productTitle"
-              type="text"
-              :rows="1"
-              placeholder="请输入商品名称"
-              maxlength="200"
-              class="product-name-input"
-            />
-            <el-input
-              v-model="tab.productLink"
-              type="text"
-              :rows="1"
-              placeholder="请输入商品链接"
-              maxlength="200"
-              class="product-link-input"
-            />
-          </div>
-
-          <!-- 标题输入 -->
-          <div class="title-section">
-            <h3>标题</h3>
-            <el-input
-              v-model="tab.title"
-              type="textarea"
-              :rows="3"
-              placeholder="请输入标题"
-              maxlength="100"
-              show-word-limit
-              class="title-input"
-            />
-          </div>
-
-          <!-- 话题输入 -->
-          <div class="topic-section">
-            <h3>话题</h3>
-            <div class="topic-display">
-              <div class="selected-topics">
-                <el-tag
-                  v-for="(topic, index) in tab.selectedTopics"
-                  :key="index"
-                  closable
-                  @close="removeTopic(tab, index)"
-                  class="topic-tag"
-                >
-                  #{{ topic }}
-                </el-tag>
-              </div>
-              <el-button 
-                type="primary" 
-                plain 
-                @click="openTopicDialog(tab)"
-                class="select-topic-btn"
-              >
-                添加话题
-              </el-button>
-            </div>
-          </div>
-
-          <!-- 添加话题弹窗 -->
-          <el-dialog
-            v-model="topicDialogVisible"
-            title="添加话题"
-            width="600px"
-            class="topic-dialog"
-          >
-            <div class="topic-dialog-content">
-              <!-- 自定义话题输入 -->
-              <div class="custom-topic-input">
-                <el-input
-                  v-model="customTopic"
-                  placeholder="输入自定义话题"
-                  class="custom-input"
-                >
-                  <template #prepend>#</template>
-                </el-input>
-                <el-button type="primary" @click="addCustomTopic">添加</el-button>
-              </div>
-
-              <!-- 推荐话题 -->
-              <div class="recommended-topics">
-                <h4>推荐话题</h4>
-                <div class="topic-grid">
-                  <el-button
-                    v-for="topic in recommendedTopics"
-                    :key="topic"
-                    :type="currentTab?.selectedTopics?.includes(topic) ? 'primary' : 'default'"
-                    @click="toggleRecommendedTopic(topic)"
-                    class="topic-btn"
-                  >
-                    {{ topic }}
-                  </el-button>
+            <div class="sub-panel">
+              <div class="section-heading compact">
+                <span class="step-index">3</span>
+                <div>
+                  <h3>平台</h3>
+                  <p>确定本批次发布目标。</p>
                 </div>
               </div>
+              <el-radio-group v-model="tab.selectedPlatform" class="platform-radios">
+                <el-radio-button v-for="platform in platforms" :key="platform.key" :label="platform.key">
+                  {{ platform.name }}
+                </el-radio-button>
+              </el-radio-group>
             </div>
+          </section>
 
-            <template #footer>
-              <div class="dialog-footer">
-                <el-button @click="topicDialogVisible = false">取消</el-button>
-                <el-button type="primary" @click="confirmTopicSelection">确定</el-button>
+          <section class="form-section">
+            <div class="section-heading compact">
+              <span class="step-index">4</span>
+              <div>
+                <h3>发布内容</h3>
+                <p>填写标题、话题和平台扩展信息。</p>
               </div>
-            </template>
-          </el-dialog>
+            </div>
+            <el-input v-model="tab.title" type="textarea" :rows="3" placeholder="请输入标题" maxlength="100" show-word-limit />
+            <div class="tag-cloud topic-cloud">
+              <el-tag v-for="(topic, index) in tab.selectedTopics" :key="index" closable @close="removeTopic(tab, index)">#{{ topic }}</el-tag>
+              <el-button type="primary" plain @click="openTopicDialog(tab)">添加话题</el-button>
+            </div>
+            <div v-if="tab.selectedPlatform === 3" class="two-col">
+              <el-input v-model="tab.productTitle" placeholder="商品名称" maxlength="200" />
+              <el-input v-model="tab.productLink" placeholder="商品链接" maxlength="200" />
+            </div>
+            <div class="inline-options">
+              <el-checkbox v-model="tab.isOriginal" label="声明原创" />
+              <el-checkbox v-if="tab.selectedPlatform === 2" v-model="tab.isDraft" label="视频号仅保存草稿" />
+            </div>
+          </section>
 
-          <!-- 定时发布 -->
-          <div class="schedule-section">
-            <h3>定时发布</h3>
+          <section class="form-section">
+            <div class="section-heading compact">
+              <span class="step-index">5</span>
+              <div>
+                <h3>发布时间</h3>
+                <p>立即发布或设置批量排期。</p>
+              </div>
+            </div>
             <div class="schedule-controls">
-              <el-switch
-                v-model="tab.scheduleEnabled"
-                active-text="定时发布"
-                inactive-text="立即发布"
-              />
+              <el-switch v-model="tab.scheduleEnabled" active-text="定时发布" inactive-text="立即发布" />
               <div v-if="tab.scheduleEnabled" class="schedule-settings">
                 <div class="schedule-item">
-                  <span class="label">每天发布视频数：</span>
+                  <span>每天发布视频数</span>
                   <el-select v-model="tab.videosPerDay" placeholder="选择发布数量">
-                    <el-option
-                      v-for="num in 55"
-                      :key="num"
-                      :label="num"
-                      :value="num"
-                    />
+                    <el-option v-for="num in 55" :key="num" :label="num" :value="num" />
                   </el-select>
                 </div>
-                <div class="schedule-item">
-                  <span class="label">每天发布时间：</span>
-                  <el-time-select
-                    v-for="(time, index) in tab.dailyTimes"
-                    :key="index"
-                    v-model="tab.dailyTimes[index]"
-                    start="00:00"
-                    step="00:30"
-                    end="23:30"
-                    placeholder="选择时间"
-                  />
-                  <el-button
-                    v-if="tab.dailyTimes.length < tab.videosPerDay"
-                    type="primary"
-                    size="small"
-                    @click="tab.dailyTimes.push('10:00')"
-                  >
-                    添加时间
-                  </el-button>
+                <div class="schedule-item wide">
+                  <span>每天发布时间</span>
+                  <div class="time-list">
+                    <el-time-select v-for="(time, index) in tab.dailyTimes" :key="index" v-model="tab.dailyTimes[index]" start="00:00" step="00:30" end="23:30" placeholder="选择时间" />
+                    <el-button v-if="tab.dailyTimes.length < tab.videosPerDay" type="primary" size="small" @click="tab.dailyTimes.push('10:00')">添加时间</el-button>
+                  </div>
                 </div>
                 <div class="schedule-item">
-                  <span class="label">开始天数：</span>
+                  <span>开始天数</span>
                   <el-select v-model="tab.startDays" placeholder="选择开始天数">
-                    <el-option :label="'明天'" :value="0" />
-                    <el-option :label="'后天'" :value="1" />
+                    <el-option label="明天" :value="0" />
+                    <el-option label="后天" :value="1" />
                   </el-select>
                 </div>
               </div>
             </div>
-          </div>
+          </section>
 
-          <!-- 操作按钮 -->
-          <div class="action-buttons">
-            <el-button size="small" @click="cancelPublish(tab)">取消</el-button>
-            <el-button
-              size="small"
-              type="primary"
-              @click="confirmPublish(tab)"
-              :loading="tab.publishing || false"
-            >
+          <div class="submit-bar">
+            <el-button @click="cancelPublish(tab)">取消</el-button>
+            <el-button type="primary" @click="confirmPublish(tab)" :loading="tab.publishing || false">
               {{ tab.publishing ? '发布中...' : '发布' }}
             </el-button>
           </div>
         </div>
-      </div>
+      </main>
     </div>
+
+    <el-dialog v-model="batchPublishDialogVisible" title="批量发布进度" width="500px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="false">
+      <div class="publish-progress">
+        <el-progress :percentage="publishProgress" :status="publishProgress === 100 ? 'success' : ''" />
+        <div v-if="currentPublishingTab" class="current-publishing">正在发布：{{ currentPublishingTab.label }}</div>
+        <div class="publish-results" v-if="publishResults.length > 0">
+          <div v-for="(result, index) in publishResults" :key="index" :class="['result-item', result.status]">
+            <span class="label">{{ result.label }}</span>
+            <span class="message">{{ result.message }}</span>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="cancelBatchPublish" :disabled="publishProgress === 100">取消发布</el-button>
+          <el-button type="primary" @click="batchPublishDialogVisible = false" v-if="publishProgress === 100">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="materialLibraryVisible" title="选择处理后视频" width="860px" class="material-library-dialog">
+      <el-alert
+        title="发布中心只显示已经完成字幕、作者信息和兼容转码的处理后视频。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-checkbox-group v-model="selectedMaterials">
+        <div v-if="publishableMaterials.length > 0" class="material-list publishable-list">
+          <div v-for="material in publishableMaterials" :key="material.id" class="material-item publishable-item">
+            <el-checkbox :label="material.id">
+              <div class="material-info">
+                <div class="material-name">{{ material.displayTitle || material.filename }}</div>
+                <div class="material-details">
+                  <span>{{ material.displayChannel || '未知博主' }}</span>
+                  <span>{{ material.displaySubscribers || '粉丝未知' }}</span>
+                  <span>{{ material.displayPublishedAt || '发布时间未知' }}</span>
+                </div>
+                <div class="material-badges">
+                  <el-tag size="small" type="warning" effect="light">{{ material.processType || '处理后视频' }}</el-tag>
+                  <el-tag size="small" type="success" effect="plain">{{ material.subtitleLanguageLabel || '字幕语言未知' }}</el-tag>
+                  <el-tag size="small" effect="plain">{{ processVersionLabel(material.processVersion) }}</el-tag>
+                  <span>{{ material.duration || '-' }}</span>
+                  <span>{{ material.filesize }} MB</span>
+                </div>
+              </div>
+            </el-checkbox>
+          </div>
+        </div>
+        <el-empty v-else description="暂无可发布的处理后视频，请先在视频采集处理页完成处理。" />
+      </el-checkbox-group>
+      <template #footer><div class="dialog-footer"><el-button @click="materialLibraryVisible = false">取消</el-button><el-button type="primary" @click="confirmMaterialSelection">确定</el-button></div></template>
+    </el-dialog>
+
+    <el-dialog v-model="accountDialogVisible" title="选择账号" width="600px" class="account-dialog">
+      <el-checkbox-group v-model="tempSelectedAccounts">
+        <div class="account-list">
+          <el-checkbox v-for="account in availableAccounts" :key="account.id" :label="account.id" class="account-item">
+            <span>{{ account.name }}</span>
+          </el-checkbox>
+        </div>
+      </el-checkbox-group>
+      <template #footer><div class="dialog-footer"><el-button @click="accountDialogVisible = false">取消</el-button><el-button type="primary" @click="confirmAccountSelection">确定</el-button></div></template>
+    </el-dialog>
+
+    <el-dialog v-model="topicDialogVisible" title="添加话题" width="600px" class="topic-dialog">
+      <div class="custom-topic-input">
+        <el-input v-model="customTopic" placeholder="输入自定义话题"><template #prepend>#</template></el-input>
+        <el-button type="primary" @click="addCustomTopic">添加</el-button>
+      </div>
+      <div class="recommended-topics">
+        <h4>推荐话题</h4>
+        <div class="topic-grid">
+          <el-button v-for="topic in recommendedTopics" :key="topic" :type="currentTab?.selectedTopics?.includes(topic) ? 'primary' : 'default'" @click="toggleRecommendedTopic(topic)">{{ topic }}</el-button>
+        </div>
+      </div>
+      <template #footer><div class="dialog-footer"><el-button @click="topicDialogVisible = false">取消</el-button><el-button type="primary" @click="confirmTopicSelection">确定</el-button></div></template>
+    </el-dialog>
   </div>
 </template>
-
 <script setup>
 import { ref, reactive, computed } from 'vue'
-import { Upload, Plus, Close, Folder } from '@element-plus/icons-vue'
+import { Plus, Close, Folder } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import { materialApi } from '@/api/material'
 import { http } from '@/utils/request'
-
-// API base URL
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5409'
-
-// Authorization headers
-const authHeaders = computed(() => ({
-  'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-}))
 
 // 当前激活的tab
 const activeTab = ref('tab1')
@@ -517,12 +269,13 @@ let tabCounter = 1
 const appStore = useAppStore()
 
 // 上传相关状态
-const uploadOptionsVisible = ref(false)
-const localUploadVisible = ref(false)
 const materialLibraryVisible = ref(false)
 const currentUploadTab = ref(null)
 const selectedMaterials = ref([])
 const materials = computed(() => appStore.materials)
+const publishableMaterials = computed(() => {
+  return materials.value.filter(material => material.source_type === 'youtube_processed')
+})
 
 // 批量发布相关状态
 const batchPublishing = ref(false)
@@ -626,43 +379,6 @@ const removeTab = (tabName) => {
   }
 }
 
-// 处理文件上传成功
-const handleUploadSuccess = (response, file, tab) => {
-  if (response.code === 200) {
-    // 获取文件路径
-    const filePath = response.data.path || response.data
-    // 从路径中提取文件名
-    const filename = filePath.split('/').pop()
-    
-    // 保存文件信息到fileList，包含文件路径和其他信息
-    const fileInfo = {
-      name: file.name,
-      url: materialApi.getMaterialPreviewUrl(filename), // 使用getMaterialPreviewUrl生成预览URL
-      path: filePath,
-      size: file.size,
-      type: file.type
-    }
-    
-    // 添加到文件列表
-    tab.fileList.push(fileInfo)
-    
-    // 更新显示列表
-    tab.displayFileList = [...tab.fileList.map(item => ({
-      name: item.name,
-      url: item.url
-    }))]
-    
-    ElMessage.success('文件上传成功')
-  } else {
-    ElMessage.error(response.msg || '上传失败')
-  }
-}
-
-// 处理文件上传失败
-const handleUploadError = (error) => {
-  ElMessage.error('文件上传失败')
-}
-
 // 删除已上传文件
 const removeFile = (tab, index) => {
   // 从文件列表中删除
@@ -753,6 +469,20 @@ const getAccountDisplayName = (accountId) => {
   return account ? account.name : accountId
 }
 
+const processVersionLabel = (value) => {
+  const labelMap = {
+    translation_v1: '处理版本一',
+    editing_v1: '处理版本二'
+  }
+  return labelMap[value] || value || '处理版本未知'
+}
+
+const formatFileSize = (size) => {
+  const bytes = Number(size || 0)
+  if (!bytes) return '-'
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 // 取消发布
 const cancelPublish = (tab) => {
   ElMessage.info('已取消发布')
@@ -769,9 +499,15 @@ const confirmPublish = async (tab) => {
 
   // 数据验证
   if (tab.fileList.length === 0) {
-    ElMessage.error('请先上传视频文件')
+    ElMessage.error('请先选择处理后视频')
     tab.publishing = false
-    throw new Error('请先上传视频文件')
+    throw new Error('请先选择处理后视频')
+  }
+  const invalidFiles = tab.fileList.filter(file => file.sourceType !== 'youtube_processed')
+  if (invalidFiles.length > 0) {
+    ElMessage.error('发布中心只支持处理后视频，请重新选择素材')
+    tab.publishing = false
+    throw new Error('发布中心只支持处理后视频')
   }
   if (!tab.title.trim()) {
     ElMessage.error('请输入标题')
@@ -835,37 +571,22 @@ const confirmPublish = async (tab) => {
   }
 }
 
-// 显示上传选项
-const showUploadOptions = (tab) => {
-  currentUploadTab.value = tab
-  uploadOptionsVisible.value = true
-}
-
-// 选择本地上传
-const selectLocalUpload = () => {
-  uploadOptionsVisible.value = false
-  localUploadVisible.value = true
-}
-
 // 选择素材库
-const selectMaterialLibrary = async () => {
-  uploadOptionsVisible.value = false
-  
-  // 如果素材库为空，先获取素材数据
-  if (materials.value.length === 0) {
-    try {
-      const response = await materialApi.getAllMaterials()
-      if (response.code === 200) {
-        appStore.setMaterials(response.data)
-      } else {
-        ElMessage.error('获取素材列表失败')
-        return
-      }
-    } catch (error) {
-      console.error('获取素材列表出错:', error)
+const selectMaterialLibrary = async (tab) => {
+  currentUploadTab.value = tab
+
+  try {
+    const response = await materialApi.getAllMaterials()
+    if (response.code === 200) {
+      appStore.setMaterials(response.data)
+    } else {
       ElMessage.error('获取素材列表失败')
       return
     }
+  } catch (error) {
+    console.error('获取素材列表出错:', error)
+    ElMessage.error('获取素材列表失败')
+    return
   }
   
   selectedMaterials.value = []
@@ -882,10 +603,19 @@ const confirmMaterialSelection = () => {
   if (currentUploadTab.value) {
     // 将选中的素材添加到当前tab的文件列表
     selectedMaterials.value.forEach(materialId => {
-      const material = materials.value.find(m => m.id === materialId)
+      const material = publishableMaterials.value.find(m => m.id === materialId)
       if (material) {
         const fileInfo = {
-          name: material.filename,
+          name: material.displayTitle || material.filename,
+          displayTitle: material.displayTitle || material.filename,
+          channel: material.displayChannel || '',
+          processType: material.processType || '处理后视频',
+          processVersion: material.processVersion || '',
+          processVersionLabel: processVersionLabel(material.processVersion),
+          subtitleLanguage: material.subtitleLanguage || '',
+          subtitleLanguageLabel: material.subtitleLanguageLabel || '',
+          sourceType: material.source_type,
+          materialId: material.id,
           url: materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()),
           path: material.file_path,
           size: material.filesize * 1024 * 1024, // 转换为字节
@@ -911,7 +641,7 @@ const confirmMaterialSelection = () => {
   materialLibraryVisible.value = false
   selectedMaterials.value = []
   currentUploadTab.value = null
-  ElMessage.success(`已添加 ${addedCount} 个素材`)
+  ElMessage.success(`已添加 ${addedCount} 个处理后视频`)
 }
 
 // 批量发布对话框状态
@@ -1001,398 +731,115 @@ const batchPublish = async () => {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
+$panel-border: #dce6f2;
+$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
+$accent-blue: #2563eb;
+$ink-strong: #172033;
+
 .publish-center {
+  display: grid;
+  gap: 16px;
+}
+
+.page-hero,
+.batch-panel,
+.compose-panel {
+  border: 1px solid $panel-border;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: $panel-shadow;
+}
+
+.page-hero {
   display: flex;
-  flex-direction: column;
-  height: 100%;
-  
-  // Tab管理区域
-  .tab-management {
-    background-color: #fff;
-    border-radius: 4px;
-    box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-    margin-bottom: 20px;
-    padding: 15px 20px;
-    
-    .tab-header {
-      display: flex;
-      align-items: flex-start;
-      gap: 15px;
-      
-      .tab-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        flex: 1;
-        min-width: 0;
-        
-        .tab-item {
-           display: flex;
-           align-items: center;
-           gap: 6px;
-           padding: 6px 12px;
-           background-color: #f5f7fa;
-           border: 1px solid #dcdfe6;
-           border-radius: 4px;
-           cursor: pointer;
-           transition: all 0.3s;
-           font-size: 14px;
-           height: 32px;
-           
-           &:hover {
-             background-color: #ecf5ff;
-             border-color: #b3d8ff;
-           }
-           
-           &.active {
-             background-color: #409eff;
-             border-color: #409eff;
-             color: #fff;
-             
-             .close-icon {
-               color: #fff;
-               
-               &:hover {
-                 background-color: rgba(255, 255, 255, 0.2);
-               }
-             }
-           }
-           
-           .close-icon {
-             padding: 2px;
-             border-radius: 2px;
-             cursor: pointer;
-             transition: background-color 0.3s;
-             font-size: 12px;
-             
-             &:hover {
-               background-color: rgba(0, 0, 0, 0.1);
-             }
-           }
-         }
-       }
-       
-      .tab-actions {
-        display: flex;
-        gap: 10px;
-        flex-shrink: 0;
-        
-        .add-tab-btn,
-        .batch-publish-btn {
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          height: 32px;
-          padding: 6px 12px;
-          font-size: 14px;
-          white-space: nowrap;
-        }
-      }
-    }
-  }
-  
-  // 批量发布进度对话框样式
-  .publish-progress {
-    padding: 20px;
-    
-    .current-publishing {
-      margin: 15px 0;
-      text-align: center;
-      color: #606266;
-    }
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)), #fff;
 
-    .publish-results {
-      margin-top: 20px;
-      border-top: 1px solid #EBEEF5;
-      padding-top: 15px;
-      max-height: 300px;
-      overflow-y: auto;
+  h1 { margin: 4px 0 8px; color: $ink-strong; font-size: 25px; line-height: 1.25; font-weight: 700; }
+  p { margin: 0; color: #5b667a; font-size: 14px; line-height: 1.7; }
+}
 
-      .result-item {
-        display: flex;
-        align-items: center;
-        padding: 8px 0;
-        color: #606266;
+.eyebrow,
+.panel-kicker { color: $accent-blue; font-size: 12px; font-weight: 700; letter-spacing: 0; }
 
-        .el-icon {
-          margin-right: 8px;
-        }
+.hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
-        .label {
-          margin-right: 10px;
-          font-weight: 500;
-        }
+.publish-workbench { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
 
-        .message {
-          color: #909399;
-        }
+.batch-panel { padding: 14px; position: sticky; top: 12px; }
+.panel-title h2 { margin: 2px 0 12px; color: $ink-strong; font-size: 18px; }
+.batch-list { display: grid; gap: 8px; }
+.batch-item { position: relative; display: grid; gap: 4px; width: 100%; padding: 12px 34px 12px 12px; border: 1px solid $border-lighter; border-radius: 8px; background: #f8fbff; text-align: left; cursor: pointer; }
+.batch-item.active { border-color: rgba(37, 99, 235, 0.42); background: rgba(37, 99, 235, 0.08); }
+.batch-item span { color: $ink-strong; font-weight: 650; }
+.batch-item small { color: $text-secondary; }
+.close-icon { position: absolute; right: 10px; top: 12px; }
 
-        &.success {
-          color: #67C23A;
-        }
+.compose-panel { padding: 16px; }
+.compose-content { display: grid; gap: 14px; }
+.form-section { display: grid; gap: 12px; padding: 14px; border: 1px solid $border-lighter; border-radius: 8px; background: #fff; }
+.split-section { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sub-panel { display: grid; gap: 12px; min-width: 0; }
+.section-heading { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.section-heading.compact { justify-content: flex-start; }
+.section-heading h3 { margin: 0; color: $ink-strong; font-size: 16px; }
+.section-heading p { margin: 3px 0 0; color: $text-secondary; font-size: 12px; }
+.step-index { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: $accent-blue; background: rgba(37, 99, 235, 0.1); font-weight: 700; flex: 0 0 auto; }
 
-        &.error {
-          color: #F56C6C;
-        }
+.file-list,
+.material-list,
+.account-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
+.file-item,
+.material-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid $border-lighter; border-radius: 8px; background: #f8fbff; }
+.selected-video-main { display: grid; gap: 5px; min-width: 0; margin-right: auto; }
+.selected-video-main .el-link { justify-content: flex-start; max-width: 640px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selected-video-meta,
+.material-details,
+.material-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: $text-secondary; font-size: 12px; }
 
-        &.cancelled {
-          color: #909399;
-        }
-      }
-    }
-  }
+.tag-cloud { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 32px; }
+.topic-cloud { margin-top: 4px; }
+.platform-radios { display: flex; flex-wrap: wrap; gap: 8px; }
+.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.inline-options { display: flex; gap: 16px; flex-wrap: wrap; }
+.schedule-controls { display: grid; gap: 12px; }
+.schedule-settings { display: grid; gap: 12px; padding: 12px; border-radius: 8px; background: #f8fbff; }
+.schedule-item { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; align-items: center; }
+.schedule-item > span { color: $text-secondary; font-size: 13px; }
+.time-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.submit-bar { display: flex; justify-content: flex-end; gap: 10px; padding-top: 2px; }
+.option-grid { display: grid; gap: 12px; }
+.option-btn { width: 100%; height: 46px; }
+.custom-topic-input { display: flex; gap: 10px; margin-bottom: 18px; }
+.topic-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.material-library-dialog :deep(.el-alert) { margin-bottom: 12px; }
+.publishable-list { max-height: 430px; }
+.publishable-item { align-items: flex-start; }
+.publishable-item :deep(.el-checkbox) { width: 100%; align-items: flex-start; }
+.publishable-item :deep(.el-checkbox__label) { min-width: 0; flex: 1; }
+.material-info { display: grid; gap: 7px; min-width: 0; }
+.material-name { color: $ink-strong; font-weight: 650; }
+.publish-progress { display: grid; gap: 14px; padding: 12px; }
+.result-item { display: flex; gap: 10px; padding: 8px 0; color: $text-secondary; }
+.result-item.success { color: $success-color; }
+.result-item.error { color: $danger-color; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 10px; }
+.video-upload { width: 100%; }
+.video-upload :deep(.el-upload-dragger) { width: 100%; }
 
-  .dialog-footer {
-    text-align: right;
-  }
-  
-  // 内容区域
-  .publish-content {
-    flex: 1;
-    background-color: #fff;
-    border-radius: 4px;
-    box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-    padding: 20px;
-    
-    .tab-content-wrapper {
-      display: flex;
-      justify-content: center;
-      
-      .tab-content {
-        width: 100%;
-        max-width: 800px;
-        
-        h3 {
-          font-size: 16px;
-          font-weight: 500;
-          color: $text-primary;
-          margin: 0 0 10px 0;
-        }
-        
-        .upload-section,
-        .account-section,
-        .platform-section,
-        .title-section,
-        .product-section,
-        .topic-section,
-        .schedule-section {
-          margin-bottom: 30px;
-        }
+@media (max-width: 1100px) {
+  .publish-workbench { grid-template-columns: 1fr; }
+  .batch-panel { position: static; }
+  .split-section { grid-template-columns: 1fr; }
+}
 
-        .product-section {
-          .product-name-input,
-          .product-link-input {
-            margin-bottom: 5px;
-          }
-        }
-        
-        .video-upload {
-          width: 100%;
-          
-          :deep(.el-upload-dragger) {
-            width: 100%;
-            height: 180px;
-          }
-        }
-        
-        .account-input {
-          max-width: 400px;
-        }
-        
-        .platform-buttons {
-          display: flex;
-          gap: 10px;
-          flex-wrap: wrap;
-          
-          .platform-btn {
-            min-width: 80px;
-          }
-        }
-        
-        .title-input {
-          max-width: 600px;
-        }
-        
-        .topic-display {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          
-          .selected-topics {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            min-height: 32px;
-            
-            .topic-tag {
-              font-size: 14px;
-            }
-          }
-          
-          .select-topic-btn {
-            align-self: flex-start;
-          }
-        }
-        
-        .schedule-controls {
-          display: flex;
-          flex-direction: column;
-          gap: 15px;
-
-          .schedule-settings {
-            margin-top: 15px;
-            padding: 15px;
-            background-color: #f5f7fa;
-            border-radius: 4px;
-
-            .schedule-item {
-              display: flex;
-              align-items: center;
-              margin-bottom: 15px;
-
-              &:last-child {
-                margin-bottom: 0;
-              }
-
-              .label {
-                min-width: 120px;
-                margin-right: 10px;
-              }
-
-              .el-time-select {
-                margin-right: 10px;
-              }
-
-              .el-button {
-                margin-left: 10px;
-              }
-            }
-          }
-        }
-        
-        .action-buttons {
-          display: flex;
-          justify-content: flex-end;
-          gap: 10px;
-          margin-top: 30px;
-          padding-top: 20px;
-          border-top: 1px solid #ebeef5;
-        }
-
-        .draft-section {
-          margin: 20px 0;
-
-          .draft-checkbox {
-            display: block;
-            margin: 10px 0;
-          }
-        }
-
-        .original-section {
-          margin: 10px 0 20px;
-
-          .original-checkbox {
-            display: block;
-            margin: 10px 0;
-          }
-        }
-      }
-    }
-  }
-
-  // 已上传文件列表样式
-  .uploaded-files {
-    margin-top: 20px;
-    
-    h4 {
-      font-size: 16px;
-      font-weight: 500;
-      margin-bottom: 12px;
-      color: #303133;
-    }
-    
-    .file-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      
-      .file-item {
-        display: flex;
-        align-items: center;
-        padding: 10px 15px;
-        background-color: #f5f7fa;
-        border-radius: 4px;
-        
-        .el-link {
-          margin-right: 10px;
-          max-width: 300px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        
-        .file-size {
-          color: #909399;
-          font-size: 13px;
-          margin-right: auto;
-        }
-      }
-    }
-  }
-  
-  // 添加话题弹窗样式
-  .topic-dialog {
-    .topic-dialog-content {
-      .custom-topic-input {
-        display: flex;
-        gap: 12px;
-        margin-bottom: 24px;
-        
-        .custom-input {
-          flex: 1;
-        }
-      }
-      
-      .recommended-topics {
-        h4 {
-          margin: 0 0 16px 0;
-          font-size: 16px;
-          font-weight: 500;
-          color: #303133;
-        }
-        
-        .topic-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-          gap: 12px;
-          
-          .topic-btn {
-            height: 36px;
-            font-size: 14px;
-            border-radius: 6px;
-            min-width: 100px;
-            padding: 0 12px;
-            white-space: nowrap;
-            text-align: center;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            
-            &.el-button--primary {
-              background-color: #409eff;
-              border-color: #409eff;
-              color: white;
-            }
-          }
-        }
-      }
-    }
-    
-    .dialog-footer {
-      display: flex;
-      justify-content: flex-end;
-      gap: 12px;
-    }
-  }
+@media (max-width: 760px) {
+  .page-hero { align-items: flex-start; flex-direction: column; }
+  .section-heading { align-items: flex-start; flex-direction: column; }
+  .two-col,
+  .schedule-item { grid-template-columns: 1fr; }
 }
 </style>
