@@ -37,6 +37,14 @@ export const youtubeApi = {
     return request.post('/youtube/translate/jobs', data)
   },
 
+  createAnalysisJob(data) {
+    return request.post('/youtube/analysis/jobs', data)
+  },
+
+  getVideoAnalysis(videoId) {
+    return request.get(`/youtube/videos/${videoId}/analysis`)
+  },
+
   listWorkflowJobs(params = {}) {
     return request.get('/youtube/workflow/jobs', { params })
   },

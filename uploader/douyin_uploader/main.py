@@ -22,6 +22,7 @@ from utils.log import douyin_logger
 
 DOUYIN_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 DOUYIN_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+DOUYIN_UPLOAD_RETRY_LIMIT = int(os.environ.get("DOUYIN_UPLOAD_RETRY_LIMIT", "0") or 0)
 
 
 def _msg(emoji: str, text: str) -> str:
@@ -382,6 +383,7 @@ class DouYinVideo(DouYinBaseUploader):
         thumbnail_portrait_path=None,
         desc: str | None = None,
         publish_strategy: str = DOUYIN_PUBLISH_STRATEGY_IMMEDIATE,
+        upload_retry_limit: int | None = None,
         debug: bool = DEBUG_MODE,
         headless: bool = LOCAL_CHROME_HEADLESS,
     ):
@@ -400,6 +402,7 @@ class DouYinVideo(DouYinBaseUploader):
         self.productLink = productLink
         self.productTitle = productTitle
         self.desc = desc or ""
+        self.upload_retry_limit = DOUYIN_UPLOAD_RETRY_LIMIT if upload_retry_limit is None else int(upload_retry_limit)
 
     async def validate_upload_args(self):
         await self.validate_base_args()
@@ -412,9 +415,15 @@ class DouYinVideo(DouYinBaseUploader):
         if self.thumbnail_portrait_path:
             self.thumbnail_portrait_path = str(self.validate_image_file(self.thumbnail_portrait_path))
 
-    async def handle_upload_error(self, page):
-        douyin_logger.warning(_msg("😵", "视频上传摔了一跤，小人马上重新上传"))
+    async def handle_upload_error(self, page, retry_count):
+        if retry_count >= self.upload_retry_limit:
+            raise RuntimeError(
+                f"抖音视频上传失败，已停止自动重传。当前自动重试上限为 {self.upload_retry_limit} 次；"
+                "如需允许重试，可在 .env 设置 DOUYIN_UPLOAD_RETRY_LIMIT。"
+            )
+        douyin_logger.warning(_msg("😵", f"检测到上传失败，准备第 {retry_count + 1}/{self.upload_retry_limit} 次重新上传"))
         await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
+        return retry_count + 1
 
     async def handle_auto_video_cover(self, page):
         if await page.get_by_text("请设置封面后再发布").first.is_visible():
@@ -510,17 +519,36 @@ class DouYinVideo(DouYinBaseUploader):
         await self.fill_title_and_description(page, self.title, self.desc or self.title, self.tags)
         douyin_logger.info(_msg("🏷️", f"小人一共贴了 {len(self.tags)} 个话题"))
 
+        upload_retry_count = 0
+        last_upload_progress_text = ""
+        stable_progress_rounds = 0
         while True:
             try:
                 number = await page.locator('[class^="long-card"] div:has-text("重新上传")').count()
                 if number > 0:
                     douyin_logger.success(_msg("🥳", "视频已经传完啦"))
                     break
-                douyin_logger.info(_msg("🏃", "小人正在努力上传视频"))
+                progress_text = ""
+                try:
+                    progress_node = page.locator("div.progress-div").first
+                    if await progress_node.count():
+                        progress_text = (await progress_node.inner_text(timeout=1000)).strip()
+                except Exception:
+                    progress_text = ""
+                if progress_text and progress_text != last_upload_progress_text:
+                    douyin_logger.info(_msg("🏃", f"抖音上传进度: {progress_text}"))
+                    last_upload_progress_text = progress_text
+                    stable_progress_rounds = 0
+                else:
+                    stable_progress_rounds += 1
+                    if stable_progress_rounds % 15 == 0:
+                        douyin_logger.info(_msg("🏃", "抖音仍在上传视频，继续等待"))
                 await asyncio.sleep(2)
                 if await page.locator('div.progress-div > div:has-text("上传失败")').count():
                     douyin_logger.error(_msg("😵", "检测到上传失败，小人准备重试"))
-                    await self.handle_upload_error(page)
+                    upload_retry_count = await self.handle_upload_error(page, upload_retry_count)
+            except RuntimeError:
+                raise
             except Exception:
                 douyin_logger.debug(_msg("🧍", "小人还在等视频上传完成"))
                 await asyncio.sleep(2)
