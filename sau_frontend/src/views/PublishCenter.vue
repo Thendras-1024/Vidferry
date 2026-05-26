@@ -112,6 +112,7 @@
               </div>
             </div>
             <el-input v-model="tab.title" type="textarea" :rows="3" placeholder="请输入标题" maxlength="100" show-word-limit />
+            <el-input v-model="tab.description" type="textarea" :rows="4" placeholder="作品描述，可由视频分析结果自动填充" maxlength="800" show-word-limit />
             <div class="tag-cloud topic-cloud">
               <el-tag v-for="(topic, index) in tab.selectedTopics" :key="index" closable @close="removeTopic(tab, index)">#{{ topic }}</el-tag>
               <el-button type="primary" plain @click="openTopicDialog(tab)">添加话题</el-button>
@@ -171,6 +172,72 @@
       </main>
     </div>
 
+    <section class="published-panel">
+      <div class="panel-heading-row">
+        <div>
+          <span class="panel-kicker">PUBLISHED</span>
+          <h2>已发布视频</h2>
+          <p>汇总已经提交到国内平台的处理后视频，方便从发布中心追踪结果。</p>
+        </div>
+        <el-button :loading="publishedLoading" @click="loadPublishedVideos">
+          <el-icon><Refresh /></el-icon>
+          <span>刷新</span>
+        </el-button>
+      </div>
+
+      <div class="published-summary">
+        <div class="summary-tile">
+          <span>已发布</span>
+          <strong>{{ publishedVideos.length }}</strong>
+        </div>
+        <div class="summary-tile">
+          <span>抖音任务</span>
+          <strong>{{ publishedPlatformStats.douyin }}</strong>
+        </div>
+        <div class="summary-tile">
+          <span>B站任务</span>
+          <strong>{{ publishedPlatformStats.bilibili }}</strong>
+        </div>
+        <div class="summary-tile">
+          <span>处理后素材</span>
+          <strong>{{ publishedMaterialCount }}</strong>
+        </div>
+      </div>
+
+      <div v-if="publishedVideos.length > 0" class="published-list">
+        <article v-for="video in publishedVideos" :key="video.id" class="published-card">
+          <div class="published-cover">
+            <img v-if="video.thumbnail" :src="video.thumbnail" :alt="video.title" />
+            <span v-else>VIDEO</span>
+          </div>
+          <div class="published-body">
+            <div class="published-title-row">
+              <h3>{{ video.title || '未命名视频' }}</h3>
+              <el-tag size="small" type="success">已发布</el-tag>
+            </div>
+            <div class="published-meta">
+              <span>{{ video.channel || '未知博主' }}</span>
+              <span>{{ video.subscribers || '粉丝未知' }}</span>
+              <span>{{ video.publishedAt || '原发布时间未知' }}</span>
+              <span>{{ video.duration || '-' }}</span>
+            </div>
+            <div class="published-tags">
+              <el-tag v-for="tag in publishedPlatforms(video)" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
+              <el-tag size="small" type="warning" effect="light">{{ video.processVersionLabel || '处理版本未知' }}</el-tag>
+              <el-tag size="small" type="success" effect="plain">{{ video.subtitleLanguageLabel || '字幕语言未知' }}</el-tag>
+              <span>{{ video.processedFileSizeLabel || '素材大小未知' }}</span>
+            </div>
+            <div class="published-actions">
+              <el-link v-if="video.url" :href="video.url" target="_blank" type="primary">打开原链接</el-link>
+              <el-link v-if="video.processedPreviewUrl" :href="video.processedPreviewUrl" target="_blank" type="success">预览处理后视频</el-link>
+              <span>{{ video.publishedLabel }}</span>
+            </div>
+          </div>
+        </article>
+      </div>
+      <el-empty v-else description="暂无已发布视频，发布成功后会在这里汇总展示。" :image-size="84" />
+    </section>
+
     <el-dialog v-model="batchPublishDialogVisible" title="批量发布进度" width="500px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="false">
       <div class="publish-progress">
         <el-progress :percentage="publishProgress" :status="publishProgress === 100 ? 'success' : ''" />
@@ -190,7 +257,13 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="materialLibraryVisible" title="选择处理后视频" width="860px" class="material-library-dialog">
+    <el-dialog
+      v-model="materialLibraryVisible"
+      title="选择处理后视频"
+      width="min(960px, calc(100vw - 32px))"
+      top="6vh"
+      class="material-library-dialog"
+    >
       <el-alert
         title="发布中心只显示已经完成字幕、作者信息和兼容转码的处理后视频。"
         type="info"
@@ -251,12 +324,13 @@
   </div>
 </template>
 <script setup>
-import { ref, reactive, computed } from 'vue'
-import { Plus, Close, Folder } from '@element-plus/icons-vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { Plus, Close, Folder, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import { materialApi } from '@/api/material'
+import { youtubeApi } from '@/api/youtube'
 import { http } from '@/utils/request'
 
 // 当前激活的tab
@@ -264,6 +338,8 @@ const activeTab = ref('tab1')
 
 // tab计数器
 let tabCounter = 1
+
+const PUBLISH_DRAFT_STORAGE_KEY = 'vidferry:publish-center:draft:v1'
 
 // 获取应用状态管理
 const appStore = useAppStore()
@@ -276,6 +352,8 @@ const materials = computed(() => appStore.materials)
 const publishableMaterials = computed(() => {
   return materials.value.filter(material => material.source_type === 'youtube_processed')
 })
+const publishedLoading = ref(false)
+const publishedVideos = ref([])
 
 // 批量发布相关状态
 const batchPublishing = ref(false)
@@ -285,10 +363,16 @@ const batchPublishType = ref('info')
 // 平台列表 - 对应后端type字段
 const platforms = [
   { key: 3, name: '抖音' },
+  { key: 5, name: 'B站' },
   { key: 4, name: '快手' },
   { key: 2, name: '视频号' },
   { key: 1, name: '小红书' }
 ]
+
+const platformNameByKey = platforms.reduce((map, platform) => {
+  map[platform.key] = platform.name
+  return map
+}, {})
 
 const defaultTabInit = {
   name: 'tab1',
@@ -298,6 +382,7 @@ const defaultTabInit = {
   selectedAccounts: [], // 选中的账号ID列表
   selectedPlatform: 1, // 选中的平台（单选）
   title: '',
+  description: '',
   productLink: '', // 商品链接
   productTitle: '', // 商品名称
   selectedTopics: [], // 话题列表（不带#号）
@@ -321,10 +406,89 @@ const makeNewTab = () => {
   }
 }
 
+const readPublishDraft = () => {
+  try {
+    const raw = localStorage.getItem(PUBLISH_DRAFT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed?.tabs) ? parsed : null
+  } catch (error) {
+    console.warn('读取发布中心草稿失败:', error)
+    return null
+  }
+}
+
+const normalizePublishTab = (tab, index) => {
+  const nextTab = makeNewTab()
+  Object.assign(nextTab, {
+    ...tab,
+    name: tab?.name || `tab${index + 1}`,
+    label: tab?.label || `发布${index + 1}`,
+    fileList: Array.isArray(tab?.fileList) ? tab.fileList : [],
+    selectedAccounts: Array.isArray(tab?.selectedAccounts) ? tab.selectedAccounts : [],
+    selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
+    dailyTimes: Array.isArray(tab?.dailyTimes) && tab.dailyTimes.length > 0 ? tab.dailyTimes : ['10:00'],
+    publishStatus: null,
+    publishing: false
+  })
+  nextTab.displayFileList = nextTab.fileList.map(item => ({
+    name: item.name,
+    url: item.url
+  }))
+  return nextTab
+}
+
+const serializePublishTab = (tab) => ({
+  name: tab.name,
+  label: tab.label,
+  fileList: tab.fileList,
+  displayFileList: tab.displayFileList,
+  selectedAccounts: tab.selectedAccounts,
+  selectedPlatform: tab.selectedPlatform,
+  title: tab.title,
+  description: tab.description,
+  productLink: tab.productLink,
+  productTitle: tab.productTitle,
+  selectedTopics: tab.selectedTopics,
+  scheduleEnabled: tab.scheduleEnabled,
+  videosPerDay: tab.videosPerDay,
+  dailyTimes: tab.dailyTimes,
+  startDays: tab.startDays,
+  isDraft: tab.isDraft,
+  isOriginal: tab.isOriginal
+})
+
+const savePublishDraft = () => {
+  try {
+    localStorage.setItem(PUBLISH_DRAFT_STORAGE_KEY, JSON.stringify({
+      activeTab: activeTab.value,
+      tabCounter,
+      tabs: tabs.map(serializePublishTab)
+    }))
+  } catch (error) {
+    console.warn('保存发布中心草稿失败:', error)
+  }
+}
+
+const restoredDraft = readPublishDraft()
+const restoredTabs = restoredDraft?.tabs?.length
+  ? restoredDraft.tabs.map(normalizePublishTab)
+  : [makeNewTab()]
+
+if (restoredDraft?.activeTab && restoredTabs.some(tab => tab.name === restoredDraft.activeTab)) {
+  activeTab.value = restoredDraft.activeTab
+}
+
+tabCounter = Math.max(
+  Number(restoredDraft?.tabCounter || 1),
+  ...restoredTabs.map(tab => Number(String(tab.name).replace('tab', '')) || 1)
+)
+
 // tab页数据 - 默认只有一个tab (use deep copy to avoid shared refs)
-const tabs = reactive([
-  makeNewTab()
-])
+const tabs = reactive(restoredTabs)
+
+watch(activeTab, savePublishDraft)
+watch(tabs, savePublishDraft, { deep: true })
 
 // 账号相关状态
 const accountDialogVisible = ref(false)
@@ -338,6 +502,7 @@ const accountStore = useAccountStore()
 const availableAccounts = computed(() => {
   const platformMap = {
     3: '抖音',
+    5: 'B站',
     2: '视频号',
     1: '小红书',
     4: '快手'
@@ -391,6 +556,31 @@ const removeFile = (tab, index) => {
   }))]
   
   ElMessage.success('文件删除成功')
+}
+
+const normalizeAnalysisTags = (tags = []) => {
+  return Array.isArray(tags)
+    ? tags.map(tag => String(tag || '').trim().replace(/^#/, '')).filter(Boolean)
+    : []
+}
+
+const applyAnalysisToPublishTab = (tab, analysisResults = []) => {
+  const firstResult = analysisResults.find(result => result && Object.keys(result).length > 0)
+  if (!firstResult) return
+
+  const titleOptions = Array.isArray(firstResult.title_options) ? firstResult.title_options.filter(Boolean) : []
+  if (!tab.title.trim() && titleOptions.length > 0) {
+    tab.title = titleOptions[0]
+  }
+
+  if (!tab.description.trim() && firstResult.publish_copy) {
+    tab.description = firstResult.publish_copy
+  }
+
+  const nextTags = normalizeAnalysisTags(firstResult.tags)
+  if (tab.selectedTopics.length === 0 && nextTags.length > 0) {
+    tab.selectedTopics = nextTags
+  }
 }
 
 // 话题相关方法
@@ -483,6 +673,78 @@ const formatFileSize = (size) => {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
+const formatMaterialSizeMb = (size) => {
+  const mb = Number(size || 0)
+  if (!mb) return ''
+  return `${mb.toFixed(2)} MB`
+}
+
+const materialByVideoId = computed(() => {
+  const map = new Map()
+  publishableMaterials.value.forEach(material => {
+    const videoId = material.source_video_id || material.metadata?.videoId
+    if (!videoId) return
+    const existing = map.get(videoId)
+    if (!existing || Number(material.id || 0) > Number(existing.id || 0)) {
+      map.set(videoId, material)
+    }
+  })
+  return map
+})
+
+const publishedMaterialCount = computed(() => {
+  return publishedVideos.value.filter(video => Boolean(video.processedFilePath)).length
+})
+
+const publishedPlatformStats = computed(() => {
+  return publishedVideos.value.reduce((stats, video) => {
+    if (video.publishToDouyin) stats.douyin += 1
+    if (video.publishToBilibili) stats.bilibili += 1
+    return stats
+  }, { douyin: 0, bilibili: 0 })
+})
+
+const publishedPlatforms = (video) => {
+  const tags = []
+  if (video.publishToDouyin) tags.push(platformNameByKey[3])
+  if (video.publishToBilibili) tags.push('B站')
+  if (tags.length === 0) tags.push('发布中心')
+  return tags
+}
+
+const loadPublishedVideos = async () => {
+  publishedLoading.value = true
+  try {
+    const [videoResponse, materialResponse] = await Promise.all([
+      youtubeApi.list(),
+      materialApi.getAllMaterials()
+    ])
+    if (materialResponse?.code === 200) {
+      appStore.setMaterials(materialResponse.data || [])
+    }
+    const sourceItems = videoResponse?.data?.items || []
+    publishedVideos.value = sourceItems
+      .filter(item => item.publishStatus === 1)
+      .map(item => {
+        const material = materialByVideoId.value.get(item.id)
+        return {
+          ...item,
+          processVersionLabel: material ? processVersionLabel(material.processVersion) : processVersionLabel(item.processVersion),
+          subtitleLanguageLabel: material?.subtitleLanguageLabel || item.subtitleLanguageLabel || '字幕语言未知',
+          processedFilePath: material?.file_path || item.processedFilePath || '',
+          processedPreviewUrl: material?.file_path ? materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()) : '',
+          processedFileSizeLabel: material ? formatMaterialSizeMb(material.filesize) : '',
+          publishedLabel: item.updatedAt ? `状态更新时间 ${item.updatedAt}` : '已提交发布'
+        }
+      })
+  } catch (error) {
+    console.error('加载已发布视频失败:', error)
+    ElMessage.error('加载已发布视频失败')
+  } finally {
+    publishedLoading.value = false
+  }
+}
+
 // 取消发布
 const cancelPublish = (tab) => {
   ElMessage.info('已取消发布')
@@ -529,6 +791,7 @@ const confirmPublish = async (tab) => {
   const publishData = {
     type: tab.selectedPlatform,
     title: tab.title,
+    description: tab.description,
     tags: tab.selectedTopics, // 不带#号的话题列表
     fileList: tab.fileList.map(file => file.path), // 只发送文件路径
     accountList: tab.selectedAccounts.map(accountId => {
@@ -548,6 +811,7 @@ const confirmPublish = async (tab) => {
   // 调用后端发布API（使用统一的http封装）
   try {
     const data = await http.post('/postVideo', publishData)
+    await loadPublishedVideos()
     tab.publishStatus = {
       message: '发布成功',
       type: 'success'
@@ -556,6 +820,7 @@ const confirmPublish = async (tab) => {
     tab.fileList = []
     tab.displayFileList = []
     tab.title = ''
+    tab.description = ''
     tab.selectedTopics = []
     tab.selectedAccounts = []
     tab.scheduleEnabled = false
@@ -602,9 +867,13 @@ const confirmMaterialSelection = () => {
   
   if (currentUploadTab.value) {
     // 将选中的素材添加到当前tab的文件列表
+    const selectedAnalysisResults = []
     selectedMaterials.value.forEach(materialId => {
       const material = publishableMaterials.value.find(m => m.id === materialId)
       if (material) {
+        if (material.analysisResult && Object.keys(material.analysisResult).length > 0) {
+          selectedAnalysisResults.push(material.analysisResult)
+        }
         const fileInfo = {
           name: material.displayTitle || material.filename,
           displayTitle: material.displayTitle || material.filename,
@@ -615,6 +884,7 @@ const confirmMaterialSelection = () => {
           subtitleLanguage: material.subtitleLanguage || '',
           subtitleLanguageLabel: material.subtitleLanguageLabel || '',
           sourceType: material.source_type,
+          analysisResult: material.analysisResult || {},
           materialId: material.id,
           url: materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()),
           path: material.file_path,
@@ -629,6 +899,8 @@ const confirmMaterialSelection = () => {
         }
       }
     })
+
+    applyAnalysisToPublishTab(currentUploadTab.value, selectedAnalysisResults)
     
     // 更新显示列表
     currentUploadTab.value.displayFileList = [...currentUploadTab.value.fileList.map(item => ({
@@ -726,6 +998,10 @@ const batchPublish = async () => {
     isCancelled.value = false
   }
 }
+
+onMounted(() => {
+  loadPublishedVideos()
+})
 </script>
 
 <style lang="scss" scoped>
@@ -768,6 +1044,117 @@ $ink-strong: #172033;
 .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .publish-workbench { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
+
+.published-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid $panel-border;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: $panel-shadow;
+}
+
+.panel-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  h2 { margin: 2px 0 6px; color: $ink-strong; font-size: 18px; }
+  p { margin: 0; color: $text-secondary; font-size: 13px; line-height: 1.6; }
+}
+
+.published-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.summary-tile {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #f8fbff;
+
+  span { color: $text-secondary; font-size: 12px; }
+  strong { color: $ink-strong; font-size: 22px; line-height: 1.1; }
+}
+
+.published-list {
+  display: grid;
+  gap: 10px;
+}
+
+.published-card {
+  display: grid;
+  grid-template-columns: 138px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.published-cover {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  min-height: 78px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #eef4fb;
+  color: $accent-blue;
+  font-size: 12px;
+  font-weight: 700;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.published-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.published-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+
+  h3 {
+    margin: 0;
+    color: $ink-strong;
+    font-size: 15px;
+    line-height: 1.45;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
+
+.published-meta,
+.published-tags,
+.published-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.published-actions {
+  justify-content: space-between;
+}
 
 .batch-panel { padding: 14px; position: sticky; top: 12px; }
 .panel-title h2 { margin: 2px 0 12px; color: $ink-strong; font-size: 18px; }
@@ -815,13 +1202,41 @@ $ink-strong: #172033;
 .option-btn { width: 100%; height: 46px; }
 .custom-topic-input { display: flex; gap: 10px; margin-bottom: 18px; }
 .topic-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+:global(.material-library-dialog) {
+  width: min(960px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+:global(.material-library-dialog .el-dialog__body) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
 .material-library-dialog :deep(.el-alert) { margin-bottom: 12px; }
-.publishable-list { max-height: 430px; }
-.publishable-item { align-items: flex-start; }
-.publishable-item :deep(.el-checkbox) { width: 100%; align-items: flex-start; }
-.publishable-item :deep(.el-checkbox__label) { min-width: 0; flex: 1; }
-.material-info { display: grid; gap: 7px; min-width: 0; }
-.material-name { color: $ink-strong; font-weight: 650; }
+.publishable-list {
+  max-height: min(62vh, 620px);
+  padding-right: 4px;
+}
+.publishable-item { align-items: flex-start; min-height: 92px; }
+.publishable-item :deep(.el-checkbox) { width: 100%; align-items: flex-start; height: auto; }
+.publishable-item :deep(.el-checkbox__input) { margin-top: 3px; }
+.publishable-item :deep(.el-checkbox__label) {
+  min-width: 0;
+  flex: 1;
+  line-height: 1.45;
+  white-space: normal;
+}
+.material-info { display: grid; gap: 7px; min-width: 0; width: 100%; }
+.material-name {
+  color: $ink-strong;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
 .publish-progress { display: grid; gap: 14px; padding: 12px; }
 .result-item { display: flex; gap: 10px; padding: 8px 0; color: $text-secondary; }
 .result-item.success { color: $success-color; }
@@ -832,12 +1247,16 @@ $ink-strong: #172033;
 
 @media (max-width: 1100px) {
   .publish-workbench { grid-template-columns: 1fr; }
+  .published-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .batch-panel { position: static; }
   .split-section { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
   .page-hero { align-items: flex-start; flex-direction: column; }
+  .panel-heading-row { align-items: flex-start; flex-direction: column; }
+  .published-summary,
+  .published-card { grid-template-columns: 1fr; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .two-col,
   .schedule-item { grid-template-columns: 1fr; }

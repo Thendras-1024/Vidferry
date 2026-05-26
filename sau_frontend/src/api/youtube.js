@@ -45,6 +45,10 @@ export const youtubeApi = {
     return request.get(`/youtube/videos/${videoId}/analysis`)
   },
 
+  updateVideoAnalysis(videoId, data) {
+    return request.patch(`/youtube/videos/${videoId}/analysis`, data)
+  },
+
   listWorkflowJobs(params = {}) {
     return request.get('/youtube/workflow/jobs', { params })
   },
