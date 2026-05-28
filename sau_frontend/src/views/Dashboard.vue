@@ -56,34 +56,82 @@
       <template #header>
         <div class="panel-header">
           <div>
-            <span class="panel-kicker">PUBLISHED MATERIALS</span>
-            <h2>已发布素材</h2>
+            <span class="panel-kicker">PUBLISH TASKS</span>
+            <h2>发布任务完成情况</h2>
           </div>
           <el-button text type="primary" @click="navigateTo('/publish-center')">查看发布中心</el-button>
         </div>
       </template>
 
-      <el-table :data="recentPublishedMaterials" style="width: 100%" v-loading="loading" empty-text="暂无已发布素材">
-        <el-table-column label="素材" min-width="320">
+      <el-table
+        :data="recentPublishTasks"
+        style="width: 100%"
+        v-loading="loading"
+        empty-text="暂无发布任务记录"
+      >
+        <el-table-column type="expand" width="44">
           <template #default="{ row }">
-            <div class="material-cell">
-              <strong>{{ publishedChineseTitle(row) }}</strong>
-              <span>{{ publishedEnglishTitle(row) }}</span>
+            <div class="target-records">
+              <div class="target-help">
+                删除只会清理本地发布记录和平台占用状态，不会删除平台上已经发布的视频。
+              </div>
+              <div
+                v-for="target in row.targets"
+                :key="target.id"
+                class="target-row"
+              >
+                <div class="target-platform">
+                  <el-tag size="small" effect="plain">{{ target.platform || platformTypeLabel(target.platformType) }}</el-tag>
+                  <span>{{ target.accountName || target.accountFile || '未记录账号' }}</span>
+                </div>
+                <el-tag size="small" :type="publishStatusTag(target.status)" effect="plain">
+                  {{ publishStatusText(target.status) }}
+                </el-tag>
+                <span class="target-meta">耗时 {{ formatDurationMs(target.durationMs) }}</span>
+                <span class="target-meta">{{ target.updatedAt || target.publishedAt || '-' }}</span>
+                <span class="target-message">{{ target.message || '-' }}</span>
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :disabled="isTargetRecordLocked(target)"
+                  @click="deletePublishRecord(row, target)"
+                >
+                  删除记录
+                </el-button>
+              </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="filesize" label="大小" width="110">
+        <el-table-column label="发布任务" min-width="360">
+          <template #default="{ row }">
+            <div class="material-cell">
+              <strong>{{ row.chineseTitle || '未命名发布任务' }}</strong>
+              <span>{{ row.englishTitle || row.sourceUrl || '暂无英文标题' }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="110">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="publishedAt" label="发布时间" width="180" />
-        <el-table-column label="平台" width="120">
+        <el-table-column prop="publishedAt" label="任务时间" width="180" />
+        <el-table-column label="总体状态" width="120">
           <template #default="{ row }">
-            <el-tag type="success" effect="plain" size="small">
-              {{ row.platform || '已发布' }}
+            <el-tag :type="publishStatusTag(row.overallStatus)" effect="plain" size="small">
+              {{ publishStatusText(row.overallStatus) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="平台情况" width="170">
+          <template #default="{ row }">
+            <div class="status-summary">
+              <span class="success">成功 {{ row.summary?.success || 0 }}</span>
+              <span class="failed">失败 {{ (row.summary?.failed || 0) + (row.summary?.timeout || 0) }}</span>
+              <span>共 {{ row.summary?.total || 0 }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <el-link
               v-if="publishedPreviewUrl(row)"
@@ -91,7 +139,7 @@
               target="_blank"
               type="primary"
             >
-              预览
+              预览视频
             </el-link>
             <span v-else class="muted-text">无预览</span>
           </template>
@@ -104,8 +152,9 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  User, Platform, Document, Upload, Timer, DataAnalysis, Search, Refresh, Picture
+  User, Upload, Timer, DataAnalysis, Search, Refresh, Picture
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
@@ -166,51 +215,96 @@ const contentStats = computed(() => {
   return { total: materials.length, videos, images, others: materials.length - videos - images }
 })
 
-const recentPublishedMaterials = computed(() => {
-  return [...appStore.publishedMaterials]
+const recentPublishTasks = computed(() => {
+  return [...appStore.publishTasks]
     .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
     .slice(0, 6)
 })
-
-const stripPublishTitleMeta = (value = '') => {
-  return String(value || '').split('; description=')[0].trim()
-}
-
-const publishedChineseTitle = (row) => {
-  return stripPublishTitleMeta(row.publishTitle) || row.metadata?.publishTitle || row.title || row.filename || '未命名发布素材'
-}
-
-const publishedEnglishTitle = (row) => {
-  return row.title || row.filename || row.sourceUrl || '暂无英文标题'
-}
 
 const publishedPreviewUrl = (row) => {
   if (!row.filePath) return ''
   return materialApi.getMaterialPreviewUrl(row.filePath)
 }
 
-const getFileType = (filename = '') => {
-  if (videoExtensions.some(ext => filename.toLowerCase().endsWith(ext))) return '视频'
-  if (imageExtensions.some(ext => filename.toLowerCase().endsWith(ext))) return '图片'
-  return '其他'
-}
-
-const getFileTypeTag = (filename) => {
-  const type = getFileType(filename)
-  return { 视频: 'success', 图片: 'warning', 其他: 'info' }[type] || 'info'
-}
-
 const navigateTo = (path) => {
   router.push(path)
+}
+
+const platformTypeLabel = (type) => {
+  return {
+    1: '小红书',
+    2: '快手',
+    3: '抖音',
+    4: '视频号',
+    5: 'B站'
+  }[Number(type)] || '未知平台'
+}
+
+const publishStatusText = (status = '') => {
+  return {
+    pending: '等待发布',
+    running: '发布中',
+    success: '发布成功',
+    failed: '发布失败',
+    timeout: '发布超时',
+    partial: '部分成功'
+  }[status || 'success'] || '未知'
+}
+
+const publishStatusTag = (status = '') => {
+  return {
+    pending: 'warning',
+    running: 'primary',
+    success: 'success',
+    failed: 'danger',
+    timeout: 'danger',
+    partial: 'warning'
+  }[status || 'success'] || 'info'
+}
+
+const formatDurationMs = (value) => {
+  const ms = Number(value || 0)
+  if (!ms) return '-'
+  if (ms < 1000) return `${ms}ms`
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
+}
+
+const isTargetRecordLocked = (target) => ['pending', 'running'].includes(target.status)
+
+const deletePublishRecord = async (task, target) => {
+  void task
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${target.platform || platformTypeLabel(target.platformType)}」的本地发布记录？此操作不会删除平台上已经发布的视频，但会释放该平台状态，允许后续重新发布。`,
+      '删除本地发布记录',
+      {
+        confirmButtonText: '删除记录',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    const res = await materialApi.deletePublishTargetRecord(target.id)
+    if (res.code !== 200) {
+      throw new Error(res.msg || '删除失败')
+    }
+    ElMessage.success(res.msg || '已删除本地发布记录')
+    await fetchDashboardData()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error.message || '删除发布记录失败')
+  }
 }
 
 const fetchDashboardData = async () => {
   loading.value = true
   try {
-    const [accountRes, materialRes, publishedRes] = await Promise.allSettled([
+    const [accountRes, materialRes, publishTasksRes] = await Promise.allSettled([
       accountApi.getAccounts(),
       materialApi.getAllMaterials({ page: 1, pageSize: 20 }),
-      materialApi.getPublishedMaterials({ limit: 20 })
+      materialApi.getPublishTasks({ limit: 20 })
     ])
 
     if (accountRes.status === 'fulfilled' && accountRes.value.code === 200) {
@@ -220,8 +314,8 @@ const fetchDashboardData = async () => {
       appStore.setMaterials(materialRes.value.data?.items || [])
       materialSummary.value = materialRes.value.data?.summary || materialSummary.value
     }
-    if (publishedRes.status === 'fulfilled' && publishedRes.value.code === 200) {
-      appStore.setPublishedMaterials(publishedRes.value.data || [])
+    if (publishTasksRes.status === 'fulfilled' && publishTasksRes.value.code === 200) {
+      appStore.setPublishTasks(publishTasksRes.value.data || [])
     }
   } catch (error) {
     console.error('获取仪表盘数据失败:', error)
@@ -400,9 +494,83 @@ $ink-strong: #172033;
   }
 }
 
+.target-records {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: #f8fbff;
+}
+
+.target-help {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.target-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) 90px 90px 170px minmax(180px, 1fr) 88px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dce6f2;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.target-platform {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+
+  span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    color: #4b5563;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.target-meta {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.target-message {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+
+  .success {
+    color: #059669;
+  }
+
+  .failed {
+    color: #dc2626;
+  }
+}
+
 @media (max-width: 1200px) {
   .quick-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .target-row {
+    grid-template-columns: 1fr 90px 80px;
   }
 }
 
@@ -414,6 +582,10 @@ $ink-strong: #172033;
 
   .metric-grid,
   .quick-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .target-row {
     grid-template-columns: 1fr;
   }
 }

@@ -6,13 +6,8 @@ Vidferry is a local-first video lead, download, processing, material, account, a
 
 Prioritize the current Web workflow and the main `sau` CLI path. Do not expand legacy `examples/` unless a task explicitly asks for it.
 
-## Backend Rules
-
-- Do not add new business logic to `sau_backend.py`.
-- Put new backend code under `sau_backend/`.
-- Keep routes thin; move state, file, task, account, and publishing logic into services, repositories, workflow, or security modules.
-- Any change touching videos, materials, or workflow jobs must keep their states synchronized.
-- Ask the user for confirmation before any action that restarts or stops the backend service.
+## Code Modularization Rules
+Split code by functional modules. Do not put all functions and logic into one single file. Create separate files for business features, utilities and configurations. The entry file is only for invocation, without specific business logic.
 
 ## State Rules
 
@@ -21,6 +16,7 @@ Prioritize the current Web workflow and the main `sau` CLI path. Do not expand l
 - Active jobs are `queued` or `running`.
 - Interrupted jobs must become `abnormal` with an error code and reason.
 - Frontend must not directly fake completed download, process, or publish states.
+- Do not add fallback logic to hide or bypass bugs unless the user explicitly approves that fallback. Prefer surfacing clear errors, logs, and root causes.
 
 ## Security Rules
 

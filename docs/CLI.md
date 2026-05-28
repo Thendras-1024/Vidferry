@@ -9,7 +9,7 @@
 
 实现说明：
 
-- `sau_cli.py` 是当前 CLI 的主入口和唯一主要实现文件
+- `sau_cli.py` 是兼容主入口，具体参数、调度和平台动作在 `app/cli/` 中实现
 - `sau.exe` 是安装后在 Windows 虚拟环境里自动生成的命令入口，本质上还是调用 `sau_cli.py`
 - 如果需要给 OpenClaw、Codex 等 agent 使用，可参考仓库内 skill：
   - `skills/douyin-upload/`

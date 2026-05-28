@@ -67,5 +67,17 @@ export const youtubeApi = {
 
   getWorkflowStatistics(params = {}) {
     return request.get('/youtube/workflow/statistics', { params })
+  },
+
+  getBilibiliCategories() {
+    return request.get('/bilibili/categories')
+  },
+
+  getWorkflowSettings() {
+    return request.get('/youtube/workflow/settings')
+  },
+
+  updateWorkflowSettings(data) {
+    return request.put('/youtube/workflow/settings', data)
   }
 }

@@ -120,7 +120,18 @@
           <span class="section-kicker">原始素材</span>
           <h2>下载原视频</h2>
         </div>
-        <span class="section-count">第 {{ downloadedPagination.page }} 页 · {{ downloadedMaterials.length }} / {{ downloadedTotal }} 条</span>
+        <div class="section-header-actions">
+          <span class="section-count">第 {{ downloadedPagination.page }} 页 · {{ downloadedMaterials.length }} / {{ downloadedTotal }} 条</span>
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            :disabled="selectedDownloadedMaterials.length === 0"
+            @click="handleBatchDelete('downloaded')"
+          >
+            批量删除 {{ selectedDownloadedMaterials.length || '' }}
+          </el-button>
+        </div>
       </div>
 
       <el-table
@@ -934,8 +945,8 @@ const handleDelete = (material) => {
     .catch(() => {})
 }
 
-const handleBatchDelete = async () => {
-  const rows = selectedMaterials.value
+const handleBatchDelete = async (scope = 'all') => {
+  const rows = scope === 'downloaded' ? selectedDownloadedMaterials.value : selectedMaterials.value
   if (rows.length === 0) {
     ElMessage.warning('请先选择要删除的视频素材')
     return
@@ -1155,6 +1166,14 @@ $ink-strong: #172033;
 .section-count {
   color: $text-secondary;
   font-size: 13px;
+}
+
+.section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .table-pagination {

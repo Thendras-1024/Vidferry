@@ -132,14 +132,25 @@
             clearable
             placeholder="B站账号"
           />
-          <el-input-number
+          <el-select
             v-if="workflowForm.publishToBilibili"
             v-model="workflowForm.bilibiliTid"
-            :min="1"
-            :max="999"
-            controls-position="right"
             class="tid-input"
-          />
+            filterable
+            placeholder="B站分区"
+          >
+            <el-option
+              v-for="category in bilibiliCategories"
+              :key="category.tid"
+              :label="`${category.label}（${category.tid}）`"
+              :value="category.tid"
+            />
+            <el-option
+              v-if="isUnknownBilibiliTid(workflowForm.bilibiliTid)"
+              :label="`未知分区（${workflowForm.bilibiliTid}）`"
+              :value="workflowForm.bilibiliTid"
+            />
+          </el-select>
           <el-input
             v-model="workflowForm.tags"
             class="tag-input"
@@ -176,21 +187,20 @@
             </el-button>
             <el-select v-model="videoFilter.status" class="status-select" size="small" aria-label="显示状态">
               <el-option label="全部状态" value="all" />
-              <el-option label="未下载" value="notDownloaded" />
+              <el-option label="初始线索" value="initial" />
               <el-option label="已下载" value="downloaded" />
-              <el-option label="未处理" value="notTranslated" />
-              <el-option label="已处理" value="translated" />
-              <el-option label="已跳过处理" value="translationSkipped" />
-              <el-option label="未发布" value="notPublished" />
+              <el-option label="已处理" value="processed" />
               <el-option label="已发布" value="published" />
               <el-option label="运行中" value="running" />
+              <el-option label="任务失败" value="failed" />
+              <el-option label="任务异常" value="abnormal" />
+              <el-option label="已跳过处理" value="translationSkipped" />
             </el-select>
             <el-select v-model="videoFilter.sort" class="sort-select" size="small" aria-label="排序方式">
               <el-option label="默认顺序" value="default" />
-              <el-option label="待处理优先" value="pendingFirst" />
-              <el-option label="已下载优先" value="downloadedFirst" />
-              <el-option label="已处理优先" value="translatedFirst" />
-              <el-option label="已发布优先" value="publishedFirst" />
+              <el-option label="发布时间最新" value="publishedNewest" />
+              <el-option label="视频时长最短" value="durationShortest" />
+              <el-option label="状态完成度" value="stageProgress" />
             </el-select>
             <span class="panel-count">第 {{ videoPagination.page }} 页 · {{ items.length }} / {{ videoTotal }} 条</span>
           </div>
@@ -216,7 +226,16 @@
               </div>
               <div class="video-info">
                 <div class="title-line">
-                  <span class="stage-badge" :class="currentStage(row).className">{{ currentStage(row).label }}</span>
+                  <button
+                    v-if="stageErrorJob(row)"
+                    type="button"
+                    class="stage-badge stage-badge-button"
+                    :class="currentStage(row).className"
+                    @click="showJobErrorDetails(row)"
+                  >
+                    {{ currentStage(row).label }}
+                  </button>
+                  <span v-else class="stage-badge" :class="currentStage(row).className">{{ currentStage(row).label }}</span>
                   <a :href="row.url" target="_blank" rel="noopener noreferrer" class="video-title">
                     {{ row.title || '未获取到标题' }}
                   </a>
@@ -678,6 +697,51 @@
         <el-button @click="analysisDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="jobErrorDialogVisible"
+      title="任务失败详情"
+      width="560px"
+      destroy-on-close
+    >
+      <div v-if="currentErrorJob" class="job-error-detail">
+        <div class="detail-row">
+          <span>任务状态</span>
+          <strong>{{ jobStatusText(currentErrorJob.status) }}</strong>
+        </div>
+        <div class="detail-row">
+          <span>当前阶段</span>
+          <strong>{{ jobStepText(currentErrorJob.step) }}</strong>
+        </div>
+        <div class="detail-row" v-if="currentErrorJob.errorReason">
+          <span>错误原因</span>
+          <p>{{ currentErrorJob.errorReason }}</p>
+        </div>
+        <div class="detail-row" v-if="currentErrorJob.errorCode">
+          <span>错误码</span>
+          <code>{{ currentErrorJob.errorCode }}</code>
+        </div>
+        <div class="detail-row" v-if="currentErrorJob.errorType">
+          <span>错误类型</span>
+          <code>{{ currentErrorJob.errorType }}</code>
+        </div>
+        <div class="detail-row" v-if="currentErrorJob.errorDetail">
+          <span>详细信息</span>
+          <p>{{ currentErrorJob.errorDetail }}</p>
+        </div>
+        <div class="detail-row" v-if="currentErrorJob.message">
+          <span>任务消息</span>
+          <p>{{ currentErrorJob.message }}</p>
+        </div>
+        <el-empty
+          v-if="!jobErrorMessageAvailable(currentErrorJob)"
+          description="暂无详细错误信息，请查看任务列表消息"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="jobErrorDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -709,6 +773,8 @@ const analysisLoading = ref(false)
 const analysisResult = ref(null)
 const analysisStatus = ref(0)
 const currentAnalysisRow = ref(null)
+const jobErrorDialogVisible = ref(false)
+const currentErrorJob = ref(null)
 const videoTableRef = ref(null)
 const items = ref([])
 const jobs = ref([])
@@ -733,6 +799,7 @@ let clockTimer = null
 let jobsRequesting = false
 let workflowSettingsLoaded = false
 let loadingWorkflowSettings = false
+let workflowSettingsSaveTimer = null
 
 const openSettingsFromLayout = () => {
   settingsDialogVisible.value = true
@@ -747,7 +814,7 @@ const consumeOpenSettingsQuery = async () => {
 
 const form = reactive({
   query: 'foreigner China travel vlog first time in China',
-  limit: 12
+  limit: 8
 })
 
 const manualForm = reactive({
@@ -759,7 +826,7 @@ const workflowForm = reactive({
   account: 'creator',
   publishToBilibili: false,
   bilibiliAccount: 'creator',
-  bilibiliTid: 249,
+  bilibiliTid: 21,
   tags: '中国旅行,外国人在中国',
   processVersion: 'translation_v1',
   subtitleLanguage: 'zh-CN',
@@ -769,6 +836,44 @@ const workflowForm = reactive({
 })
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
+
+const fallbackBilibiliCategories = [
+  { tid: 21, group: '生活', name: '日常', label: '生活 / 日常' },
+  { tid: 180, group: '纪录片', name: '社会·美食·旅行', label: '纪录片 / 社会·美食·旅行' },
+  { tid: 37, group: '纪录片', name: '人文·历史', label: '纪录片 / 人文·历史' },
+  { tid: 201, group: '知识', name: '科学科普', label: '知识 / 科学科普' },
+  { tid: 124, group: '知识', name: '社科·法律·心理', label: '知识 / 社科·法律·心理' },
+  { tid: 215, group: '美食', name: '美食记录', label: '美食 / 美食记录' },
+  { tid: 95, group: '科技', name: '数码', label: '科技 / 数码' }
+]
+
+const bilibiliCategories = ref(fallbackBilibiliCategories)
+const defaultBilibiliTid = ref(21)
+
+const isUnknownBilibiliTid = (tid) => {
+  const value = Number(tid || 0)
+  return value > 0 && !bilibiliCategories.value.some(category => Number(category.tid) === value)
+}
+
+const loadBilibiliCategories = async () => {
+  try {
+    const response = await youtubeApi.getBilibiliCategories()
+    const items = response.data?.items || response.items || []
+    if (Array.isArray(items) && items.length > 0) {
+      bilibiliCategories.value = items.map(item => ({
+        ...item,
+        tid: Number(item.tid),
+        label: item.label || `${item.group || 'B站'} / ${item.name || item.tid}`
+      }))
+      defaultBilibiliTid.value = Number(response.data?.defaultTid || response.defaultTid || 21)
+      if (!workflowForm.bilibiliTid) {
+        workflowForm.bilibiliTid = defaultBilibiliTid.value
+      }
+    }
+  } catch (error) {
+    console.warn('读取 B站分区失败，使用内置常用分区', error)
+  }
+}
 
 const subtitleLanguages = [
   { value: 'zh-CN', label: '中文' },
@@ -793,6 +898,15 @@ const processVersions = [
     description: '保留字幕处理链路，并把外国人震惊点、中外对比等前三个高光片段拼接到视频开头。'
   }
 ]
+
+const escapeHtml = (value) => {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
 
 const burnProfiles = [
   {
@@ -880,28 +994,76 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
   return next
 }
 
-const loadWorkflowSettings = () => {
+const readLocalWorkflowSettings = () => {
   try {
     const raw = localStorage.getItem(WORKFLOW_SETTINGS_STORAGE_KEY)
-    if (!raw) return
-    Object.assign(workflowForm, normalizeStoredWorkflowSettings(JSON.parse(raw)))
+    if (!raw) return {}
+    return normalizeStoredWorkflowSettings(JSON.parse(raw))
   } catch (error) {
     console.warn('读取处理设置失败', error)
+    return {}
+  }
+}
+
+const persistLocalWorkflowSettings = (settings) => {
+  try {
+    localStorage.setItem(WORKFLOW_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch (error) {
+    console.warn('保存本地处理设置失败', error)
+  }
+}
+
+const currentWorkflowSettingsPayload = () => ({
+  processVersion: workflowForm.processVersion,
+  subtitleLanguage: workflowForm.subtitleLanguage,
+  burnProfile: workflowForm.burnProfile,
+  subtitleSize: workflowForm.subtitleSize,
+  translatorLabel: workflowForm.translatorLabel
+})
+
+const loadWorkflowSettings = async () => {
+  const localSettings = readLocalWorkflowSettings()
+  if (Object.keys(localSettings).length) {
+    Object.assign(workflowForm, localSettings)
+  }
+  try {
+    const response = await youtubeApi.getWorkflowSettings()
+    const settings = normalizeStoredWorkflowSettings(response.data || response)
+    Object.assign(workflowForm, settings)
+    persistLocalWorkflowSettings(currentWorkflowSettingsPayload())
+  } catch (error) {
+    console.warn('读取后端处理设置失败，使用本地缓存', error)
   }
 }
 
 const saveWorkflowSettings = () => {
-  try {
-    const settings = {
-      processVersion: workflowForm.processVersion,
-      subtitleLanguage: workflowForm.subtitleLanguage,
-      burnProfile: workflowForm.burnProfile,
-      subtitleSize: workflowForm.subtitleSize,
-      translatorLabel: workflowForm.translatorLabel
+  const settings = currentWorkflowSettingsPayload()
+  persistLocalWorkflowSettings(settings)
+  if (!workflowSettingsLoaded || loadingWorkflowSettings) return
+  if (workflowSettingsSaveTimer) {
+    window.clearTimeout(workflowSettingsSaveTimer)
+  }
+  workflowSettingsSaveTimer = window.setTimeout(async () => {
+    try {
+      const response = await youtubeApi.updateWorkflowSettings(settings)
+      const savedSettings = normalizeStoredWorkflowSettings(response.data || response)
+      persistLocalWorkflowSettings(savedSettings)
+    } catch (error) {
+      console.warn('保存后端处理设置失败，已保留本地缓存', error)
     }
-    localStorage.setItem(WORKFLOW_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  }, 250)
+}
+
+const flushWorkflowSettings = async () => {
+  if (workflowSettingsSaveTimer) {
+    window.clearTimeout(workflowSettingsSaveTimer)
+    workflowSettingsSaveTimer = null
+  }
+  if (!workflowSettingsLoaded || loadingWorkflowSettings) return
+  try {
+    await youtubeApi.updateWorkflowSettings(currentWorkflowSettingsPayload())
   } catch (error) {
-    console.warn('保存处理设置失败', error)
+    console.warn('同步后端处理设置失败，已保留本地缓存', error)
   }
 }
 
@@ -974,6 +1136,31 @@ const isRunningJob = (job) => job.status === 'queued' || job.status === 'running
 const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
 const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
 const activeAnalysisJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job) && job.step === 'analysis')
+const failedJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && ['failed', 'abnormal'].includes(job.status))
+const stageErrorJob = (item) => failedJobForVideo(item)
+
+const jobErrorMessageAvailable = (job = {}) => {
+  return Boolean(job.errorReason || job.errorCode || job.errorType || job.errorDetail || job.message)
+}
+
+const jobStepText = (step) => {
+  const map = {
+    queued: '排队中',
+    download: '下载',
+    subtitle: '处理',
+    analysis: '分析',
+    publish: '发布',
+    done: '收尾'
+  }
+  return map[step] || step || '-'
+}
+
+const showJobErrorDetails = (item) => {
+  const job = stageErrorJob(item)
+  if (!job) return
+  currentErrorJob.value = job
+  jobErrorDialogVisible.value = true
+}
 
 const hasDownloadedVideo = (item) => {
   return Number(item.downloadStatus) === 1 || Boolean(item.downloadedFilePath)
@@ -989,6 +1176,30 @@ const deleteBlockReason = (item) => {
   if (hasProcessedVideo(item)) return '该视频已存在处理后视频，请先到素材管理删除对应处理后视频，再删除线索。'
   if (hasDownloadedVideo(item)) return '该视频已存在下载视频，请先到素材管理删除对应下载视频，再删除线索。'
   return ''
+}
+
+const videoDisplayName = (item = {}) => {
+  return item.title || item.url || item.id || '未命名线索'
+}
+
+const showDeleteBlockedDetails = async (blockedRows, title = '线索不能删除') => {
+  const detailHtml = blockedRows
+    .map(({ row, reason }, index) => {
+      const name = escapeHtml(videoDisplayName(row))
+      const message = escapeHtml(reason || '请先删除对应视频或等待任务结束。')
+      return `<li><strong>${index + 1}. ${name}</strong><span>${message}</span></li>`
+    })
+    .join('')
+
+  return ElMessageBox.alert(
+    `<div class="delete-block-details"><p>以下 ${blockedRows.length} 条线索不能删除：</p><ol>${detailHtml}</ol></div>`,
+    title,
+    {
+      confirmButtonText: '知道了',
+      dangerouslyUseHTMLString: true,
+      type: 'warning'
+    }
+  ).catch(() => {})
 }
 
 const analysisHint = (item) => {
@@ -1184,9 +1395,9 @@ const summaryStats = computed(() => {
 
   return [
     { label: '全部线索', value: total, meta: '当前入库', tone: 'tone-primary', filter: 'all' },
-    { label: '待下载', value: pendingDownload, meta: pendingDownload ? '需要获取素材' : '无待下载', tone: 'tone-info', filter: 'notDownloaded' },
-    { label: '待处理', value: pendingTranslate, meta: pendingTranslate ? '需要处理素材' : '无待处理', tone: 'tone-warning', filter: 'notTranslated' },
-    { label: '待发布', value: readyPublish, meta: readyPublish ? '可进入发布' : '无待发布', tone: 'tone-ready', filter: 'notPublished' },
+    { label: '待下载', value: pendingDownload, meta: pendingDownload ? '需要获取素材' : '无待下载', tone: 'tone-info', filter: 'initial' },
+    { label: '待处理', value: pendingTranslate, meta: pendingTranslate ? '需要处理素材' : '无待处理', tone: 'tone-warning', filter: 'downloaded' },
+    { label: '待发布', value: readyPublish, meta: readyPublish ? '可进入发布' : '无待发布', tone: 'tone-ready', filter: 'processed' },
     { label: '运行中', value: running, meta: running ? '执行中' : '暂无队列', tone: 'tone-running', filter: 'running' },
     { label: '已完成', value: completed, meta: completed ? '已发布' : '等待完成', tone: 'tone-success', filter: 'published' }
   ]
@@ -1581,7 +1792,7 @@ const batchDeleteVideos = async () => {
     .filter(item => item.reason)
 
   if (blockedRows.length > 0) {
-    ElMessage.warning(`有 ${blockedRows.length} 条线索不能删除，请先删除对应视频或等待任务结束`)
+    await showDeleteBlockedDetails(blockedRows, '批量删除受限')
     return
   }
 
@@ -1621,7 +1832,14 @@ const batchDeleteVideos = async () => {
     videoTableRef.value?.clearSelection?.()
 
     if (failedCount > 0) {
-      ElMessage.warning(`已删除 ${successCount} 条，${failedCount} 条未删除，请先删除对应视频后再试`)
+      const failedItems = (res.data?.items || [])
+        .filter(item => !item.success)
+        .map(item => ({
+          row: selectedRows.find(row => String(row.id) === String(item.videoId)) || { id: item.videoId },
+          reason: item.message || '请先删除对应视频后再试。'
+        }))
+      ElMessage.warning(`已删除 ${successCount} 条，${failedCount} 条未删除`)
+      await showDeleteBlockedDetails(failedItems, '部分线索未删除')
     } else {
       ElMessage.success(`批量删除成功，共删除 ${successCount} 条`)
     }
@@ -1891,7 +2109,8 @@ const copyText = async (text) => {
 
 onMounted(async () => {
   loadingWorkflowSettings = true
-  loadWorkflowSettings()
+  await loadBilibiliCategories()
+  await loadWorkflowSettings()
   await nextTick()
   loadingWorkflowSettings = false
   workflowSettingsLoaded = true
@@ -1921,6 +2140,11 @@ onBeforeUnmount(() => {
     window.clearInterval(clockTimer)
     clockTimer = null
   }
+  if (workflowSettingsSaveTimer) {
+    window.clearTimeout(workflowSettingsSaveTimer)
+    workflowSettingsSaveTimer = null
+  }
+  flushWorkflowSettings()
 })
 </script>
 
@@ -1966,6 +2190,38 @@ $ink-strong: #172033;
 
   :deep(.el-table td.el-table__cell) {
     padding: 10px 0;
+  }
+}
+
+:deep(.delete-block-details) {
+  p {
+    margin: 0 0 10px;
+    color: #5b667a;
+  }
+
+  ol {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding-left: 20px;
+  }
+
+  li {
+    color: $ink-strong;
+    line-height: 1.5;
+  }
+
+  strong {
+    display: block;
+    margin-bottom: 2px;
+    word-break: break-word;
+  }
+
+  span {
+    display: block;
+    color: $text-secondary;
+    font-size: 13px;
+    word-break: break-word;
   }
 }
 
@@ -2280,7 +2536,7 @@ $ink-strong: #172033;
 }
 
 .tid-input {
-  width: 108px;
+  width: 220px;
 }
 
 .tag-input {
@@ -2420,6 +2676,16 @@ $ink-strong: #172033;
   }
 }
 
+.stage-badge-button {
+  cursor: pointer;
+  font-family: inherit;
+
+  &:hover {
+    filter: brightness(0.97);
+    box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.08);
+  }
+}
+
 .video-title {
   min-width: 0;
   color: $ink-strong;
@@ -2432,6 +2698,39 @@ $ink-strong: #172033;
 
   &:hover {
     color: $accent-blue;
+  }
+}
+
+.job-error-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #f8fbff;
+
+  > span {
+    color: $text-secondary;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  strong,
+  p,
+  code {
+    margin: 0;
+    color: $ink-strong;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 }
 

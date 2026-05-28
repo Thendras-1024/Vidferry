@@ -8,6 +8,59 @@ PLATFORM_TYPE_TO_NAME = {
 
 PLATFORM_NAME_TO_TYPE = {name: value for value, name in PLATFORM_TYPE_TO_NAME.items()}
 
+BILIBILI_DEFAULT_TID = 21
+
+BILIBILI_CATEGORIES = [
+    {"tid": 21, "group": "生活", "name": "日常"},
+    {"tid": 180, "group": "纪录片", "name": "社会·美食·旅行"},
+    {"tid": 37, "group": "纪录片", "name": "人文·历史"},
+    {"tid": 138, "group": "生活", "name": "搞笑"},
+    {"tid": 161, "group": "生活", "name": "手工"},
+    {"tid": 239, "group": "生活", "name": "家居房产"},
+    {"tid": 201, "group": "知识", "name": "科学科普"},
+    {"tid": 124, "group": "知识", "name": "社科·法律·心理"},
+    {"tid": 228, "group": "知识", "name": "人文历史"},
+    {"tid": 207, "group": "知识", "name": "财经商业"},
+    {"tid": 209, "group": "知识", "name": "职业职场"},
+    {"tid": 215, "group": "美食", "name": "美食记录"},
+    {"tid": 76, "group": "美食", "name": "美食制作"},
+    {"tid": 213, "group": "美食", "name": "美食测评"},
+    {"tid": 85, "group": "影视", "name": "短片"},
+    {"tid": 182, "group": "影视", "name": "影视杂谈"},
+    {"tid": 183, "group": "影视", "name": "影视剪辑"},
+    {"tid": 95, "group": "科技", "name": "数码"},
+    {"tid": 230, "group": "科技", "name": "软件应用"},
+    {"tid": 231, "group": "科技", "name": "计算机技术"},
+]
+
+
+def _with_bilibili_category_label(category):
+    item = dict(category)
+    item["label"] = f"{item['group']} / {item['name']}"
+    return item
+
+
+BILIBILI_CATEGORY_OPTIONS = [_with_bilibili_category_label(item) for item in BILIBILI_CATEGORIES]
+BILIBILI_CATEGORY_BY_TID = {int(item["tid"]): item for item in BILIBILI_CATEGORY_OPTIONS}
+
+
+def bilibili_categories():
+    return [dict(item) for item in BILIBILI_CATEGORY_OPTIONS]
+
+
+def normalize_bilibili_tid(value, default=BILIBILI_DEFAULT_TID):
+    try:
+        tid = int(value or default)
+    except (TypeError, ValueError):
+        return int(default)
+    return tid if tid > 0 else int(default)
+
+
+def bilibili_category_label(tid):
+    tid = normalize_bilibili_tid(tid)
+    item = BILIBILI_CATEGORY_BY_TID.get(tid)
+    return item["label"] if item else f"未知分区（{tid}）"
+
 
 def platform_name(platform_type):
     try:
@@ -58,6 +111,9 @@ def normalize_publish_targets(payload):
                 "accountFile": account_file,
                 "accountId": raw.get("accountId"),
                 "accountName": raw.get("accountName") or "",
+                "bilibiliTid": normalize_bilibili_tid(raw.get("bilibiliTid") or payload.get("bilibiliTid")) if platform_type == 5 else "",
+                "productLink": str(raw.get("productLink") or payload.get("productLink") or "").strip() if platform_type == 3 else "",
+                "productTitle": str(raw.get("productTitle") or payload.get("productTitle") or "").strip() if platform_type == 3 else "",
             })
         return targets
 
@@ -76,4 +132,7 @@ def normalize_publish_targets(payload):
         "accountFile": account_list[0],
         "accountId": "",
         "accountName": "",
+        "bilibiliTid": normalize_bilibili_tid(payload.get("bilibiliTid")) if platform_type == 5 else "",
+        "productLink": str(payload.get("productLink") or "").strip() if platform_type == 3 else "",
+        "productTitle": str(payload.get("productTitle") or "").strip() if platform_type == 3 else "",
     }]
