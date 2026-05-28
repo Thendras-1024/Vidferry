@@ -14,6 +14,7 @@ export const useAppStore = defineStore('app', () => {
   // 素材列表数据
   const materials = ref([])
   const publishedMaterials = ref([])
+  const listCache = ref({})
   
   // 设置账号管理页面已访问
   const setAccountManagementVisited = () => {
@@ -57,6 +58,33 @@ export const useAppStore = defineStore('app', () => {
     const idSet = new Set(materialIds.map(id => String(id)))
     materials.value = materials.value.filter(m => !idSet.has(String(m.id)))
   }
+
+  const getListCache = (key, maxAgeMs = 60000) => {
+    const cached = listCache.value[key]
+    if (!cached) return null
+    if (Date.now() - cached.loadedAt > maxAgeMs) return null
+    return cached.payload
+  }
+
+  const setListCache = (key, payload) => {
+    listCache.value = {
+      ...listCache.value,
+      [key]: {
+        payload,
+        loadedAt: Date.now()
+      }
+    }
+  }
+
+  const clearListCache = (prefix = '') => {
+    if (!prefix) {
+      listCache.value = {}
+      return
+    }
+    listCache.value = Object.fromEntries(
+      Object.entries(listCache.value).filter(([key]) => !key.startsWith(prefix))
+    )
+  }
   
   // 设置账号管理页面刷新状态
   const setAccountRefreshing = (status) => {
@@ -69,6 +97,7 @@ export const useAppStore = defineStore('app', () => {
     isAccountRefreshing,
     materials,
     publishedMaterials,
+    listCache,
     setAccountManagementVisited,
     setMaterialManagementVisited,
     resetVisitStatus,
@@ -77,6 +106,9 @@ export const useAppStore = defineStore('app', () => {
     addMaterial,
     removeMaterial,
     removeMaterials,
+    getListCache,
+    setListCache,
+    clearListCache,
     setAccountRefreshing
   }
 })

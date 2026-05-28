@@ -154,7 +154,7 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="submitAccountForm" :loading="sseConnecting" :disabled="sseConnecting">
+          <el-button type="primary" @click="submitAccountForm" :disabled="sseConnecting">
             {{ sseConnecting ? '请求中' : '确认' }}
           </el-button>
         </span>

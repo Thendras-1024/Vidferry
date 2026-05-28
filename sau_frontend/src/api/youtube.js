@@ -5,8 +5,8 @@ export const youtubeApi = {
     return request.get('/youtube/search', { params })
   },
 
-  list() {
-    return request.get('/youtube/videos')
+  list(params = {}) {
+    return request.get('/youtube/videos', { params })
   },
 
   importVideo(data) {

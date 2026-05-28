@@ -9,15 +9,15 @@
       <div class="summary-strip">
         <div class="summary-item">
           <span>处理后视频</span>
-          <strong>{{ processedMaterials.length }}</strong>
+          <strong>{{ processedTotal }}</strong>
         </div>
         <div class="summary-item">
           <span>下载原视频</span>
-          <strong>{{ downloadedMaterials.length }}</strong>
+          <strong>{{ downloadedTotal }}</strong>
         </div>
         <div class="summary-item">
           <span>其他素材</span>
-          <strong>{{ otherMaterials.length }}</strong>
+          <strong>{{ otherTotal }}</strong>
         </div>
       </div>
     </section>
@@ -41,7 +41,7 @@
         >
           批量删除 {{ selectedMaterials.length || '' }}
         </el-button>
-        <el-button type="info" @click="fetchMaterials" :loading="isRefreshing">
+        <el-button type="info" @click="fetchMaterials({ force: true, successMessage: true })" :loading="isRefreshing">
           <el-icon :class="{ 'is-loading': isRefreshing }"><Refresh /></el-icon>
           <span>刷新</span>
         </el-button>
@@ -54,7 +54,7 @@
           <span class="section-kicker">已完成处理</span>
           <h2>处理后视频</h2>
         </div>
-        <span class="section-count">{{ processedMaterials.length }} 条</span>
+        <span class="section-count">第 {{ processedPagination.page }} 页 · {{ processedMaterials.length }} / {{ processedTotal }} 条</span>
       </div>
 
       <el-table
@@ -103,6 +103,15 @@
         </el-table-column>
       </el-table>
       <el-empty v-else description="暂无处理后视频" />
+      <div class="table-pagination" v-if="processedTotal > processedPagination.pageSize">
+        <el-pagination
+          v-model:current-page="processedPagination.page"
+          :page-size="processedPagination.pageSize"
+          :total="processedTotal"
+          layout="total, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </section>
 
     <section class="material-section">
@@ -111,7 +120,7 @@
           <span class="section-kicker">原始素材</span>
           <h2>下载原视频</h2>
         </div>
-        <span class="section-count">{{ downloadedMaterials.length }} 条</span>
+        <span class="section-count">第 {{ downloadedPagination.page }} 页 · {{ downloadedMaterials.length }} / {{ downloadedTotal }} 条</span>
       </div>
 
       <el-table
@@ -149,6 +158,15 @@
         </el-table-column>
       </el-table>
       <el-empty v-else description="暂无下载原视频" />
+      <div class="table-pagination" v-if="downloadedTotal > downloadedPagination.pageSize">
+        <el-pagination
+          v-model:current-page="downloadedPagination.page"
+          :page-size="downloadedPagination.pageSize"
+          :total="downloadedTotal"
+          layout="total, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </section>
 
     <section v-if="otherMaterials.length > 0" class="material-section">
@@ -157,7 +175,7 @@
           <span class="section-kicker">补充素材</span>
           <h2>其他素材</h2>
         </div>
-        <span class="section-count">{{ otherMaterials.length }} 条</span>
+        <span class="section-count">{{ otherTotal }} 条</span>
       </div>
 
       <el-table :data="otherMaterials" class="material-table" style="width: 100%">
@@ -305,7 +323,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { InfoFilled, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
 import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'element-plus'
 import { materialApi } from '@/api/material'
@@ -347,6 +365,16 @@ const publishDraftForm = ref({
   description: '',
   tags: []
 })
+const processedMaterials = ref([])
+const downloadedMaterials = ref([])
+const otherMaterials = ref([])
+const processedTotal = ref(0)
+const downloadedTotal = ref(0)
+const otherTotal = ref(0)
+const processedPagination = reactive({ page: 1, pageSize: 10 })
+const downloadedPagination = reactive({ page: 1, pageSize: 10 })
+let searchTimer = null
+let materialPageWatchPaused = false
 
 const materialTitle = (material) => {
   return material?.displayTitle || material?.metadata?.title || material?.original_filename || material?.filename || '未命名素材'
@@ -496,42 +524,6 @@ const processVersionLabel = (value) => {
   return labelMap[value] || value || '版本未知'
 }
 
-const searchableText = (material) => {
-  return [
-    materialTitle(material),
-    materialDuration(material),
-    materialUrl(material),
-    material.displayChannel,
-    material.displaySubscribers,
-    material.displayPublishedAt,
-    material.processVersion,
-    material.metadata?.processVersion,
-    materialSubtitleLanguageLabel(material),
-    material.filename,
-    material.original_filename,
-    material.uuid,
-    material.source_video_id
-  ].filter(Boolean).join(' ').toLowerCase()
-}
-
-const filteredMaterials = computed(() => {
-  const keyword = searchKeyword.value.trim().toLowerCase()
-  if (!keyword) return appStore.materials
-  return appStore.materials.filter(material => searchableText(material).includes(keyword))
-})
-
-const processedMaterials = computed(() => {
-  return filteredMaterials.value.filter(material => material.source_type === 'youtube_processed')
-})
-
-const downloadedMaterials = computed(() => {
-  return filteredMaterials.value.filter(material => material.source_type === 'youtube_download')
-})
-
-const otherMaterials = computed(() => {
-  return filteredMaterials.value.filter(material => !['youtube_processed', 'youtube_download'].includes(material.source_type))
-})
-
 const MaterialIdentity = defineComponent({
   name: 'MaterialIdentity',
   props: {
@@ -629,16 +621,64 @@ watch(fileList, (newList) => {
   customFilename.value = ''
 })
 
-const fetchMaterials = async () => {
+const materialCacheKey = (sourceType, pagination) => `materials:${sourceType}:${searchKeyword.value.trim()}:${pagination.page}:${pagination.pageSize}`
+
+const applyMaterialPage = (sourceType, payload = {}) => {
+  const list = payload.items || []
+  if (sourceType === 'youtube_processed') {
+    processedMaterials.value = list
+    processedTotal.value = Number(payload.total || 0)
+    processedPagination.page = Number(payload.page || processedPagination.page)
+    processedPagination.pageSize = Number(payload.pageSize || processedPagination.pageSize)
+  } else if (sourceType === 'youtube_download') {
+    downloadedMaterials.value = list
+    downloadedTotal.value = Number(payload.total || 0)
+    downloadedPagination.page = Number(payload.page || downloadedPagination.page)
+    downloadedPagination.pageSize = Number(payload.pageSize || downloadedPagination.pageSize)
+  } else {
+    otherMaterials.value = list
+    otherTotal.value = Number(payload.total || 0)
+  }
+}
+
+const loadMaterialPage = async (sourceType, pagination, { force = false } = {}) => {
+  const params = {
+    sourceType,
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    keyword: searchKeyword.value.trim()
+  }
+  const cacheKey = materialCacheKey(sourceType, pagination)
+  if (!force) {
+    const cached = appStore.getListCache(cacheKey)
+    if (cached) {
+      applyMaterialPage(sourceType, cached)
+    }
+  }
+  const response = await materialApi.getAllMaterials(params)
+  const payload = response.data || {}
+  applyMaterialPage(sourceType, payload)
+  appStore.setListCache(cacheKey, payload)
+}
+
+const syncMaterialStoreSnapshot = () => {
+  appStore.setMaterials([
+    ...processedMaterials.value,
+    ...downloadedMaterials.value,
+    ...otherMaterials.value
+  ])
+}
+
+const fetchMaterials = async ({ force = false, successMessage = false } = {}) => {
   isRefreshing.value = true
   try {
-    const response = await materialApi.getAllMaterials()
-    if (response.code === 200) {
-      appStore.setMaterials(response.data)
-      ElMessage.success('刷新成功')
-    } else {
-      ElMessage.error('获取素材列表失败')
-    }
+    await Promise.all([
+      loadMaterialPage('youtube_processed', processedPagination, { force }),
+      loadMaterialPage('youtube_download', downloadedPagination, { force }),
+      loadMaterialPage('other', { page: 1, pageSize: 10 }, { force })
+    ])
+    syncMaterialStoreSnapshot()
+    if (successMessage) ElMessage.success('刷新成功')
   } catch (error) {
     console.error('获取素材列表出错:', error)
     ElMessage.error('获取素材列表失败')
@@ -647,7 +687,50 @@ const fetchMaterials = async () => {
   }
 }
 
-const handleSearch = () => {}
+const refreshMaterialSection = async (sourceType, pagination, { force = false } = {}) => {
+  isRefreshing.value = true
+  try {
+    await loadMaterialPage(sourceType, pagination, { force })
+    syncMaterialStoreSnapshot()
+  } catch (error) {
+    console.error('获取素材列表出错:', error)
+    ElMessage.error('获取素材列表失败')
+  } finally {
+    isRefreshing.value = false
+  }
+}
+
+const handleSearch = () => {
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(async () => {
+    materialPageWatchPaused = true
+    processedPagination.page = 1
+    downloadedPagination.page = 1
+    try {
+      await fetchMaterials({ force: true })
+    } finally {
+      materialPageWatchPaused = false
+    }
+  }, 300)
+}
+
+watch(
+  () => processedPagination.page,
+  () => {
+    if (!materialPageWatchPaused) {
+      refreshMaterialSection('youtube_processed', processedPagination)
+    }
+  }
+)
+
+watch(
+  () => downloadedPagination.page,
+  () => {
+    if (!materialPageWatchPaused) {
+      refreshMaterialSection('youtube_download', downloadedPagination)
+    }
+  }
+)
 
 const handleProcessedSelectionChange = (rows) => {
   selectedProcessedMaterials.value = rows
@@ -746,7 +829,7 @@ const submitUpload = async () => {
   }
 
   isUploading.value = false
-  await fetchMaterials()
+  await fetchMaterials({ force: true })
 }
 
 const handlePreview = async (material) => {
@@ -838,6 +921,7 @@ const handleDelete = (material) => {
         const response = await materialApi.deleteMaterial(material.id)
         if (response.code === 200) {
           appStore.removeMaterial(material.id)
+          await fetchMaterials({ force: true })
           ElMessage.success('删除成功')
         } else {
           ElMessage.error(response.msg || '删除失败')
@@ -880,6 +964,7 @@ const handleBatchDelete = async () => {
     appStore.removeMaterials(successIds)
     selectedProcessedMaterials.value = []
     selectedDownloadedMaterials.value = []
+    await fetchMaterials({ force: true })
     if (result.failed > 0) {
       ElMessage.warning(`已删除 ${result.success} 个，${result.failed} 个删除失败`)
     } else {
@@ -912,6 +997,10 @@ const isImageFile = (filename = '') => {
 
 onMounted(() => {
   fetchMaterials()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(searchTimer)
 })
 </script>
 
@@ -1066,6 +1155,13 @@ $ink-strong: #172033;
 .section-count {
   color: $text-secondary;
   font-size: 13px;
+}
+
+.table-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px 14px;
+  border-top: 1px solid $border-lighter;
 }
 
 .material-table {

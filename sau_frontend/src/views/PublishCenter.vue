@@ -31,7 +31,7 @@
             @click="activeTab = tab.name"
           >
             <span>{{ tab.label }}</span>
-            <small>{{ tab.fileList.length }} 个素材 · {{ tab.selectedAccounts.length }} 个账号</small>
+            <small>{{ tab.fileList.length }} 个素材 · {{ publishTargets(tab).length }} 个平台</small>
             <el-icon v-if="tabs.length > 1" class="close-icon" @click.stop="removeTab(tab.name)"><Close /></el-icon>
           </button>
         </div>
@@ -48,11 +48,12 @@
                 <h3>视频素材</h3>
                 <p>仅支持选择已完成处理的视频，避免误发布原始下载素材。</p>
               </div>
-              <el-button type="primary" @click="selectMaterialLibrary(tab)">
+              <el-button type="primary" :disabled="tab.fileList.length > 0" @click="selectMaterialLibrary(tab)">
                 <el-icon><Folder /></el-icon>
                 <span>选择处理后视频</span>
               </el-button>
             </div>
+            <div v-if="tab.fileList.length > 0" class="selection-note">如需更换视频，请先删除当前视频，发布内容会同步清空。</div>
             <div v-if="tab.fileList.length > 0" class="file-list">
               <div v-for="(file, index) in tab.fileList" :key="index" class="file-item">
                 <div class="selected-video-main">
@@ -70,67 +71,103 @@
             <el-empty v-else description="暂无视频素材" :image-size="72" />
           </section>
 
-          <section class="form-section split-section">
+          <section class="form-section">
             <div class="sub-panel">
               <div class="section-heading compact">
                 <span class="step-index">2</span>
                 <div>
-                  <h3>账号</h3>
-                  <p>选择当前平台可用账号。</p>
+                  <h3>平台账号</h3>
+                  <p>可同时选择多个平台，但每个平台只能选择一个账号。</p>
                 </div>
               </div>
               <div class="tag-cloud">
-                <el-tag v-for="(account, index) in tab.selectedAccounts" :key="index" closable @close="removeAccount(tab, index)">
-                  {{ getAccountDisplayName(account) }}
+                <el-tag v-for="target in publishTargets(tab)" :key="target.platformType" closable @close="removePlatformAccount(tab, target.platformType)">
+                  {{ target.platformName }} · {{ target.accountName }}
                 </el-tag>
+                <el-tag v-if="publishTargets(tab).length === 0" type="info" effect="plain">暂无发布平台</el-tag>
                 <el-button type="primary" plain @click="openAccountDialog(tab)">选择账号</el-button>
               </div>
             </div>
+          </section>
 
-            <div class="sub-panel">
-              <div class="section-heading compact">
-                <span class="step-index">3</span>
+          <section class="form-section">
+            <div class="section-heading compact">
+              <span class="step-index">3</span>
+              <div>
+                <h3>发布内容</h3>
+                <p>发布中心只读取视频采集处理页保存的发布稿，如需修改文案请回到视频采集处理页。</p>
+              </div>
+            </div>
+            <el-carousel
+              v-if="publishTargets(tab).length > 0"
+              class="target-carousel"
+              height="168px"
+              indicator-position="outside"
+              :autoplay="false"
+              arrow="always"
+            >
+              <el-carousel-item v-for="target in publishTargets(tab)" :key="target.platformType">
+                <div class="target-slide">
+                  <div>
+                    <strong>{{ target.platformName }}</strong>
+                    <span>{{ target.accountName }}</span>
+                  </div>
+                  <div class="target-preview-grid">
+                    <span>标题</span>
+                    <p>{{ tab.title || '选择素材后自动填充标题' }}</p>
+                    <span>描述</span>
+                    <p>{{ tab.description || '选择素材后自动填充文案' }}</p>
+                    <span>话题</span>
+                    <p>{{ tab.selectedTopics.length ? tab.selectedTopics.map(topic => `#${topic}`).join(' ') : '暂无话题' }}</p>
+                    <span>发布</span>
+                    <p>{{ tab.scheduleEnabled ? `定时发布 · ${tab.dailyTimes.join('、')}` : '立即发布' }}</p>
+                  </div>
+                </div>
+              </el-carousel-item>
+            </el-carousel>
+            <el-alert v-else title="请选择至少一个平台账号，选择后这里会按平台分页展示发布内容。" type="info" :closable="false" show-icon />
+            <div v-if="targetStatusList(tab).length > 0" class="target-status-panel">
+              <div v-for="status in targetStatusList(tab)" :key="status.platformType" class="target-status-item">
                 <div>
-                  <h3>平台</h3>
-                  <p>确定本批次发布目标。</p>
+                  <strong>{{ status.platformName }}</strong>
+                  <span>{{ status.accountName }}</span>
+                </div>
+                <el-tag size="small" :type="publishStatusTagType(status.status)">
+                  {{ publishStatusLabel(status.status) }}
+                </el-tag>
+                <p>{{ status.message || '等待发布' }}</p>
+              </div>
+            </div>
+            <div class="publish-readonly-card">
+              <div>
+                <span>标题</span>
+                <strong>{{ tab.title || '暂无发布标题' }}</strong>
+              </div>
+              <div>
+                <span>描述</span>
+                <p>{{ tab.description || '暂无发布文案' }}</p>
+              </div>
+              <div>
+                <span>话题</span>
+                <div class="tag-cloud topic-cloud">
+                  <el-tag v-for="topic in tab.selectedTopics" :key="topic">#{{ topic }}</el-tag>
+                  <el-tag v-if="tab.selectedTopics.length === 0" type="info" effect="plain">暂无已保存话题</el-tag>
                 </div>
               </div>
-              <el-radio-group v-model="tab.selectedPlatform" class="platform-radios">
-                <el-radio-button v-for="platform in platforms" :key="platform.key" :label="platform.key">
-                  {{ platform.name }}
-                </el-radio-button>
-              </el-radio-group>
+            </div>
+            <div v-if="hasSelectedPlatform(tab, 3)" class="two-col">
+              <el-input v-model="tab.productTitle" placeholder="商品名称" maxlength="200" />
+              <el-input v-model="tab.productLink" placeholder="商品链接" maxlength="200" />
+            </div>
+            <div class="inline-options">
+              <el-checkbox v-model="tab.isOriginal" label="声明原创" />
+              <el-checkbox v-if="hasSelectedPlatform(tab, 2)" v-model="tab.isDraft" label="视频号仅保存草稿" />
             </div>
           </section>
 
           <section class="form-section">
             <div class="section-heading compact">
               <span class="step-index">4</span>
-              <div>
-                <h3>发布内容</h3>
-                <p>优先读取视频绑定的已保存发布稿，可在这里继续修改并保存回视频。</p>
-              </div>
-              <el-button size="small" type="primary" plain :disabled="tab.fileList.length === 0" @click="saveTabPublishDraft(tab)">保存发布稿</el-button>
-            </div>
-            <el-input v-model="tab.title" type="textarea" :rows="3" placeholder="选择素材后自动填充标题，可修改后保存" maxlength="100" show-word-limit />
-            <el-input v-model="tab.description" type="textarea" :rows="4" placeholder="选择素材后自动填充文案，可修改后保存" maxlength="800" show-word-limit />
-            <div class="tag-cloud topic-cloud">
-              <el-tag v-for="(topic, index) in tab.selectedTopics" :key="index">#{{ topic }}</el-tag>
-              <el-tag v-if="tab.selectedTopics.length === 0" type="info" effect="plain">暂无已保存话题</el-tag>
-            </div>
-            <div v-if="tab.selectedPlatform === 3" class="two-col">
-              <el-input v-model="tab.productTitle" placeholder="商品名称" maxlength="200" />
-              <el-input v-model="tab.productLink" placeholder="商品链接" maxlength="200" />
-            </div>
-            <div class="inline-options">
-              <el-checkbox v-model="tab.isOriginal" label="声明原创" />
-              <el-checkbox v-if="tab.selectedPlatform === 2" v-model="tab.isDraft" label="视频号仅保存草稿" />
-            </div>
-          </section>
-
-          <section class="form-section">
-            <div class="section-heading compact">
-              <span class="step-index">5</span>
               <div>
                 <h3>发布时间</h3>
                 <p>立即发布或设置批量排期。</p>
@@ -271,10 +308,23 @@
         :closable="false"
         show-icon
       />
-      <el-checkbox-group v-model="selectedMaterials">
-        <div v-if="publishableMaterials.length > 0" class="material-list publishable-list">
+      <div class="material-library-tools">
+        <el-input
+          v-model="materialLibraryKeyword"
+          clearable
+          placeholder="搜索视频标题、博主、话题"
+          @input="handleMaterialLibrarySearch"
+          @clear="handleMaterialLibrarySearch"
+        />
+        <el-button :loading="materialLibraryLoading" @click="loadPublishableMaterials({ force: true })">
+          <el-icon><Refresh /></el-icon>
+          <span>刷新</span>
+        </el-button>
+      </div>
+      <el-radio-group v-model="selectedMaterial" class="material-radio-group">
+        <div v-if="publishableMaterials.length > 0" v-loading="materialLibraryLoading" class="material-list publishable-list">
           <div v-for="material in publishableMaterials" :key="material.id" class="material-item publishable-item">
-            <el-checkbox :label="material.id">
+            <el-radio :label="material.id">
               <div class="material-info">
                 <div class="material-name">{{ material.displayTitle || material.filename }}</div>
                 <div class="material-details">
@@ -303,26 +353,66 @@
                   <el-tag size="small" type="warning" effect="light">{{ material.processType || '处理后视频' }}</el-tag>
                   <el-tag size="small" type="success" effect="plain">{{ material.subtitleLanguageLabel || '字幕语言未知' }}</el-tag>
                   <el-tag size="small" effect="plain">{{ processVersionLabel(material.processVersion) }}</el-tag>
+                  <el-tag
+                    v-for="platformType in publishedPlatformTypesForVideo(material.source_video_id || material.metadata?.videoId)"
+                    :key="platformType"
+                    size="small"
+                    type="danger"
+                    effect="plain"
+                  >
+                    已发{{ platformNameByKey[platformType] }}
+                  </el-tag>
                   <span>{{ material.duration || '-' }}</span>
                   <span>{{ material.filesize }} MB</span>
                 </div>
               </div>
-            </el-checkbox>
+            </el-radio>
           </div>
         </div>
-        <el-empty v-else description="暂无可发布的处理后视频，请先在视频采集处理页完成处理。" />
-      </el-checkbox-group>
-      <template #footer><div class="dialog-footer"><el-button @click="materialLibraryVisible = false">取消</el-button><el-button type="primary" @click="confirmMaterialSelection">确定</el-button></div></template>
+        <el-empty v-else v-loading="materialLibraryLoading" description="暂无可发布的处理后视频，请先在视频采集处理页完成处理。" />
+      </el-radio-group>
+      <template #footer>
+        <div class="material-library-footer">
+          <el-pagination
+            v-if="materialLibraryTotal > materialLibraryPagination.pageSize"
+            v-model:current-page="materialLibraryPagination.page"
+            :page-size="materialLibraryPagination.pageSize"
+            :total="materialLibraryTotal"
+            layout="total, prev, pager, next"
+            background
+          />
+          <div class="dialog-footer">
+            <el-button @click="materialLibraryVisible = false">取消</el-button>
+            <el-button type="primary" :disabled="selectedMaterial === null" @click="confirmMaterialSelection">确定</el-button>
+          </div>
+        </div>
+      </template>
     </el-dialog>
 
-    <el-dialog v-model="accountDialogVisible" title="选择账号" width="600px" class="account-dialog">
-      <el-checkbox-group v-model="tempSelectedAccounts">
-        <div class="account-list">
-          <el-checkbox v-for="account in availableAccounts" :key="account.id" :label="account.id" class="account-item">
-            <span>{{ account.name }}</span>
-          </el-checkbox>
+    <el-dialog v-model="accountDialogVisible" title="选择平台账号" width="760px" class="account-dialog">
+      <div class="account-platform-list">
+        <div v-for="platform in platforms" :key="platform.key" class="account-platform-card" :class="{ disabled: isPlatformDisabledForCurrentTab(platform.key) }">
+          <div class="account-platform-heading">
+            <div>
+              <strong>{{ platform.name }}</strong>
+              <span v-if="isPlatformDisabledForCurrentTab(platform.key)">该视频已发布到{{ platform.name }}</span>
+              <span v-else>每个平台只能选择一个账号</span>
+            </div>
+            <el-button v-if="tempPlatformAccounts[platform.key]" size="small" text type="danger" @click="tempPlatformAccounts[platform.key] = ''">清除</el-button>
+          </div>
+          <el-radio-group v-model="tempPlatformAccounts[platform.key]" :disabled="isPlatformDisabledForCurrentTab(platform.key)" class="platform-account-radios">
+            <el-radio
+              v-for="account in accountsByPlatform(platform.name)"
+              :key="account.id"
+              :label="account.id"
+              class="account-item"
+            >
+              <span>{{ account.name }}</span>
+            </el-radio>
+          </el-radio-group>
+          <el-empty v-if="accountsByPlatform(platform.name).length === 0" description="暂无可用账号" :image-size="48" />
         </div>
-      </el-checkbox-group>
+      </div>
       <template #footer><div class="dialog-footer"><el-button @click="accountDialogVisible = false">取消</el-button><el-button type="primary" @click="confirmAccountSelection">确定</el-button></div></template>
     </el-dialog>
 
@@ -342,7 +432,7 @@
   </div>
 </template>
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Plus, Close, Folder, Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
@@ -366,11 +456,13 @@ const accountStore = useAccountStore()
 // 上传相关状态
 const materialLibraryVisible = ref(false)
 const currentUploadTab = ref(null)
-const selectedMaterials = ref([])
-const materials = computed(() => appStore.materials)
-const publishableMaterials = computed(() => {
-  return materials.value.filter(material => material.source_type === 'youtube_processed')
-})
+const selectedMaterial = ref(null)
+const publishableMaterials = ref([])
+const materialLibraryLoading = ref(false)
+const materialLibraryKeyword = ref('')
+const materialLibraryTotal = ref(0)
+const materialLibraryPagination = reactive({ page: 1, pageSize: 10 })
+let materialLibrarySearchTimer = null
 const publishedLoading = ref(false)
 const publishedVideos = ref([])
 
@@ -399,6 +491,7 @@ const defaultTabInit = {
   fileList: [], // 后端返回的文件名列表
   displayFileList: [], // 用于显示的文件列表
   selectedAccounts: [], // 选中的账号ID列表
+  platformAccounts: {}, // 平台 -> 账号ID
   selectedPlatform: 1, // 选中的平台（单选）
   title: '',
   description: '',
@@ -406,6 +499,7 @@ const defaultTabInit = {
   productTitle: '', // 商品名称
   selectedTopics: [], // 话题列表（不带#号）
   contentLocked: false,
+  publishTargetStatuses: [],
   scheduleEnabled: false, // 定时发布开关
   videosPerDay: 1, // 每天发布视频数量
   dailyTimes: ['10:00'], // 每天发布时间点列表
@@ -439,6 +533,19 @@ const normalizeSelectedAccounts = (accounts = []) => {
     })
 }
 
+const normalizePlatformAccounts = (platformAccounts = {}) => {
+  const normalized = {}
+  Object.entries(platformAccounts || {}).forEach(([platformType, accountId]) => {
+    const key = String(platformType)
+    const value = String(accountId || '')
+    if (!value) return
+    if (accountStore.accounts.some(account => String(account.id) === value)) {
+      normalized[key] = value
+    }
+  })
+  return normalized
+}
+
 const readPublishDraft = () => {
   try {
     const raw = localStorage.getItem(PUBLISH_DRAFT_STORAGE_KEY)
@@ -457,10 +564,12 @@ const normalizePublishTab = (tab, index) => {
     ...tab,
     name: tab?.name || `tab${index + 1}`,
     label: tab?.label || `发布${index + 1}`,
-    fileList: Array.isArray(tab?.fileList) ? tab.fileList : [],
+    fileList: Array.isArray(tab?.fileList) ? tab.fileList.slice(0, 1) : [],
     selectedAccounts: normalizeSelectedAccounts(tab?.selectedAccounts),
+    platformAccounts: normalizePlatformAccounts(tab?.platformAccounts),
     selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
     dailyTimes: Array.isArray(tab?.dailyTimes) && tab.dailyTimes.length > 0 ? tab.dailyTimes : ['10:00'],
+    publishTargetStatuses: Array.isArray(tab?.publishTargetStatuses) ? tab.publishTargetStatuses : [],
     publishStatus: null,
     publishing: false
   })
@@ -477,6 +586,7 @@ const serializePublishTab = (tab) => ({
   fileList: tab.fileList,
   displayFileList: tab.displayFileList,
   selectedAccounts: normalizeSelectedAccounts(tab.selectedAccounts),
+  platformAccounts: normalizePlatformAccounts(tab.platformAccounts),
   selectedPlatform: tab.selectedPlatform,
   title: tab.title,
   description: tab.description,
@@ -484,6 +594,7 @@ const serializePublishTab = (tab) => ({
   productTitle: tab.productTitle,
   selectedTopics: tab.selectedTopics,
   contentLocked: Boolean(tab.contentLocked),
+  publishTargetStatuses: tab.publishTargetStatuses || [],
   scheduleEnabled: tab.scheduleEnabled,
   videosPerDay: tab.videosPerDay,
   dailyTimes: tab.dailyTimes,
@@ -526,21 +637,8 @@ watch(tabs, savePublishDraft, { deep: true })
 
 // 账号相关状态
 const accountDialogVisible = ref(false)
-const tempSelectedAccounts = ref([])
+const tempPlatformAccounts = ref({})
 const currentTab = ref(null)
-
-// 根据选择的平台获取可用账号列表
-const availableAccounts = computed(() => {
-  const platformMap = {
-    3: '抖音',
-    5: 'B站',
-    2: '视频号',
-    1: '小红书',
-    4: '快手'
-  }
-  const currentPlatform = currentTab.value ? platformMap[currentTab.value.selectedPlatform] : null
-  return currentPlatform ? accountStore.accounts.filter(acc => acc.platform === currentPlatform) : []
-})
 
 // 话题相关状态
 const topicDialogVisible = ref(false)
@@ -575,6 +673,19 @@ const removeTab = (tabName) => {
   }
 }
 
+const clearVideoDerivedContent = (tab) => {
+  tab.title = ''
+  tab.description = ''
+  tab.selectedTopics = []
+  tab.productLink = ''
+  tab.productTitle = ''
+  tab.platformAccounts = {}
+  tab.selectedAccounts = []
+  tab.publishTargetStatuses = []
+  tab.contentLocked = false
+  tab.publishStatus = null
+}
+
 // 删除已上传文件
 const removeFile = (tab, index) => {
   // 从文件列表中删除
@@ -585,6 +696,10 @@ const removeFile = (tab, index) => {
     name: item.name,
     url: item.url
   }))]
+
+  if (tab.fileList.length === 0) {
+    clearVideoDerivedContent(tab)
+  }
   
   ElMessage.success('文件删除成功')
 }
@@ -618,6 +733,125 @@ const normalizePublishDraft = (material) => {
 
 const materialPublishDraft = (material) => normalizePublishDraft(material)
 
+const accountsByPlatform = (platformName) => {
+  return accountStore.accounts.filter(account => account.platform === platformName)
+}
+
+const selectedVideoId = (tab) => {
+  return tab.fileList[0]?.videoId || ''
+}
+
+const publishedPlatformTypesForVideo = (videoId) => {
+  if (!videoId) return []
+  const video = publishedVideos.value.find(item => item.id === videoId)
+  return video?.publishedPlatformTypes || []
+}
+
+const loadPublishableMaterials = async ({ force = false } = {}) => {
+  const params = {
+    sourceType: 'youtube_processed',
+    page: materialLibraryPagination.page,
+    pageSize: materialLibraryPagination.pageSize,
+    keyword: materialLibraryKeyword.value.trim()
+  }
+  const cacheKey = `publish:center:materials:${JSON.stringify(params)}`
+  if (!force) {
+    const cached = appStore.getListCache(cacheKey)
+    if (cached) {
+      publishableMaterials.value = cached.items || []
+      materialLibraryTotal.value = Number(cached.total || 0)
+    }
+  }
+
+  materialLibraryLoading.value = true
+  try {
+    const response = await materialApi.getAllMaterials(params)
+    const payload = response.data || {}
+    publishableMaterials.value = payload.items || []
+    materialLibraryTotal.value = Number(payload.total || 0)
+    materialLibraryPagination.page = Number(payload.page || materialLibraryPagination.page)
+    materialLibraryPagination.pageSize = Number(payload.pageSize || materialLibraryPagination.pageSize)
+    appStore.setListCache(cacheKey, payload)
+  } catch (error) {
+    console.error('获取可发布素材失败:', error)
+    ElMessage.error('获取素材列表失败')
+  } finally {
+    materialLibraryLoading.value = false
+  }
+}
+
+const handleMaterialLibrarySearch = () => {
+  window.clearTimeout(materialLibrarySearchTimer)
+  materialLibrarySearchTimer = window.setTimeout(() => {
+    materialLibraryPagination.page = 1
+    loadPublishableMaterials({ force: true })
+  }, 300)
+}
+
+watch(
+  () => materialLibraryPagination.page,
+  () => {
+    if (materialLibraryVisible.value) {
+      loadPublishableMaterials()
+    }
+  }
+)
+
+const isPlatformPublishedForTab = (tab, platformType) => {
+  return publishedPlatformTypesForVideo(selectedVideoId(tab)).includes(Number(platformType))
+}
+
+const isPlatformDisabledForCurrentTab = (platformType) => {
+  return currentTab.value ? isPlatformPublishedForTab(currentTab.value, platformType) : false
+}
+
+const publishTargets = (tab) => {
+  return Object.entries(tab.platformAccounts || {})
+    .map(([platformType, accountId]) => {
+      const platform = platforms.find(item => String(item.key) === String(platformType))
+      const account = accountStore.accounts.find(item => String(item.id) === String(accountId))
+      if (!platform || !account) return null
+      return {
+        platformType: platform.key,
+        platformName: platform.name,
+        accountId: account.id,
+        accountName: account.name,
+        accountFile: account.filePath
+      }
+    })
+    .filter(Boolean)
+}
+
+const targetStatusList = (tab) => {
+  const statusMap = new Map((tab.publishTargetStatuses || []).map(item => [Number(item.platformType), item]))
+  return publishTargets(tab).map(target => ({
+    ...target,
+    status: statusMap.get(Number(target.platformType))?.status || 'pending',
+    message: statusMap.get(Number(target.platformType))?.message || '等待发布'
+  }))
+}
+
+const publishStatusLabel = (status) => {
+  const map = {
+    pending: '待发布',
+    running: '发布中',
+    success: '成功',
+    failed: '失败'
+  }
+  return map[status] || status || '待发布'
+}
+
+const publishStatusTagType = (status) => {
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'running') return 'warning'
+  return 'info'
+}
+
+const hasSelectedPlatform = (tab, platformType) => {
+  return publishTargets(tab).some(target => Number(target.platformType) === Number(platformType))
+}
+
 const applyPublishDraftToPublishTab = (tab, drafts = []) => {
   const firstDraft = drafts.find(draft => draft && (draft.title || draft.description || draft.tags.length > 0))
   if (!firstDraft) return
@@ -628,7 +862,7 @@ const applyPublishDraftToPublishTab = (tab, drafts = []) => {
   tab.contentLocked = true
 
   if (!firstDraft.fromSavedDraft) {
-    ElMessage.warning('该素材还没有保存发布稿，已用 LLM 原稿临时填充；修改后请点击保存发布稿。')
+    ElMessage.warning('该素材还没有保存发布稿，已用 LLM 原稿临时填充；如需修改请回到视频采集处理页。')
   }
 }
 
@@ -721,14 +955,28 @@ const confirmTopicSelection = () => {
 // 打开账号选择弹窗
 const openAccountDialog = (tab) => {
   currentTab.value = tab
-  tempSelectedAccounts.value = [...tab.selectedAccounts]
+  tempPlatformAccounts.value = { ...(tab.platformAccounts || {}) }
   accountDialogVisible.value = true
 }
 
 // 确认账号选择
 const confirmAccountSelection = () => {
   if (currentTab.value) {
-    currentTab.value.selectedAccounts = normalizeSelectedAccounts(tempSelectedAccounts.value)
+    const normalized = normalizePlatformAccounts(tempPlatformAccounts.value)
+    Object.keys(normalized).forEach(platformType => {
+      if (isPlatformPublishedForTab(currentTab.value, platformType)) {
+        delete normalized[platformType]
+      }
+    })
+    currentTab.value.platformAccounts = normalized
+    currentTab.value.selectedAccounts = Object.values(normalized)
+    currentTab.value.publishTargetStatuses = publishTargets(currentTab.value).map(target => ({
+      platformType: target.platformType,
+      platformName: target.platformName,
+      accountName: target.accountName,
+      status: 'pending',
+      message: '等待发布'
+    }))
   }
   accountDialogVisible.value = false
   currentTab.value = null
@@ -739,6 +987,13 @@ const confirmAccountSelection = () => {
 const removeAccount = (tab, index) => {
   tab.selectedAccounts.splice(index, 1)
   tab.selectedAccounts = normalizeSelectedAccounts(tab.selectedAccounts)
+  savePublishDraft()
+}
+
+const removePlatformAccount = (tab, platformType) => {
+  delete tab.platformAccounts[String(platformType)]
+  tab.selectedAccounts = Object.values(tab.platformAccounts)
+  tab.publishTargetStatuses = (tab.publishTargetStatuses || []).filter(item => Number(item.platformType) !== Number(platformType))
   savePublishDraft()
 }
 
@@ -770,7 +1025,8 @@ const formatMaterialSizeMb = (size) => {
 
 const materialByVideoId = computed(() => {
   const map = new Map()
-  publishableMaterials.value.forEach(material => {
+  appStore.materials.forEach(material => {
+    if (material.source_type !== 'youtube_processed') return
     const videoId = material.source_video_id || material.metadata?.videoId
     if (!videoId) return
     const existing = map.get(videoId)
@@ -785,18 +1041,22 @@ const publishedMaterialCount = computed(() => {
   return publishedVideos.value.filter(video => Boolean(video.processedFilePath)).length
 })
 
+const allPublishedRecords = computed(() => {
+  return publishedVideos.value.flatMap(video => video.publishedRecords || [])
+})
+
 const publishedPlatformStats = computed(() => {
-  return publishedVideos.value.reduce((stats, video) => {
-    if (video.publishToDouyin) stats.douyin += 1
-    if (video.publishToBilibili) stats.bilibili += 1
+  return allPublishedRecords.value.reduce((stats, record) => {
+    if (Number(record.platformType) === 3) stats.douyin += 1
+    if (Number(record.platformType) === 5) stats.bilibili += 1
     return stats
   }, { douyin: 0, bilibili: 0 })
 })
 
 const publishedPlatforms = (video) => {
-  const tags = []
-  if (video.publishToDouyin) tags.push(platformNameByKey[3])
-  if (video.publishToBilibili) tags.push('B站')
+  const tags = (video.publishedPlatformTypes || [])
+    .map(platformType => platformNameByKey[platformType])
+    .filter(Boolean)
   if (tags.length === 0) tags.push('发布中心')
   return tags
 }
@@ -804,20 +1064,41 @@ const publishedPlatforms = (video) => {
 const loadPublishedVideos = async () => {
   publishedLoading.value = true
   try {
-    const [videoResponse, materialResponse] = await Promise.all([
-      youtubeApi.list(),
-      materialApi.getAllMaterials()
+    const [videoResponse, publishedResponse] = await Promise.all([
+      youtubeApi.list({ page: 1, pageSize: 100, status: 'published', sort: 'publishedFirst' }),
+      http.get('/published-materials', { limit: 200 })
     ])
-    if (materialResponse?.code === 200) {
-      appStore.setMaterials(materialResponse.data || [])
-    }
     const sourceItems = videoResponse?.data?.items || []
+    const sourceVideoIds = sourceItems.map(item => item.id).filter(Boolean)
+    const materialResponse = sourceVideoIds.length
+      ? await materialApi.getAllMaterials({
+        sourceType: 'youtube_processed',
+        videoIds: sourceVideoIds.join(','),
+        page: 1,
+        pageSize: Math.min(sourceVideoIds.length, 100)
+      })
+      : null
+    if (materialResponse?.code === 200) {
+      appStore.setMaterials(materialResponse.data?.items || [])
+    }
+    const publishedRecords = publishedResponse?.data || []
+    const publishedByVideoId = new Map()
+    publishedRecords.forEach(record => {
+      if (!record.videoId) return
+      if (!publishedByVideoId.has(record.videoId)) {
+        publishedByVideoId.set(record.videoId, [])
+      }
+      publishedByVideoId.get(record.videoId).push(record)
+    })
     publishedVideos.value = sourceItems
       .filter(item => item.publishStatus === 1)
       .map(item => {
         const material = materialByVideoId.value.get(item.id)
+        const records = publishedByVideoId.get(item.id) || []
         return {
           ...item,
+          publishedRecords: records,
+          publishedPlatformTypes: Array.from(new Set(records.map(record => Number(record.platformType)).filter(Boolean))),
           processVersionLabel: material ? processVersionLabel(material.processVersion) : processVersionLabel(item.processVersion),
           subtitleLanguageLabel: material?.subtitleLanguageLabel || item.subtitleLanguageLabel || '字幕语言未知',
           processedFilePath: material?.file_path || item.processedFilePath || '',
@@ -854,6 +1135,11 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error('请先选择处理后视频')
   }
+  if (tab.fileList.length > 1) {
+    ElMessage.error('每个发布批次只能选择一个视频，请删除多余视频后再发布')
+    tab.publishing = false
+    throw new Error('每个发布批次只能选择一个视频')
+  }
   const invalidFiles = tab.fileList.filter(file => file.sourceType !== 'youtube_processed')
   if (invalidFiles.length > 0) {
     ElMessage.error('发布中心只支持处理后视频，请重新选择素材')
@@ -865,52 +1151,82 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error('发布标题为空')
   }
-  if (!tab.selectedPlatform) {
-    ElMessage.error('请选择发布平台')
+  const targets = publishTargets(tab)
+  if (targets.length === 0) {
+    ElMessage.error('请至少选择一个平台账号')
     tab.publishing = false
-    throw new Error('请选择发布平台')
+    throw new Error('请至少选择一个平台账号')
   }
-  if (tab.selectedAccounts.length === 0) {
-    ElMessage.error('请选择发布账号')
+  const duplicatedTarget = targets.find(target => isPlatformPublishedForTab(tab, target.platformType))
+  if (duplicatedTarget) {
+    ElMessage.error(`该视频已发布到${duplicatedTarget.platformName}，不能重复发布`)
     tab.publishing = false
-    throw new Error('请选择发布账号')
+    throw new Error(`该视频已发布到${duplicatedTarget.platformName}`)
   }
-  const normalizedAccounts = normalizeSelectedAccounts(tab.selectedAccounts)
-  if (normalizedAccounts.length === 0) {
-    ElMessage.error('已选账号不存在或已被移除，请重新选择账号')
-    tab.publishing = false
-    throw new Error('已选账号不存在')
-  }
-  tab.selectedAccounts = normalizedAccounts
 
-  // 构造发布数据，符合后端API格式
-  const publishData = {
-    type: tab.selectedPlatform,
+  tab.publishTargetStatuses = targets.map((target, index) => ({
+    platformType: target.platformType,
+    platformName: target.platformName,
+    accountName: target.accountName,
+    status: 'running',
+    message: '发布中'
+  }))
+
+  const buildPublishData = () => ({
     title: tab.title,
     description: tab.description,
     tags: tab.selectedTopics, // 不带#号的话题列表
     fileList: tab.fileList.map(file => file.path), // 只发送文件路径
-    accountList: normalizedAccounts.map(accountId => {
-      const account = accountStore.accounts.find(acc => acc.id === accountId)
-      return account ? account.filePath : accountId
-    }).filter(Boolean), // 发送当前保留账号的文件路径
+    targets: targets.map(target => ({
+      platformType: target.platformType,
+      accountFile: target.accountFile,
+      accountId: target.accountId,
+      accountName: target.accountName
+    })),
     enableTimer: tab.scheduleEnabled ? 1 : 0,
     videosPerDay: tab.scheduleEnabled ? tab.videosPerDay || 1 : 1,
     dailyTimes: tab.scheduleEnabled ? tab.dailyTimes || ['10:00'] : ['10:00'],
     startDays: tab.scheduleEnabled ? tab.startDays || 0 : 0,
     category: tab.isOriginal ? 1 : 0, // 1表示原创，0表示非原创
+    bilibiliTid: 249,
     productLink: tab.productLink.trim() || '',
     productTitle: tab.productTitle.trim() || '',
     isDraft: tab.isDraft
+  })
+
+  const updateTargetStatus = (target, patch) => {
+    tab.publishTargetStatuses = tab.publishTargetStatuses.map(item => (
+      Number(item.platformType) === Number(target.platformType)
+        ? { ...item, ...patch }
+        : item
+    ))
   }
 
-  // 调用后端发布API（使用统一的http封装）
+  // 一次提交所有平台，后端按平台隔离并发执行，同时返回每个平台结果。
   try {
-    const data = await http.post('/postVideo', publishData)
+    const data = await http.post('/postVideo', buildPublishData())
     await loadPublishedVideos()
+    const results = Array.isArray(data?.data?.results) ? data.data.results : []
+    results.forEach(result => {
+      const target = targets.find(item => Number(item.platformType) === Number(result.platformType))
+      if (!target) return
+      updateTargetStatus(target, {
+        platformType: target.platformType,
+        platformName: target.platformName,
+        accountName: target.accountName,
+        status: result?.status || 'success',
+        message: result?.message || '发布成功'
+      })
+    })
+    const resultCount = results.length || targets.length
+    const failedCount = tab.publishTargetStatuses.filter(item => item.status === 'failed' || item.status === 'timeout').length
+    const successCount = resultCount - failedCount
     tab.publishStatus = {
-      message: '发布成功',
-      type: 'success'
+      message: failedCount ? `发布完成：${successCount} 个成功，${failedCount} 个失败` : `发布成功，已提交 ${resultCount} 个平台`,
+      type: failedCount === resultCount ? 'error' : (failedCount ? 'warning' : 'success')
+    }
+    if (failedCount) {
+      return
     }
     // 清空当前tab的数据
     tab.fileList = []
@@ -920,9 +1236,22 @@ const confirmPublish = async (tab) => {
     tab.selectedTopics = []
     tab.contentLocked = false
     tab.selectedAccounts = []
+    tab.platformAccounts = {}
+    tab.publishTargetStatuses = []
     tab.scheduleEnabled = false
   } catch (error) {
     console.error('发布错误:', error)
+    await loadPublishedVideos()
+    tab.publishTargetStatuses = targets.map(target => {
+      const previous = (tab.publishTargetStatuses || []).find(item => Number(item.platformType) === Number(target.platformType))
+      return {
+        platformType: target.platformType,
+        platformName: target.platformName,
+        accountName: target.accountName,
+        status: previous?.status === 'success' ? 'success' : 'failed',
+        message: previous?.status === 'success' ? previous.message : (error.message || '发布失败')
+      }
+    })
     tab.publishStatus = {
       message: `发布失败：${error.message || '请检查网络连接'}`,
       type: 'error'
@@ -935,67 +1264,56 @@ const confirmPublish = async (tab) => {
 
 // 选择素材库
 const selectMaterialLibrary = async (tab) => {
-  currentUploadTab.value = tab
-
-  try {
-    const response = await materialApi.getAllMaterials()
-    if (response.code === 200) {
-      appStore.setMaterials(response.data)
-    } else {
-      ElMessage.error('获取素材列表失败')
-      return
-    }
-  } catch (error) {
-    console.error('获取素材列表出错:', error)
-    ElMessage.error('获取素材列表失败')
+  if (tab.fileList.length > 0) {
+    ElMessage.warning('当前批次已有视频，请先删除后再选择')
     return
   }
-  
-  selectedMaterials.value = []
+  currentUploadTab.value = tab
+  selectedMaterial.value = null
+  materialLibraryPagination.page = 1
   materialLibraryVisible.value = true
+  await loadPublishableMaterials()
 }
 
 // 确认素材选择
 const confirmMaterialSelection = () => {
-  if (selectedMaterials.value.length === 0) {
-    ElMessage.warning('请选择至少一个素材')
+  if (selectedMaterial.value === null) {
+    ElMessage.warning('请选择一个素材')
     return
   }
   
   if (currentUploadTab.value) {
-    // 将选中的素材添加到当前tab的文件列表
-    const selectedPublishDrafts = []
-    selectedMaterials.value.forEach(materialId => {
-      const material = publishableMaterials.value.find(m => m.id === materialId)
-      if (material) {
-        selectedPublishDrafts.push(normalizePublishDraft(material))
-        const fileInfo = {
-          name: material.displayTitle || material.filename,
-          displayTitle: material.displayTitle || material.filename,
-          channel: material.displayChannel || '',
-          processType: material.processType || '处理后视频',
-          processVersion: material.processVersion || '',
-          processVersionLabel: processVersionLabel(material.processVersion),
-          subtitleLanguage: material.subtitleLanguage || '',
-          subtitleLanguageLabel: material.subtitleLanguageLabel || '',
-          sourceType: material.source_type,
-          analysisResult: material.analysisResult || {},
-          publishDraft: material.publishDraft || {},
-          videoId: material.source_video_id || material.metadata?.videoId || '',
-          materialId: material.id,
-          url: materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()),
-          path: material.file_path,
-          size: material.filesize * 1024 * 1024, // 转换为字节
-          type: 'video/mp4'
-        }
-        
-        // 检查是否已存在相同文件
-        const exists = currentUploadTab.value.fileList.some(file => file.path === fileInfo.path)
-        if (!exists) {
-          currentUploadTab.value.fileList.push(fileInfo)
-        }
-      }
-    })
+    if (currentUploadTab.value.fileList.length > 0) {
+      ElMessage.warning('当前批次已有视频，请先删除后再选择')
+      return
+    }
+    const material = publishableMaterials.value.find(m => String(m.id) === String(selectedMaterial.value))
+    if (!material) {
+      ElMessage.error('选中的素材不存在，请刷新后重试')
+      return
+    }
+    clearVideoDerivedContent(currentUploadTab.value)
+    const selectedPublishDrafts = [normalizePublishDraft(material)]
+    const fileInfo = {
+      name: material.displayTitle || material.filename,
+      displayTitle: material.displayTitle || material.filename,
+      channel: material.displayChannel || '',
+      processType: material.processType || '处理后视频',
+      processVersion: material.processVersion || '',
+      processVersionLabel: processVersionLabel(material.processVersion),
+      subtitleLanguage: material.subtitleLanguage || '',
+      subtitleLanguageLabel: material.subtitleLanguageLabel || '',
+      sourceType: material.source_type,
+      analysisResult: material.analysisResult || {},
+      publishDraft: material.publishDraft || {},
+      videoId: material.source_video_id || material.metadata?.videoId || '',
+      materialId: material.id,
+      url: materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()),
+      path: material.file_path,
+      size: material.filesize * 1024 * 1024, // 转换为字节
+      type: 'video/mp4'
+    }
+    currentUploadTab.value.fileList = [fileInfo]
 
     applyPublishDraftToPublishTab(currentUploadTab.value, selectedPublishDrafts)
     
@@ -1006,11 +1324,10 @@ const confirmMaterialSelection = () => {
     }))]
   }
   
-  const addedCount = selectedMaterials.value.length
   materialLibraryVisible.value = false
-  selectedMaterials.value = []
+  selectedMaterial.value = null
   currentUploadTab.value = null
-  ElMessage.success(`已添加 ${addedCount} 个处理后视频`)
+  ElMessage.success('已添加 1 个处理后视频')
 }
 
 // 批量发布对话框状态
@@ -1098,6 +1415,10 @@ const batchPublish = async () => {
 
 onMounted(() => {
   loadPublishedVideos()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(materialLibrarySearchTimer)
 })
 </script>
 
@@ -1272,6 +1593,7 @@ $ink-strong: #172033;
 .section-heading h3 { margin: 0; color: $ink-strong; font-size: 16px; }
 .section-heading p { margin: 3px 0 0; color: $text-secondary; font-size: 12px; }
 .step-index { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: $accent-blue; background: rgba(37, 99, 235, 0.1); font-weight: 700; flex: 0 0 auto; }
+.selection-note { color: $text-secondary; font-size: 12px; line-height: 1.6; }
 
 .file-list,
 .material-list,
@@ -1321,6 +1643,101 @@ $ink-strong: #172033;
 .tag-cloud { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 32px; }
 .topic-cloud { margin-top: 4px; }
 .platform-radios { display: flex; flex-wrap: wrap; gap: 8px; }
+.target-carousel {
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+.target-slide {
+  display: grid;
+  gap: 12px;
+  height: 100%;
+  padding: 14px 42px;
+}
+.target-slide > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.target-slide strong { color: $ink-strong; font-size: 16px; }
+.target-slide span { color: $text-secondary; font-size: 13px; }
+.target-preview-grid {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 8px 10px;
+  color: $text-secondary;
+  font-size: 12px;
+}
+.target-preview-grid p {
+  margin: 0;
+  min-width: 0;
+  color: $ink-strong;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-status-panel {
+  display: grid;
+  gap: 8px;
+}
+.target-status-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #fff;
+}
+.target-status-item > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.target-status-item strong {
+  color: $ink-strong;
+  font-size: 13px;
+}
+.target-status-item span,
+.target-status-item p {
+  color: $text-secondary;
+  font-size: 12px;
+}
+.target-status-item p {
+  grid-column: 1 / -1;
+  margin: 0;
+  line-height: 1.5;
+}
+.publish-readonly-card {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #fff;
+}
+.publish-readonly-card > div {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+}
+.publish-readonly-card span {
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.publish-readonly-card strong,
+.publish-readonly-card p {
+  margin: 0;
+  min-width: 0;
+  color: $ink-strong;
+  font-size: 13px;
+  line-height: 1.7;
+}
 .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .inline-options { display: flex; gap: 16px; flex-wrap: wrap; }
 .schedule-controls { display: grid; gap: 12px; }
@@ -1331,6 +1748,15 @@ $ink-strong: #172033;
 .submit-bar { display: flex; justify-content: flex-end; gap: 10px; padding-top: 2px; }
 .option-grid { display: grid; gap: 12px; }
 .option-btn { width: 100%; height: 46px; }
+.account-platform-list { display: grid; gap: 12px; max-height: 62vh; overflow: auto; padding-right: 4px; }
+.account-platform-card { display: grid; gap: 10px; padding: 12px; border: 1px solid $border-lighter; border-radius: 8px; background: #f8fbff; }
+.account-platform-card.disabled { opacity: 0.62; background: #fafafa; }
+.account-platform-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.account-platform-heading > div { display: grid; gap: 3px; }
+.account-platform-heading strong { color: $ink-strong; font-size: 14px; }
+.account-platform-heading span { color: $text-secondary; font-size: 12px; }
+.platform-account-radios { display: grid; gap: 8px; }
+.account-item { padding: 8px 10px; border: 1px solid $border-lighter; border-radius: 8px; background: #fff; }
 .custom-topic-input { display: flex; gap: 10px; margin-bottom: 18px; }
 .topic-grid { display: flex; flex-wrap: wrap; gap: 10px; }
 :global(.material-library-dialog) {
@@ -1345,14 +1771,31 @@ $ink-strong: #172033;
   overflow: hidden;
 }
 .material-library-dialog :deep(.el-alert) { margin-bottom: 12px; }
+.material-library-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.material-library-tools .el-input {
+  max-width: 420px;
+}
+.material-library-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
 .publishable-list {
   max-height: min(62vh, 620px);
   padding-right: 4px;
 }
+.material-radio-group { width: 100%; }
 .publishable-item { align-items: flex-start; min-height: 92px; }
-.publishable-item :deep(.el-checkbox) { width: 100%; align-items: flex-start; height: auto; }
-.publishable-item :deep(.el-checkbox__input) { margin-top: 3px; }
-.publishable-item :deep(.el-checkbox__label) {
+.publishable-item :deep(.el-radio) { width: 100%; align-items: flex-start; height: auto; margin-right: 0; }
+.publishable-item :deep(.el-radio__input) { margin-top: 3px; }
+.publishable-item :deep(.el-radio__label) {
   min-width: 0;
   flex: 1;
   line-height: 1.45;

@@ -85,7 +85,7 @@
             <span class="panel-kicker">明细记录</span>
             <h2>视频处理阶段明细</h2>
           </div>
-          <span class="panel-count">最近 {{ events.length }} 条</span>
+          <span class="panel-count">第 {{ eventPagination.page }} 页 · {{ events.length }} / {{ eventTotal }} 条</span>
         </div>
       </template>
 
@@ -125,12 +125,21 @@
         <el-table-column prop="startedAt" label="开始时间" width="165" />
         <el-table-column prop="message" label="说明" min-width="220" show-overflow-tooltip />
       </el-table>
+      <div class="table-pagination" v-if="eventTotal > eventPagination.pageSize">
+        <el-pagination
+          v-model:current-page="eventPagination.page"
+          :page-size="eventPagination.pageSize"
+          :total="eventTotal"
+          layout="total, prev, pager, next, jumper"
+          background
+        />
+      </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { youtubeApi } from '@/api/youtube'
@@ -142,6 +151,8 @@ const stats = ref({
   events: [],
   jobs: []
 })
+const eventPagination = reactive({ page: 1, pageSize: 50 })
+const eventTotal = ref(0)
 
 const summary = computed(() => stats.value.summary || {})
 const stages = computed(() => stats.value.stages || [])
@@ -161,14 +172,28 @@ const languageMap = {
 const fetchStatistics = async () => {
   loading.value = true
   try {
-    const res = await youtubeApi.getWorkflowStatistics({ limit: 300 })
+    const res = await youtubeApi.getWorkflowStatistics({
+      limit: 300,
+      page: eventPagination.page,
+      pageSize: eventPagination.pageSize
+    })
     stats.value = res.data || stats.value
+    eventTotal.value = Number(res.data?.eventsTotal || stats.value.events?.length || 0)
+    eventPagination.page = Number(res.data?.eventsPage || eventPagination.page)
+    eventPagination.pageSize = Number(res.data?.eventsPageSize || eventPagination.pageSize)
   } catch (error) {
     ElMessage.error('获取处理统计失败')
   } finally {
     loading.value = false
   }
 }
+
+watch(
+  () => eventPagination.page,
+  () => {
+    fetchStatistics()
+  }
+)
 
 const formatDuration = (seconds) => {
   const safeSeconds = Math.max(0, Math.round(Number(seconds) || 0))
@@ -363,6 +388,13 @@ $ink-strong: #172033;
 .panel-count {
   color: $text-secondary;
   font-size: 13px;
+}
+
+.table-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px 14px;
+  border-top: 1px solid $border-lighter;
 }
 
 .job-cell {

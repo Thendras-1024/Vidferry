@@ -118,6 +118,15 @@
                       <div class="message-item-time">{{ formatMessageTime(message.updatedAt) }}</div>
                       <div class="message-item-actions">
                         <el-button
+                          v-if="message.actionUrl"
+                          size="small"
+                          type="warning"
+                          link
+                          @click="handleMessageAction(message)"
+                        >
+                          {{ message.actionLabel || '去解决' }}
+                        </el-button>
+                        <el-button
                           size="small"
                           type="primary"
                           link
@@ -212,6 +221,12 @@ const formatMessageTime = (timestamp) => {
     hour: '2-digit',
     minute: '2-digit'
   })
+}
+
+const handleMessageAction = (message) => {
+  if (!message?.actionUrl) return
+  window.open(message.actionUrl, '_blank', 'noopener,noreferrer')
+  notificationStore.acknowledgeMessage(message.id)
 }
 
 onMounted(() => {

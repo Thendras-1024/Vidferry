@@ -182,6 +182,9 @@ package-lock.json
 
 # database
 db/database.db
+db/*.db
+*.sqlite
+*.sqlite3
 
 # 临时文件夹
 cookiesFile
@@ -205,3 +208,6 @@ videos/
 *.vtt
 
 /uploader/bilibili_uploader/qrcode.png
+qrcode.png
+# Added by code-review-graph
+.code-review-graph/
