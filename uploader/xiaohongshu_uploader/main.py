@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -29,10 +30,26 @@ XHS_LOGIN_BOX_SELECTOR = "div[class*='login-box']"
 XHS_LOGIN_SWITCH_SELECTOR = "img.css-wemwzq"
 XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+XHS_GOTO_TIMEOUT_MS = int(os.environ.get("XHS_GOTO_TIMEOUT_MS", "90000") or 90000)
+XHS_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("XHS_UPLOAD_WAIT_TIMEOUT", "1800") or 1800)
+XHS_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("XHS_PUBLISH_CONFIRM_TIMEOUT", "180") or 180)
 
 
 def _msg(emoji: str, text: str) -> str:
     return f"{emoji} {text}"
+
+
+async def safe_goto_xhs(page: Page, url: str, retries: int = 2) -> None:
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=XHS_GOTO_TIMEOUT_MS)
+            return
+        except Exception as exc:
+            last_error = exc
+            xiaohongshu_logger.warning(_msg("😵", f"打开小红书页面超时/失败，准备重试 {attempt + 1}/{retries + 1}: {exc}"))
+            await asyncio.sleep(2)
+    raise RuntimeError(f"打开小红书页面失败: {last_error}")
 
 
 async def _emit_qrcode_callback(qrcode_callback, payload: dict):
@@ -158,7 +175,7 @@ async def cookie_auth(account_file):
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
             page = await context.new_page()
-            await page.goto(XHS_PUBLISH_VIDEO_URL)
+            await safe_goto_xhs(page, XHS_PUBLISH_VIDEO_URL)
             await page.wait_for_timeout(3000)
 
             if page.url.startswith(XHS_LOGIN_URL):
@@ -228,7 +245,7 @@ async def xiaohongshu_cookie_gen(
         result = _build_login_result(False, "failed", "小红书登录失败", account_file)
         try:
             page = await context.new_page()
-            await page.goto(XHS_LOGIN_URL)
+            await safe_goto_xhs(page, XHS_LOGIN_URL)
             qrcode_info = await _save_xhs_qrcode(page, account_file, qrcode_callback=qrcode_callback)
             qrcode_path = Path(qrcode_info["image_path"])
             xiaohongshu_logger.info(_msg("🧍", "请扫码，小人正在耐心等待登录完成"))
@@ -487,11 +504,14 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
     async def upload_video_content(self, page: Page) -> None:
         xiaohongshu_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
         xiaohongshu_logger.info(_msg("🧭", "小人正在赶往视频发布页"))
-        await page.goto(XHS_PUBLISH_VIDEO_URL)
-        await page.wait_for_url(XHS_PUBLISH_VIDEO_URL)
+        await safe_goto_xhs(page, XHS_PUBLISH_VIDEO_URL)
+        await page.wait_for_url(XHS_PUBLISH_VIDEO_URL, timeout=XHS_GOTO_TIMEOUT_MS)
         await page.locator("div[class^='upload-content'] input[class='upload-input']").set_input_files(self.file_path)
 
+        upload_deadline = time.monotonic() + XHS_UPLOAD_WAIT_TIMEOUT
         while True:
+            if time.monotonic() > upload_deadline:
+                raise RuntimeError("小红书视频上传等待超时")
             try:
                 upload_input = await page.wait_for_selector('input.upload-input', timeout=3000)
                 preview_new = await upload_input.query_selector(
@@ -538,7 +558,10 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
         if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
             await self.set_schedule_time_xiaohongshu(page, self.publish_date)
 
+        publish_deadline = time.monotonic() + XHS_PUBLISH_CONFIRM_TIMEOUT
         while True:
+            if time.monotonic() > publish_deadline:
+                raise RuntimeError("小红书发布确认超时")
             try:
                 if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED:
                     await page.locator('button:has-text("定时发布")').click()
@@ -629,8 +652,8 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
     async def upload_note_content(self, page: Page) -> None:
         xiaohongshu_logger.info(_msg("🏃", f"小人开始搬运图文，共 {len(self.image_paths)} 张图片"))
         xiaohongshu_logger.info(_msg("🧭", "小人正在赶往图文发布页"))
-        await page.goto(XHS_PUBLISH_NOTE_URL)
-        await page.wait_for_url(XHS_PUBLISH_NOTE_URL)
+        await safe_goto_xhs(page, XHS_PUBLISH_NOTE_URL)
+        await page.wait_for_url(XHS_PUBLISH_NOTE_URL, timeout=XHS_GOTO_TIMEOUT_MS)
 
         upload_input = page.locator('input[type="file"][accept*="image"]').first
         if not await upload_input.count():
@@ -640,7 +663,10 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
         xiaohongshu_logger.info(_msg("📤", "小人正在上传图片"))
         await upload_input.set_input_files(self.image_paths)
 
+        upload_deadline = time.monotonic() + XHS_UPLOAD_WAIT_TIMEOUT
         while True:
+            if time.monotonic() > upload_deadline:
+                raise RuntimeError("小红书图文上传等待超时")
             try:
                 title_container = page.locator('input[placeholder*="填写标题"]').first
                 await title_container.wait_for(state="visible", timeout=3000)
@@ -656,7 +682,10 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
         if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
             await self.set_schedule_time_xiaohongshu(page, self.publish_date)
 
+        publish_deadline = time.monotonic() + XHS_PUBLISH_CONFIRM_TIMEOUT
         while True:
+            if time.monotonic() > publish_deadline:
+                raise RuntimeError("小红书图文发布确认超时")
             try:
                 if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED:
                     await page.locator('button:has-text("定时发布")').click()
