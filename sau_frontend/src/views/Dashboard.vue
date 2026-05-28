@@ -67,8 +67,8 @@
         <el-table-column label="素材" min-width="320">
           <template #default="{ row }">
             <div class="material-cell">
-              <strong>{{ row.title || row.publishTitle || row.filename }}</strong>
-              <span>{{ row.filename || row.sourceUrl }}</span>
+              <strong>{{ publishedChineseTitle(row) }}</strong>
+              <span>{{ publishedEnglishTitle(row) }}</span>
             </div>
           </template>
         </el-table-column>
@@ -81,6 +81,19 @@
             <el-tag type="success" effect="plain" size="small">
               {{ row.platform || '已发布' }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-link
+              v-if="publishedPreviewUrl(row)"
+              :href="publishedPreviewUrl(row)"
+              target="_blank"
+              type="primary"
+            >
+              预览
+            </el-link>
+            <span v-else class="muted-text">无预览</span>
           </template>
         </el-table-column>
       </el-table>
@@ -103,6 +116,7 @@ const router = useRouter()
 const accountStore = useAccountStore()
 const appStore = useAppStore()
 const loading = ref(false)
+const materialSummary = ref({ total: 0, processed: 0, downloaded: 0, other: 0 })
 
 const quickActions = [
   { title: '视频采集处理', desc: '查找线索、下载、翻译和烧录', path: '/youtube-research', icon: Search },
@@ -135,6 +149,17 @@ const videoExtensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv']
 const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
 
 const contentStats = computed(() => {
+  const summary = materialSummary.value || {}
+  if (Number(summary.total || 0) > 0) {
+    const videos = Number(summary.videos ?? (Number(summary.processed || 0) + Number(summary.downloaded || 0)))
+    const images = Number(summary.images || 0)
+    return {
+      total: Number(summary.total || 0),
+      videos,
+      images,
+      others: Math.max(0, Number(summary.total || 0) - videos - images)
+    }
+  }
   const materials = appStore.materials
   const videos = materials.filter(m => videoExtensions.some(ext => m.filename.toLowerCase().endsWith(ext))).length
   const images = materials.filter(m => imageExtensions.some(ext => m.filename.toLowerCase().endsWith(ext))).length
@@ -146,6 +171,23 @@ const recentPublishedMaterials = computed(() => {
     .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
     .slice(0, 6)
 })
+
+const stripPublishTitleMeta = (value = '') => {
+  return String(value || '').split('; description=')[0].trim()
+}
+
+const publishedChineseTitle = (row) => {
+  return stripPublishTitleMeta(row.publishTitle) || row.metadata?.publishTitle || row.title || row.filename || '未命名发布素材'
+}
+
+const publishedEnglishTitle = (row) => {
+  return row.title || row.filename || row.sourceUrl || '暂无英文标题'
+}
+
+const publishedPreviewUrl = (row) => {
+  if (!row.filePath) return ''
+  return materialApi.getMaterialPreviewUrl(row.filePath)
+}
 
 const getFileType = (filename = '') => {
   if (videoExtensions.some(ext => filename.toLowerCase().endsWith(ext))) return '视频'
@@ -167,7 +209,7 @@ const fetchDashboardData = async () => {
   try {
     const [accountRes, materialRes, publishedRes] = await Promise.allSettled([
       accountApi.getAccounts(),
-      materialApi.getAllMaterials(),
+      materialApi.getAllMaterials({ page: 1, pageSize: 20 }),
       materialApi.getPublishedMaterials({ limit: 20 })
     ])
 
@@ -175,7 +217,8 @@ const fetchDashboardData = async () => {
       accountStore.setAccounts(accountRes.value.data)
     }
     if (materialRes.status === 'fulfilled' && materialRes.value.code === 200) {
-      appStore.setMaterials(materialRes.value.data)
+      appStore.setMaterials(materialRes.value.data?.items || [])
+      materialSummary.value = materialRes.value.data?.summary || materialSummary.value
     }
     if (publishedRes.status === 'fulfilled' && publishedRes.value.code === 200) {
       appStore.setPublishedMaterials(publishedRes.value.data || [])

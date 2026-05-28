@@ -34,6 +34,13 @@ const writeStorage = (key, value) => {
 const getAccountMessageKey = (account) => `account-abnormal:${account.id}`
 const getWorkflowFailureMessageKey = (job) => `workflow-failed:${job.id}`
 const getWorkflowAbnormalMessageKey = (job) => `workflow-abnormal:${job.id}`
+const getPublishUploadPausedMessageKey = (job) => `publish-upload-paused:${job.id}`
+
+const platformResolveUrls = {
+  抖音: 'https://creator.douyin.com/creator-micro/content/upload',
+  B站: 'https://member.bilibili.com/platform/upload/video/frame',
+  bilibili: 'https://member.bilibili.com/platform/upload/video/frame'
+}
 
 const buildAccountMessage = (account, previousMessage) => {
   const now = Date.now()
@@ -67,6 +74,46 @@ const buildWorkflowFailureMessage = (job) => {
     content: `${title} 执行失败：${message}`,
     jobId: job.id,
     videoId: job.videoId,
+    createdAt: now,
+    updatedAt: now,
+    acknowledged: false,
+    acknowledgedAt: null
+  }
+}
+
+const getPublishUploadPausedPlatform = (job) => {
+  const message = `${job?.message || ''} ${job?.errorReason || ''} ${job?.publishCommand || ''}`.toLowerCase()
+  if (message.includes('douyin') || message.includes('抖音')) return '抖音'
+  if (message.includes('bilibili') || message.includes('b站')) return 'B站'
+  return job?.publishToDouyin ? '抖音' : '发布平台'
+}
+
+const isPublishUploadPausedJob = (job) => {
+  const message = `${job?.message || ''} ${job?.errorCode || ''} ${job?.errorReason || ''}`
+  return job?.status === 'failed' && (
+    message.includes('VF-PUBLISH-UPLOAD-PAUSED') ||
+    message.includes('上传已暂停') ||
+    message.includes('暂停传输') ||
+    message.includes('继续上传')
+  )
+}
+
+const buildPublishUploadPausedMessage = (job) => {
+  const now = Date.now()
+  const title = job.title || job.videoTitle || job.videoId || '未命名视频'
+  const platform = getPublishUploadPausedPlatform(job)
+
+  return {
+    id: getPublishUploadPausedMessageKey(job),
+    key: getPublishUploadPausedMessageKey(job),
+    type: 'publish-upload-paused',
+    title: '视频上传已暂停',
+    content: `你有一个视频在${platform}暂停上传了：${title}。可能是在发布过程中手动点击了暂停传输，请进入平台页面恢复上传，或回到发布中心重新发起发布。`,
+    jobId: job.id,
+    videoId: job.videoId,
+    platform,
+    actionLabel: '去解决',
+    actionUrl: platformResolveUrls[platform] || '',
     createdAt: now,
     updatedAt: now,
     acknowledged: false,
@@ -182,6 +229,28 @@ export const useNotificationStore = defineStore('notification', () => {
     })
   }
 
+  const addPublishUploadPausedMessage = (job) => {
+    if (!job?.id || !isPublishUploadPausedJob(job)) return false
+
+    const key = getPublishUploadPausedMessageKey(job)
+    if (handledKeys.value.includes(key)) return true
+    if (messages.value.some(message => message.key === key)) return true
+
+    const message = buildPublishUploadPausedMessage(job)
+    messages.value.unshift(message)
+    persist()
+
+    ElNotification({
+      title: message.title,
+      message: message.content,
+      type: 'warning',
+      position: 'top-right',
+      duration: 8000
+    })
+
+    return true
+  }
+
   const addWorkflowAbnormalMessage = (job) => {
     if (!job?.id) return
 
@@ -230,6 +299,7 @@ export const useNotificationStore = defineStore('notification', () => {
     hasUnread,
     syncAccountAbnormalMessages,
     addWorkflowFailureMessage,
+    addPublishUploadPausedMessage,
     addWorkflowAbnormalMessage,
     acknowledgeMessage,
     resolveMessage

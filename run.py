@@ -6,7 +6,7 @@ import logging
 from app import create_app, initialize_runtime
 from app.config import HOST, PORT
 
-# 关闭 Flask 默认的访问日志（就是你刷屏的那些）
+# 关闭 Flask 默认的访问日志
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)  # 只显示错误，不显示 GET/POST 请求
 

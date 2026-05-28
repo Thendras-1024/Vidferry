@@ -169,6 +169,7 @@
               type="danger"
               plain
               :disabled="selectedVideos.length === 0"
+              :loading="batchDeleting"
               @click="batchDeleteVideos"
             >
               批量删除 {{ selectedVideos.length || '' }}
@@ -191,17 +192,18 @@
               <el-option label="已处理优先" value="translatedFirst" />
               <el-option label="已发布优先" value="publishedFirst" />
             </el-select>
-            <span class="panel-count">第 {{ videoPagination.page }} 页 · {{ filteredItems.length }} / {{ items.length }} 条</span>
+            <span class="panel-count">第 {{ videoPagination.page }} 页 · {{ items.length }} / {{ videoTotal }} 条</span>
           </div>
         </div>
       </template>
 
       <el-table
-        :data="pagedItems"
+        :data="items"
         v-loading="loading"
         empty-text="暂无匹配的视频记录"
         class="research-table"
         style="width: 100%"
+        ref="videoTableRef"
         @selection-change="handleVideoSelectionChange"
       >
         <el-table-column type="selection" width="44" />
@@ -271,9 +273,9 @@
                       <div class="draft-editor-primary">
                         <div class="draft-row">
                           <span>标题</span>
-                          <el-select v-model="row.analysisDraft.selectedTitle" placeholder="选择或编辑标题" filterable allow-create default-first-option>
+                          <el-select v-model="publishDraftForm(row).selectedTitle" placeholder="选择或编辑标题" filterable allow-create default-first-option>
                             <el-option
-                              v-for="title in row.analysisDraft.titleOptions"
+                              v-for="title in publishDraftForm(row).titleOptions"
                               :key="title"
                               :label="title"
                               :value="title"
@@ -282,9 +284,9 @@
                         </div>
                         <div class="draft-row">
                           <span>话题</span>
-                          <el-select v-model="row.analysisDraft.tags" multiple filterable allow-create default-first-option placeholder="选择或新增话题">
+                          <el-select v-model="publishDraftForm(row).tags" multiple filterable allow-create default-first-option placeholder="选择或新增话题">
                             <el-option
-                              v-for="tag in row.analysisDraft.tagOptions"
+                              v-for="tag in publishDraftForm(row).tagOptions"
                               :key="tag"
                               :label="tag"
                               :value="tag"
@@ -294,7 +296,7 @@
                       </div>
                       <div class="draft-row draft-description-row">
                         <span>描述</span>
-                        <el-input v-model="row.analysisDraft.publishCopy" type="textarea" :rows="5" maxlength="500" show-word-limit />
+                        <el-input v-model="publishDraftForm(row).publishCopy" type="textarea" :rows="5" maxlength="500" show-word-limit />
                       </div>
                     </div>
                   </template>
@@ -327,6 +329,7 @@
                       保存修改
                     </el-button>
                     <el-button v-else size="small" type="primary" text @click="startPublishDraftEditing(row)">编辑文案</el-button>
+                    <el-button v-if="isPublishDraftEditing(row)" size="small" text @click="cancelPublishDraftEditing(row)">取消</el-button>
                     <el-button size="small" text @click="showAnalysis(row)">查看详情</el-button>
                   </div>
               </div>
@@ -400,11 +403,11 @@
           </template>
         </el-table-column>
       </el-table>
-      <div class="table-pagination" v-if="filteredItems.length > videoPagination.pageSize">
+      <div class="table-pagination" v-if="videoTotal > videoPagination.pageSize">
         <el-pagination
           v-model:current-page="videoPagination.page"
           :page-size="videoPagination.pageSize"
-          :total="filteredItems.length"
+          :total="videoTotal"
           layout="total, prev, pager, next, jumper"
           background
         />
@@ -426,13 +429,13 @@
               <el-option label="失败" value="failed" />
               <el-option label="异常" value="abnormal" />
             </el-select>
-            <span class="panel-count">第 {{ jobPagination.page }} 页 · {{ filteredJobs.length }} / {{ jobs.length }} 个</span>
+            <span class="panel-count">第 {{ jobPagination.page }} 页 · {{ jobs.length }} / {{ jobTotal }} 个</span>
             <el-button text type="primary" :loading="jobsLoading" @click="loadJobs()">刷新</el-button>
           </div>
         </div>
       </template>
 
-      <el-table :data="pagedJobs" empty-text="暂无匹配任务" class="job-table" style="width: 100%">
+      <el-table :data="jobs" empty-text="暂无匹配任务" class="job-table" style="width: 100%">
         <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
         <el-table-column prop="account" label="抖音账号" width="110" />
         <el-table-column prop="status" label="状态" width="105">
@@ -470,11 +473,11 @@
         </el-table-column>
         <el-table-column prop="updatedAt" label="更新时间" width="165" />
       </el-table>
-      <div class="table-pagination" v-if="filteredJobs.length > jobPagination.pageSize">
+      <div class="table-pagination" v-if="jobTotal > jobPagination.pageSize">
         <el-pagination
           v-model:current-page="jobPagination.page"
           :page-size="jobPagination.pageSize"
-          :total="filteredJobs.length"
+          :total="jobTotal"
           layout="total, prev, pager, next, jumper"
           background
         />
@@ -684,6 +687,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, DocumentCopy, Download, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
+import { useAppStore } from '@/stores/app'
 import { useNotificationStore } from '@/stores/notification'
 
 const loading = ref(false)
@@ -695,6 +699,7 @@ const creatingJobId = ref('')
 const analyzingId = ref('')
 const savingAnalysisId = ref('')
 const deletingId = ref('')
+const batchDeleting = ref(false)
 const resettingId = ref('')
 const settingsDialogVisible = ref(false)
 const route = useRoute()
@@ -704,11 +709,16 @@ const analysisLoading = ref(false)
 const analysisResult = ref(null)
 const analysisStatus = ref(0)
 const currentAnalysisRow = ref(null)
+const videoTableRef = ref(null)
 const items = ref([])
 const jobs = ref([])
+const videoTotal = ref(0)
+const videoSummary = ref({})
+const jobTotal = ref(0)
 const lastResult = ref(null)
 const nowTick = ref(Date.now())
 const editingPublishDraftIds = ref(new Set())
+const editingPublishDraftForms = reactive({})
 const selectedVideos = ref([])
 const searchProgress = reactive({
   visible: false,
@@ -717,6 +727,7 @@ const searchProgress = reactive({
   message: ''
 })
 const notificationStore = useNotificationStore()
+const appStore = useAppStore()
 let jobsTimer = null
 let clockTimer = null
 let jobsRequesting = false
@@ -942,7 +953,7 @@ const videoFilter = reactive({
 
 const videoPagination = reactive({
   page: 1,
-  pageSize: 10
+  pageSize: 20
 })
 
 const jobFilter = reactive({
@@ -951,7 +962,7 @@ const jobFilter = reactive({
 
 const jobPagination = reactive({
   page: 1,
-  pageSize: 10
+  pageSize: 20
 })
 
 const isDownloaded = (item) => Number(item.downloadStatus) === 1
@@ -959,7 +970,6 @@ const isTranslated = (item) => Number(item.translateStatus) === 1
 const isTranslationSkipped = (item) => Number(item.translateStatus) === 2
 const isPublished = (item) => item.publishStatus === 1
 const isRunningJob = (job) => job.status === 'queued' || job.status === 'running'
-const isAbnormalJob = (job) => job.status === 'abnormal'
 
 const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
 const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
@@ -1047,7 +1057,25 @@ const showInlinePublishDraft = (item) => {
 
 const isPublishDraftEditing = (item) => editingPublishDraftIds.value.has(item.id)
 
+const cloneAnalysisDraft = (draft = {}) => ({
+  titleOptions: [...(draft.titleOptions || [])],
+  selectedTitle: draft.selectedTitle || '',
+  publishCopy: draft.publishCopy || '',
+  tags: [...(draft.tags || [])],
+  tagOptions: [...(draft.tagOptions || [])],
+  summary: draft.summary || '',
+  chinaViewAngle: draft.chinaViewAngle || ''
+})
+
+const publishDraftForm = (item) => {
+  if (!editingPublishDraftForms[item.id]) {
+    editingPublishDraftForms[item.id] = cloneAnalysisDraft(item.analysisDraft || {})
+  }
+  return editingPublishDraftForms[item.id]
+}
+
 const startPublishDraftEditing = (item) => {
+  editingPublishDraftForms[item.id] = cloneAnalysisDraft(item.analysisDraft || {})
   editingPublishDraftIds.value = new Set([...editingPublishDraftIds.value, item.id])
 }
 
@@ -1055,6 +1083,11 @@ const stopPublishDraftEditing = (item) => {
   const nextIds = new Set(editingPublishDraftIds.value)
   nextIds.delete(item.id)
   editingPublishDraftIds.value = nextIds
+  delete editingPublishDraftForms[item.id]
+}
+
+const cancelPublishDraftEditing = (item) => {
+  stopPublishDraftEditing(item)
 }
 
 const currentStage = (item) => {
@@ -1110,113 +1143,44 @@ const rowWorkflowSteps = (item) => {
   }))
 }
 
-const matchesVideoStatus = (item) => {
-  const status = videoFilter.status
-  if (status === 'notDownloaded') return !isDownloaded(item)
-  if (status === 'downloaded') return isDownloaded(item)
-  if (status === 'notTranslated') return !isTranslated(item) && !isTranslationSkipped(item)
-  if (status === 'translated') return isTranslated(item)
-  if (status === 'translationSkipped') return isTranslationSkipped(item)
-  if (status === 'notPublished') return !isPublished(item)
-  if (status === 'published') return isPublished(item)
-  if (status === 'running') return Boolean(activeJobForVideo(item))
-  return true
-}
-
-const scoreVideo = (item, sort) => {
-  if (sort === 'pendingFirst') {
-    return [
-      isDownloaded(item) && isTranslated(item) ? 1 : 0,
-      isDownloaded(item) ? 1 : 0,
-      isTranslated(item) ? 1 : 0,
-      isPublished(item) ? 1 : 0
-    ]
-  }
-  if (sort === 'downloadedFirst') return [isDownloaded(item) ? 0 : 1, isTranslated(item) ? 0 : 1]
-  if (sort === 'translatedFirst') return [isTranslated(item) ? 0 : 1, isDownloaded(item) ? 0 : 1]
-  if (sort === 'publishedFirst') return [isPublished(item) ? 0 : 1, isTranslated(item) ? 0 : 1]
-  return [0]
-}
-
-const compareScore = (left, right) => {
-  const maxLength = Math.max(left.length, right.length)
-  for (let index = 0; index < maxLength; index += 1) {
-    const diff = (left[index] || 0) - (right[index] || 0)
-    if (diff !== 0) return diff
-  }
-  return 0
-}
-
-const filteredItems = computed(() => {
-  const sort = videoFilter.sort
-  return items.value
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => matchesVideoStatus(item))
-    .sort((left, right) => {
-      if (sort === 'default') return left.index - right.index
-      return compareScore(scoreVideo(left.item, sort), scoreVideo(right.item, sort)) || left.index - right.index
-    })
-    .map(({ item }) => item)
-})
-
 watch(
   () => [videoFilter.status, videoFilter.sort],
   () => {
     videoPagination.page = 1
+    loadVideos(false, { force: true })
   }
 )
 
-const pagedItems = computed(() => {
-  const totalPages = Math.max(1, Math.ceil(filteredItems.value.length / videoPagination.pageSize))
-  const page = Math.min(videoPagination.page, totalPages)
-  const start = (page - 1) * videoPagination.pageSize
-  return filteredItems.value.slice(start, start + videoPagination.pageSize)
-})
-
-const getJobTimeValue = (job) => {
-  return parseJobTime(job.updatedAt) || parseJobTime(job.createdAt)
-}
-
-const matchesJobStatus = (job) => {
-  if (jobFilter.status === 'running') return isRunningJob(job)
-  if (jobFilter.status === 'success') return job.status === 'success'
-  if (jobFilter.status === 'failed') return job.status === 'failed'
-  if (jobFilter.status === 'abnormal') return isAbnormalJob(job)
-  return true
-}
-
-const filteredJobs = computed(() => {
-  return jobs.value
-    .filter(matchesJobStatus)
-    .sort((left, right) => {
-      const leftRank = isRunningJob(left) ? 0 : 1
-      const rightRank = isRunningJob(right) ? 0 : 1
-      if (leftRank !== rightRank) return leftRank - rightRank
-      return getJobTimeValue(right) - getJobTimeValue(left)
-    })
-})
+watch(
+  () => videoPagination.page,
+  () => {
+    loadVideos(false)
+  }
+)
 
 watch(
   () => jobFilter.status,
   () => {
     jobPagination.page = 1
+    loadJobs({ silent: true })
   }
 )
 
-const pagedJobs = computed(() => {
-  const totalPages = Math.max(1, Math.ceil(filteredJobs.value.length / jobPagination.pageSize))
-  const page = Math.min(jobPagination.page, totalPages)
-  const start = (page - 1) * jobPagination.pageSize
-  return filteredJobs.value.slice(start, start + jobPagination.pageSize)
-})
+watch(
+  () => jobPagination.page,
+  () => {
+    loadJobs({ silent: true })
+  }
+)
 
 const summaryStats = computed(() => {
-  const total = items.value.length
-  const pendingDownload = items.value.filter(item => !isDownloaded(item)).length
-  const pendingTranslate = items.value.filter(item => isDownloaded(item) && !isTranslated(item) && !isTranslationSkipped(item)).length
-  const readyPublish = items.value.filter(item => isTranslated(item) && !isPublished(item)).length
-  const running = jobs.value.filter(job => job.status === 'queued' || job.status === 'running').length
-  const completed = items.value.filter(item => isPublished(item)).length
+  const summary = videoSummary.value || {}
+  const total = Number(summary.total || videoTotal.value || 0)
+  const pendingDownload = Number(summary.pendingDownload || 0)
+  const pendingTranslate = Number(summary.pendingTranslate || 0)
+  const readyPublish = Number(summary.readyPublish || 0)
+  const running = Number(summary.running || 0)
+  const completed = Number(summary.completed || 0)
 
   return [
     { label: '全部线索', value: total, meta: '当前入库', tone: 'tone-primary', filter: 'all' },
@@ -1229,10 +1193,10 @@ const summaryStats = computed(() => {
 })
 
 const pipelineStages = computed(() => [
-  { label: '导入/查询', value: `${items.value.length} 条线索`, icon: Search },
-  { label: '下载', value: `${items.value.filter(item => item.downloadStatus === 1).length} 个素材`, icon: Download },
-  { label: '处理', value: `${items.value.filter(item => Number(item.translateStatus) === 1).length} 条完成`, icon: VideoCamera },
-  { label: '发布', value: `${items.value.filter(item => item.publishStatus === 1).length} 条完成`, icon: VideoPlay }
+  { label: '导入/查询', value: `${Number(videoSummary.value?.total || videoTotal.value || 0)} 条线索`, icon: Search },
+  { label: '下载', value: `${Number(videoSummary.value?.downloaded || 0)} 个素材`, icon: Download },
+  { label: '处理', value: `${Number(videoSummary.value?.translated || 0)} 条完成`, icon: VideoCamera },
+  { label: '发布', value: `${Number(videoSummary.value?.completed || 0)} 条完成`, icon: VideoPlay }
 ])
 
 const searchProgressPercent = computed(() => {
@@ -1256,7 +1220,7 @@ const handleSearch = async () => {
     searchProgress.loaded = loadedCount
     searchProgress.total = Number(res.data?.requested || form.limit || loadedCount)
     searchProgress.message = `查询完成，实际加载 ${searchProgress.loaded} 条`
-    await loadVideos(false)
+    await loadVideos(false, { force: true })
     showImportResultMessage(res.data, '查询完成')
   } catch (error) {
     searchProgress.message = '查询失败，请检查网络或关键词后重试'
@@ -1284,7 +1248,7 @@ const importVideo = async () => {
     const res = await youtubeApi.importVideo({ url })
     lastResult.value = res.data
     manualForm.url = ''
-    await loadVideos(false)
+    await loadVideos(false, { force: true })
     showImportResultMessage(res.data, '导入完成')
   } finally {
     importing.value = false
@@ -1308,30 +1272,94 @@ const showImportResultMessage = (result = {}, title = '处理完成') => {
   ElMessage.success(`${title}，实际导入 ${created} 条视频`)
 }
 
-const loadVideos = async (showLoading = true) => {
+const uniqueValues = (values = []) => Array.from(new Set(values.filter(Boolean).map(value => String(value))))
+
+const videoCacheKey = (params) => `youtube:videos:${JSON.stringify(params)}`
+
+const applyVideoPage = (payload = {}) => {
+  items.value = (payload.items || []).map(normalizeVideoItem)
+  videoTotal.value = Number(payload.total || 0)
+  videoPagination.page = Number(payload.page || videoPagination.page)
+  videoPagination.pageSize = Number(payload.pageSize || videoPagination.pageSize)
+  videoSummary.value = payload.summary || videoSummary.value || {}
+}
+
+const loadVideos = async (showLoading = true, options = {}) => {
+  const params = {
+    page: videoPagination.page,
+    pageSize: videoPagination.pageSize,
+    status: videoFilter.status,
+    sort: videoFilter.sort
+  }
+  const cacheKey = videoCacheKey(params)
+  if (!options.force && !options.ids) {
+    const cached = appStore.getListCache(cacheKey)
+    if (cached) {
+      applyVideoPage(cached)
+      showLoading = false
+    }
+  }
+
   if (showLoading) loading.value = true
   try {
-    const res = await youtubeApi.list()
-    items.value = (res.data.items || []).map(normalizeVideoItem)
+    const res = await youtubeApi.list(params)
+    applyVideoPage(res.data || {})
+    appStore.setListCache(cacheKey, res.data || {})
   } finally {
     if (showLoading) loading.value = false
   }
 }
 
-const loadJobs = async ({ silent = false } = {}) => {
-  if (jobsRequesting) return
+const refreshVideosByIds = async (videoIds = []) => {
+  const ids = uniqueValues(videoIds)
+  if (ids.length === 0) return
+  try {
+    const res = await youtubeApi.list({
+      ids: ids.join(','),
+      page: 1,
+      pageSize: Math.min(ids.length, 100)
+    })
+    const nextItems = (res.data?.items || []).map(normalizeVideoItem)
+    const nextMap = new Map(nextItems.map(item => [String(item.id), item]))
+    items.value = items.value.map(item => nextMap.get(String(item.id)) || item)
+    if (res.data?.summary) {
+      videoSummary.value = res.data.summary
+    }
+  } catch (error) {
+    console.warn('局部刷新视频线索失败:', error)
+  }
+}
+
+const loadJobs = async ({ silent = false, recentOnly = false } = {}) => {
+  if (jobsRequesting) return []
   jobsRequesting = true
   if (!silent) jobsLoading.value = true
   try {
-    const res = await youtubeApi.listWorkflowJobs({ limit: 50 })
-    const nextJobs = res.data.items || []
+    const res = await youtubeApi.listWorkflowJobs({
+      page: recentOnly ? 1 : jobPagination.page,
+      pageSize: recentOnly ? Math.max(50, jobPagination.pageSize) : jobPagination.pageSize,
+      status: recentOnly ? 'recent' : jobFilter.status
+    })
+    const nextJobs = res.data?.items || []
     const previousStatuses = new Map(jobs.value.map(job => [job.id, job.status]))
+    const changedVideoIds = []
     const shouldNotifyFailures = jobs.value.length > 0
+
+    nextJobs.forEach(job => {
+      notificationStore.addPublishUploadPausedMessage(job)
+      const previousStatus = previousStatuses.get(job.id)
+      if (previousStatus && ['queued', 'running'].includes(previousStatus) && !['queued', 'running'].includes(job.status)) {
+        changedVideoIds.push(job.videoId)
+      }
+    })
 
     if (shouldNotifyFailures) {
       nextJobs.forEach(job => {
         if (job.status === 'failed' && previousStatuses.get(job.id) !== 'failed') {
-          notificationStore.addWorkflowFailureMessage(job)
+          const handledAsUploadPaused = notificationStore.addPublishUploadPausedMessage(job)
+          if (!handledAsUploadPaused) {
+            notificationStore.addWorkflowFailureMessage(job)
+          }
         }
         if (job.status === 'abnormal' && previousStatuses.get(job.id) !== 'abnormal') {
           notificationStore.addWorkflowAbnormalMessage(job)
@@ -1339,7 +1367,16 @@ const loadJobs = async ({ silent = false } = {}) => {
       })
     }
 
-    jobs.value = nextJobs
+    if (recentOnly) {
+      const nextMap = new Map(nextJobs.map(job => [job.id, job]))
+      const existingIds = new Set(jobs.value.map(job => job.id))
+      const additions = nextJobs.filter(job => !existingIds.has(job.id))
+      jobs.value = [...additions, ...jobs.value.map(job => nextMap.get(job.id) || job)]
+    } else {
+      jobs.value = nextJobs
+      jobTotal.value = Number(res.data?.total || nextJobs.length)
+    }
+    return uniqueValues(changedVideoIds)
   } finally {
     jobsRequesting = false
     if (!silent) jobsLoading.value = false
@@ -1349,9 +1386,10 @@ const loadJobs = async ({ silent = false } = {}) => {
 const startJobsPolling = () => {
   if (jobsTimer) return
   jobsTimer = window.setInterval(() => {
-    if (jobs.value.some(job => job.status === 'queued' || job.status === 'running')) {
-      loadJobs({ silent: true })
-      loadVideos(false)
+    if (jobs.value.some(job => job.status === 'queued' || job.status === 'running') || Number(videoSummary.value?.running || 0) > 0) {
+      loadJobs({ silent: true, recentOnly: true }).then(changedVideoIds => {
+        refreshVideosByIds(changedVideoIds)
+      })
     }
   }, 1500)
 }
@@ -1458,6 +1496,7 @@ const createJob = async (row) => {
     jobs.value.unshift(res.data)
     ElMessage.success('工作流任务已创建')
     startJobsPolling()
+    refreshVideosByIds([row.id])
   } finally {
     creatingJobId.value = ''
   }
@@ -1481,9 +1520,9 @@ const downloadVideo = async (row) => {
     jobs.value.unshift(res.data)
     ElMessage.success('下载任务已创建')
     startJobsPolling()
-    setTimeout(() => {
-      loadJobs({ silent: true })
-      loadVideos(false)
+    setTimeout(async () => {
+      const changedVideoIds = await loadJobs({ silent: true, recentOnly: true })
+      refreshVideosByIds([...changedVideoIds, row.id])
     }, 1500)
   } finally {
     downloadingId.value = ''
@@ -1515,11 +1554,81 @@ const deleteVideo = async (row) => {
   try {
     await youtubeApi.deleteVideo(row.id)
     items.value = items.value.filter(item => item.id !== row.id)
+    videoTotal.value = Math.max(0, videoTotal.value - 1)
+    if (videoSummary.value?.total) {
+      videoSummary.value = {
+        ...videoSummary.value,
+        total: Math.max(0, Number(videoSummary.value.total || 0) - 1)
+      }
+    }
     ElMessage.success('视频线索已删除')
   } catch (error) {
     console.warn('删除视频线索失败:', error)
   } finally {
     deletingId.value = ''
+  }
+}
+
+const batchDeleteVideos = async () => {
+  const selectedRows = [...selectedVideos.value]
+  if (selectedRows.length === 0) {
+    ElMessage.warning('请先选择要删除的视频线索')
+    return
+  }
+
+  const blockedRows = selectedRows
+    .map(row => ({ row, reason: deleteBlockReason(row) }))
+    .filter(item => item.reason)
+
+  if (blockedRows.length > 0) {
+    ElMessage.warning(`有 ${blockedRows.length} 条线索不能删除，请先删除对应视频或等待任务结束`)
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${selectedRows.length} 条视频线索吗？删除后线索数据将不存在；如果仍有关联下载视频或处理后视频，请先到素材管理删除视频后再删除线索。`,
+      '批量删除视频线索',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch (error) {
+    return
+  }
+
+  batchDeleting.value = true
+  try {
+    const res = await youtubeApi.deleteVideos(selectedRows.map(row => row.id))
+    const successItems = (res.data?.items || []).filter(item => item.success)
+    const successCount = Number(res.data?.success ?? successItems.length)
+    const failedCount = Number(res.data?.failed ?? 0)
+    const deletedIds = new Set(successItems.map(item => String(item.videoId)))
+
+    if (deletedIds.size > 0) {
+      items.value = items.value.filter(item => !deletedIds.has(String(item.id)))
+      videoTotal.value = Math.max(0, videoTotal.value - deletedIds.size)
+      if (videoSummary.value?.total) {
+        videoSummary.value = {
+          ...videoSummary.value,
+          total: Math.max(0, Number(videoSummary.value.total || 0) - deletedIds.size)
+        }
+      }
+    }
+    selectedVideos.value = []
+    videoTableRef.value?.clearSelection?.()
+
+    if (failedCount > 0) {
+      ElMessage.warning(`已删除 ${successCount} 条，${failedCount} 条未删除，请先删除对应视频后再试`)
+    } else {
+      ElMessage.success(`批量删除成功，共删除 ${successCount} 条`)
+    }
+  } catch (error) {
+    console.warn('批量删除视频线索失败:', error)
+  } finally {
+    batchDeleting.value = false
   }
 }
 
@@ -1551,7 +1660,7 @@ const resetProcessing = async (row) => {
     })
     const updatedVideo = res.data.video
     items.value = items.value.map(item => item.id === row.id ? normalizeVideoItem(updatedVideo) : item)
-    await loadVideos(false)
+    await refreshVideosByIds([row.id])
     await loadJobs({ silent: true })
     ElMessage.success(`已回退为可重新处理状态，删除处理后素材 ${res.data.deletedMaterialCount || 0} 个`)
   } finally {
@@ -1600,6 +1709,7 @@ const createAnalysisJob = async (row) => {
     items.value = items.value.map(item => item.id === row.id ? { ...item, analysisStatus: 2, hasAnalysis: false, analysisDraft: null } : item)
     ElMessage.success(Number(row.analysisStatus) === 3 ? '发布文案重新生成任务已创建' : '发布文案生成任务已创建')
     startJobsPolling()
+    refreshVideosByIds([row.id])
   } finally {
     analyzingId.value = ''
   }
@@ -1637,15 +1747,16 @@ const analysisErrorText = computed(() => {
 
 const saveInlineAnalysis = async (row) => {
   if (!row.analysisDraft) return
+  const form = publishDraftForm(row)
   savingAnalysisId.value = row.id
   try {
-    const nextTitleOptions = row.analysisDraft.selectedTitle
-      ? Array.from(new Set([row.analysisDraft.selectedTitle, ...row.analysisDraft.titleOptions].filter(Boolean)))
-      : row.analysisDraft.titleOptions.filter(Boolean)
+    const nextTitleOptions = form.selectedTitle
+      ? Array.from(new Set([form.selectedTitle, ...form.titleOptions].filter(Boolean)))
+      : form.titleOptions.filter(Boolean)
     const payload = {
-      title: row.analysisDraft.selectedTitle || nextTitleOptions[0] || '',
-      description: row.analysisDraft.publishCopy || '',
-      tags: row.analysisDraft.tags.filter(Boolean)
+      title: form.selectedTitle || nextTitleOptions[0] || '',
+      description: form.publishCopy || '',
+      tags: form.tags.filter(Boolean)
     }
     const response = await youtubeApi.updatePublishDraft(row.id, payload)
     const savedDraft = response.data?.draft || payload
@@ -1684,9 +1795,9 @@ const processVideo = async (row) => {
     jobs.value.unshift(res.data)
     ElMessage.success(workflowForm.processVersion === 'editing_v1' ? '剪辑处理任务已创建' : '处理任务已创建')
     startJobsPolling()
-    setTimeout(() => {
-      loadJobs({ silent: true })
-      loadVideos(false)
+    setTimeout(async () => {
+      const changedVideoIds = await loadJobs({ silent: true, recentOnly: true })
+      refreshVideosByIds([...changedVideoIds, row.id])
     }, 1500)
   } finally {
     translatingId.value = ''

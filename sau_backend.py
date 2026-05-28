@@ -11,6 +11,7 @@ import signal
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -19,11 +20,13 @@ import math
 import urllib.parse
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from queue import Queue
 from flask_cors import CORS
 from flask import Flask, request, jsonify, Response, render_template, send_from_directory
+from app.publishing import normalize_publish_targets, platform_name, platform_type_from_name
 from app.config import (
     ACTIVE_JOB_STATUSES,
     BASE_DIR,
@@ -194,6 +197,40 @@ def _clean_unique_list(values):
     return cleaned
 
 
+_publish_account_locks = {}
+_publish_account_locks_guard = threading.Lock()
+
+
+def _safe_text(value, default=""):
+    return str(value if value is not None else default).strip()
+
+
+def _normalize_publish_tags(tags):
+    if isinstance(tags, (list, tuple, set)):
+        raw_values = tags
+    else:
+        raw_values = re.split(r"[，,\s]+", str(tags or ""))
+    cleaned = []
+    seen = set()
+    for value in raw_values:
+        text = str(value or "").strip().lstrip("#")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    return cleaned
+
+
+def _get_publish_account_lock(platform_type, account_file):
+    key = f"{int(platform_type or 0)}:{_safe_text(account_file)}"
+    with _publish_account_locks_guard:
+        lock = _publish_account_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _publish_account_locks[key] = lock
+        return lock
+
+
 class WorkflowConflictError(ValueError):
     def __init__(self, message, error_code, error_type="WORKFLOW_CONFLICT", data=None):
         super().__init__(message)
@@ -268,6 +305,28 @@ def _parse_publish_draft(raw_value, analysis_result=None):
     }
 
 
+def _parse_positive_int(value, default, minimum=1, maximum=500):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(default)
+    return max(minimum, min(number, maximum))
+
+
+def _split_request_values(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        raw_values = value
+    else:
+        raw_values = str(value or "").split(",")
+    return [str(item or "").strip() for item in raw_values if str(item or "").strip()]
+
+
+def _sql_placeholders(values):
+    return ",".join("?" for _ in values)
+
+
 def init_database_tables():
     Path(BASE_DIR / "db").mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(_db_path()) as conn:
@@ -327,6 +386,8 @@ def init_database_tables():
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_file_records_asset_id ON file_records(asset_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_video_id ON file_records(source_video_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_type ON file_records(source_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_type_upload ON file_records(source_type, upload_time, id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_video_type ON file_records(source_video_id, source_type)")
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS youtube_workflow_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,6 +441,7 @@ def init_database_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_job_id ON youtube_workflow_events(job_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_video_id ON youtube_workflow_events(video_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_stage ON youtube_workflow_events(stage)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_started ON youtube_workflow_events(started_at, id)")
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS published_youtube_materials (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -387,6 +449,8 @@ def init_database_tables():
             source_url TEXT,
             title TEXT,
             platform TEXT,
+            platform_type INTEGER DEFAULT 0,
+            account_file TEXT,
             account_count INTEGER DEFAULT 0,
             material_id INTEGER,
             filename TEXT,
@@ -409,6 +473,8 @@ def init_database_tables():
             "source_url": "TEXT",
             "title": "TEXT",
             "platform": "TEXT",
+            "platform_type": "INTEGER DEFAULT 0",
+            "account_file": "TEXT",
             "account_count": "INTEGER DEFAULT 0",
             "material_id": "INTEGER",
             "filename": "TEXT",
@@ -429,6 +495,20 @@ def init_database_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_video_id ON published_youtube_materials(video_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_source_url ON published_youtube_materials(source_url)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_published_at ON published_youtube_materials(published_at)")
+        cursor.execute("SELECT id, platform FROM published_youtube_materials WHERE COALESCE(platform_type, 0) = 0")
+        for row in cursor.fetchall():
+            row_id, platform = row
+            inferred_platform_type = platform_type_from_name(platform)
+            if inferred_platform_type:
+                cursor.execute(
+                    "UPDATE published_youtube_materials SET platform_type = ? WHERE id = ?",
+                    (inferred_platform_type, row_id),
+                )
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_video_platform
+        ON published_youtube_materials(video_id, platform_type)
+        WHERE video_id IS NOT NULL AND video_id != '' AND platform_type IS NOT NULL AND platform_type != 0
+        ''')
         conn.commit()
 
 
@@ -484,6 +564,7 @@ def init_youtube_video_table():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_publish_status ON youtube_videos(publish_status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_translate_status ON youtube_videos(translate_status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_analysis_status ON youtube_videos(analysis_status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_created ON youtube_videos(created_at, id)')
         conn.commit()
 
 
@@ -570,6 +651,8 @@ def init_youtube_workflow_table():
                 cursor.execute(f"ALTER TABLE youtube_workflow_jobs ADD COLUMN {column} {definition}")
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_id ON youtube_workflow_jobs(video_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status ON youtube_workflow_jobs(status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status_updated ON youtube_workflow_jobs(status, updated_at, created_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_updated ON youtube_workflow_jobs(video_id, updated_at, created_at)')
         conn.commit()
 
 
@@ -696,19 +779,189 @@ def upsert_youtube_videos(videos, query):
     return result["items"]
 
 
-def list_youtube_videos():
+def _youtube_video_status_clause(status):
+    if status == "notDownloaded":
+        return "(download_status IS NULL OR download_status != 1)", []
+    if status == "downloaded":
+        return "download_status = 1", []
+    if status == "notTranslated":
+        return "(translate_status IS NULL OR translate_status NOT IN (1, 2))", []
+    if status == "translated":
+        return "translate_status = 1", []
+    if status == "translationSkipped":
+        return "translate_status = 2", []
+    if status == "notPublished":
+        return "(publish_status IS NULL OR publish_status != 1)", []
+    if status == "published":
+        return "publish_status = 1", []
+    if status == "running":
+        return """video_id IN (
+            SELECT video_id FROM youtube_workflow_jobs
+            WHERE status IN ('queued', 'running') AND video_id IS NOT NULL AND video_id != ''
+        )""", []
+    return "", []
+
+
+def _youtube_video_sort_sql(sort):
+    if sort == "pendingFirst":
+        return """
+        CASE WHEN download_status = 1 AND translate_status = 1 THEN 1 ELSE 0 END ASC,
+        CASE WHEN download_status = 1 THEN 1 ELSE 0 END ASC,
+        CASE WHEN translate_status = 1 THEN 1 ELSE 0 END ASC,
+        CASE WHEN publish_status = 1 THEN 1 ELSE 0 END ASC,
+        created_at DESC, id DESC
+        """
+    if sort == "downloadedFirst":
+        return "CASE WHEN download_status = 1 THEN 0 ELSE 1 END ASC, CASE WHEN translate_status = 1 THEN 0 ELSE 1 END ASC, created_at DESC, id DESC"
+    if sort == "translatedFirst":
+        return "CASE WHEN translate_status = 1 THEN 0 ELSE 1 END ASC, CASE WHEN download_status = 1 THEN 0 ELSE 1 END ASC, created_at DESC, id DESC"
+    if sort == "publishedFirst":
+        return "CASE WHEN publish_status = 1 THEN 0 ELSE 1 END ASC, CASE WHEN translate_status = 1 THEN 0 ELSE 1 END ASC, created_at DESC, id DESC"
+    return "created_at DESC, id DESC"
+
+
+def _youtube_video_where(params):
+    where = []
+    values = []
+    ids = _split_request_values(params.get("ids"))
+    if ids:
+        where.append(f"video_id IN ({_sql_placeholders(ids)})")
+        values.extend(ids)
+    keyword = str(params.get("keyword") or "").strip()
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("(title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?)")
+        values.extend([like, like, like, like])
+    status_clause, status_values = _youtube_video_status_clause(str(params.get("status") or "all"))
+    if status_clause:
+        where.append(status_clause)
+        values.extend(status_values)
+    return (" WHERE " + " AND ".join(where)) if where else "", values, ids
+
+
+def _attach_processed_versions_for_videos(cursor, videos):
+    video_ids = [video.get("id") for video in videos if video.get("id")]
+    for video in videos:
+        video["processedVersions"] = []
+    if not video_ids:
+        return videos
+
+    cursor.execute(f'''
+    SELECT * FROM file_records
+    WHERE source_type = 'youtube_processed'
+      AND source_video_id IN ({_sql_placeholders(video_ids)})
+    ORDER BY upload_time DESC, id DESC
+    ''', video_ids)
+    versions_by_video = {video_id: {} for video_id in video_ids}
+    videos_by_id = {video.get("id"): video for video in videos if video.get("id")}
+    for row in cursor.fetchall():
+        raw_record = dict(row)
+        video_id = _material_source_video_id(raw_record)
+        if video_id not in versions_by_video:
+            continue
+        source_video = videos_by_id.get(video_id) or {}
+        record = _row_to_material_fast(
+            row,
+            source_video=source_video,
+            analysis={
+                "result": source_video.get("analysisResult") or {},
+                "draft": source_video.get("publishDraft") or {},
+            },
+        )
+        process_version = record.get("processVersion") or _material_process_version(record) or "translation_v1"
+        if process_version in versions_by_video[video_id]:
+            continue
+        versions_by_video[video_id][process_version] = {
+            "materialId": record.get("id"),
+            "filename": record.get("filename") or "",
+            "filePath": str(_material_file_path(record) or ""),
+            "processVersion": process_version,
+            "processType": record.get("processType") or "",
+            "subtitleLanguage": record.get("subtitleLanguage") or _material_subtitle_language(record),
+            "subtitleLanguageLabel": record.get("subtitleLanguageLabel") or "",
+            "duration": record.get("duration") or "",
+            "filesize": record.get("filesize") or 0,
+            "createdAt": record.get("upload_time") or "",
+        }
+
+    for video in videos:
+        video["processedVersions"] = list(versions_by_video.get(video.get("id"), {}).values())
+    return videos
+
+
+def _youtube_video_summary(cursor, keyword=""):
+    where = ""
+    values = []
+    if keyword:
+        like = f"%{keyword}%"
+        where = "WHERE title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?"
+        values = [like, like, like, like]
+    cursor.execute(f'''
+    SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN download_status = 1 THEN 0 ELSE 1 END) AS pending_download,
+        SUM(CASE WHEN download_status = 1 AND translate_status NOT IN (1, 2) THEN 1 ELSE 0 END) AS pending_translate,
+        SUM(CASE WHEN translate_status = 1 AND publish_status != 1 THEN 1 ELSE 0 END) AS ready_publish,
+        SUM(CASE WHEN publish_status = 1 THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN download_status = 1 THEN 1 ELSE 0 END) AS downloaded,
+        SUM(CASE WHEN translate_status = 1 THEN 1 ELSE 0 END) AS translated
+    FROM youtube_videos
+    {where}
+    ''', values)
+    row = cursor.fetchone() or {}
+    cursor.execute('''
+    SELECT COUNT(DISTINCT video_id) AS running
+    FROM youtube_workflow_jobs
+    WHERE status IN ('queued', 'running') AND video_id IS NOT NULL AND video_id != ''
+    ''')
+    running_row = cursor.fetchone() or {}
+    return {
+        "total": int(row["total"] or 0),
+        "pendingDownload": int(row["pending_download"] or 0),
+        "pendingTranslate": int(row["pending_translate"] or 0),
+        "readyPublish": int(row["ready_publish"] or 0),
+        "running": int(running_row["running"] or 0),
+        "completed": int(row["completed"] or 0),
+        "downloaded": int(row["downloaded"] or 0),
+        "translated": int(row["translated"] or 0),
+    }
+
+
+def list_youtube_videos(params=None):
     init_youtube_video_table()
+    params = params or {}
+    page = _parse_positive_int(params.get("page"), 1, 1, 100000)
+    page_size = _parse_positive_int(params.get("pageSize"), 20, 1, 100)
+    offset = (page - 1) * page_size
     with sqlite3.connect(_db_path()) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        where_sql, values, ids = _youtube_video_where(params)
+        sort_sql = _youtube_video_sort_sql(str(params.get("sort") or "default"))
+        cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_videos{where_sql}", values)
+        total = int((cursor.fetchone() or {})["total"] or 0)
+
+        if ids:
+            order_sql = f"CASE video_id {' '.join(f'WHEN ? THEN {index}' for index, _ in enumerate(ids))} END"
+            query_values = values + ids + [page_size, offset]
+        else:
+            order_sql = sort_sql
+            query_values = values + [page_size, offset]
         cursor.execute('''
         SELECT * FROM youtube_videos
-        ORDER BY created_at DESC, id DESC
-        ''')
+        {where_sql}
+        ORDER BY {order_sql}
+        LIMIT ? OFFSET ?
+        '''.format(where_sql=where_sql, order_sql=order_sql), query_values)
         videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
-        for video in videos:
-            video["processedVersions"] = _list_processed_versions_for_video(cursor, video.get("id"))
-        return videos
+        _attach_processed_versions_for_videos(cursor, videos)
+        return {
+            "items": videos,
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+            "summary": _youtube_video_summary(cursor, str(params.get("keyword") or "").strip()),
+        }
 
 
 def normalize_existing_youtube_subscribers():
@@ -1089,17 +1342,57 @@ def get_youtube_workflow_job(job_id):
         return _row_to_workflow_job(row)
 
 
-def list_youtube_workflow_jobs(limit=50):
+def _workflow_status_clause(status):
+    if status == "running":
+        return "status IN ('queued', 'running')", []
+    if status == "recent":
+        return "", []
+    if status in {"success", "failed", "abnormal"}:
+        return "status = ?", [status]
+    return "", []
+
+
+def list_youtube_workflow_jobs(limit=50, params=None):
     init_youtube_workflow_table()
+    params = params or {}
+    page = _parse_positive_int(params.get("page"), 1, 1, 100000)
+    page_size = _parse_positive_int(params.get("pageSize") or params.get("limit"), limit, 1, 100)
+    offset = (page - 1) * page_size
     with sqlite3.connect(_db_path()) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        where = []
+        values = []
+        status_clause, status_values = _workflow_status_clause(str(params.get("status") or "all"))
+        if status_clause:
+            where.append(status_clause)
+            values.extend(status_values)
+        if str(params.get("status") or "") == "recent":
+            where.append("""(
+                status IN ('queued', 'running')
+                OR datetime(COALESCE(updated_at, created_at)) >= datetime('now', '-10 minutes')
+            )""")
+        video_ids = _split_request_values(params.get("videoIds") or params.get("ids"))
+        if video_ids:
+            where.append(f"video_id IN ({_sql_placeholders(video_ids)})")
+            values.extend(video_ids)
+        where_sql = " WHERE " + " AND ".join(where) if where else ""
+        cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_workflow_jobs{where_sql}", values)
+        total = int((cursor.fetchone() or {})["total"] or 0)
         cursor.execute('''
         SELECT * FROM youtube_workflow_jobs
-        ORDER BY created_at DESC
-        LIMIT ?
-        ''', (limit,))
-        return [_row_to_workflow_job(row) for row in cursor.fetchall()]
+        {where_sql}
+        ORDER BY CASE WHEN status IN ('queued', 'running') THEN 0 ELSE 1 END,
+                 updated_at DESC,
+                 created_at DESC
+        LIMIT ? OFFSET ?
+        '''.format(where_sql=where_sql), values + [page_size, offset])
+        return {
+            "items": [_row_to_workflow_job(row) for row in cursor.fetchall()],
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+        }
 
 
 def _active_job_for_video(cursor, video_id):
@@ -1186,6 +1479,60 @@ def _attach_material_workflow_state(cursor, material):
     material["workflowJobId"] = job.get("id") or ""
     material["workflowSameProcessVersion"] = bool(
         process_version and job.get("processVersion") == process_version
+    )
+    return material
+
+
+def _latest_workflow_jobs_for_videos(cursor, video_ids):
+    clean_ids = _clean_unique_list(video_ids)
+    if not clean_ids:
+        return {}, {}
+
+    cursor.execute(f'''
+    SELECT * FROM youtube_workflow_jobs
+    WHERE video_id IN ({_sql_placeholders(clean_ids)})
+    ORDER BY CASE WHEN status IN ('queued', 'running') THEN 0 ELSE 1 END,
+             updated_at DESC,
+             created_at DESC
+    ''', clean_ids)
+    jobs = [_row_to_workflow_job(row) for row in cursor.fetchall()]
+    jobs_by_video = {}
+    jobs_by_video_version = {}
+    for job in jobs:
+        video_id = job.get("videoId") or ""
+        if not video_id:
+            continue
+        process_version = job.get("processVersion") or ""
+        jobs_by_video.setdefault(video_id, job)
+        if process_version:
+            jobs_by_video_version.setdefault((video_id, process_version), job)
+    return jobs_by_video, jobs_by_video_version
+
+
+def _material_workflow_job(material, jobs_by_video, jobs_by_video_version):
+    video_id = material.get("source_video_id") or material.get("metadata", {}).get("videoId") or ""
+    process_version = material.get("processVersion") or material.get("metadata", {}).get("processVersion") or ""
+    normalized_version = _normalize_process_version(process_version) if process_version else ""
+    if normalized_version:
+        job = jobs_by_video_version.get((video_id, normalized_version))
+        if job:
+            return job
+    return jobs_by_video.get(video_id)
+
+
+def _attach_workflow_job_to_material(material, workflow_job):
+    if not workflow_job:
+        return material
+    material["workflowStatus"] = workflow_job.get("status") or ""
+    material["workflowStep"] = workflow_job.get("step") or ""
+    material["workflowMessage"] = workflow_job.get("message") or ""
+    material["workflowProgress"] = workflow_job.get("progress") or 0
+    material["workflowProcessVersion"] = workflow_job.get("processVersion") or ""
+    material["workflowSubtitleLanguage"] = workflow_job.get("subtitleLanguage") or ""
+    material["workflowUpdatedAt"] = workflow_job.get("updatedAt") or ""
+    material["workflowJobId"] = workflow_job.get("id") or ""
+    material["workflowSameProcessVersion"] = bool(
+        material.get("processVersion") and workflow_job.get("processVersion") == material.get("processVersion")
     )
     return material
 
@@ -1436,18 +1783,23 @@ def _row_to_workflow_event(row):
     }
 
 
-def list_workflow_events(limit=200):
+def list_workflow_events(limit=200, page=1, page_size=None):
     init_youtube_workflow_table()
+    page_size = _parse_positive_int(page_size or limit, limit, 1, 1000)
+    page = _parse_positive_int(page, 1, 1, 100000)
+    offset = (page - 1) * page_size
     with sqlite3.connect(_db_path()) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS total FROM youtube_workflow_events")
+        total = int((cursor.fetchone() or {})["total"] or 0)
         cursor.execute('''
         SELECT e.*, j.title, j.process_version, j.subtitle_language, j.burn_profile
         FROM youtube_workflow_events e
         LEFT JOIN youtube_workflow_jobs j ON j.id = e.job_id
         ORDER BY e.started_at DESC, e.id DESC
-        LIMIT ?
-        ''', (limit,))
+        LIMIT ? OFFSET ?
+        ''', (page_size, offset))
         rows = cursor.fetchall()
         events = []
         for row in rows:
@@ -1457,68 +1809,92 @@ def list_workflow_events(limit=200):
             event["subtitleLanguage"] = _normalize_subtitle_language(row["subtitle_language"])
             event["burnProfile"] = _normalize_burn_profile(row["burn_profile"])
             events.append(event)
-        return events
+        return {"items": events, "total": total, "page": page, "pageSize": page_size}
 
 
-def get_workflow_statistics(limit=200):
-    events = list_workflow_events(limit)
-    jobs = list_youtube_workflow_jobs(limit)
-    total_duration = sum(event["durationSeconds"] for event in events)
-    prompt_tokens = sum(event["promptTokens"] for event in events)
-    completion_tokens = sum(event["completionTokens"] for event in events)
-    total_tokens = sum(event["totalTokens"] for event in events)
-    cloud_events = [event for event in events if event["cloudLatencyMs"] > 0 or event["totalTokens"] > 0]
-    stage_map = {}
-    for event in events:
-        stage = event["stage"]
-        bucket = stage_map.setdefault(stage, {
-            "stage": stage,
-            "stageLabel": event["stageLabel"],
-            "count": 0,
-            "success": 0,
-            "failed": 0,
-            "durationSeconds": 0,
-            "avgDurationSeconds": 0,
-            "inputSizeMb": 0,
-            "outputSizeMb": 0,
-            "promptTokens": 0,
-            "completionTokens": 0,
-            "totalTokens": 0,
-            "avgCloudLatencyMs": 0,
-        })
-        bucket["count"] += 1
-        if event["status"] == "success":
-            bucket["success"] += 1
-        if event["status"] == "failed":
-            bucket["failed"] += 1
-        bucket["durationSeconds"] += event["durationSeconds"]
-        bucket["inputSizeMb"] += event["inputSizeMb"]
-        bucket["outputSizeMb"] += event["outputSizeMb"]
-        bucket["promptTokens"] += event["promptTokens"]
-        bucket["completionTokens"] += event["completionTokens"]
-        bucket["totalTokens"] += event["totalTokens"]
-        bucket["avgCloudLatencyMs"] += event["cloudLatencyMs"]
-    for bucket in stage_map.values():
-        bucket["durationSeconds"] = round(bucket["durationSeconds"], 2)
-        bucket["avgDurationSeconds"] = round(bucket["durationSeconds"] / bucket["count"], 2) if bucket["count"] else 0
-        bucket["inputSizeMb"] = round(bucket["inputSizeMb"], 2)
-        bucket["outputSizeMb"] = round(bucket["outputSizeMb"], 2)
-        bucket["avgCloudLatencyMs"] = round(bucket["avgCloudLatencyMs"] / bucket["count"], 2) if bucket["count"] else 0
+def get_workflow_statistics(limit=200, page=1, page_size=None):
+    event_page = list_workflow_events(limit, page=page, page_size=page_size)
+    events = event_page["items"]
+    jobs_page = list_youtube_workflow_jobs(limit)
+    jobs = jobs_page["items"]
+    init_youtube_workflow_table()
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+        SELECT
+            COUNT(*) AS event_count,
+            SUM(duration_seconds) AS total_duration,
+            SUM(prompt_tokens) AS prompt_tokens,
+            SUM(completion_tokens) AS completion_tokens,
+            SUM(total_tokens) AS total_tokens,
+            SUM(CASE WHEN cloud_latency_ms > 0 OR total_tokens > 0 THEN 1 ELSE 0 END) AS cloud_call_count,
+            AVG(CASE WHEN cloud_latency_ms > 0 OR total_tokens > 0 THEN cloud_latency_ms ELSE NULL END) AS avg_cloud_latency
+        FROM youtube_workflow_events
+        ''')
+        summary_row = cursor.fetchone()
+        event_count = int(summary_row["event_count"] or 0) if summary_row else 0
+        total_duration = float(summary_row["total_duration"] or 0) if summary_row else 0
+        prompt_tokens = int(summary_row["prompt_tokens"] or 0) if summary_row else 0
+        completion_tokens = int(summary_row["completion_tokens"] or 0) if summary_row else 0
+        total_tokens = int(summary_row["total_tokens"] or 0) if summary_row else 0
+        cloud_call_count = int(summary_row["cloud_call_count"] or 0) if summary_row else 0
+        avg_cloud_latency = float(summary_row["avg_cloud_latency"] or 0) if summary_row else 0
+
+        cursor.execute('''
+        SELECT
+            stage,
+            COALESCE(stage_label, stage) AS stage_label,
+            COUNT(*) AS count,
+            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+            SUM(duration_seconds) AS duration_seconds,
+            AVG(duration_seconds) AS avg_duration_seconds,
+            SUM(input_size_mb) AS input_size_mb,
+            SUM(output_size_mb) AS output_size_mb,
+            SUM(prompt_tokens) AS prompt_tokens,
+            SUM(completion_tokens) AS completion_tokens,
+            SUM(total_tokens) AS total_tokens,
+            AVG(CASE WHEN cloud_latency_ms > 0 OR total_tokens > 0 THEN cloud_latency_ms ELSE NULL END) AS avg_cloud_latency
+        FROM youtube_workflow_events
+        GROUP BY stage, COALESCE(stage_label, stage)
+        ORDER BY MAX(started_at) DESC, MAX(id) DESC
+        ''')
+        stages = []
+        for row in cursor.fetchall():
+            stages.append({
+                "stage": row["stage"] or "",
+                "stageLabel": row["stage_label"] or row["stage"] or "",
+                "count": int(row["count"] or 0),
+                "success": int(row["success"] or 0),
+                "failed": int(row["failed"] or 0),
+                "durationSeconds": round(float(row["duration_seconds"] or 0), 2),
+                "avgDurationSeconds": round(float(row["avg_duration_seconds"] or 0), 2),
+                "inputSizeMb": round(float(row["input_size_mb"] or 0), 2),
+                "outputSizeMb": round(float(row["output_size_mb"] or 0), 2),
+                "promptTokens": int(row["prompt_tokens"] or 0),
+                "completionTokens": int(row["completion_tokens"] or 0),
+                "totalTokens": int(row["total_tokens"] or 0),
+                "avgCloudLatencyMs": round(float(row["avg_cloud_latency"] or 0), 2),
+            })
 
     return {
         "summary": {
-            "eventCount": len(events),
-            "jobCount": len(jobs),
+            "eventCount": event_count,
+            "jobCount": jobs_page["total"],
             "totalDurationSeconds": round(total_duration, 2),
-            "avgDurationSeconds": round(total_duration / len(events), 2) if events else 0,
+            "avgDurationSeconds": round(total_duration / event_count, 2) if event_count else 0,
             "promptTokens": prompt_tokens,
             "completionTokens": completion_tokens,
             "totalTokens": total_tokens,
-            "cloudCallCount": len(cloud_events),
-            "avgCloudLatencyMs": round(sum(event["cloudLatencyMs"] for event in cloud_events) / len(cloud_events), 2) if cloud_events else 0,
+            "cloudCallCount": cloud_call_count,
+            "avgCloudLatencyMs": round(avg_cloud_latency, 2),
         },
-        "stages": list(stage_map.values()),
+        "stages": stages,
         "events": events,
+        "eventsTotal": event_page["total"],
+        "eventsPage": event_page["page"],
+        "eventsPageSize": event_page["pageSize"],
         "jobs": jobs,
     }
 
@@ -1701,19 +2077,25 @@ def _ensure_dir(path):
 
 def _run_command(command, cwd=None, timeout=None):
     is_shell_command = isinstance(command, str)
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     result = subprocess.run(
         command,
         cwd=str(cwd or BASE_DIR),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         shell=is_shell_command,
+        env=env,
     )
-    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    output = "\n".join(part for part in [(result.stdout or "").strip(), (result.stderr or "").strip()] if part)
     if result.returncode != 0:
         display_command = command if is_shell_command else " ".join(command)
         raise RuntimeError(output or f"命令执行失败: {display_command}")
-    return output
+    return result
 
 
 def _replace_file_with_backup(source_file, output_file):
@@ -2123,7 +2505,7 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None):
     english_floor = 40 if is_vertical else 34
     info_floor = 36 if is_vertical else 30
     subtitle_font_size = int(max(subtitle_floor, min(112, int(short_side * 0.092))) * font_scale)
-    english_font_size = int(max(english_floor, min(82, int(short_side * 0.065))) * font_scale)
+    english_font_size = int(max(english_floor, min(82, int(short_side * 0.052))) * font_scale)
     info_font_size = int(max(info_floor, min(72, int(short_side * 0.060))) * min(font_scale, 1.14))
     horizontal_margin = max(22, int(width * (0.046 if is_vertical else 0.055)))
     subtitle_margin_v = max(92 if is_vertical else 78, int(height * (0.092 if is_vertical else 0.086)))
@@ -3386,12 +3768,14 @@ def _format_duration_label(seconds):
     return f"{minute}:{second:02d}"
 
 
-def _material_duration(record, source_video=None):
+def _material_duration(record, source_video=None, probe_missing=True):
     metadata = record.get("metadata") or {}
     duration = record.get("duration") or metadata.get("duration") or (source_video or {}).get("duration") or ""
     duration_seconds = float(record.get("duration_seconds") or 0)
     if duration:
         return duration, duration_seconds
+    if not probe_missing:
+        return "", 0
 
     file_path = _material_file_path(record)
     if not file_path or not file_path.is_file():
@@ -3463,6 +3847,193 @@ def _row_to_material(row):
     return item
 
 
+def _row_to_material_fast(row, source_video=None, analysis=None, workflow_job=None):
+    item = dict(row)
+    metadata = _material_metadata(item)
+    if not item.get("asset_id"):
+        item["asset_id"] = ""
+    item["uuid"] = item.get("asset_id") or ""
+    item["storage_key"] = item.get("storage_key") or item.get("file_path") or ""
+    item["storage_backend"] = item.get("storage_backend") or "local"
+    item["source_type"] = item.get("source_type") or "manual_upload"
+    item["source_video_id"] = item.get("source_video_id") or metadata.get("videoId") or ""
+    item["status"] = item.get("status") or "ready"
+    item["metadata"] = metadata
+
+    video = source_video or {}
+    display_title = metadata.get("title") or video.get("title") or item.get("original_filename") or item.get("filename") or ""
+    display_url = metadata.get("url") or video.get("url") or ""
+    display_channel = metadata.get("channel") or video.get("channel") or ""
+    display_subscribers = metadata.get("subscribers") or video.get("subscribers") or ""
+    display_published_at = metadata.get("publishedAt") or video.get("publishedAt") or ""
+    video_id = metadata.get("videoId") or item.get("source_video_id") or video.get("id") or ""
+    display_thumbnail = metadata.get("thumbnail") or video.get("thumbnail") or _youtube_thumbnail_url(video_id)
+    duration_label, duration_seconds = _material_duration(item, video, probe_missing=False)
+    inferred_language = _infer_subtitle_language_from_filename(item.get("filename")) if item["source_type"] == "youtube_processed" else ""
+    subtitle_language = metadata.get("subtitleLanguage") or inferred_language
+    language_meta = None
+    if subtitle_language:
+        subtitle_language, language_meta = _subtitle_language_meta(subtitle_language)
+
+    item["displayTitle"] = display_title
+    item["displayUrl"] = display_url
+    item["displayChannel"] = display_channel
+    item["displaySubscribers"] = _format_subscribers_w(display_subscribers) if display_subscribers else ""
+    item["displayPublishedAt"] = display_published_at
+    item["displayThumbnail"] = display_thumbnail
+    item["duration"] = duration_label
+    item["durationSeconds"] = round(float(duration_seconds or 0), 2)
+    item["processVersion"] = metadata.get("processVersion") or "translation_v1"
+    item["processType"] = "字幕处理/信息烧录" if item["source_type"] == "youtube_processed" else "原视频下载"
+    item["subtitleLanguage"] = subtitle_language or ""
+    item["subtitleLanguageLabel"] = metadata.get("subtitleLanguageLabel") or (language_meta or {}).get("label") or ""
+    item["analysisStatus"] = int(video.get("analysisStatus") or 0)
+    item["analysisResult"] = (analysis or {}).get("result") or {}
+    item["publishDraft"] = (analysis or {}).get("draft") or {}
+    return _attach_workflow_job_to_material(item, workflow_job)
+
+
+def _material_where(params):
+    where = []
+    values = []
+    source_type = str(params.get("sourceType") or params.get("source_type") or "").strip()
+    video_ids = _split_request_values(params.get("videoIds") or params.get("ids"))
+    if source_type == "other":
+        where.append("(source_type IS NULL OR source_type NOT IN ('youtube_processed', 'youtube_download'))")
+    elif source_type:
+        where.append("source_type = ?")
+        values.append(source_type)
+    if video_ids:
+        metadata_conditions = []
+        for video_id in video_ids:
+            metadata_conditions.extend([
+                f'%"videoId": "{video_id}"%',
+                f'%"videoId":"{video_id}"%',
+                f'%"sourceVideoId": "{video_id}"%',
+                f'%"sourceVideoId":"{video_id}"%',
+            ])
+        where.append(
+            f"(source_video_id IN ({_sql_placeholders(video_ids)})"
+            f" OR metadata LIKE {' OR metadata LIKE '.join('?' for _ in metadata_conditions)})"
+        )
+        values.extend(video_ids + metadata_conditions)
+
+    keyword = str(params.get("keyword") or "").strip()
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("""(
+            filename LIKE ? OR original_filename LIKE ? OR file_path LIKE ? OR
+            storage_key LIKE ? OR source_video_id LIKE ? OR metadata LIKE ?
+        )""")
+        values.extend([like, like, like, like, like, like])
+
+    return (" WHERE " + " AND ".join(where)) if where else "", values
+
+
+def _material_summary(cursor, keyword=""):
+    where = ""
+    values = []
+    if keyword:
+        like = f"%{keyword}%"
+        where = """WHERE (
+            filename LIKE ? OR original_filename LIKE ? OR file_path LIKE ? OR
+            storage_key LIKE ? OR source_video_id LIKE ? OR metadata LIKE ?
+        )"""
+        values = [like, like, like, like, like, like]
+    cursor.execute(f'''
+    SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN source_type = 'youtube_processed' THEN 1 ELSE 0 END) AS processed,
+        SUM(CASE WHEN source_type = 'youtube_download' THEN 1 ELSE 0 END) AS downloaded,
+        SUM(CASE WHEN lower(filename) LIKE '%.mp4'
+                  OR lower(filename) LIKE '%.avi'
+                  OR lower(filename) LIKE '%.mov'
+                  OR lower(filename) LIKE '%.wmv'
+                  OR lower(filename) LIKE '%.flv'
+                  OR lower(filename) LIKE '%.mkv'
+                 THEN 1 ELSE 0 END) AS videos,
+        SUM(CASE WHEN lower(filename) LIKE '%.jpg'
+                  OR lower(filename) LIKE '%.jpeg'
+                  OR lower(filename) LIKE '%.png'
+                  OR lower(filename) LIKE '%.gif'
+                  OR lower(filename) LIKE '%.bmp'
+                  OR lower(filename) LIKE '%.webp'
+                 THEN 1 ELSE 0 END) AS images,
+        SUM(CASE WHEN source_type IS NULL OR source_type NOT IN ('youtube_processed', 'youtube_download') THEN 1 ELSE 0 END) AS other
+    FROM file_records
+    {where}
+    ''', values)
+    row = cursor.fetchone()
+    return {
+        "total": int(row["total"] or 0) if row else 0,
+        "processed": int(row["processed"] or 0) if row else 0,
+        "downloaded": int(row["downloaded"] or 0) if row else 0,
+        "videos": int(row["videos"] or 0) if row else 0,
+        "images": int(row["images"] or 0) if row else 0,
+        "other": int(row["other"] or 0) if row else 0,
+    }
+
+
+def list_material_records(params=None):
+    init_youtube_video_table()
+    params = params or {}
+    page = _parse_positive_int(params.get("page"), 1, 1, 100000)
+    page_size = _parse_positive_int(params.get("pageSize"), 20, 1, 100)
+    offset = (page - 1) * page_size
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        where_sql, values = _material_where(params)
+        cursor.execute(f"SELECT COUNT(*) AS total FROM file_records{where_sql}", values)
+        total = int((cursor.fetchone() or {})["total"] or 0)
+        cursor.execute(f'''
+        SELECT * FROM file_records
+        {where_sql}
+        ORDER BY upload_time DESC, id DESC
+        LIMIT ? OFFSET ?
+        ''', values + [page_size, offset])
+        rows = cursor.fetchall()
+        raw_items = [dict(row) for row in rows]
+        video_ids = _clean_unique_list(_material_source_video_id(record) for record in raw_items)
+
+        videos_by_id = {}
+        analysis_by_id = {}
+        if video_ids:
+            cursor.execute(f'''
+            SELECT * FROM youtube_videos
+            WHERE video_id IN ({_sql_placeholders(video_ids)})
+            ''', video_ids)
+            for video_row in cursor.fetchall():
+                video = _row_to_youtube_video(video_row)
+                videos_by_id[video.get("id")] = video
+                analysis_by_id[video.get("id")] = {
+                    "result": video.get("analysisResult") or {},
+                    "draft": video.get("publishDraft") or {},
+                }
+
+        jobs_by_video, jobs_by_video_version = _latest_workflow_jobs_for_videos(cursor, video_ids)
+        items = []
+        for row in rows:
+            record = dict(row)
+            video_id = _material_source_video_id(record)
+            source_video = videos_by_id.get(video_id)
+            material = _row_to_material_fast(
+                row,
+                source_video=source_video,
+                analysis=analysis_by_id.get(video_id),
+            )
+            workflow_job = _material_workflow_job(material, jobs_by_video, jobs_by_video_version)
+            items.append(_attach_workflow_job_to_material(material, workflow_job))
+
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+            "summary": _material_summary(cursor, str(params.get("keyword") or "").strip()),
+        }
+
+
 def _row_to_published_material(row):
     item = dict(row)
     try:
@@ -3475,6 +4046,8 @@ def _row_to_published_material(row):
         "sourceUrl": item.get("source_url") or "",
         "title": item.get("title") or "",
         "platform": item.get("platform") or "",
+        "platformType": int(item.get("platform_type") or 0),
+        "accountFile": item.get("account_file") or "",
         "accountCount": int(item.get("account_count") or 0),
         "materialId": item.get("material_id"),
         "filename": item.get("filename") or "",
@@ -3523,7 +4096,7 @@ def _published_youtube_identity_sets(cursor):
     return published_ids, published_urls
 
 
-def _archive_published_material(cursor, material, video, platform_name, published_at, publish_title="", account_count=0):
+def _archive_published_material(cursor, material, video, platform_name, published_at, publish_title="", account_count=0, platform_type=0, account_file=""):
     video_id = material.get("source_video_id") or _material_source_video_id(material) or (video or {}).get("id") or ""
     source_url = _canonical_youtube_url((video or {}).get("url") or material.get("displayUrl") or "", video_id)
     title = (video or {}).get("title") or material.get("displayTitle") or material.get("original_filename") or material.get("filename") or ""
@@ -3532,18 +4105,30 @@ def _archive_published_material(cursor, material, video, platform_name, publishe
         "sourceVideo": video or {},
         "archivedFrom": "publish_success",
     }
+    cursor.execute(
+        """
+        SELECT id FROM published_youtube_materials
+        WHERE video_id = ? AND platform_type = ?
+        LIMIT 1
+        """,
+        (video_id, int(platform_type or 0)),
+    )
+    if cursor.fetchone():
+        return
     cursor.execute('''
     INSERT INTO published_youtube_materials (
-        video_id, source_url, title, platform, account_count, material_id,
+        video_id, source_url, title, platform, platform_type, account_file, account_count, material_id,
         filename, file_path, filesize, thumbnail, channel, subscribers,
         source_published_at, publish_title, metadata, published_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         video_id,
         source_url,
         title,
         platform_name or "",
+        int(platform_type or 0),
+        account_file or "",
         int(account_count or 0),
         material.get("id"),
         material.get("filename") or "",
@@ -3720,6 +4305,10 @@ def _validate_publish_processed_files(file_list):
     if len(normalized_paths) != len(file_list):
         raise ValueError("文件列表包含无效路径")
 
+    if len(normalized_paths) != 1:
+        raise ValueError("发布中心每次只能选择一个处理后视频")
+
+    materials = []
     init_database_tables()
     with sqlite3.connect(_db_path()) as conn:
         conn.row_factory = sqlite3.Row
@@ -3738,23 +4327,44 @@ def _validate_publish_processed_files(file_list):
             resolved_path = _material_file_path(material)
             if not resolved_path or not resolved_path.is_file():
                 raise ValueError(f"处理后视频文件不存在: {file_path}")
-    return normalized_paths
+            materials.append(material)
+    return normalized_paths, materials
 
 
-def _mark_published_materials(file_list, platform_type=None, title="", account_count=0):
+def _assert_publish_targets_available(material, targets):
+    video_id = material.get("source_video_id") or _material_source_video_id(material)
+    if not video_id:
+        raise ValueError("发布素材未绑定视频线索，无法校验平台发布状态")
+
+    init_database_tables()
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        for target in targets:
+            platform_type = int(target.get("platformType") or 0)
+            cursor.execute(
+                """
+                SELECT id FROM published_youtube_materials
+                WHERE video_id = ? AND platform_type = ?
+                LIMIT 1
+                """,
+                (video_id, platform_type),
+            )
+            if cursor.fetchone():
+                raise WorkflowConflictError(
+                    f"该视频已发布到{platform_name(platform_type)}，不能重复发布到同一平台。",
+                    "VF-PUBLISH-DUPLICATE-PLATFORM",
+                    "PUBLISH_DUPLICATE_PLATFORM",
+                    {"videoId": video_id, "platformType": platform_type},
+                )
+    return video_id
+
+
+def _mark_published_materials(file_list, platform_type=None, title="", account_count=0, account_file=""):
     if not file_list:
         return []
 
-    platform_map = {
-        1: "小红书",
-        2: "视频号",
-        3: "抖音",
-        4: "快手",
-    }
-    try:
-        platform_name = platform_map.get(int(platform_type or 0), str(platform_type or ""))
-    except (TypeError, ValueError):
-        platform_name = str(platform_type or "")
+    platform_name_value = platform_name(platform_type)
     published_at = _now_iso()
     updated = []
 
@@ -3780,10 +4390,12 @@ def _mark_published_materials(file_list, platform_type=None, title="", account_c
                 cursor,
                 material,
                 video,
-                platform_name,
+                platform_name_value,
                 published_at,
                 publish_title=title,
                 account_count=account_count,
+                platform_type=platform_type,
+                account_file=account_file,
             )
             cursor.execute(
                 """
@@ -3806,7 +4418,7 @@ def _mark_published_materials(file_list, platform_type=None, title="", account_c
                 (
                     "发布中心已提交发布任务",
                     published_at,
-                    f"platform={platform_name}; title={title}; accounts={account_count}",
+                    f"platform={platform_name_value}; title={title}; accounts={account_count}",
                     published_at,
                     video_id,
                 ),
@@ -4179,6 +4791,223 @@ def _publish_center_to_bilibili(title, description, file_list, tags, account_lis
                 raise RuntimeError((result.stderr or result.stdout or "").strip() or "B站发布失败")
 
 
+def _format_publish_schedule(value):
+    if not value:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d %H:%M")
+    return str(value)
+
+
+def _build_publish_datetimes(file_count, enable_timer=False, videos_per_day=1, daily_times=None, start_days=0):
+    if not enable_timer:
+        return [0 for _ in range(file_count)]
+    try:
+        from utils.files_times import generate_schedule_time_next_day
+        normalized_daily_times = []
+        for item in daily_times or []:
+            if isinstance(item, str) and ":" in item:
+                normalized_daily_times.append(int(item.split(":", 1)[0]))
+            else:
+                normalized_daily_times.append(int(item))
+        return generate_schedule_time_next_day(file_count, videos_per_day, normalized_daily_times, start_days=start_days)
+    except Exception:
+        return [0 for _ in range(file_count)]
+
+
+def _publish_platform_slug(platform_type):
+    return {
+        1: "xiaohongshu",
+        3: "douyin",
+        5: "bilibili",
+    }.get(int(platform_type or 0), "")
+
+
+def _run_isolated_publish_command(command, timeout=3600):
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
+    try:
+        return subprocess.run(
+            command,
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in [(exc.stdout or ""), (exc.stderr or "")] if part).strip()
+        raise TimeoutError(output or f"平台发布超时: {' '.join(map(str, command))}") from exc
+
+
+def _execute_publish_target(task):
+    start_time = time.time()
+    platform_type = int(task["platformType"])
+    platform_slug = _publish_platform_slug(platform_type)
+    result = {
+        "platformType": platform_type,
+        "platformName": task["platformName"],
+        "accountName": task.get("accountName") or "",
+        "publishedVideoIds": [],
+        "status": "running",
+        "message": "发布中",
+        "durationMs": 0,
+    }
+    try:
+        if not platform_slug:
+            raise RuntimeError(f"{task['platformName']} 暂未接入稳定并发发布适配器")
+        account_lock = _get_publish_account_lock(platform_type, task["accountFile"])
+        with account_lock:
+            for index, file_path in enumerate(task["absoluteFiles"]):
+                command = [
+                    sys.executable,
+                    "-m",
+                    "app.publish_runner",
+                    "--platform",
+                    platform_slug,
+                    "--account-file",
+                    str(task["accountPath"]),
+                    "--file",
+                    str(file_path),
+                    "--title",
+                    task["title"],
+                    "--desc",
+                    task["description"],
+                    "--tags",
+                    ",".join(task["tags"]),
+                ]
+                if task.get("headless"):
+                    command.append("--headless")
+                schedule = _format_publish_schedule(task["publishDatetimes"][index] if index < len(task["publishDatetimes"]) else 0)
+                if schedule:
+                    command.extend(["--schedule", schedule])
+                if task.get("thumbnailPath"):
+                    command.extend(["--thumbnail", task["thumbnailPath"]])
+                if task.get("productLink"):
+                    command.extend(["--product-link", task["productLink"]])
+                if task.get("productTitle"):
+                    command.extend(["--product-title", task["productTitle"]])
+                if platform_type == 5:
+                    command.extend(["--tid", str(task.get("bilibiliTid") or 249)])
+                process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
+                if process_result.returncode != 0:
+                    output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
+                    raise RuntimeError(output or f"{task['platformName']} 发布失败")
+
+        published_ids = _mark_published_materials(
+            task["fileList"],
+            platform_type=platform_type,
+            title=f"{task['title']}; description={task['description']}" if task["description"] else task["title"],
+            account_count=1,
+            account_file=task["accountFile"],
+        )
+        result.update({
+            "publishedVideoIds": published_ids,
+            "status": "success",
+            "message": "发布成功",
+        })
+    except TimeoutError as exc:
+        result.update({
+            "status": "timeout",
+            "message": str(exc),
+        })
+    except Exception as exc:
+        result.update({
+            "status": "failed",
+            "message": str(exc),
+        })
+    finally:
+        result["durationMs"] = int((time.time() - start_time) * 1000)
+    return result
+
+
+def _build_publish_tasks(data, targets, file_list):
+    title = _safe_text(data.get("title"))
+    description = _safe_text(data.get("description"))
+    tags = _normalize_publish_tags(data.get("tags"))
+    thumbnail_path = _safe_text(data.get("thumbnail"))
+    product_link = _safe_text(data.get("productLink"))
+    product_title = _safe_text(data.get("productTitle"))
+    bilibili_tid = int(data.get("bilibiliTid") or 249)
+    publish_datetimes = _build_publish_datetimes(
+        len(file_list),
+        enable_timer=bool(data.get("enableTimer")),
+        videos_per_day=data.get("videosPerDay") or 1,
+        daily_times=data.get("dailyTimes"),
+        start_days=data.get("startDays") or 0,
+    )
+    absolute_files = [Path(BASE_DIR / "videoFile" / file_path) for file_path in file_list]
+    tasks = []
+    for target in targets:
+        account_file = _safe_text(target.get("accountFile"))
+        platform_type = int(target.get("platformType") or 0)
+        tasks.append({
+            "platformType": platform_type,
+            "platformName": target.get("platformName") or platform_name(platform_type),
+            "accountName": target.get("accountName") or "",
+            "accountFile": account_file,
+            "accountPath": Path(BASE_DIR / "cookiesFile" / account_file),
+            "fileList": file_list,
+            "absoluteFiles": absolute_files,
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "thumbnailPath": thumbnail_path,
+            "productLink": product_link,
+            "productTitle": product_title,
+            "bilibiliTid": bilibili_tid,
+            "publishDatetimes": publish_datetimes,
+            "timeoutSeconds": int(data.get("publishTimeoutSeconds") or 3600),
+            "headless": bool(data.get("headless", False)),
+        })
+    return tasks
+
+
+def _run_publish_tasks(tasks):
+    if not tasks:
+        return []
+    max_workers = max(1, min(len(tasks), 3))
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_execute_publish_target, task): task for task in tasks}
+        for future in as_completed(future_map):
+            results.append(future.result())
+    order = {int(task["platformType"]): index for index, task in enumerate(tasks)}
+    results.sort(key=lambda item: order.get(int(item.get("platformType") or 0), 999))
+    return results
+
+
+def _publish_payload(data):
+    if not data:
+        raise ValueError("请求数据不能为空")
+    file_list = data.get("fileList", [])
+    if not file_list:
+        raise ValueError("文件列表不能为空")
+    if not _safe_text(data.get("title")):
+        raise ValueError("标题不能为空")
+    targets = normalize_publish_targets(data)
+    file_list, publish_materials = _validate_publish_processed_files(file_list)
+    publish_material = publish_materials[0]
+    _assert_publish_targets_available(publish_material, targets)
+    tasks = _build_publish_tasks(data, targets, file_list)
+    results = _run_publish_tasks(tasks)
+    published_video_ids = []
+    for item in results:
+        published_video_ids.extend(item.get("publishedVideoIds") or [])
+    success_count = sum(1 for item in results if item["status"] == "success")
+    failed_count = len(results) - success_count
+    return {
+        "publishedVideoIds": list(dict.fromkeys(published_video_ids)),
+        "results": results,
+        "hasFailures": failed_count > 0,
+        "successCount": success_count,
+        "failedCount": failed_count,
+    }
+
+
 def run_youtube_workflow(job_id):
     workflow_event_id = None
     download_event_id = None
@@ -4297,9 +5126,23 @@ def run_youtube_workflow(job_id):
         douyin_command = _publish_to_douyin(latest_job, processed_file)
         if douyin_command:
             publish_commands.append(douyin_command)
+            _mark_published_materials(
+                [material.get("file_path") or material.get("storage_key")],
+                platform_type=3,
+                title=latest_job.get("title") or "YouTube 视频",
+                account_count=1,
+                account_file=latest_job.get("account") or "",
+            )
         bilibili_command = _publish_to_bilibili(latest_job, processed_file)
         if bilibili_command:
             publish_commands.append(bilibili_command)
+            _mark_published_materials(
+                [material.get("file_path") or material.get("storage_key")],
+                platform_type=5,
+                title=latest_job.get("title") or "YouTube 视频",
+                account_count=1,
+                account_file=latest_job.get("bilibiliAccount") or "",
+            )
         final_message = "任务完成"
         if not publish_commands:
             final_message = "任务完成，已保存到素材库，未配置抖音账号所以未发布"
@@ -4766,29 +5609,15 @@ def upload_save():
 @app.route('/getFiles', methods=['GET'])
 def get_all_files():
     try:
-        init_database_tables()
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
-            conn.row_factory = sqlite3.Row  # 允许通过列名访问结果
-            cursor = conn.cursor()
-
-            # 查询所有记录
-            cursor.execute("SELECT * FROM file_records ORDER BY upload_time DESC, id DESC")
-            rows = cursor.fetchall()
-
-            data = [
-                _attach_material_workflow_state(cursor, _row_to_material(row))
-                for row in rows
-            ]
-
-            return jsonify({
-                "code": 200,
-                "msg": "success",
-                "data": data
-            }), 200
+        return jsonify({
+            "code": 200,
+            "msg": "success",
+            "data": list_material_records(request.args)
+        }), 200
     except Exception as e:
         return jsonify({
             "code": 500,
-            "msg": str("get file failed!"),
+            "msg": f"get file failed: {e}",
             "data": None
         }), 500
 
@@ -4838,14 +5667,11 @@ def youtube_search():
 @app.route('/youtube/videos', methods=['GET'])
 def youtube_videos():
     try:
-        items = list_youtube_videos()
+        result = list_youtube_videos(request.args)
         return jsonify({
             "code": 200,
             "msg": "success",
-            "data": {
-                "total": len(items),
-                "items": items,
-            }
+            "data": result
         }), 200
     except Exception as e:
         return jsonify({
@@ -4978,10 +5804,9 @@ def batch_delete_youtube_videos():
 @app.route('/youtube/workflow/jobs', methods=['GET'])
 def youtube_workflow_jobs():
     try:
-        limit = int(request.args.get("limit", 50))
+        limit = int(request.args.get("limit", request.args.get("pageSize", 50)))
         limit = max(1, min(limit, 100))
-        items = list_youtube_workflow_jobs(limit)
-        return _json_response(data={"total": len(items), "items": items})
+        return _json_response(data=list_youtube_workflow_jobs(limit, request.args))
     except Exception as e:
         return _json_response(500, f"获取工作流任务失败: {str(e)}", None, 500)
 
@@ -5001,7 +5826,9 @@ def youtube_workflow_statistics():
     try:
         limit = int(request.args.get("limit", 200))
         limit = max(20, min(limit, 1000))
-        return _json_response(data=get_workflow_statistics(limit))
+        page = int(request.args.get("page", 1))
+        page_size = int(request.args.get("pageSize", limit))
+        return _json_response(data=get_workflow_statistics(limit, page=page, page_size=page_size))
     except Exception as e:
         return _json_response(500, f"获取工作流统计失败: {str(e)}", None, 500)
 
@@ -5116,7 +5943,7 @@ def youtube_analysis_jobs():
         limit = int(request.args.get("limit", 50))
         limit = max(1, min(limit, 100))
         items = [
-            item for item in list_youtube_workflow_jobs(limit)
+            item for item in list_youtube_workflow_jobs(limit).get("items", [])
             if item.get("processVersion") == PROCESS_VERSION_EDITING
         ]
         return _json_response(data={"total": len(items), "items": items})
@@ -5595,104 +6422,27 @@ def login():
 
 @app.route('/postVideo', methods=['POST'])
 def postVideo():
-    # 获取JSON数据
     data = request.get_json()
-
-    if not data:
-        return jsonify({"code": 400, "msg": "请求数据不能为空", "data": None}), 400
-
-    # 从JSON数据中提取fileList和accountList
-    file_list = data.get('fileList', [])
-    account_list = _clean_unique_list(data.get('accountList', []))
-    type = data.get('type')
-    title = data.get('title')
-    description = data.get('description') or ''
-    tags = data.get('tags')
-    category = data.get('category')
-    enableTimer = data.get('enableTimer')
-    if category == 0:
-        category = None
-    productLink = data.get('productLink', '')
-    productTitle = data.get('productTitle', '')
-    thumbnail_path = data.get('thumbnail', '')
-    is_draft = data.get('isDraft', False)  # 新增参数：是否保存为草稿
-
-    videos_per_day = data.get('videosPerDay')
-    daily_times = data.get('dailyTimes')
-    start_days = data.get('startDays')
-
-    # 参数校验
-    if not file_list:
-        return jsonify({"code": 400, "msg": "文件列表不能为空", "data": None}), 400
-    if not account_list:
-        return jsonify({"code": 400, "msg": "账号列表不能为空", "data": None}), 400
-    if not type:
-        return jsonify({"code": 400, "msg": "平台类型不能为空", "data": None}), 400
-    if not title:
-        return jsonify({"code": 400, "msg": "标题不能为空", "data": None}), 400
-
     try:
-        file_list = _validate_publish_processed_files(file_list)
+        result = _publish_payload(data)
+    except WorkflowConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
-
-    # 打印获取到的数据（仅作为示例）
-    print("File List:", file_list)
-    print("Account List:", account_list)
-
-    try:
-        match type:
-            case 1:
-                post_video_xhs(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                                   start_days)
-            case 2:
-                post_video_tencent(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                                   start_days, is_draft)
-            case 3:
-                post_video_DouYin(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                          start_days, thumbnail_path, productLink, productTitle)
-            case 4:
-                post_video_ks(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                          start_days)
-            case 5:
-                _publish_center_to_bilibili(
-                    title,
-                    description,
-                    file_list,
-                    tags or [],
-                    account_list,
-                    tid=category or 249,
-                    enable_timer=enableTimer,
-                    videos_per_day=videos_per_day,
-                    daily_times=daily_times,
-                    start_days=start_days,
-                )
-            case _:
-                return jsonify({"code": 400, "msg": f"不支持的平台类型: {type}", "data": None}), 400
-
-        published_video_ids = _mark_published_materials(
-            file_list,
-            platform_type=type,
-            title=f"{title}; description={description}" if description else title,
-            account_count=len(account_list),
-        )
-
-        # 返回响应给客户端
-        return jsonify(
-            {
-                "code": 200,
-                "msg": "发布任务已提交",
-                "data": {
-                    "publishedVideoIds": published_video_ids,
-                }
-            }), 200
     except Exception as e:
         print(f"发布视频时出错: {str(e)}")
         return jsonify({
             "code": 500,
             "msg": f"发布失败: {str(e)}",
-            "data": None
+            "data": None,
         }), 500
+    failed_count = result.get("failedCount", 0)
+    success_count = result.get("successCount", 0)
+    return jsonify({
+        "code": 200,
+        "msg": "所有平台发布失败" if failed_count and success_count == 0 else ("部分平台发布失败" if failed_count else "发布任务已提交"),
+        "data": result,
+    }), 200
 
 
 @app.route('/updateUserinfo', methods=['POST'])
@@ -5738,47 +6488,37 @@ def postVideoBatch():
 
     if not isinstance(data_list, list):
         return jsonify({"code": 400, "msg": "Expected a JSON array", "data": None}), 400
-    for data in data_list:
-        # 从JSON数据中提取fileList和accountList
-        file_list = data.get('fileList', [])
-        account_list = _clean_unique_list(data.get('accountList', []))
-        type = data.get('type')
-        title = data.get('title')
-        tags = data.get('tags')
-        category = data.get('category')
-        enableTimer = data.get('enableTimer')
-        if category == 0:
-            category = None
-        productLink = data.get('productLink', '')
-        productTitle = data.get('productTitle', '')
-        is_draft = data.get('isDraft', False)
-
-        videos_per_day = data.get('videosPerDay')
-        daily_times = data.get('dailyTimes')
-        start_days = data.get('startDays')
-        # 打印获取到的数据（仅作为示例）
-        print("File List:", file_list)
-        print("Account List:", account_list)
-        match type:
-            case 1:
-                post_video_xhs(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                               start_days)
-            case 2:
-                post_video_tencent(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                                   start_days, is_draft)
-            case 3:
-                post_video_DouYin(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                          start_days, productLink, productTitle)
-            case 4:
-                post_video_ks(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                          start_days)
-    # 返回响应给客户端
-    return jsonify(
-        {
-            "code": 200,
-            "msg": None,
-            "data": None
-        }), 200
+    batch_results = []
+    for index, data in enumerate(data_list):
+        try:
+            batch_results.append({
+                "index": index,
+                "status": "success",
+                "data": _publish_payload(data),
+            })
+        except WorkflowConflictError as exc:
+            batch_results.append({
+                "index": index,
+                "status": "failed",
+                "message": str(exc),
+                "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data},
+            })
+        except Exception as exc:
+            batch_results.append({
+                "index": index,
+                "status": "failed",
+                "message": str(exc),
+                "data": None,
+            })
+    failed_count = sum(1 for item in batch_results if item["status"] != "success" or item["data"].get("hasFailures"))
+    return jsonify({
+        "code": 200,
+        "msg": "部分批次发布失败" if failed_count else "发布任务已提交",
+        "data": {
+            "items": batch_results,
+            "hasFailures": failed_count > 0,
+        }
+    }), 200
 
 # Cookie文件上传API
 @app.route('/uploadCookie', methods=['POST'])
