@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from app.publishing import normalize_bilibili_tid
+
 SCHEDULE_FORMAT = "%Y-%m-%d %H:%M"
 PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 PUBLISH_STRATEGY_SCHEDULED = "scheduled"
@@ -83,7 +85,7 @@ async def _upload_bilibili(args: argparse.Namespace) -> None:
         "--desc",
         _safe_text(args.desc),
         "--tid",
-        str(args.tid or 249),
+        str(normalize_bilibili_tid(args.tid)),
     ]
     tags = _parse_tags(args.tags)
     if tags:
@@ -109,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thumbnail", type=Path)
     parser.add_argument("--product-link", default="")
     parser.add_argument("--product-title", default="")
-    parser.add_argument("--tid", type=int, default=249)
+    parser.add_argument("--tid", type=int, default=None)
     parser.add_argument("--headless", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
     return parser

@@ -25,6 +25,14 @@ export const materialApi = {
   getPublishedMaterials: (params = {}) => {
     return http.get('/published-materials', params)
   },
+
+  getPublishTasks: (params = {}) => {
+    return http.get('/publish/tasks', params)
+  },
+
+  deletePublishTargetRecord: (id) => {
+    return http.delete(`/publish/target-records/${id}`)
+  },
   
   // 下载素材
   downloadMaterial: (filePath) => {

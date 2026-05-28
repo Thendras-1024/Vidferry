@@ -1,11 +1,10 @@
-"""HTTP API blueprints grouped by business domain."""
+"""HTTP API route modules grouped by business domain.
+
+Routes are loaded by ``app.backend.runtime`` during the modular transition so
+legacy decorators keep their behavior while each domain lives in its own file.
+"""
 
 
 def register_blueprints(app):
-    """Register migrated blueprints.
-
-    No blueprints are registered in phase one because current routes are still
-    loaded by ``sau_backend``. Keep this function as the stable integration
-    point for later route extraction.
-    """
+    """Reserved integration point for future Flask Blueprint registration."""
     return app

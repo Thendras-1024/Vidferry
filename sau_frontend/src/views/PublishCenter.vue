@@ -101,7 +101,7 @@
             <el-carousel
               v-if="publishTargets(tab).length > 0"
               class="target-carousel"
-              height="168px"
+              height="244px"
               indicator-position="outside"
               :autoplay="false"
               arrow="always"
@@ -121,6 +121,29 @@
                     <p>{{ tab.selectedTopics.length ? tab.selectedTopics.map(topic => `#${topic}`).join(' ') : '暂无话题' }}</p>
                     <span>发布</span>
                     <p>{{ tab.scheduleEnabled ? `定时发布 · ${tab.dailyTimes.join('、')}` : '立即发布' }}</p>
+                  </div>
+                  <div v-if="Number(target.platformType) === 3" class="platform-specific-panel">
+                    <span class="platform-specific-title">抖音专属设置</span>
+                    <div class="two-col">
+                      <el-input v-model="tab.productTitle" placeholder="商品名称（可选）" maxlength="200" />
+                      <el-input v-model="tab.productLink" placeholder="商品链接（可选）" maxlength="200" />
+                    </div>
+                  </div>
+                  <div v-if="Number(target.platformType) === 5" class="platform-specific-panel">
+                    <span class="platform-specific-title">B站专属设置</span>
+                    <el-select v-model="tab.bilibiliTid" filterable placeholder="选择 B站分区">
+                      <el-option
+                        v-for="category in bilibiliCategories"
+                        :key="category.tid"
+                        :label="`${category.label}（${category.tid}）`"
+                        :value="category.tid"
+                      />
+                      <el-option
+                        v-if="isUnknownBilibiliTid(tab.bilibiliTid)"
+                        :label="`未知分区（${tab.bilibiliTid}）`"
+                        :value="tab.bilibiliTid"
+                      />
+                    </el-select>
                   </div>
                 </div>
               </el-carousel-item>
@@ -154,10 +177,6 @@
                   <el-tag v-if="tab.selectedTopics.length === 0" type="info" effect="plain">暂无已保存话题</el-tag>
                 </div>
               </div>
-            </div>
-            <div v-if="hasSelectedPlatform(tab, 3)" class="two-col">
-              <el-input v-model="tab.productTitle" placeholder="商品名称" maxlength="200" />
-              <el-input v-model="tab.productLink" placeholder="商品链接" maxlength="200" />
             </div>
             <div class="inline-options">
               <el-checkbox v-model="tab.isOriginal" label="声明原创" />
@@ -402,7 +421,7 @@
           </div>
           <el-radio-group v-model="tempPlatformAccounts[platform.key]" :disabled="isPlatformDisabledForCurrentTab(platform.key)" class="platform-account-radios">
             <el-radio
-              v-for="account in accountsByPlatform(platform.name)"
+              v-for="account in availableAccountsByPlatform(platform.name)"
               :key="account.id"
               :label="account.id"
               class="account-item"
@@ -410,7 +429,7 @@
               <span>{{ account.name }}</span>
             </el-radio>
           </el-radio-group>
-          <el-empty v-if="accountsByPlatform(platform.name).length === 0" description="暂无可用账号" :image-size="48" />
+          <el-empty v-if="availableAccountsByPlatform(platform.name).length === 0" description="暂无正常账号，请先在账号管理中重新连接" :image-size="48" />
         </div>
       </div>
       <template #footer><div class="dialog-footer"><el-button @click="accountDialogVisible = false">取消</el-button><el-button type="primary" @click="confirmAccountSelection">确定</el-button></div></template>
@@ -439,6 +458,7 @@ import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
+import { accountApi } from '@/api/account'
 import { http } from '@/utils/request'
 
 // 当前激活的tab
@@ -485,6 +505,41 @@ const platformNameByKey = platforms.reduce((map, platform) => {
   return map
 }, {})
 
+const fallbackBilibiliCategories = [
+  { tid: 21, group: '生活', name: '日常', label: '生活 / 日常' },
+  { tid: 180, group: '纪录片', name: '社会·美食·旅行', label: '纪录片 / 社会·美食·旅行' },
+  { tid: 37, group: '纪录片', name: '人文·历史', label: '纪录片 / 人文·历史' },
+  { tid: 201, group: '知识', name: '科学科普', label: '知识 / 科学科普' },
+  { tid: 124, group: '知识', name: '社科·法律·心理', label: '知识 / 社科·法律·心理' },
+  { tid: 215, group: '美食', name: '美食记录', label: '美食 / 美食记录' },
+  { tid: 95, group: '科技', name: '数码', label: '科技 / 数码' }
+]
+
+const bilibiliCategories = ref(fallbackBilibiliCategories)
+const defaultBilibiliTid = ref(21)
+
+const isUnknownBilibiliTid = (tid) => {
+  const value = Number(tid || 0)
+  return value > 0 && !bilibiliCategories.value.some(category => Number(category.tid) === value)
+}
+
+const loadBilibiliCategories = async () => {
+  try {
+    const response = await youtubeApi.getBilibiliCategories()
+    const items = response.data?.items || response.items || []
+    if (Array.isArray(items) && items.length > 0) {
+      bilibiliCategories.value = items.map(item => ({
+        ...item,
+        tid: Number(item.tid),
+        label: item.label || `${item.group || 'B站'} / ${item.name || item.tid}`
+      }))
+      defaultBilibiliTid.value = Number(response.data?.defaultTid || response.defaultTid || 21)
+    }
+  } catch (error) {
+    console.warn('读取 B站分区失败，使用内置常用分区', error)
+  }
+}
+
 const defaultTabInit = {
   name: 'tab1',
   label: '发布1',
@@ -497,6 +552,7 @@ const defaultTabInit = {
   description: '',
   productLink: '', // 商品链接
   productTitle: '', // 商品名称
+  bilibiliTid: 21,
   selectedTopics: [], // 话题列表（不带#号）
   contentLocked: false,
   publishTargetStatuses: [],
@@ -567,6 +623,7 @@ const normalizePublishTab = (tab, index) => {
     fileList: Array.isArray(tab?.fileList) ? tab.fileList.slice(0, 1) : [],
     selectedAccounts: normalizeSelectedAccounts(tab?.selectedAccounts),
     platformAccounts: normalizePlatformAccounts(tab?.platformAccounts),
+    bilibiliTid: Number(tab?.bilibiliTid || defaultBilibiliTid.value),
     selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
     dailyTimes: Array.isArray(tab?.dailyTimes) && tab.dailyTimes.length > 0 ? tab.dailyTimes : ['10:00'],
     publishTargetStatuses: Array.isArray(tab?.publishTargetStatuses) ? tab.publishTargetStatuses : [],
@@ -592,6 +649,7 @@ const serializePublishTab = (tab) => ({
   description: tab.description,
   productLink: tab.productLink,
   productTitle: tab.productTitle,
+  bilibiliTid: Number(tab.bilibiliTid || defaultBilibiliTid.value),
   selectedTopics: tab.selectedTopics,
   contentLocked: Boolean(tab.contentLocked),
   publishTargetStatuses: tab.publishTargetStatuses || [],
@@ -679,6 +737,7 @@ const clearVideoDerivedContent = (tab) => {
   tab.selectedTopics = []
   tab.productLink = ''
   tab.productTitle = ''
+  tab.bilibiliTid = defaultBilibiliTid.value
   tab.platformAccounts = {}
   tab.selectedAccounts = []
   tab.publishTargetStatuses = []
@@ -737,6 +796,10 @@ const accountsByPlatform = (platformName) => {
   return accountStore.accounts.filter(account => account.platform === platformName)
 }
 
+const availableAccountsByPlatform = (platformName) => {
+  return accountsByPlatform(platformName).filter(account => account.status === '正常')
+}
+
 const selectedVideoId = (tab) => {
   return tab.fileList[0]?.videoId || ''
 }
@@ -780,6 +843,15 @@ const loadPublishableMaterials = async ({ force = false } = {}) => {
   }
 }
 
+const loadAccounts = async () => {
+  try {
+    const response = await accountApi.getAccounts()
+    accountStore.setAccounts(response.data || [])
+  } catch (error) {
+    console.error('刷新账号状态失败:', error)
+  }
+}
+
 const handleMaterialLibrarySearch = () => {
   window.clearTimeout(materialLibrarySearchTimer)
   materialLibrarySearchTimer = window.setTimeout(() => {
@@ -810,7 +882,7 @@ const publishTargets = (tab) => {
     .map(([platformType, accountId]) => {
       const platform = platforms.find(item => String(item.key) === String(platformType))
       const account = accountStore.accounts.find(item => String(item.id) === String(accountId))
-      if (!platform || !account) return null
+      if (!platform || !account || account.status !== '正常') return null
       return {
         platformType: platform.key,
         platformName: platform.name,
@@ -965,6 +1037,11 @@ const confirmAccountSelection = () => {
     const normalized = normalizePlatformAccounts(tempPlatformAccounts.value)
     Object.keys(normalized).forEach(platformType => {
       if (isPlatformPublishedForTab(currentTab.value, platformType)) {
+        delete normalized[platformType]
+        return
+      }
+      const account = accountStore.accounts.find(item => String(item.id) === String(normalized[platformType]))
+      if (!account || account.status !== '正常') {
         delete normalized[platformType]
       }
     })
@@ -1181,14 +1258,17 @@ const confirmPublish = async (tab) => {
       platformType: target.platformType,
       accountFile: target.accountFile,
       accountId: target.accountId,
-      accountName: target.accountName
+      accountName: target.accountName,
+      bilibiliTid: Number(target.platformType) === 5 ? Number(tab.bilibiliTid || defaultBilibiliTid.value) : undefined,
+      productLink: Number(target.platformType) === 3 ? tab.productLink.trim() : undefined,
+      productTitle: Number(target.platformType) === 3 ? tab.productTitle.trim() : undefined
     })),
     enableTimer: tab.scheduleEnabled ? 1 : 0,
     videosPerDay: tab.scheduleEnabled ? tab.videosPerDay || 1 : 1,
     dailyTimes: tab.scheduleEnabled ? tab.dailyTimes || ['10:00'] : ['10:00'],
     startDays: tab.scheduleEnabled ? tab.startDays || 0 : 0,
     category: tab.isOriginal ? 1 : 0, // 1表示原创，0表示非原创
-    bilibiliTid: 249,
+    bilibiliTid: Number(tab.bilibiliTid || defaultBilibiliTid.value),
     productLink: tab.productLink.trim() || '',
     productTitle: tab.productTitle.trim() || '',
     isDraft: tab.isDraft
@@ -1205,6 +1285,7 @@ const confirmPublish = async (tab) => {
   // 一次提交所有平台，后端按平台隔离并发执行，同时返回每个平台结果。
   try {
     const data = await http.post('/postVideo', buildPublishData())
+    await loadAccounts()
     await loadPublishedVideos()
     const results = Array.isArray(data?.data?.results) ? data.data.results : []
     results.forEach(result => {
@@ -1241,6 +1322,7 @@ const confirmPublish = async (tab) => {
     tab.scheduleEnabled = false
   } catch (error) {
     console.error('发布错误:', error)
+    await loadAccounts()
     await loadPublishedVideos()
     tab.publishTargetStatuses = targets.map(target => {
       const previous = (tab.publishTargetStatuses || []).find(item => Number(item.platformType) === Number(target.platformType))
@@ -1414,6 +1496,8 @@ const batchPublish = async () => {
 }
 
 onMounted(() => {
+  loadBilibiliCategories()
+  loadAccounts()
   loadPublishedVideos()
 })
 
@@ -1651,6 +1735,7 @@ $ink-strong: #172033;
 .target-slide {
   display: grid;
   gap: 12px;
+  align-content: start;
   height: 100%;
   padding: 14px 42px;
 }
@@ -1676,6 +1761,22 @@ $ink-strong: #172033;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.platform-specific-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #fff;
+}
+.platform-specific-title {
+  color: $text-secondary;
+  font-size: 12px;
+  font-weight: 650;
+}
+.platform-specific-panel .el-select {
+  width: min(360px, 100%);
 }
 .target-status-panel {
   display: grid;

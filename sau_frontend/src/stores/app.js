@@ -14,6 +14,7 @@ export const useAppStore = defineStore('app', () => {
   // 素材列表数据
   const materials = ref([])
   const publishedMaterials = ref([])
+  const publishTasks = ref([])
   const listCache = ref({})
   
   // 设置账号管理页面已访问
@@ -39,6 +40,10 @@ export const useAppStore = defineStore('app', () => {
 
   const setPublishedMaterials = (materialList) => {
     publishedMaterials.value = materialList
+  }
+
+  const setPublishTasks = (taskList) => {
+    publishTasks.value = taskList
   }
 
   // 添加新素材
@@ -97,12 +102,14 @@ export const useAppStore = defineStore('app', () => {
     isAccountRefreshing,
     materials,
     publishedMaterials,
+    publishTasks,
     listCache,
     setAccountManagementVisited,
     setMaterialManagementVisited,
     resetVisitStatus,
     setMaterials,
     setPublishedMaterials,
+    setPublishTasks,
     addMaterial,
     removeMaterial,
     removeMaterials,

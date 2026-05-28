@@ -1,27 +1,22 @@
-"""Flask application factory for the modular backend transition.
-
-Routes and services are still provided by ``sau_backend`` during the first
-migration phase. New modules should move business code out of that file
-domain by domain while keeping this factory stable.
-"""
+"""Flask application factory for the Vidferry backend."""
 
 from __future__ import annotations
 
 from importlib import import_module
 
 
-def _legacy_backend():
+def _backend():
     return import_module("sau_backend")
 
 
 def create_app():
-    """Return the Flask app instance with all current routes registered."""
-    return _legacy_backend().app
+    """Return the Flask app instance with all modular routes registered."""
+    return _backend().create_app()
 
 
 def initialize_runtime() -> None:
     """Run backend startup hooks shared by the formal ``run.py`` entry."""
-    backend = _legacy_backend()
+    backend = _backend()
     backend.init_youtube_video_table()
     recovered_jobs = backend.recover_interrupted_workflow_jobs()
     if recovered_jobs:
