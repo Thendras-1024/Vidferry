@@ -8,6 +8,10 @@
       </div>
       <div class="hero-actions">
         <el-button type="primary" @click="handleAddAccount">添加账号</el-button>
+        <el-button type="warning" plain @click="handleCheckAllCookies" :loading="checkingCookies" :disabled="checkCooldownRemaining > 0">
+          <el-icon :class="{ 'is-loading': checkingCookies }"><Refresh /></el-icon>
+          <span>{{ checkCooldownRemaining > 0 ? `${checkCooldownRemaining}s 后可检查` : '检查 Cookie' }}</span>
+        </el-button>
         <el-button @click="fetchAccounts" :loading="appStore.isAccountRefreshing">
           <el-icon :class="{ 'is-loading': appStore.isAccountRefreshing }"><Refresh /></el-icon>
           <span>刷新状态</span>
@@ -183,6 +187,9 @@ const activeTab = ref('all')
 
 // 搜索关键词
 const searchKeyword = ref('')
+const checkingCookies = ref(false)
+const checkCooldownRemaining = ref(0)
+let checkCooldownTimer = null
 
 const accountFilterOptions = [
   { label: '全部', value: 'all' },
@@ -233,6 +240,47 @@ const fetchAccounts = async () => {
     ElMessage.error('获取账号数据失败')
   } finally {
     appStore.setAccountRefreshing(false)
+  }
+}
+
+const startCheckCooldown = (seconds = 60) => {
+  window.clearInterval(checkCooldownTimer)
+  checkCooldownRemaining.value = Number(seconds || 60)
+  checkCooldownTimer = window.setInterval(() => {
+    checkCooldownRemaining.value -= 1
+    if (checkCooldownRemaining.value <= 0) {
+      checkCooldownRemaining.value = 0
+      window.clearInterval(checkCooldownTimer)
+      checkCooldownTimer = null
+    }
+  }, 1000)
+}
+
+const handleCheckAllCookies = async () => {
+  if (checkingCookies.value || checkCooldownRemaining.value > 0) return
+  checkingCookies.value = true
+  try {
+    const res = await accountApi.checkCookies({ all: true })
+    if (Array.isArray(res.data?.accounts)) {
+      accountStore.setAccounts(res.data.accounts)
+      notificationStore.syncAccountAbnormalMessages(accountStore.accounts)
+    }
+    const invalid = res.data?.invalid || []
+    const checkedCount = Number(res.data?.checkedCount || 0)
+    const skippedCount = Number(res.data?.skippedCount || 0)
+    if (invalid.length > 0) {
+      ElMessage.warning(`检查完成，${invalid.length} 个账号 Cookie 已过期，请重新连接`)
+    } else {
+      ElMessage.success(`检查完成，当前账号 Cookie 均可用${skippedCount ? `，${skippedCount} 个账号复用最近检查结果` : ''}`)
+    }
+    if (checkedCount > 0 || skippedCount > 0) {
+      startCheckCooldown(res.data?.cooldownSeconds || 60)
+    }
+  } catch (error) {
+    console.error('检查 Cookie 失败:', error)
+    ElMessage.error(error.message || '检查 Cookie 失败')
+  } finally {
+    checkingCookies.value = false
   }
 }
 
@@ -700,6 +748,7 @@ const submitAccountForm = () => {
 // 组件卸载前关闭SSE连接
 onBeforeUnmount(() => {
   closeSSEConnection()
+  window.clearInterval(checkCooldownTimer)
 })
 </script>
 

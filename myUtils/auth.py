@@ -32,33 +32,45 @@ async def safe_goto(page, url):
 async def cookie_auth_douyin(account_file):
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**get_browser_options())
-        context = await browser.new_context(storage_state=account_file)
-        context = await set_init_script(context)
-        # 创建一个新的页面
-        page = await context.new_page()
-        # 访问指定的 URL
-        await safe_goto(page, "https://creator.douyin.com/creator-micro/content/upload")
         try:
-            await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload", timeout=5000)
-            # 2024.06.17 抖音创作者中心改版
-            # 判断
-            # 等待“扫码登录”元素出现，超时 5 秒（如果 5 秒没出现，说明 cookie 有效）
-            try:
-                await page.get_by_text("扫码登录").wait_for(timeout=5000)
-                douyin_logger.error("[+] cookie 失效，需要扫码登录")
-                await context.close()
-                await browser.close()
-                return False
-            except:
-                douyin_logger.success("[+]  cookie 有效")
-                await context.close()
-                await browser.close()
+            context = await browser.new_context(storage_state=account_file)
+            context = await set_init_script(context)
+            page = await context.new_page()
+            await safe_goto(page, "https://creator.douyin.com/creator-micro/content/upload")
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(3000)
+
+            login_markers = [
+                page.get_by_text("扫码登录", exact=True).first,
+                page.get_by_text("手机号登录", exact=True).first,
+                page.get_by_text("登录后即可", exact=False).first,
+                page.get_by_role("img", name="二维码").first,
+            ]
+            for marker in login_markers:
+                if not await marker.count():
+                    continue
+                try:
+                    if await marker.is_visible():
+                        douyin_logger.error("[+] cookie 失效，需要重新登录")
+                        return False
+                except Exception:
+                    continue
+
+            if page.url.startswith("https://creator.douyin.com/"):
+                douyin_logger.success(f"[+] cookie 有效，当前页面: {page.url}")
                 return True
-        except:
-            douyin_logger.error("[+] 等待5秒 cookie 失效")
-            await context.close()
-            await browser.close()
+
+            douyin_logger.error(f"[+] cookie 校验未进入创作者中心，当前页面: {page.url}")
             return False
+        except Exception as exc:
+            douyin_logger.error(f"[+] cookie 校验异常: {exc}")
+            return False
+        finally:
+            try:
+                await context.close()
+            except Exception:
+                pass
+            await browser.close()
 
 
 async def cookie_auth_tencent(account_file):

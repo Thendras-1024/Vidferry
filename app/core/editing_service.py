@@ -92,7 +92,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
     _update_translate_progress(job_id, 86, "处理版本二：正在截取前三个高光片段", step="editing")
     for index, segment in enumerate(segments, start=1):
         clip_file = work_dir / f"{output_file.stem}_intro_{index}.mp4"
-        encode_clip(source_file, clip_file, start=segment["start"], end=segment["end"])
+        encode_clip(processed_file, clip_file, start=segment["start"], end=segment["end"])
         clip_files.append(clip_file)
 
     _update_translate_progress(job_id, 91, "处理版本二：正在拼接高光开头与正片", step="editing")

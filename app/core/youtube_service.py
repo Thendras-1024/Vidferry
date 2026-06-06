@@ -126,14 +126,8 @@ def _youtube_video_status_clause(status):
             SELECT video_id FROM youtube_workflow_jobs
             WHERE status IN ('queued', 'running') AND video_id IS NOT NULL AND video_id != ''
         )"""
-    failed_job_sql = """video_id IN (
-            SELECT video_id FROM youtube_workflow_jobs
-            WHERE status = 'failed' AND video_id IS NOT NULL AND video_id != ''
-        )"""
-    abnormal_job_sql = """video_id IN (
-            SELECT video_id FROM youtube_workflow_jobs
-            WHERE status = 'abnormal' AND video_id IS NOT NULL AND video_id != ''
-        )"""
+    failed_job_sql = _relevant_job_status_exists_sql("failed")
+    abnormal_job_sql = _relevant_job_status_exists_sql("abnormal")
     failed_or_abnormal_sql = f"({failed_job_sql} OR {abnormal_job_sql})"
     if status == "initial":
         return f"""(download_status IS NULL OR download_status != 1)
@@ -214,10 +208,27 @@ def _job_status_exists_sql(status):
     )"""
 
 
+def _relevant_job_status_exists_sql(status):
+    return f"""EXISTS (
+        SELECT 1 FROM youtube_workflow_jobs job
+        WHERE job.video_id = youtube_videos.video_id
+          AND job.status = '{status}'
+          AND (
+            (COALESCE(youtube_videos.download_status, 0) != 1 AND COALESCE(job.step, '') IN ('queued', 'download', 'failed'))
+            OR (COALESCE(youtube_videos.download_status, 0) = 1
+                AND COALESCE(youtube_videos.translate_status, 0) NOT IN (1, 2)
+                AND COALESCE(job.step, '') IN ('queued', 'subtitle', 'analysis', 'editing', 'failed'))
+            OR (COALESCE(youtube_videos.translate_status, 0) IN (1, 2)
+                AND COALESCE(youtube_videos.publish_status, 0) != 1
+                AND COALESCE(job.step, '') IN ('publish', 'failed'))
+          )
+    )"""
+
+
 def _default_stage_order_sql():
     return f"""
     CASE
-        WHEN {_job_status_exists_sql('failed')} OR {_job_status_exists_sql('abnormal')} THEN 0
+        WHEN {_relevant_job_status_exists_sql('failed')} OR {_relevant_job_status_exists_sql('abnormal')} THEN 0
         WHEN {_active_job_exists_sql()} THEN 1
         WHEN (publish_status IS NULL OR publish_status != 1) AND translate_status IN (1, 2) THEN 2
         WHEN download_status = 1 AND (translate_status IS NULL OR translate_status NOT IN (1, 2)) THEN 3

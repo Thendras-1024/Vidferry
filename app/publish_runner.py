@@ -72,6 +72,25 @@ async def _upload_xiaohongshu(args: argparse.Namespace) -> None:
     await app.main()
 
 
+async def _upload_kuaishou(args: argparse.Namespace) -> None:
+    from uploader.ks_uploader.main import KSVideo
+
+    publish_date = _parse_schedule(args.schedule)
+    app = KSVideo(
+        title=_safe_text(args.title),
+        file_path=str(args.file),
+        desc=_safe_text(args.desc),
+        tags=_parse_tags(args.tags),
+        publish_date=publish_date,
+        account_file=str(args.account_file),
+        thumbnail_path=str(args.thumbnail) if args.thumbnail else None,
+        publish_strategy=PUBLISH_STRATEGY_SCHEDULED if args.schedule else PUBLISH_STRATEGY_IMMEDIATE,
+        debug=args.debug,
+        headless=args.headless,
+    )
+    await app.main()
+
+
 async def _upload_bilibili(args: argparse.Namespace) -> None:
     from uploader.bilibili_uploader.runtime import run_biliup_command
 
@@ -101,7 +120,7 @@ async def _upload_bilibili(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Backend isolated publish runner")
-    parser.add_argument("--platform", required=True, choices=["douyin", "xiaohongshu", "bilibili"])
+    parser.add_argument("--platform", required=True, choices=["douyin", "xiaohongshu", "kuaishou", "bilibili"])
     parser.add_argument("--account-file", required=True, type=Path)
     parser.add_argument("--file", required=True, type=Path)
     parser.add_argument("--title", required=True)
@@ -130,6 +149,9 @@ async def dispatch(args: argparse.Namespace) -> None:
         return
     if args.platform == "xiaohongshu":
         await _upload_xiaohongshu(args)
+        return
+    if args.platform == "kuaishou":
+        await _upload_kuaishou(args)
         return
     if args.platform == "bilibili":
         await _upload_bilibili(args)

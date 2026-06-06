@@ -1,3 +1,176 @@
+ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
+_account_cookie_check_last_at = {}
+
+
+def _account_row_to_list(row):
+    return [row["id"], row["type"], row["filePath"], row["userName"], row["status"]]
+
+
+def _account_check_payload(row, *, checked=False, skipped=False, valid=False, message=""):
+    return {
+        "id": row["id"],
+        "type": row["type"],
+        "platform": platform_name(row["type"]),
+        "filePath": row["filePath"],
+        "name": row["userName"],
+        "status": int(row["status"] if row["status"] is not None else 0),
+        "checked": bool(checked),
+        "skipped": bool(skipped),
+        "valid": bool(valid),
+        "message": message,
+    }
+
+
+def _run_bilibili_cookie_check_sync(file_path):
+    account_file = Path(BASE_DIR / "cookiesFile" / str(file_path or ""))
+    if not account_file.is_file():
+        return False
+
+    try:
+        from uploader.bilibili_uploader.runtime import run_biliup_command
+    except Exception as exc:
+        print(f"B站 Cookie 检查依赖加载失败: {exc}")
+        return False
+
+    result = run_biliup_command(["-u", str(account_file), "renew"])
+    if result.returncode == 0:
+        return True
+
+    output = "\n".join(
+        item.strip()
+        for item in [getattr(result, "stderr", ""), getattr(result, "stdout", "")]
+        if str(item or "").strip()
+    )
+    print(f"B站 Cookie 检查失败: {output or f'biliup 退出码 {result.returncode}'}")
+    return False
+
+
+def _run_cookie_check_sync(platform_type, file_path):
+    try:
+        platform_type_value = int(platform_type)
+    except (TypeError, ValueError):
+        platform_type_value = 0
+
+    if platform_type_value == 5:
+        return _run_bilibili_cookie_check_sync(file_path)
+
+    if check_cookie is None:
+        raise RuntimeError("后端未加载 Cookie 检查模块，请检查依赖。")
+
+    result = {"value": False, "error": None}
+
+    def runner():
+        try:
+            result["value"] = bool(asyncio.run(check_cookie(platform_type_value, str(file_path))))
+        except Exception as exc:
+            result["error"] = exc
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        runner()
+    else:
+        thread = threading.Thread(target=runner)
+        thread.start()
+        thread.join()
+
+    if result["error"]:
+        raise result["error"]
+    return bool(result["value"])
+
+
+def _check_account_cookie_row(cursor, row, *, force=False):
+    now = time.time()
+    account_id = int(row["id"])
+    last_checked_at = float(_account_cookie_check_last_at.get(account_id) or 0)
+    current_status = int(row["status"] if row["status"] is not None else 0)
+
+    if not force and last_checked_at and now - last_checked_at < ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS:
+        return _account_check_payload(
+            row,
+            skipped=True,
+            valid=current_status == 1,
+            message="刚刚检查过，已复用当前账号状态。",
+        )
+
+    valid = _run_cookie_check_sync(row["type"], row["filePath"])
+    next_status = 1 if valid else 0
+    cursor.execute("UPDATE user_info SET status = ? WHERE id = ?", (next_status, account_id))
+    _account_cookie_check_last_at[account_id] = now
+
+    checked_row = dict(row)
+    checked_row["status"] = next_status
+    return _account_check_payload(
+        checked_row,
+        checked=True,
+        valid=valid,
+        message="Cookie 有效" if valid else "Cookie 已过期或不可用",
+    )
+
+
+def _load_accounts(cursor, account_ids=None):
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        cursor.execute(f"SELECT * FROM user_info WHERE id IN ({placeholders})", account_ids)
+    else:
+        cursor.execute("SELECT * FROM user_info")
+    return cursor.fetchall()
+
+
+def _list_all_accounts(cursor):
+    cursor.execute("SELECT * FROM user_info")
+    return [_account_row_to_list(row) for row in cursor.fetchall()]
+
+
+def _check_accounts_for_publish(targets):
+    if not targets:
+        return []
+    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        results = []
+        for target in targets:
+            account_id = target.get("accountId")
+            account_file = str(target.get("accountFile") or "").strip()
+            platform_type = int(target.get("platformType") or 0)
+            row = None
+            if account_id:
+                cursor.execute("SELECT * FROM user_info WHERE id = ?", (account_id,))
+                row = cursor.fetchone()
+            if not row and account_file:
+                cursor.execute(
+                    "SELECT * FROM user_info WHERE type = ? AND filePath = ?",
+                    (platform_type, account_file),
+                )
+                row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"{platform_name(platform_type)}账号不存在，请重新选择账号。")
+            if int(row["status"] if row["status"] is not None else 0) != 1:
+                raise ValueError(f"{platform_name(platform_type)}账号“{row['userName']}”当前状态异常，请重新连接后再发布。")
+            results.append(_account_check_payload(row, skipped=True, valid=True, message="发布前跳过主动 Cookie 验证。"))
+        conn.commit()
+        return results
+
+
+def _check_named_publish_account(platform_type, account_name):
+    account_name = str(account_name or "").strip()
+    if not account_name:
+        return None
+    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM user_info WHERE type = ? AND userName = ?",
+            (int(platform_type), account_name),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"{platform_name(platform_type)}账号“{account_name}”不存在，请重新选择账号。")
+        if int(row["status"] if row["status"] is not None else 0) != 1:
+            raise ValueError(f"{platform_name(platform_type)}账号“{account_name}”当前状态异常，请重新连接后再发布。")
+        return _account_check_payload(row, skipped=True, valid=True, message="发布前跳过主动 Cookie 验证。")
+
+
 @app.route("/getAccounts", methods=['GET'])
 def getAccounts():
     """快速获取所有账号信息，不进行cookie验证"""
@@ -30,35 +203,66 @@ def getAccounts():
 
 
 @app.route("/getValidAccounts",methods=['GET'])
-async def getValidAccounts():
+def getValidAccounts():
     with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('''
-        SELECT * FROM user_info''')
-        rows = cursor.fetchall()
-        rows_list = [list(row) for row in rows]
-        print("\n📋 当前数据表内容：")
+        rows = _load_accounts(cursor)
         for row in rows:
-            print(row)
-        for row in rows_list:
-            flag = await check_cookie(row[1],row[2])
-            if not flag:
-                row[4] = 0
-                cursor.execute('''
-                UPDATE user_info
-                SET status = ?
-                WHERE id = ?
-                ''', (0,row[0]))
-                conn.commit()
-                print("✅ 用户状态已更新")
-        for row in rows:
-            print(row)
+            _check_account_cookie_row(cursor, row)
+        conn.commit()
+        rows_list = _list_all_accounts(cursor)
         return jsonify(
                         {
                             "code": 200,
                             "msg": None,
                             "data": rows_list
                         }),200
+
+
+@app.route("/accounts/check-cookies", methods=["POST"])
+def check_account_cookies():
+    try:
+        payload = request.get_json(silent=True) or {}
+        raw_ids = payload.get("accountIds") or payload.get("ids") or []
+        account_ids = [
+            int(item)
+            for item in raw_ids
+            if str(item).isdigit()
+        ]
+        check_all = bool(payload.get("all")) or not account_ids
+
+        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            rows = _load_accounts(cursor, None if check_all else account_ids)
+            found_ids = {int(row["id"]) for row in rows}
+            missing_ids = [item for item in account_ids if item not in found_ids]
+            results = [_check_account_cookie_row(cursor, row) for row in rows]
+            conn.commit()
+            accounts = _list_all_accounts(cursor)
+
+        invalid = [item for item in results if not item.get("valid")]
+        return jsonify({
+            "code": 200,
+            "msg": None,
+            "data": {
+                "items": results,
+                "accounts": accounts,
+                "invalid": invalid,
+                "invalidCount": len(invalid),
+                "checkedCount": len([item for item in results if item.get("checked")]),
+                "skippedCount": len([item for item in results if item.get("skipped")]),
+                "missingIds": missing_ids,
+                "cooldownSeconds": ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS,
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "code": 500,
+            "msg": f"检查账号 Cookie 失败: {str(e)}",
+            "data": None
+        }), 500
 
 @app.route('/deleteFile', methods=['GET'])
 def delete_file():
