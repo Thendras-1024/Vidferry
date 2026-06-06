@@ -4,8 +4,8 @@
       <el-aside :width="isCollapse ? '64px' : '200px'">
         <div class="sidebar">
           <div class="logo">
-            <img v-show="isCollapse" src="/vite.svg" alt="Logo" class="logo-img">
-            <h2 v-show="!isCollapse">Vidferry V1.0</h2>
+            <img v-show="isCollapse" src="/vidferry-icon.svg" alt="Vidferry" class="logo-img">
+            <h2 v-show="!isCollapse">Vidferry V1.1</h2>
           </div>
           <el-menu
             :router="true"

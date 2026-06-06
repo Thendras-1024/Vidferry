@@ -265,8 +265,6 @@ class DouYinBaseUploader(BaseVideoUploader):
     async def validate_base_args(self):
         if not os.path.exists(self.account_file):
             raise RuntimeError(f"cookie文件不存在，请先完成抖音登录: {self.account_file}")
-        if not await cookie_auth(self.account_file):
-            raise RuntimeError(f"cookie文件已失效，请先完成抖音登录: {self.account_file}")
         if self.publish_strategy not in {DOUYIN_PUBLISH_STRATEGY_IMMEDIATE, DOUYIN_PUBLISH_STRATEGY_SCHEDULED}:
             raise ValueError(f"不支持的发布策略: {self.publish_strategy}")
 
@@ -491,15 +489,46 @@ class DouYinVideo(DouYinBaseUploader):
         return True
 
     async def is_publish_success(self, page: Page) -> bool:
-        if "creator-micro/content/manage" in page.url:
-            return True
-        for selector in ("text=发布成功", "text=发布完成", "text=作品管理"):
+        for selector in (
+            'text=发布成功',
+            'text=发布完成',
+            'div:has-text("发布成功"):has-text("100%")',
+        ):
             try:
                 if await page.locator(selector).count():
                     return True
             except Exception:
                 continue
         return False
+
+    async def is_publish_pending_after_manage(self, page: Page) -> bool:
+        for selector in (
+            'text=作品上传中',
+            'text=请勿关闭页面',
+            'text=上传完成后将自动发布',
+            'div:has-text("作品上传中"):has-text("0%")',
+            'div:has-text("作品上传中"):has-text("%")',
+        ):
+            try:
+                if await page.locator(selector).count():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def wait_for_publish_complete_after_manage(self, page: Page):
+        started_at = time.monotonic()
+        while True:
+            if await self.is_publish_success(page):
+                douyin_logger.success(_msg("🥳", "抖音提示发布成功，发布任务已完成"))
+                return
+            if await self.is_publish_pending_after_manage(page):
+                douyin_logger.info(_msg("🏃", "作品仍在上传中，继续等待抖音发布完成"))
+            elif time.monotonic() - started_at > 5:
+                douyin_logger.info(_msg("🏃", "已进入作品管理页，等待抖音发布完成提示"))
+            if time.monotonic() - started_at > DOUYIN_PUBLISH_CONFIRM_TIMEOUT:
+                raise RuntimeError("VF-PUBLISH-CONFIRM-TIMEOUT: 已进入作品管理页，但未等到抖音发布成功提示。")
+            await asyncio.sleep(2)
 
     async def set_video_file_for_upload(self, page: Page):
         selectors = [
@@ -718,6 +747,7 @@ class DouYinVideo(DouYinBaseUploader):
                         "https://creator.douyin.com/creator-micro/content/manage**",
                         timeout=3000,
                     )
+                    await self.wait_for_publish_complete_after_manage(page)
                     douyin_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))
                     upload_success = True
                     break

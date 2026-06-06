@@ -10,8 +10,14 @@ def _row_to_workflow_job(row):
         "publishedAt": item.get("published_at") or "",
         "bilibiliAccount": item.get("bilibili_account") or "",
         "bilibiliTid": normalize_bilibili_tid(item.get("bilibili_tid")),
+        "xiaohongshuAccount": item.get("xiaohongshu_account") or "",
+        "kuaishouAccount": item.get("kuaishou_account") or "",
+        "tencentAccount": item.get("tencent_account") or "",
         "publishToDouyin": int(item.get("publish_to_douyin") if item.get("publish_to_douyin") is not None else 1),
         "publishToBilibili": int(item.get("publish_to_bilibili") or 0),
+        "publishToXiaohongshu": int(item.get("publish_to_xiaohongshu") or 0),
+        "publishToKuaishou": int(item.get("publish_to_kuaishou") or 0),
+        "publishToTencent": int(item.get("publish_to_tencent") or 0),
         "processVersion": _normalize_process_version(item.get("process_version")),
         "subtitleLanguage": _normalize_subtitle_language(item.get("subtitle_language")),
         "burnProfile": _normalize_burn_profile(item.get("burn_profile")),
@@ -121,11 +127,12 @@ def create_youtube_workflow_job(payload):
         cursor.execute('''
         INSERT INTO youtube_workflow_jobs (
             id, video_id, url, account, channel, subscribers, published_at,
-            bilibili_account, bilibili_tid, publish_to_douyin, publish_to_bilibili,
+            bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
+            publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
             process_version, subtitle_language, burn_profile, subtitle_size, translator_label,
             title, description, tags, schedule, status, step, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             job_id,
             payload.get("videoId") or "",
@@ -136,8 +143,14 @@ def create_youtube_workflow_job(payload):
             payload.get("publishedAt") or "",
             payload.get("bilibiliAccount") or "",
             normalize_bilibili_tid(payload.get("bilibiliTid")),
+            payload.get("xiaohongshuAccount") or "",
+            payload.get("kuaishouAccount") or "",
+            payload.get("tencentAccount") or "",
             int(1 if payload.get("publishToDouyin", True) else 0),
             int(1 if payload.get("publishToBilibili") else 0),
+            int(1 if payload.get("publishToXiaohongshu") else 0),
+            int(1 if payload.get("publishToKuaishou") else 0),
+            int(1 if payload.get("publishToTencent") else 0),
             process_version,
             subtitle_language,
             burn_profile,
@@ -348,6 +361,15 @@ def _material_workflow_job(material, jobs_by_video, jobs_by_video_version):
 def _attach_workflow_job_to_material(material, workflow_job):
     if not workflow_job:
         return material
+    if (
+        material.get("source_type") == "youtube_processed"
+        and workflow_job.get("status") == "failed"
+        and int(material.get("analysisStatus") or 0) == 1
+    ):
+        failed_step = str(workflow_job.get("step") or "").lower()
+        failed_message = str(workflow_job.get("message") or "")
+        if failed_step in {"analysis", "failed"} and any(keyword in failed_message for keyword in ["文案", "分析", "LLM", "模型"]):
+            return material
     material["workflowStatus"] = workflow_job.get("status") or ""
     material["workflowStep"] = workflow_job.get("step") or ""
     material["workflowMessage"] = workflow_job.get("message") or ""
@@ -727,10 +749,24 @@ def get_workflow_statistics(limit=200, page=1, page_size=None):
 def update_youtube_video_artifacts(video_id, **changes):
     if not video_id or not changes:
         return None
+    column_map = {
+        "downloadStatus": "download_status",
+        "publishStatus": "publish_status",
+        "translateStatus": "translate_status",
+        "downloadedFilePath": "downloaded_file_path",
+        "processedFilePath": "processed_file_path",
+        "transcriptStatus": "transcript_status",
+        "transcriptFilePath": "transcript_file_path",
+        "transcriptLanguage": "transcript_language",
+        "analysisStatus": "analysis_status",
+        "analysisResult": "analysis_result",
+        "publishDraft": "publish_draft",
+    }
     fields = []
     values = []
     for key, value in changes.items():
-        fields.append(f"{key} = ?")
+        column = column_map.get(key, key)
+        fields.append(f"{column} = ?")
         values.append(value)
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(video_id)

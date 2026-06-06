@@ -1,9 +1,14 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL
+const apiBaseURL = configuredApiBaseUrl && configuredApiBaseUrl !== '/'
+  ? configuredApiBaseUrl
+  : (import.meta.env.DEV ? '/api' : 'http://localhost:5409')
+
 // 创建axios实例
 const request = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5409',
+  baseURL: apiBaseURL,
   headers: {
     'Content-Type': 'application/json'
   }

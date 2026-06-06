@@ -807,13 +807,12 @@ def _archive_published_material(
     cursor.execute(
         """
         SELECT id FROM published_youtube_materials
-        WHERE COALESCE(publish_task_id, '') = ?
-          AND video_id = ?
+        WHERE video_id = ?
           AND platform_type = ?
           AND deleted_at IS NULL
         LIMIT 1
         """,
-        (publish_task_id or "", video_id, int(platform_type or 0)),
+        (video_id, int(platform_type or 0)),
     )
     existing = cursor.fetchone()
     if existing:
@@ -1190,14 +1189,12 @@ def _mark_published_materials(
                 UPDATE youtube_workflow_jobs
                 SET step = 'publish',
                     message = ?,
-                    published_at = ?,
                     publish_command = ?,
                     updated_at = ?
                 WHERE video_id = ?
                 """,
                 (
                     "发布中心已提交发布任务" if status == "success" else f"发布中心记录平台状态：{message or status}",
-                    published_at,
                     f"platform={platform_name_value}; title={title}; accounts={account_count}; status={status}",
                     published_at,
                     video_id,

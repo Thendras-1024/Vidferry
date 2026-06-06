@@ -198,10 +198,13 @@ def init_database_tables():
                     "UPDATE published_youtube_materials SET platform_type = ? WHERE id = ?",
                     (inferred_platform_type, row_id),
                 )
+        cursor.execute("DROP INDEX IF EXISTS idx_published_youtube_materials_video_platform")
         cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_video_platform
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_published_youtube_materials_video_platform
         ON published_youtube_materials(video_id, platform_type)
-        WHERE video_id IS NOT NULL AND video_id != '' AND platform_type IS NOT NULL AND platform_type != 0
+        WHERE video_id IS NOT NULL AND video_id != ''
+          AND platform_type IS NOT NULL AND platform_type != 0
+          AND deleted_at IS NULL
         ''')
         conn.commit()
 
@@ -277,8 +280,14 @@ def init_youtube_workflow_table():
             published_at TEXT,
             bilibili_account TEXT,
             bilibili_tid INTEGER DEFAULT 249,
+            xiaohongshu_account TEXT,
+            kuaishou_account TEXT,
+            tencent_account TEXT,
             publish_to_douyin INTEGER DEFAULT 1,
             publish_to_bilibili INTEGER DEFAULT 0,
+            publish_to_xiaohongshu INTEGER DEFAULT 0,
+            publish_to_kuaishou INTEGER DEFAULT 0,
+            publish_to_tencent INTEGER DEFAULT 0,
             process_version TEXT DEFAULT 'translation_v1',
             subtitle_language TEXT DEFAULT 'zh-CN',
             burn_profile TEXT DEFAULT 'stable',
@@ -319,10 +328,22 @@ def init_youtube_workflow_table():
             cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN bilibili_account TEXT")
         if "bilibili_tid" not in existing_columns:
             cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN bilibili_tid INTEGER DEFAULT 249")
+        if "xiaohongshu_account" not in existing_columns:
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN xiaohongshu_account TEXT")
+        if "kuaishou_account" not in existing_columns:
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN kuaishou_account TEXT")
+        if "tencent_account" not in existing_columns:
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN tencent_account TEXT")
         if "publish_to_douyin" not in existing_columns:
             cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN publish_to_douyin INTEGER DEFAULT 1")
         if "publish_to_bilibili" not in existing_columns:
             cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN publish_to_bilibili INTEGER DEFAULT 0")
+        if "publish_to_xiaohongshu" not in existing_columns:
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN publish_to_xiaohongshu INTEGER DEFAULT 0")
+        if "publish_to_kuaishou" not in existing_columns:
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN publish_to_kuaishou INTEGER DEFAULT 0")
+        if "publish_to_tencent" not in existing_columns:
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN publish_to_tencent INTEGER DEFAULT 0")
         if "process_version" not in existing_columns:
             cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN process_version TEXT DEFAULT 'translation_v1'")
         if "subtitle_language" not in existing_columns:

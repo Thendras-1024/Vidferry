@@ -12,6 +12,10 @@ export const accountApi = {
     return http.get('/getAccounts')
   },
 
+  checkCookies(data = {}) {
+    return http.post('/accounts/check-cookies', data)
+  },
+
   // 添加账号
   addAccount(data) {
     return http.post('/account', data)

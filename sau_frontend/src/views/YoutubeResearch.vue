@@ -114,24 +114,40 @@
             <span>发抖音</span>
             <el-switch v-model="workflowForm.publishToDouyin" />
           </label>
-          <el-input
+          <el-select
             v-if="workflowForm.publishToDouyin"
             v-model="workflowForm.account"
             class="compact-input"
             clearable
-            placeholder="抖音账号"
-          />
+            filterable
+            placeholder="选择抖音账号"
+          >
+            <el-option
+              v-for="account in normalAccountsByPlatform('抖音')"
+              :key="account.id"
+              :label="account.name"
+              :value="account.name"
+            />
+          </el-select>
           <label class="config-item">
             <span>发B站</span>
             <el-switch v-model="workflowForm.publishToBilibili" />
           </label>
-          <el-input
+          <el-select
             v-if="workflowForm.publishToBilibili"
             v-model="workflowForm.bilibiliAccount"
             class="compact-input"
             clearable
-            placeholder="B站账号"
-          />
+            filterable
+            placeholder="选择B站账号"
+          >
+            <el-option
+              v-for="account in normalAccountsByPlatform('B站')"
+              :key="account.id"
+              :label="account.name"
+              :value="account.name"
+            />
+          </el-select>
           <el-select
             v-if="workflowForm.publishToBilibili"
             v-model="workflowForm.bilibiliTid"
@@ -149,6 +165,63 @@
               v-if="isUnknownBilibiliTid(workflowForm.bilibiliTid)"
               :label="`未知分区（${workflowForm.bilibiliTid}）`"
               :value="workflowForm.bilibiliTid"
+            />
+          </el-select>
+          <label class="config-item">
+            <span>发小红书</span>
+            <el-switch v-model="workflowForm.publishToXiaohongshu" />
+          </label>
+          <el-select
+            v-if="workflowForm.publishToXiaohongshu"
+            v-model="workflowForm.xiaohongshuAccount"
+            class="compact-input"
+            clearable
+            filterable
+            placeholder="选择小红书账号"
+          >
+            <el-option
+              v-for="account in normalAccountsByPlatform('小红书')"
+              :key="account.id"
+              :label="account.name"
+              :value="account.name"
+            />
+          </el-select>
+          <label class="config-item">
+            <span>发快手</span>
+            <el-switch v-model="workflowForm.publishToKuaishou" />
+          </label>
+          <el-select
+            v-if="workflowForm.publishToKuaishou"
+            v-model="workflowForm.kuaishouAccount"
+            class="compact-input"
+            clearable
+            filterable
+            placeholder="选择快手账号"
+          >
+            <el-option
+              v-for="account in normalAccountsByPlatform('快手')"
+              :key="account.id"
+              :label="account.name"
+              :value="account.name"
+            />
+          </el-select>
+          <label class="config-item">
+            <span>发视频号</span>
+            <el-switch v-model="workflowForm.publishToTencent" />
+          </label>
+          <el-select
+            v-if="workflowForm.publishToTencent"
+            v-model="workflowForm.tencentAccount"
+            class="compact-input"
+            clearable
+            filterable
+            placeholder="选择视频号账号"
+          >
+            <el-option
+              v-for="account in normalAccountsByPlatform('视频号')"
+              :key="account.id"
+              :label="account.name"
+              :value="account.name"
             />
           </el-select>
           <el-input
@@ -751,7 +824,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, DocumentCopy, Download, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
+import { accountApi } from '@/api/account'
 import { useAppStore } from '@/stores/app'
+import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 
 const loading = ref(false)
@@ -794,6 +869,7 @@ const searchProgress = reactive({
 })
 const notificationStore = useNotificationStore()
 const appStore = useAppStore()
+const accountStore = useAccountStore()
 let jobsTimer = null
 let clockTimer = null
 let jobsRequesting = false
@@ -827,6 +903,12 @@ const workflowForm = reactive({
   publishToBilibili: false,
   bilibiliAccount: 'creator',
   bilibiliTid: 21,
+  publishToXiaohongshu: false,
+  xiaohongshuAccount: '',
+  publishToKuaishou: false,
+  kuaishouAccount: '',
+  publishToTencent: false,
+  tencentAccount: '',
   tags: '中国旅行,外国人在中国',
   processVersion: 'translation_v1',
   subtitleLanguage: 'zh-CN',
@@ -875,6 +957,42 @@ const loadBilibiliCategories = async () => {
   }
 }
 
+const normalAccountsByPlatform = (platformName) => {
+  return accountStore.accounts.filter(account => account.platform === platformName && account.status === '正常')
+}
+
+const isNormalAccountName = (platformName, accountName) => {
+  const name = String(accountName || '').trim()
+  if (!name) return false
+  return normalAccountsByPlatform(platformName).some(account => account.name === name)
+}
+
+const workflowPublishPlatforms = [
+  { key: 'douyin', label: '抖音', platform: '抖音', enabledKey: 'publishToDouyin', accountKey: 'account' },
+  { key: 'bilibili', label: 'B站', platform: 'B站', enabledKey: 'publishToBilibili', accountKey: 'bilibiliAccount' },
+  { key: 'xiaohongshu', label: '小红书', platform: '小红书', enabledKey: 'publishToXiaohongshu', accountKey: 'xiaohongshuAccount' },
+  { key: 'kuaishou', label: '快手', platform: '快手', enabledKey: 'publishToKuaishou', accountKey: 'kuaishouAccount' },
+  { key: 'tencent', label: '视频号', platform: '视频号', enabledKey: 'publishToTencent', accountKey: 'tencentAccount' }
+]
+
+const syncWorkflowAccountSelections = () => {
+  workflowPublishPlatforms.forEach(item => {
+    if (workflowForm[item.accountKey] && !isNormalAccountName(item.platform, workflowForm[item.accountKey])) {
+      workflowForm[item.accountKey] = ''
+    }
+  })
+}
+
+const loadAccounts = async () => {
+  try {
+    const response = await accountApi.getAccounts()
+    accountStore.setAccounts(response.data || [])
+    syncWorkflowAccountSelections()
+  } catch (error) {
+    console.warn('读取账号列表失败', error)
+  }
+}
+
 const subtitleLanguages = [
   { value: 'zh-CN', label: '中文' },
   { value: 'en', label: '英文' },
@@ -889,7 +1007,7 @@ const subtitleLanguages = [
 const processVersions = [
   {
     value: 'translation_v1',
-    label: '处理版本一：基础处理',
+    label: '处理版本一：翻译',
     description: '保留当前链路：生成目标语言字幕，并添加左上角原作者信息。'
   },
   {
@@ -1136,8 +1254,19 @@ const isRunningJob = (job) => job.status === 'queued' || job.status === 'running
 const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
 const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
 const activeAnalysisJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job) && job.step === 'analysis')
-const failedJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && ['failed', 'abnormal'].includes(job.status))
+const failedJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isFailedJobRelevantToCurrentStage(item, job))
 const stageErrorJob = (item) => failedJobForVideo(item)
+
+const isFailedJobRelevantToCurrentStage = (item, job) => {
+  if (!job || !['failed', 'abnormal'].includes(job.status)) return false
+  const step = String(job.step || '').toLowerCase()
+  if (!isDownloaded(item)) return ['queued', 'download', 'failed'].includes(step)
+  if (!isTranslated(item) && !isTranslationSkipped(item)) {
+    return ['queued', 'subtitle', 'analysis', 'editing', 'failed'].includes(step)
+  }
+  if (!isPublished(item)) return ['publish', 'failed'].includes(step)
+  return false
+}
 
 const jobErrorMessageAvailable = (job = {}) => {
   return Boolean(job.errorReason || job.errorCode || job.errorType || job.errorDetail || job.message)
@@ -1316,8 +1445,10 @@ const currentStage = (item) => {
   }
 
   const latestJob = latestJobForVideo(item)
-  if (latestJob?.status === 'abnormal') return { label: '任务异常', className: 'is-failed' }
-  if (latestJob?.status === 'failed') return { label: '任务失败', className: 'is-failed' }
+  if (isFailedJobRelevantToCurrentStage(item, latestJob)) {
+    if (latestJob.status === 'abnormal') return { label: '任务异常', className: 'is-failed' }
+    if (latestJob.status === 'failed') return { label: '任务失败', className: 'is-failed' }
+  }
   if (!isDownloaded(item)) return { label: '待下载', className: 'is-pending' }
   if (!isTranslated(item) && !isTranslationSkipped(item)) return { label: '待处理', className: 'is-warning' }
   if (isTranslationSkipped(item)) return { label: '已跳过', className: 'is-warning' }
@@ -1329,7 +1460,7 @@ const rowWorkflowSteps = (item) => {
   const runningJob = activeJobForVideo(item)
   const runningStep = runningJob?.step || ''
   const latestJob = latestJobForVideo(item)
-  const failed = latestJob?.status === 'failed' || latestJob?.status === 'abnormal'
+  const failed = isFailedJobRelevantToCurrentStage(item, latestJob)
   const steps = [
     { key: 'lead', label: '线索', done: true },
     { key: 'download', label: '下载', done: isDownloaded(item), running: runningStep === 'download' },
@@ -1562,6 +1693,9 @@ const loadJobs = async ({ silent = false, recentOnly = false } = {}) => {
       if (previousStatus && ['queued', 'running'].includes(previousStatus) && !['queued', 'running'].includes(job.status)) {
         changedVideoIds.push(job.videoId)
       }
+      if (job.status === 'running' && ['subtitle', 'analysis', 'editing', 'publish'].includes(String(job.step || ''))) {
+        changedVideoIds.push(job.videoId)
+      }
     })
 
     if (shouldNotifyFailures) {
@@ -1679,8 +1813,54 @@ const confirmReplacingCurrentVersion = async (row) => {
   }
 }
 
+const validateWorkflowPublishAccounts = async () => {
+  const enabledPlatforms = workflowPublishPlatforms.filter(item => Boolean(workflowForm[item.enabledKey]))
+
+  if (enabledPlatforms.length === 0) {
+    await ElMessageBox.alert(
+      '一键处理会从当前线索状态继续执行下载、处理和发布流程。请先在任务默认配置中至少开启一个发布平台并填写账号。',
+      '请选择发布账号',
+      {
+        confirmButtonText: '去设置',
+        type: 'warning'
+      }
+    )
+    return false
+  }
+
+  for (const item of enabledPlatforms) {
+    const accountName = String(workflowForm[item.accountKey] || '').trim()
+    if (!accountName) {
+      await ElMessageBox.alert(
+        `已开启发${item.label}，但还没有选择正常的${item.label}账号。请先在下拉框选择账号后再一键处理。`,
+        `缺少${item.label}账号`,
+        {
+          confirmButtonText: '去设置',
+          type: 'warning'
+        }
+      )
+      return false
+    }
+    if (!isNormalAccountName(item.platform, accountName)) {
+      await ElMessageBox.alert(
+        `当前${item.label}账号不存在或状态异常，请在账号管理中重新连接后再选择。`,
+        `${item.label}账号不可用`,
+        {
+          confirmButtonText: '去设置',
+          type: 'warning'
+        }
+      )
+      return false
+    }
+  }
+
+  return true
+}
+
 const createJob = async (row) => {
-  if (!(await confirmReplacingCurrentVersion(row))) return
+  if (!(await validateWorkflowPublishAccounts())) return
+  const shouldProcessBeforePublish = !(isTranslated(row) || isTranslationSkipped(row))
+  if (shouldProcessBeforePublish && !(await confirmReplacingCurrentVersion(row))) return
   creatingJobId.value = row.id
   try {
     const res = await youtubeApi.createWorkflowJob({
@@ -1691,6 +1871,12 @@ const createJob = async (row) => {
       publishToBilibili: workflowForm.publishToBilibili,
       bilibiliAccount: workflowForm.bilibiliAccount.trim(),
       bilibiliTid: workflowForm.bilibiliTid,
+      publishToXiaohongshu: workflowForm.publishToXiaohongshu,
+      xiaohongshuAccount: workflowForm.xiaohongshuAccount.trim(),
+      publishToKuaishou: workflowForm.publishToKuaishou,
+      kuaishouAccount: workflowForm.kuaishouAccount.trim(),
+      publishToTencent: workflowForm.publishToTencent,
+      tencentAccount: workflowForm.tencentAccount.trim(),
       channel: row.channel,
       subscribers: row.subscribers,
       publishedAt: row.publishedAt,
@@ -2109,8 +2295,9 @@ const copyText = async (text) => {
 
 onMounted(async () => {
   loadingWorkflowSettings = true
-  await loadBilibiliCategories()
+  await Promise.all([loadBilibiliCategories(), loadAccounts()])
   await loadWorkflowSettings()
+  syncWorkflowAccountSelections()
   await nextTick()
   loadingWorkflowSettings = false
   workflowSettingsLoaded = true
@@ -2532,7 +2719,7 @@ $ink-strong: #172033;
 }
 
 .compact-input {
-  width: 140px;
+  width: 150px;
 }
 
 .tid-input {

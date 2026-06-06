@@ -244,6 +244,16 @@ def create_youtube_workflow():
         if not re.match(r"^https?://", url):
             return _json_response(400, "url 必须是 http 或 https 链接", None, 400)
 
+        if payload.get("publishToDouyin") and payload.get("account"):
+            _check_named_publish_account(3, payload.get("account"))
+        if payload.get("publishToBilibili") and payload.get("bilibiliAccount"):
+            _check_named_publish_account(5, payload.get("bilibiliAccount"))
+        if payload.get("publishToXiaohongshu") and payload.get("xiaohongshuAccount"):
+            _check_named_publish_account(1, payload.get("xiaohongshuAccount"))
+        if payload.get("publishToKuaishou") and payload.get("kuaishouAccount"):
+            _check_named_publish_account(4, payload.get("kuaishouAccount"))
+        if payload.get("publishToTencent") and payload.get("tencentAccount"):
+            _check_named_publish_account(2, payload.get("tencentAccount"))
         job = create_youtube_workflow_job(payload)
         thread = threading.Thread(target=run_youtube_workflow, args=(job["id"],), daemon=True)
         thread.start()
@@ -265,6 +275,11 @@ def create_youtube_download():
         job = create_youtube_workflow_job({
             **payload,
             "account": "",
+            "publishToDouyin": False,
+            "publishToBilibili": False,
+            "publishToXiaohongshu": False,
+            "publishToKuaishou": False,
+            "publishToTencent": False,
             "description": payload.get("description") or "",
             "tags": payload.get("tags") or [],
             "schedule": "",
@@ -291,6 +306,9 @@ def create_youtube_translate():
             "account": "",
             "publishToDouyin": False,
             "publishToBilibili": False,
+            "publishToXiaohongshu": False,
+            "publishToKuaishou": False,
+            "publishToTencent": False,
             "description": payload.get("description") or "",
             "tags": payload.get("tags") or [],
             "schedule": "",

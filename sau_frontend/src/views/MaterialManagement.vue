@@ -41,7 +41,7 @@
         >
           批量删除 {{ selectedMaterials.length || '' }}
         </el-button>
-        <el-button type="info" @click="fetchMaterials({ force: true, successMessage: true })" :loading="isRefreshing">
+        <el-button type="info" @click="refreshAllMaterials" :loading="isRefreshing">
           <el-icon :class="{ 'is-loading': isRefreshing }"><Refresh /></el-icon>
           <span>刷新</span>
         </el-button>
@@ -356,6 +356,7 @@ const appStore = useAppStore()
 
 const searchKeyword = ref('')
 const isRefreshing = ref(false)
+const isPageLoading = ref(false)
 const isUploading = ref(false)
 const uploadDialogVisible = ref(false)
 const previewDialogVisible = ref(false)
@@ -680,8 +681,12 @@ const syncMaterialStoreSnapshot = () => {
   ])
 }
 
-const fetchMaterials = async ({ force = false, successMessage = false } = {}) => {
-  isRefreshing.value = true
+const fetchMaterials = async ({ force = false, successMessage = false, manual = false } = {}) => {
+  if (manual) {
+    isRefreshing.value = true
+  } else {
+    isPageLoading.value = true
+  }
   try {
     await Promise.all([
       loadMaterialPage('youtube_processed', processedPagination, { force }),
@@ -694,12 +699,20 @@ const fetchMaterials = async ({ force = false, successMessage = false } = {}) =>
     console.error('获取素材列表出错:', error)
     ElMessage.error('获取素材列表失败')
   } finally {
-    isRefreshing.value = false
+    if (manual) {
+      isRefreshing.value = false
+    } else {
+      isPageLoading.value = false
+    }
   }
 }
 
+const refreshAllMaterials = () => {
+  fetchMaterials({ force: true, successMessage: true, manual: true })
+}
+
 const refreshMaterialSection = async (sourceType, pagination, { force = false } = {}) => {
-  isRefreshing.value = true
+  isPageLoading.value = true
   try {
     await loadMaterialPage(sourceType, pagination, { force })
     syncMaterialStoreSnapshot()
@@ -707,7 +720,7 @@ const refreshMaterialSection = async (sourceType, pagination, { force = false } 
     console.error('获取素材列表出错:', error)
     ElMessage.error('获取素材列表失败')
   } finally {
-    isRefreshing.value = false
+    isPageLoading.value = false
   }
 }
 

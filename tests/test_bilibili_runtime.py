@@ -17,7 +17,7 @@ class BiliupRuntimeTests(unittest.TestCase):
     @patch("uploader.bilibili_uploader.runtime.fetch_latest_release")
     def test_ensure_biliup_binary_downloads_when_missing(self, mock_release):
         mock_release.return_value = {
-            "tag_name": "v1.0.0",
+            "tag_name": "v1.1.0",
             "asset_url": "https://example.invalid/biliup.exe",
             "asset_name": "biliup.exe",
         }
@@ -27,16 +27,16 @@ class BiliupRuntimeTests(unittest.TestCase):
                     with patch("uploader.bilibili_uploader.runtime.write_local_biliup_version") as mock_write_version:
                         ensure_biliup_binary(force_check=True)
         mock_download.assert_called_once()
-        mock_write_version.assert_called_once_with("v1.0.0")
+        mock_write_version.assert_called_once_with("v1.1.0")
 
     @patch("uploader.bilibili_uploader.runtime.fetch_latest_release")
     def test_ensure_biliup_binary_reuses_local_when_up_to_date(self, mock_release):
         mock_release.return_value = {
-            "tag_name": "v1.0.0",
+            "tag_name": "v1.1.0",
             "asset_url": "https://example.invalid/biliup.exe",
             "asset_name": "biliup.exe",
         }
-        with patch("uploader.bilibili_uploader.runtime.read_local_biliup_version", return_value="v1.0.0"):
+        with patch("uploader.bilibili_uploader.runtime.read_local_biliup_version", return_value="v1.1.0"):
             with patch("pathlib.Path.exists", return_value=True):
                 with patch("uploader.bilibili_uploader.runtime.download_biliup_asset") as mock_download:
                     with patch("uploader.bilibili_uploader.runtime.write_local_biliup_version") as mock_write_version:

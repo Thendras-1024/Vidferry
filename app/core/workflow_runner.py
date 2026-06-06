@@ -262,52 +262,98 @@ def run_youtube_analysis_job(job_id, source_file_override=""):
 def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
-    command = [
-        SAU_COMMAND,
-        "douyin",
-        "upload-video",
-        "--account",
-        job["account"],
-        "--file",
-        str(processed_file),
-        "--title",
+    account_info = _check_named_publish_account(3, job["account"])
+    source_path = Path(processed_file)
+    video_filename = source_path.name
+    video_file = Path(BASE_DIR / "videoFile" / video_filename)
+    if not video_file.is_file():
+        shutil.copy2(source_path, video_file)
+    post_video_DouYin(
         job["title"] or "YouTube 视频",
-        "--desc",
-        job["description"] or "",
-        "--tags",
-        ",".join(job["tags"]),
-    ]
-    if job["schedule"]:
-        command.extend(["--schedule", job["schedule"]])
-    command.append("--headless")
-    _run_command(command, cwd=BASE_DIR)
-    return " ".join(command)
+        [video_filename],
+        job["tags"],
+        [account_info["filePath"]],
+        enableTimer=False,
+        thumbnail_path="",
+        productLink="",
+        productTitle="",
+    )
+    return f"douyin original publish {video_filename} --account {job['account']}"
 
 
 def _publish_to_bilibili(job, processed_file):
     if not job["publishToBilibili"] or not job["bilibiliAccount"]:
         return ""
-    command = [
-        SAU_COMMAND,
-        "bilibili",
-        "upload-video",
-        "--account",
-        job["bilibiliAccount"],
-        "--file",
-        str(processed_file),
-        "--title",
-        job["title"] or "YouTube 视频",
-        "--desc",
-        job["description"] or job["url"] or "",
-        "--tid",
-        str(normalize_bilibili_tid(job["bilibiliTid"])),
-        "--tags",
-        ",".join(job["tags"]),
-    ]
-    if job["schedule"]:
-        command.extend(["--schedule", job["schedule"]])
-    _run_command(command, cwd=BASE_DIR)
+    account_info = _check_named_publish_account(5, job["bilibiliAccount"])
+    task = _workflow_publish_task(job, processed_file, 5, account_info)
+    command = _workflow_publish_runner_command(task)
+    _run_workflow_publish_command(command, 5, account_info["filePath"])
     return " ".join(command)
+
+
+def _publish_to_xiaohongshu(job, processed_file):
+    if not job.get("publishToXiaohongshu") or not job.get("xiaohongshuAccount"):
+        return ""
+    account_info = _check_named_publish_account(1, job["xiaohongshuAccount"])
+    task = _workflow_publish_task(job, processed_file, 1, account_info)
+    command = _workflow_publish_runner_command(task)
+    _run_workflow_publish_command(command, 1, account_info["filePath"])
+    return " ".join(command)
+
+
+def _publish_to_kuaishou(job, processed_file):
+    if not job.get("publishToKuaishou") or not job.get("kuaishouAccount"):
+        return ""
+    account_info = _check_named_publish_account(4, job["kuaishouAccount"])
+    task = _workflow_publish_task(job, processed_file, 4, account_info)
+    command = _workflow_publish_runner_command(task)
+    _run_workflow_publish_command(command, 4, account_info["filePath"])
+    return " ".join(command)
+
+
+def _publish_to_tencent(job, processed_file):
+    if not job.get("publishToTencent") or not job.get("tencentAccount"):
+        return ""
+    if post_video_tencent is None:
+        raise RuntimeError("后端未加载视频号发布模块，请检查依赖。")
+
+    account_info = _check_named_publish_account(2, job["tencentAccount"])
+    source_path = Path(processed_file)
+    video_filename = source_path.name
+    video_file = Path(BASE_DIR / "videoFile" / video_filename)
+    if not video_file.is_file():
+        shutil.copy2(source_path, video_file)
+
+    post_video_tencent(
+        job["title"] or "YouTube 视频",
+        [video_filename],
+        job["tags"],
+        [account_info["filePath"]],
+        enableTimer=False,
+    )
+    return f"videohao upload {video_filename} --account {job['tencentAccount']}"
+
+
+def _publish_platform_account_file(platform_type, account_name):
+    account_info = _check_named_publish_account(platform_type, account_name)
+    return account_info["filePath"] if account_info else ""
+
+
+def _publish_workflow_platform(job, processed_file, material, platform_type, account_name, command_factory):
+    if not account_name:
+        return ""
+    command = command_factory(job, processed_file)
+    if not command:
+        return ""
+    _mark_published_materials(
+        [material.get("file_path") or material.get("storage_key")],
+        platform_type=platform_type,
+        title=job.get("title") or "YouTube 视频",
+        account_count=1,
+        account_file=_publish_platform_account_file(platform_type, account_name),
+        account_name=account_name,
+    )
+    return command
 
 
 def _publish_center_to_bilibili(title, description, file_list, tags, account_list, tid=None, enable_timer=False, videos_per_day=1, daily_times=None, start_days=0):
@@ -388,9 +434,86 @@ def _build_publish_datetimes(file_count, enable_timer=False, videos_per_day=1, d
 def _publish_platform_slug(platform_type):
     return {
         1: "xiaohongshu",
+        4: "kuaishou",
         3: "douyin",
         5: "bilibili",
     }.get(int(platform_type or 0), "")
+
+
+def _workflow_publish_task(job, processed_file, platform_type, account_info):
+    platform_type = int(platform_type or 0)
+    title = job.get("title") or "YouTube 视频"
+    description = job.get("description") or (job.get("url") if platform_type == 5 else "") or ""
+    file_path = Path(processed_file)
+    return {
+        "platformType": platform_type,
+        "platformName": platform_name(platform_type),
+        "accountFile": account_info["filePath"],
+        "accountPath": Path(BASE_DIR / "cookiesFile" / account_info["filePath"]),
+        "absoluteFiles": [file_path],
+        "fileList": [str(file_path)],
+        "title": title,
+        "description": description,
+        "tags": job.get("tags") or [],
+        "thumbnailPath": "",
+        "productLink": "",
+        "productTitle": "",
+        "bilibiliTid": normalize_bilibili_tid(job.get("bilibiliTid")),
+        "publishDatetimes": [_parse_publish_schedule(job.get("schedule"))],
+        "headless": False,
+        "debug": True,
+    }
+
+
+def _parse_publish_schedule(value):
+    value = str(value or "").strip()
+    if not value:
+        return 0
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return value
+
+
+def _workflow_publish_runner_command(task):
+    platform_slug = _publish_platform_slug(task["platformType"])
+    if not platform_slug:
+        raise RuntimeError(f"{task['platformName']} 暂未接入发布适配器")
+    command = [
+        sys.executable,
+        "-m",
+        "app.publish_runner",
+        "--platform",
+        platform_slug,
+        "--account-file",
+        str(task["accountPath"]),
+        "--file",
+        str(task["absoluteFiles"][0]),
+        "--title",
+        task["title"],
+        "--desc",
+        task["description"],
+        "--tags",
+        ",".join(task["tags"]),
+    ]
+    if task.get("headless"):
+        command.append("--headless")
+    if task.get("debug"):
+        command.append("--debug")
+    schedule = _format_publish_schedule(task["publishDatetimes"][0])
+    if schedule:
+        command.extend(["--schedule", schedule])
+    if task.get("thumbnailPath"):
+        command.extend(["--thumbnail", task["thumbnailPath"]])
+    if task.get("productLink"):
+        command.extend(["--product-link", task["productLink"]])
+    if task.get("productTitle"):
+        command.extend(["--product-title", task["productTitle"]])
+    if task["platformType"] == 5:
+        command.extend(["--tid", str(normalize_bilibili_tid(task.get("bilibiliTid")))])
+    return command
 
 
 def _is_cookie_invalid_error(message):
@@ -422,20 +545,51 @@ def _run_isolated_publish_command(command, timeout=3600):
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
+    print(f"启动平台发布子进程: {' '.join(map(str, command))}", flush=True)
     try:
-        return subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=str(BASE_DIR),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=env,
         )
+        output_lines = []
+        started_at = time.time()
+        while True:
+            line = process.stdout.readline() if process.stdout else ""
+            if line:
+                output_lines.append(line)
+                print(line.rstrip(), flush=True)
+            if process.poll() is not None:
+                if process.stdout:
+                    rest = process.stdout.read()
+                    if rest:
+                        output_lines.append(rest)
+                        print(rest.rstrip(), flush=True)
+                break
+            if time.time() - started_at > timeout:
+                process.kill()
+                output = "".join(output_lines).strip()
+                raise TimeoutError(output or f"平台发布超时: {' '.join(map(str, command))}")
+        output = "".join(output_lines)
+        return subprocess.CompletedProcess(command, process.returncode, output, "")
     except subprocess.TimeoutExpired as exc:
         output = "\n".join(part for part in [(exc.stdout or ""), (exc.stderr or "")] if part).strip()
         raise TimeoutError(output or f"平台发布超时: {' '.join(map(str, command))}") from exc
+
+
+def _run_workflow_publish_command(command, platform_type, account_file, timeout=3600):
+    result = _run_isolated_publish_command(command, timeout=timeout)
+    if result.returncode == 0:
+        return result
+    output = "\n".join(part for part in [(result.stderr or "").strip(), (result.stdout or "").strip()] if part)
+    if _is_cookie_invalid_error(output):
+        _mark_account_abnormal(platform_type, account_file, output)
+    raise RuntimeError(output or f"{platform_name(platform_type)} 发布失败")
 
 
 def _execute_publish_target(task):
@@ -469,41 +623,63 @@ def _execute_publish_target(task):
             raise RuntimeError(f"{task['platformName']} 暂未接入稳定并发发布适配器")
         account_lock = _get_publish_account_lock(platform_type, task["accountFile"])
         with account_lock:
-            for index, file_path in enumerate(task["absoluteFiles"]):
-                command = [
-                    sys.executable,
-                    "-m",
-                    "app.publish_runner",
-                    "--platform",
-                    platform_slug,
-                    "--account-file",
-                    str(task["accountPath"]),
-                    "--file",
-                    str(file_path),
-                    "--title",
+            if platform_type == 3:
+                file_names = []
+                for file_path in task["absoluteFiles"]:
+                    source_path = Path(file_path)
+                    video_filename = source_path.name
+                    video_file = Path(BASE_DIR / "videoFile" / video_filename)
+                    if not video_file.is_file():
+                        shutil.copy2(source_path, video_file)
+                    file_names.append(video_filename)
+                post_video_DouYin(
                     task["title"],
-                    "--desc",
-                    task["description"],
-                    "--tags",
-                    ",".join(task["tags"]),
-                ]
-                if task.get("headless"):
-                    command.append("--headless")
-                schedule = _format_publish_schedule(task["publishDatetimes"][index] if index < len(task["publishDatetimes"]) else 0)
-                if schedule:
-                    command.extend(["--schedule", schedule])
-                if task.get("thumbnailPath"):
-                    command.extend(["--thumbnail", task["thumbnailPath"]])
-                if task.get("productLink"):
-                    command.extend(["--product-link", task["productLink"]])
-                if task.get("productTitle"):
-                    command.extend(["--product-title", task["productTitle"]])
-                if platform_type == 5:
-                    command.extend(["--tid", str(normalize_bilibili_tid(task.get("bilibiliTid")))])
-                process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
-                if process_result.returncode != 0:
-                    output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
-                    raise RuntimeError(output or f"{task['platformName']} 发布失败")
+                    file_names,
+                    task["tags"],
+                    [task["accountFile"]],
+                    enableTimer=False,
+                    thumbnail_path=task.get("thumbnailPath") or "",
+                    productLink=task.get("productLink") or "",
+                    productTitle=task.get("productTitle") or "",
+                )
+            else:
+                for index, file_path in enumerate(task["absoluteFiles"]):
+                    command = [
+                        sys.executable,
+                        "-m",
+                        "app.publish_runner",
+                        "--platform",
+                        platform_slug,
+                        "--account-file",
+                        str(task["accountPath"]),
+                        "--file",
+                        str(file_path),
+                        "--title",
+                        task["title"],
+                        "--desc",
+                        task["description"],
+                        "--tags",
+                        ",".join(task["tags"]),
+                    ]
+                    if task.get("headless"):
+                        command.append("--headless")
+                    if task.get("debug"):
+                        command.append("--debug")
+                    schedule = _format_publish_schedule(task["publishDatetimes"][index] if index < len(task["publishDatetimes"]) else 0)
+                    if schedule:
+                        command.extend(["--schedule", schedule])
+                    if task.get("thumbnailPath"):
+                        command.extend(["--thumbnail", task["thumbnailPath"]])
+                    if task.get("productLink"):
+                        command.extend(["--product-link", task["productLink"]])
+                    if task.get("productTitle"):
+                        command.extend(["--product-title", task["productTitle"]])
+                    if platform_type == 5:
+                        command.extend(["--tid", str(normalize_bilibili_tid(task.get("bilibiliTid")))])
+                    process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
+                    if process_result.returncode != 0:
+                        output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
+                        raise RuntimeError(output or f"{task['platformName']} 发布失败")
 
         published_ids = _mark_published_materials(
             task["fileList"],
@@ -594,8 +770,91 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
             "publishDatetimes": publish_datetimes,
             "timeoutSeconds": int(data.get("publishTimeoutSeconds") or 3600),
             "headless": bool(data.get("headless", False)),
+            "debug": bool(data.get("debug", True)),
         })
     return tasks
+
+
+def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_event_id=None, skipped_subtitles=False, editing_result=None):
+    latest_job = get_youtube_workflow_job(job_id)
+    publish_commands = []
+    publish_event_id = start_workflow_event(latest_job, "publish", "开始发布", input_file_path=processed_file)
+    publish_specs = [
+        (3, latest_job.get("account") or "", _publish_to_douyin),
+        (5, latest_job.get("bilibiliAccount") or "", _publish_to_bilibili),
+        (1, latest_job.get("xiaohongshuAccount") or "", _publish_to_xiaohongshu),
+        (4, latest_job.get("kuaishouAccount") or "", _publish_to_kuaishou),
+        (2, latest_job.get("tencentAccount") or "", _publish_to_tencent),
+    ]
+    for platform_type, account_name, command_factory in publish_specs:
+        command = _publish_workflow_platform(latest_job, processed_file, material, platform_type, account_name, command_factory)
+        if command:
+            publish_commands.append(command)
+
+    final_message = "任务完成"
+    if not publish_commands:
+        final_message = "任务完成，已保存到素材库，未配置发布平台账号所以未发布"
+    process_version = _normalize_process_version(latest_job.get("processVersion"))
+    if process_version == PROCESS_VERSION_EDITING and editing_result and not editing_result.get("skipped"):
+        final_message = f"{final_message}；已拼接前三个高光片段到视频开头"
+    elif process_version == PROCESS_VERSION_EDITING and editing_result and editing_result.get("skipped"):
+        final_message = f"{final_message}；未找到可拼接的高光片段"
+    if skipped_subtitles:
+        final_message = f"{final_message}；未检测到可识别人声，已跳过字幕处理"
+
+    finish_workflow_event(publish_event_id, "success", final_message, output_file_path=processed_file)
+    if workflow_event_id:
+        finish_workflow_event(workflow_event_id, "success", final_message, output_file_path=processed_file)
+    update_youtube_workflow_job(
+        job_id,
+        status="success",
+        step="done",
+        message=final_message,
+        publish_command="\n".join(publish_commands),
+        progress=100,
+        speed="",
+        eta="",
+    )
+    if publish_commands:
+        update_youtube_video_artifacts(job["videoId"], publish_status=1)
+    return publish_commands
+
+
+def _processed_material_for_workflow(job):
+    record = _get_youtube_video_record(job.get("videoId")) or {}
+    processed_path = Path(record.get("processedFilePath") or "")
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        material = _find_latest_processed_material(cursor, job.get("videoId") or "", _normalize_process_version(job.get("processVersion")))
+        if not material:
+            material = _find_latest_youtube_material(cursor, job.get("videoId") or "", "youtube_processed")
+    if material:
+        material_path = _material_file_path(material)
+        if material_path and material_path.is_file():
+            return material_path, _row_to_material(material)
+    if processed_path.is_file():
+        return processed_path, _save_processed_video_to_material(processed_path, job)
+    raise RuntimeError("未找到处理后视频，请先完成处理。")
+
+
+def _video_has_processed_output(record):
+    if not record:
+        return False
+    translate_status = int(record.get("translateStatus") or 0)
+    if translate_status not in (1, 2):
+        return False
+    processed_path = Path(record.get("processedFilePath") or "")
+    if processed_path.is_file():
+        return True
+    with sqlite3.connect(_db_path()) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        material = _find_latest_youtube_material(cursor, record.get("id") or record.get("videoId") or "", "youtube_processed")
+    if not material:
+        return False
+    material_path = _material_file_path(material)
+    return bool(material_path and material_path.is_file())
 
 
 def _run_publish_tasks(tasks):
@@ -661,30 +920,68 @@ def run_youtube_workflow(job_id):
     analysis_event_id = None
     editing_event_id = None
     subtitle_event_id = None
-    publish_event_id = None
     try:
         initial_job = get_youtube_workflow_job(job_id) or {}
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
+        process_version = _normalize_process_version(initial_job.get("processVersion"))
+        video_record = _get_youtube_video_record(initial_job.get("videoId")) or {}
+        if _video_has_processed_output(video_record):
+            job = update_youtube_workflow_job(
+                job_id,
+                status="running",
+                step="publish",
+                message="已存在处理后视频，正在直接发布",
+                progress=92,
+                speed="",
+                eta="",
+            )
+            workflow_event_id = start_workflow_event(job, "workflow", "从待发布状态继续发布")
+            processed_file, material = _processed_material_for_workflow(job)
+            update_youtube_workflow_job(
+                job_id,
+                processed_file_path=str(processed_file),
+                step="publish",
+                message="已复用处理后视频，准备发布",
+                progress=96,
+                speed="",
+                eta="",
+            )
+            _publish_workflow_outputs(job_id, job, processed_file, material, workflow_event_id=workflow_event_id)
+            return
+
+        can_reuse_download = int(video_record.get("downloadStatus") or 0) == 1
         job = update_youtube_workflow_job(
             job_id,
             status="running",
-            step="download",
-            message="正在使用 yt-dlp 下载视频",
-            progress=0,
+            step="subtitle" if can_reuse_download else "download",
+            message="已存在下载视频，正在准备处理" if can_reuse_download else "正在使用 yt-dlp 下载视频",
+            progress=4 if can_reuse_download else 0,
             speed="",
             eta="",
         )
         workflow_event_id = start_workflow_event(job, "workflow", "完整工作流开始")
-        download_event_id = start_workflow_event(job, "download", "开始下载 YouTube 原视频")
-        source_file = _download_youtube_video(job)
-        finish_workflow_event(download_event_id, "success", "下载完成", output_file_path=source_file)
-        update_youtube_video_artifacts(
-            job["videoId"],
-            download_status=1,
-            downloaded_file_path=str(source_file),
-        )
+        if can_reuse_download:
+            source_file = _resolve_downloaded_source_file(job)
+            job = update_youtube_workflow_job(
+                job_id,
+                source_file_path=str(source_file),
+                step="subtitle",
+                message="已复用下载视频，正在准备处理",
+                progress=6,
+                speed="",
+                eta="",
+            )
+        else:
+            download_event_id = start_workflow_event(job, "download", "开始下载 YouTube 原视频")
+            source_file = _download_youtube_video(job)
+            finish_workflow_event(download_event_id, "success", "下载完成", output_file_path=source_file)
+            _register_downloaded_video_material(source_file, job)
+            update_youtube_video_artifacts(
+                job["videoId"],
+                download_status=1,
+                downloaded_file_path=str(source_file),
+            )
 
-        process_version = _normalize_process_version(job.get("processVersion"))
         analysis_result = None
         editing_result = None
         if process_version == PROCESS_VERSION_EDITING:
@@ -767,54 +1064,17 @@ def run_youtube_workflow(job_id):
             processed_file_path=str(processed_file),
         )
 
-        latest_job = get_youtube_workflow_job(job_id)
-        publish_commands = []
-        publish_event_id = start_workflow_event(latest_job, "publish", "开始发布", input_file_path=processed_file)
-        douyin_command = _publish_to_douyin(latest_job, processed_file)
-        if douyin_command:
-            publish_commands.append(douyin_command)
-            _mark_published_materials(
-                [material.get("file_path") or material.get("storage_key")],
-                platform_type=3,
-                title=latest_job.get("title") or "YouTube 视频",
-                account_count=1,
-                account_file=latest_job.get("account") or "",
-            )
-        bilibili_command = _publish_to_bilibili(latest_job, processed_file)
-        if bilibili_command:
-            publish_commands.append(bilibili_command)
-            _mark_published_materials(
-                [material.get("file_path") or material.get("storage_key")],
-                platform_type=5,
-                title=latest_job.get("title") or "YouTube 视频",
-                account_count=1,
-                account_file=latest_job.get("bilibiliAccount") or "",
-            )
-        final_message = "任务完成"
-        if not publish_commands:
-            final_message = "任务完成，已保存到素材库，未配置抖音账号所以未发布"
-        if process_version == PROCESS_VERSION_EDITING and editing_result and not editing_result.get("skipped"):
-            final_message = f"{final_message}；已拼接前三个高光片段到视频开头"
-        elif process_version == PROCESS_VERSION_EDITING and editing_result and editing_result.get("skipped"):
-            final_message = f"{final_message}；未找到可拼接的高光片段"
-        if skipped_subtitles:
-            final_message = f"{final_message}；未检测到可识别人声，已跳过字幕处理"
-        finish_workflow_event(publish_event_id, "success", final_message, output_file_path=processed_file)
-        finish_workflow_event(workflow_event_id, "success", final_message, output_file_path=processed_file)
-        update_youtube_workflow_job(
+        _publish_workflow_outputs(
             job_id,
-            status="success",
-            step="done",
-            message=final_message,
-            publish_command="\n".join(publish_commands),
-            progress=100,
-            speed="",
-            eta="",
+            job,
+            processed_file,
+            material,
+            workflow_event_id=workflow_event_id,
+            skipped_subtitles=skipped_subtitles,
+            editing_result=editing_result,
         )
-        if publish_commands:
-            update_youtube_video_artifacts(job["videoId"], publish_status=1)
     except Exception as exc:
-        finish_workflow_event(publish_event_id or editing_event_id or subtitle_event_id or analysis_event_id or download_event_id or workflow_event_id, "failed", str(exc))
+        finish_workflow_event(editing_event_id or subtitle_event_id or analysis_event_id or download_event_id or workflow_event_id, "failed", str(exc))
         if workflow_event_id:
             finish_workflow_event(workflow_event_id, "failed", str(exc))
         update_youtube_workflow_job(

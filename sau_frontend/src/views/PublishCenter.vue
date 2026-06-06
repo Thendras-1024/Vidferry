@@ -285,8 +285,6 @@
               <span>{{ video.processedFileSizeLabel || '素材大小未知' }}</span>
             </div>
             <div class="published-actions">
-              <el-link v-if="video.url" :href="video.url" target="_blank" type="primary">打开原链接</el-link>
-              <el-link v-if="video.processedPreviewUrl" :href="video.processedPreviewUrl" target="_blank" type="success">预览处理后视频</el-link>
               <span>{{ video.publishedLabel }}</span>
             </div>
           </div>
@@ -1240,7 +1238,6 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error(`该视频已发布到${duplicatedTarget.platformName}`)
   }
-
   tab.publishTargetStatuses = targets.map((target, index) => ({
     platformType: target.platformType,
     platformName: target.platformName,
