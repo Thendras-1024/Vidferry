@@ -8,10 +8,23 @@ DEBUG_MODE = True  # default debug behavior
 
 # YouTube -> subtitle -> Douyin workflow settings.
 # Videos are downloaded by yt-dlp into YOUTUBE_DOWNLOAD_DIR.
-SAU_COMMAND = str(BASE_DIR / ".venv" / "Scripts" / "sau.exe")
-FFMPEG_COMMAND = "ffmpeg"
+SAU_COMMAND = "sau"
+FFMPEG_COMMAND = "ffmpeg"  # optional, e.g. E:/python/ffmpeg.exe or absolute path
 YOUTUBE_DOWNLOAD_DIR = BASE_DIR.parent / "video"
 YOUTUBE_PROCESSED_DIR = BASE_DIR / "videos" / "processed"
+
+# YouTube cookies file for yt-dlp authentication.
+# Export cookies from browser using a browser extension (e.g. "Get cookies.txt LOCALLY")
+# or use yt-dlp's --cookies-from-browser to generate this file.
+YOUTUBE_COOKIES_FILE = BASE_DIR / "www.youtube.com_cookies.txt"
+
+# yt-dlp JavaScript runtime for YouTube challenge solving (n-sig).
+# yt-dlp needs a JS runtime to solve YouTube's bot challenge.
+# Auto-detected if empty: tries deno first, then node.
+YTDLP_JS_RUNTIME = "node"
+YTDLP_JS_RUNTIME_PATH = ""  # optional, e.g. C:/Program Files/nodejs/node.exe
+# Allow yt-dlp to download external challenge solver components.
+YTDLP_REMOTE_COMPONENTS = ["ejs:github"]
 
 # Optional subtitle pipeline hook. If empty, the workflow copies the downloaded
 # video into the processed folder as a placeholder when ffmpeg is available.

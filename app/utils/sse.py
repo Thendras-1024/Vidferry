@@ -1,9 +1,6 @@
 def run_async_function(type,id,status_queue,account_id=None):
-    if type == '5':
-        bilibili_cookie_gen(id, status_queue, account_id)
-        return
-
-    if not all([xiaohongshu_cookie_gen, get_tencent_cookie, douyin_cookie_gen, get_ks_cookie]):
+    if not all([xiaohongshu_cookie_gen, get_tencent_cookie, douyin_cookie_gen, get_ks_cookie,
+                bilibili_cookie_gen]):
         status_queue.put("500")
         return
 
@@ -19,6 +16,8 @@ def run_async_function(type,id,status_queue,account_id=None):
                 loop.run_until_complete(douyin_cookie_gen(id,status_queue, account_id))
             case '4':
                 loop.run_until_complete(get_ks_cookie(id,status_queue, account_id))
+            case '5':
+                loop.run_until_complete(bilibili_cookie_gen(id, status_queue, account_id))
             case _:
                 status_queue.put("500")
     except Exception as e:

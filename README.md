@@ -24,7 +24,10 @@ Vidferry 是一个本地优先的视频采集、处理、素材管理和多平�
 - 视频处理：FFmpeg
 - 浏览器自动化：patchright / Chrome
 - B站发布：biliup
+- 小红书：xhs
+- 图像处理：opencv-python (cv2)
 - 内容分析：OpenAI-compatible Chat Completions API
+- 依赖框架：social-auto-upload
 
 ## 系统要求
 
@@ -68,43 +71,27 @@ git clone https://github.com/dreammis/social-auto-upload.git
 cd social-auto-upload
 ```
 
-### 2. 创建后端虚拟环境
+### 2. 创建后端 Conda 环境
 
-推荐使用 uv：
-
-```powershell
-python -m pip install uv
-uv sync --extra web
-```
-
-如果你希望尽量复现当前开发环境，也可以使用仓库中的 `requirements.txt`。这个文件来自当前可运行环境的 `pip freeze > requirements.txt`，版本锁定更完整，但也可能包含历史依赖或 Windows 平台相关依赖：
+本项目推荐使用 Conda 管理后端环境。
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install -U pip
+conda create -n Vidferry python=3.11 -y
+conda activate Vidferry
 pip install -r requirements.txt
 pip install -e .
 ```
 
-说明：
-
-- `pip install -r requirements.txt` 用于安装当前环境快照中的依赖。
-- `pip install -e .` 用于把项目本身以开发模式安装，并注册 `sau` 命令。
-- 如果你只想按项目声明的最小依赖安装，优先使用 `uv sync --extra web` 或 `pip install -e ".[web]"`。
-
-如果不用 uv：
+额外安装以下必要依赖（部分未列入 requirements.txt）：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install -U pip
-pip install -e .[web]
+pip install xhs opencv-python social-auto-upload biliup
 ```
 
-如果你的 shell 不支持 `.[web]`，可以使用：
+如果你是初次部署，也可以使用 pip 安装最小依赖：
 
 ```powershell
+conda activate Vidferry
 pip install -e ".[web]"
 ```
 
@@ -113,8 +100,9 @@ pip install -e ".[web]"
 项目使用 `patchright` 驱动浏览器。国内网络可使用镜像：
 
 ```powershell
+conda activate Vidferry
 $env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
-.\.venv\Scripts\patchright.exe install chromium
+patchright install chromium
 ```
 
 如果你已经安装了本机 Chrome，也建议在 `conf.py` 中配置 `LOCAL_CHROME_PATH`，扫码登录和发布流程通常更稳定。
@@ -177,7 +165,8 @@ cd ..
 在项目根目录打开第一个终端：
 
 ```powershell
-.\.venv\Scripts\python.exe run.py
+conda activate Vidferry
+python run.py
 ```
 
 默认后端地址：
@@ -226,8 +215,8 @@ http://127.0.0.1:5173
 
 平台说明：
 
-- 抖音、小红书、快手、视频号：通常会打开浏览器或展示二维码，按页面提示扫码登录。
-- B站：使用 biliup 能力，首次运行可能自动准备运行时文件。
+- 抖音、小红书、B站：会弹出可见浏览器窗口，用户在窗口中自由选择登录方式（扫码/手机号等），登录成功后窗口自动关闭。
+- 快手、视频号：展示二维码，按页面提示扫码登录。
 
 Cookie 文件会保存到：
 
@@ -246,7 +235,9 @@ cookiesFile/
 
 ### 4. 下载视频
 
-在线索列表中点击下载。下载完成后，原视频会进入“素材管理”的下载原视频区域。
+> **首次下载前，务必完成 YouTube cookies 配置**（参见 “关键配置说明 > YouTube 下载” 节），否则会提示 `Sign in to confirm you're not a bot`。
+
+在线索列表中点击下载。下载完成后，原视频会进入”素材管理”的下载原视频区域。
 
 如果 YouTube 提示需要 JS runtime，可安装 Node.js 或 Deno，并在 `.env` 中配置 `YTDLP_JS_RUNTIME`。
 
@@ -349,6 +340,13 @@ LLM_MAX_TRANSCRIPT_CHARS=28000
 
 ### YouTube 下载
 
+> **重要：** YouTube 要求在登录状态下才能下载视频。请按以下步骤准备：
+
+1. 在 **Chrome 浏览器**中登录你的 YouTube/Google 账号。
+2. 安装 Chrome 扩展 **"Get cookies.txt LOCALLY"**。
+3. 打开 `www.youtube.com`，点击扩展图标，导出 cookies 为 `www.youtube.com_cookies.txt`。
+4. 将 `www.youtube.com_cookies.txt` 放在项目根目录下。
+
 yt-dlp 会随 Python 依赖安装。某些 YouTube 页面可能需要 JS runtime：
 
 ```env
@@ -368,27 +366,28 @@ YTDLP_JS_RUNTIME_PATH=C:/Users/you/.deno/bin/deno.exe
 安装后可以使用 `sau` 命令：
 
 ```powershell
-.\.venv\Scripts\sau.exe --help
-.\.venv\Scripts\sau.exe douyin --help
-.\.venv\Scripts\sau.exe xiaohongshu --help
-.\.venv\Scripts\sau.exe kuaishou --help
-.\.venv\Scripts\sau.exe bilibili --help
+conda activate Vidferry
+sau --help
+sau douyin --help
+sau xiaohongshu --help
+sau kuaishou --help
+sau bilibili --help
 ```
 
 示例：
 
 ```powershell
-.\.venv\Scripts\sau.exe douyin login --account creator
-.\.venv\Scripts\sau.exe douyin check --account creator
-.\.venv\Scripts\sau.exe douyin upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介"
+sau douyin login --account creator
+sau douyin check --account creator
+sau douyin upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介"
 ```
 
 B站示例：
 
 ```powershell
-.\.venv\Scripts\sau.exe bilibili login --account creator
-.\.venv\Scripts\sau.exe bilibili check --account creator
-.\.venv\Scripts\sau.exe bilibili upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tid 21
+sau bilibili login --account creator
+sau bilibili check --account creator
+sau bilibili upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tid 21
 ```
 
 更多 CLI 说明见 [docs/CLI.md](docs/CLI.md)。
@@ -400,12 +399,7 @@ B站示例：
 说明 Web 依赖没有安装完整。使用：
 
 ```powershell
-uv sync --extra web
-```
-
-或：
-
-```powershell
+conda activate Vidferry
 pip install -e ".[web]"
 ```
 
@@ -434,6 +428,8 @@ ffmpeg -version
 常见原因：
 
 - 网络无法访问 YouTube。
+- 未正确配置 YouTube cookies（参见上方 "YouTube 下载" 节的 cookies 导出步骤）。
+- cookies 文件过期，需在 Chrome 中重新导出。
 - yt-dlp 版本过旧。
 - YouTube 页面需要 JS runtime。
 - 视频本身不可下载或受地区、年龄、版权限制。
@@ -441,7 +437,8 @@ ffmpeg -version
 可尝试：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -U yt-dlp
+conda activate Vidferry
+pip install -U yt-dlp
 ```
 
 并配置 Node.js 或 Deno。
@@ -474,6 +471,7 @@ WHISPER_COMPUTE_TYPE=int8
 ```text
 .env
 conf.py
+www.youtube.com_cookies.txt
 cookiesFile/
 db/*.db
 qrcode.png
@@ -495,7 +493,8 @@ sau_frontend/node_modules/
 后端语法检查：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile sau_backend.py
+conda activate Vidferry
+python -m py_compile sau_backend.py
 ```
 
 前端构建：
@@ -507,7 +506,7 @@ npm run build
 
 启动顺序建议：
 
-1. 启动后端：`.\.venv\Scripts\python.exe run.py`
+1. 启动后端：`conda activate Vidferry && python run.py`
 2. 启动前端：`cd sau_frontend && npm run dev`
 3. 修改后端配置或 Python 代码后，通常需要重启后端。
 4. 修改前端后，Vite 通常会热更新。

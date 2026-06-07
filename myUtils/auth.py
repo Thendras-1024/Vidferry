@@ -147,6 +147,34 @@ async def cookie_auth_xhs(account_file):
             return True
 
 
+async def cookie_auth_bilibili(account_file):
+    """验证 B站 cookie 是否有效，通过检查是否能访问创作中心。"""
+    if not os.path.exists(account_file):
+        return False
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        try:
+            context = await browser.new_context(storage_state=account_file)
+            page = await context.new_page()
+            await page.goto("https://member.bilibili.com/", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            # 如果被重定向到登录页，说明 cookie 失效
+            if "passport.bilibili.com" in page.url:
+                return False
+
+            # 检查是否有已登录的用户元素
+            try:
+                await page.wait_for_selector("a[href*='space.bilibili.com']", timeout=5000)
+                return True
+            except Exception:
+                return "login" not in page.url.lower()
+        except Exception:
+            return False
+        finally:
+            await browser.close()
+
+
 async def check_cookie(type, file_path):
     match type:
         # 小红书
@@ -161,6 +189,9 @@ async def check_cookie(type, file_path):
         # 快手
         case 4:
             return await cookie_auth_ks(Path(BASE_DIR / "cookiesFile" / file_path))
+        # B站
+        case 5:
+            return await cookie_auth_bilibili(Path(BASE_DIR / "cookiesFile" / file_path))
         case _:
             return False
 

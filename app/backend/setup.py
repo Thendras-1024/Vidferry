@@ -60,6 +60,7 @@ from app.config import (
     WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,
     WORKFLOW_ERROR_LOCK_ACTIVE_JOB,
     WORKFLOW_ERROR_SHUTDOWN,
+    YOUTUBE_COOKIES_FILE,
     YOUTUBE_DEFAULT_QUERY,
     YOUTUBE_DOWNLOAD_DIR,
     YOUTUBE_FALLBACK_QUERIES,
@@ -72,7 +73,7 @@ from app.config import (
 
 try:
     from myUtils.auth import check_cookie
-    from myUtils.login import get_tencent_cookie, douyin_cookie_gen, get_ks_cookie, xiaohongshu_cookie_gen
+    from myUtils.login import get_tencent_cookie, douyin_cookie_gen, get_ks_cookie, xiaohongshu_cookie_gen, bilibili_cookie_gen
     from myUtils.postVideo import post_video_tencent, post_video_DouYin, post_video_ks, post_video_xhs
     from uploader.bilibili_uploader.runtime import ensure_biliup_binary
 except ImportError as optional_import_error:

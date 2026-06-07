@@ -137,11 +137,19 @@
         </el-form-item>
 
         <div v-if="sseConnecting" class="qrcode-container">
-          <div v-if="qrCodeData && !loginStatus" class="qrcode-wrapper">
+          <!-- 浏览器弹窗模式：抖音 / 小红书 / B站 -->
+          <div v-if="loginPhase === 'browser' && !loginStatus" class="browser-login-wrapper">
+            <el-icon class="browser-icon"><Monitor /></el-icon>
+            <p class="browser-tip">浏览器窗口已打开</p>
+            <p class="browser-sub">请在弹出的窗口中完成登录，登录成功后窗口将自动关闭</p>
+            <el-button size="small" type="primary" @click="submitAccountForm">未看到弹窗？点此重试</el-button>
+          </div>
+          <!-- 二维码模式：快手 / 视频号（保留） -->
+          <div v-else-if="loginPhase === 'qrcode' && qrCodeData && !loginStatus" class="qrcode-wrapper">
             <p class="qrcode-tip">请使用对应平台 APP 扫描二维码登录</p>
             <img :src="qrCodeData" alt="登录二维码" class="qrcode-image" />
           </div>
-          <div v-else-if="!qrCodeData && !loginStatus" class="loading-wrapper">
+          <div v-else-if="loginPhase !== 'browser' && !qrCodeData && !loginStatus" class="loading-wrapper">
             <el-icon class="is-loading"><Refresh /></el-icon>
             <span>请求中...</span>
           </div>
@@ -168,7 +176,7 @@
 </template>
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
-import { Refresh, CircleCheckFilled, CircleCloseFilled, Download, Upload, Loading } from '@element-plus/icons-vue'
+import { Refresh, CircleCheckFilled, CircleCloseFilled, Download, Upload, Loading, Monitor } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi } from '@/api/account'
 import { useAccountStore } from '@/stores/account'
@@ -406,6 +414,7 @@ const sseConnecting = ref(false)
 const qrCodeData = ref('')
 const loginStatus = ref('')
 const loginErrorMessage = ref('')
+const loginPhase = ref('init') // 'init' | 'browser' | 'qrcode'
 
 // 添加账号
 const handleAddAccount = () => {
@@ -420,6 +429,7 @@ const handleAddAccount = () => {
   sseConnecting.value = false
   qrCodeData.value = ''
   loginStatus.value = ''
+  loginPhase.value = 'init'
   dialogVisible.value = true
 }
 
@@ -550,6 +560,7 @@ const handleManualReconnect = (row) => {
   sseConnecting.value = false
   qrCodeData.value = ''
   loginStatus.value = ''
+  loginPhase.value = 'init'
 
   // 显示对话框
   dialogVisible.value = true
@@ -582,6 +593,7 @@ const connectSSE = (platform, name, accountId = null) => {
   qrCodeData.value = ''
   loginStatus.value = ''
   loginErrorMessage.value = ''
+  loginPhase.value = 'init'
 
   // 获取平台类型编号
   const platformTypeMap = {
@@ -611,12 +623,17 @@ const connectSSE = (platform, name, accountId = null) => {
   eventSource.onmessage = (event) => {
     const data = event.data
 
+    if (data === 'BROWSER_OPENED') {
+      loginPhase.value = 'browser'
+      return
+    }
+
     if (data.startsWith('ERROR::')) {
       loginErrorMessage.value = data.slice('ERROR::'.length) || '登录失败'
       return
     }
 
-    // 如果还没有二维码数据，且收到图片数据，显示二维码
+    // 如果还没有二维码数据，且收到图片数据，显示二维码（保留兼容旧平台）
     if (!qrCodeData.value && (data.startsWith('data:image') || data.length > 100)) {
       try {
         if (data.startsWith('data:image')) {
@@ -664,7 +681,7 @@ const connectSSE = (platform, name, accountId = null) => {
       } else {
         // 登录失败，关闭连接
         closeSSEConnection()
-        ElMessage.error(loginErrorMessage.value || '二维码获取或登录失败，请检查平台页面是否可访问后重试')
+        ElMessage.error(loginErrorMessage.value || '登录失败，请检查平台页面是否可访问后重试')
 
         // 2秒后重置状态，允许重试
         setTimeout(() => {
@@ -672,6 +689,7 @@ const connectSSE = (platform, name, accountId = null) => {
           qrCodeData.value = ''
           loginStatus.value = ''
           loginErrorMessage.value = ''
+          loginPhase.value = 'init'
         }, 2000)
       }
     }
@@ -931,6 +949,34 @@ $ink-strong: #172033;
   align-items: center;
   justify-content: center;
   min-height: 250px;
+}
+
+.browser-login-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 20px;
+}
+
+.browser-icon {
+  font-size: 56px;
+  color: #2563eb;
+}
+
+.browser-tip {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #172033;
+}
+
+.browser-sub {
+  margin: 0;
+  font-size: 13px;
+  color: #5b667a;
 }
 
 .qrcode-wrapper,

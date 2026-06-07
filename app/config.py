@@ -34,24 +34,33 @@ try:
         FFMPEG_COMMAND,
         SAU_COMMAND,
         SUBTITLE_COMMAND_TEMPLATE,
+        YOUTUBE_COOKIES_FILE,
         YOUTUBE_DOWNLOAD_DIR,
         YOUTUBE_PROCESSED_DIR,
+        YTDLP_JS_RUNTIME,
+        YTDLP_JS_RUNTIME_PATH,
+        YTDLP_REMOTE_COMPONENTS,
     )
 except ImportError:
     FFMPEG_COMMAND = "ffmpeg"
-    SAU_COMMAND = str(Path(BASE_DIR / ".venv" / "Scripts" / "sau.exe"))
+    SAU_COMMAND = "sau"
     SUBTITLE_COMMAND_TEMPLATE = ""
+    YOUTUBE_COOKIES_FILE = Path(BASE_DIR / "www.youtube.com_cookies.txt")
     YOUTUBE_DOWNLOAD_DIR = Path(BASE_DIR / "videos" / "youtube")
     YOUTUBE_PROCESSED_DIR = Path(BASE_DIR / "videos" / "processed")
+    YTDLP_JS_RUNTIME = ""
+    YTDLP_JS_RUNTIME_PATH = ""
+    YTDLP_REMOTE_COMPONENTS = []
 
+YOUTUBE_COOKIES_FILE = Path(os.environ.get("YOUTUBE_COOKIES_FILE", str(YOUTUBE_COOKIES_FILE)))
 YOUTUBE_DOWNLOAD_DIR = Path(os.environ.get("YOUTUBE_DOWNLOAD_DIR", str(YOUTUBE_DOWNLOAD_DIR)))
 YOUTUBE_PROCESSED_DIR = Path(os.environ.get("YOUTUBE_PROCESSED_DIR", str(YOUTUBE_PROCESSED_DIR)))
 YOUTUBE_TRANSCRIPT_DIR = Path(os.environ.get("YOUTUBE_TRANSCRIPT_DIR", str(BASE_DIR / "videos" / "transcripts")))
-YTDLP_JS_RUNTIME = os.environ.get("YTDLP_JS_RUNTIME", "").strip()
-YTDLP_JS_RUNTIME_PATH = os.environ.get("YTDLP_JS_RUNTIME_PATH", "").strip()
+YTDLP_JS_RUNTIME = os.environ.get("YTDLP_JS_RUNTIME", YTDLP_JS_RUNTIME).strip()
+YTDLP_JS_RUNTIME_PATH = os.environ.get("YTDLP_JS_RUNTIME_PATH", YTDLP_JS_RUNTIME_PATH).strip()
 YTDLP_REMOTE_COMPONENTS = [
     item.strip()
-    for item in os.environ.get("YTDLP_REMOTE_COMPONENTS", "").split(",")
+    for item in os.environ.get("YTDLP_REMOTE_COMPONENTS", ",".join(YTDLP_REMOTE_COMPONENTS)).split(",")
     if item.strip()
 ]
 

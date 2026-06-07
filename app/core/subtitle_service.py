@@ -601,8 +601,33 @@ def _download_youtube_video(job):
         "ffmpeg_location": ffmpeg_command,
         "progress_hooks": [_make_download_progress_hook(job["id"])],
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.extract_info(job["url"], download=True)
+
+    # 优先从浏览器读取最新 cookies（YouTube 会频繁轮换 cookie）
+    # 关闭 Chrome 后 yt-dlp 可直接读取浏览器 cookie 数据库
+    cookies_from_browser_failed = False
+    try:
+        ydl_opts["cookiesfrombrowser"] = ("chrome",)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.extract_info(job["url"], download=True)
+    except Exception:
+        cookies_from_browser_failed = True
+        ydl_opts.pop("cookiesfrombrowser", None)
+        # 浏览器读取失败，回退到 cookies 文件
+        cookies_path = Path(YOUTUBE_COOKIES_FILE)
+        if cookies_path.is_file():
+            tmp_cookies = download_dir / f".yt_dlp_cookies_{video_key}.txt"
+            shutil.copy2(cookies_path, tmp_cookies)
+            ydl_opts["cookiefile"] = str(tmp_cookies)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.extract_info(job["url"], download=True)
+            finally:
+                if tmp_cookies.is_file():
+                    tmp_cookies.unlink()
+        else:
+            print(f"⚠ 浏览器 cookie 读取失败且 cookies 文件不存在: {cookies_path}，下载可能被 YouTube 拦截", flush=True)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(job["url"], download=True)
 
     preferred = download_dir / f"{video_key}.mp4"
     if preferred.exists():
