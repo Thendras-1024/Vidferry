@@ -6,76 +6,62 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 
 ## 界面预览
 
-<div style="width:600px; max-width:100%; overflow:hidden; border-radius:8px; border:1px solid #dce6f2;">
-  <div style="display:flex; animation:vidferry-slide 36s infinite;">
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/Home.png" alt="首页工作台" title="首页工作台" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">首页工作台</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/video_Link.png" alt="视频链接导入与查询" title="视频链接导入与查询" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">视频链接导入与查询</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/video_Material_Management1.png" alt="视频素材管理列表" title="视频素材管理列表" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">视频素材管理列表</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/video_Material_Management2.png" alt="视频素材详情与预览" title="视频素材详情与预览" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">视频素材详情与预览</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/copywriting_Generation1.png" alt="发布文案生成" title="发布文案生成" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">发布文案生成</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/copywriting_Generation2.png" alt="发布文案编辑" title="发布文案编辑" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">发布文案编辑</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/release_Center.png" alt="发布中心" title="发布中心" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">发布中心</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/account_Management.png" alt="账号管理" title="账号管理" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">账号管理</figcaption>
-    </figure>
-    <figure style="width:600px; margin:0; flex-shrink:0;">
-      <img src="img/statistics_Page.png" alt="处理统计" title="处理统计" style="width:600px; max-width:100%; display:block;">
-      <figcaption align="center">处理统计</figcaption>
-    </figure>
-  </div>
-</div>
-
-<style>
-@keyframes vidferry-slide {
-  0%, 8% { transform: translateX(0); }
-  11%, 19% { transform: translateX(-600px); }
-  22%, 30% { transform: translateX(-1200px); }
-  33%, 41% { transform: translateX(-1800px); }
-  44%, 52% { transform: translateX(-2400px); }
-  55%, 63% { transform: translateX(-3000px); }
-  66%, 74% { transform: translateX(-3600px); }
-  77%, 85% { transform: translateX(-4200px); }
-  88%, 96% { transform: translateX(-4800px); }
-  100% { transform: translateX(0); }
-}
-</style>
+<p align="center">
+  <img src="img/Home.png" alt="首页工作台" title="首页工作台" width="720">
+  <br>
+  <strong>首页工作台</strong>
+</p>
 
 <details>
-  <summary>查看全部截图名称</summary>
+  <summary>查看全部界面截图</summary>
 
-| 图片 | 说明 |
-| --- | --- |
-| `img/Home.png` | 首页工作台 |
-| `img/video_Link.png` | 视频链接导入与查询 |
-| `img/video_Material_Management1.png` | 视频素材管理列表 |
-| `img/video_Material_Management2.png` | 视频素材详情与预览 |
-| `img/copywriting_Generation1.png` | 发布文案生成 |
-| `img/copywriting_Generation2.png` | 发布文案编辑 |
-| `img/release_Center.png` | 发布中心 |
-| `img/account_Management.png` | 账号管理 |
-| `img/statistics_Page.png` | 处理统计 |
+  <p align="center">
+    <img src="img/video_Link.png" alt="视频链接导入与查询" title="视频链接导入与查询" width="720">
+    <br>
+    <strong>视频链接导入与查询</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/video_Material_Management1.png" alt="视频素材管理列表" title="视频素材管理列表" width="720">
+    <br>
+    <strong>视频素材管理列表</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/video_Material_Management2.png" alt="视频素材详情与预览" title="视频素材详情与预览" width="720">
+    <br>
+    <strong>视频素材详情与预览</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/copywriting_Generation1.png" alt="发布文案生成" title="发布文案生成" width="720">
+    <br>
+    <strong>发布文案生成</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/copywriting_Generation2.png" alt="发布文案编辑" title="发布文案编辑" width="720">
+    <br>
+    <strong>发布文案编辑</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/release_Center.png" alt="发布中心" title="发布中心" width="720">
+    <br>
+    <strong>发布中心</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/account_Management.png" alt="账号管理" title="账号管理" width="720">
+    <br>
+    <strong>账号管理</strong>
+  </p>
+
+  <p align="center">
+    <img src="img/statistics_Page.png" alt="处理统计" title="处理统计" width="720">
+    <br>
+    <strong>处理统计</strong>
+  </p>
 
 </details>
 
