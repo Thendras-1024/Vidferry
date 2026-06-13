@@ -8,9 +8,9 @@
       </div>
       <div class="hero-actions">
         <el-button type="primary" @click="handleAddAccount">添加账号</el-button>
-        <el-button type="warning" plain @click="handleCheckAllCookies" :loading="checkingCookies" :disabled="checkCooldownRemaining > 0">
-          <el-icon :class="{ 'is-loading': checkingCookies }"><Refresh /></el-icon>
-          <span>{{ checkCooldownRemaining > 0 ? `${checkCooldownRemaining}s 后可检查` : '检查 Cookie' }}</span>
+        <el-button type="warning" plain @click="handleCheckAllCookies" :disabled="checkingCookies || checkCooldownRemaining > 0">
+          <el-icon><Refresh /></el-icon>
+          <span>{{ checkingCookies ? '检查中' : (checkCooldownRemaining > 0 ? `${checkCooldownRemaining}s 后可检查` : '检查 Cookie') }}</span>
         </el-button>
         <el-button @click="fetchAccounts" :loading="appStore.isAccountRefreshing">
           <el-icon :class="{ 'is-loading': appStore.isAccountRefreshing }"><Refresh /></el-icon>

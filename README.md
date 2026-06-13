@@ -1,8 +1,83 @@
 # Vidferry
 
-Vidferry 是一个本地优先的视频采集、处理、素材管理和多平台发布工作流。它把 YouTube 视频线索查询、视频下载、ASR 转写、字幕翻译、FFmpeg 字幕烧录、LLM 发布文案生成、素材管理和发布准备串成一条完整流程。
+Vidferry 是一个本地优先的视频采集、处理、视频素材管理和多平台发布工作流。它把 YouTube 视频线索查询、视频下载、ASR 转写、字幕翻译、FFmpeg 字幕烧录、LLM 发布文案生成、视频素材管理和发布准备串成一条完整流程。
 
 当前版本仍处于本地开发和个人工作流验证阶段，不建议直接作为生产 SaaS 使用。平台登录、发布和 YouTube 下载能力都依赖本机环境以及第三方平台规则，可能需要持续维护。
+
+## 界面预览
+
+<div style="width:600px; max-width:100%; overflow:hidden; border-radius:8px; border:1px solid #dce6f2;">
+  <div style="display:flex; animation:vidferry-slide 36s infinite;">
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/Home.png" alt="首页工作台" title="首页工作台" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">首页工作台</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/video_Link.png" alt="视频链接导入与查询" title="视频链接导入与查询" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">视频链接导入与查询</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/video_Material_Management1.png" alt="视频素材管理列表" title="视频素材管理列表" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">视频素材管理列表</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/video_Material_Management2.png" alt="视频素材详情与预览" title="视频素材详情与预览" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">视频素材详情与预览</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/copywriting_Generation1.png" alt="发布文案生成" title="发布文案生成" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">发布文案生成</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/copywriting_Generation2.png" alt="发布文案编辑" title="发布文案编辑" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">发布文案编辑</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/release_Center.png" alt="发布中心" title="发布中心" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">发布中心</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/account_Management.png" alt="账号管理" title="账号管理" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">账号管理</figcaption>
+    </figure>
+    <figure style="width:600px; margin:0; flex-shrink:0;">
+      <img src="img/statistics_Page.png" alt="处理统计" title="处理统计" style="width:600px; max-width:100%; display:block;">
+      <figcaption align="center">处理统计</figcaption>
+    </figure>
+  </div>
+</div>
+
+<style>
+@keyframes vidferry-slide {
+  0%, 8% { transform: translateX(0); }
+  11%, 19% { transform: translateX(-600px); }
+  22%, 30% { transform: translateX(-1200px); }
+  33%, 41% { transform: translateX(-1800px); }
+  44%, 52% { transform: translateX(-2400px); }
+  55%, 63% { transform: translateX(-3000px); }
+  66%, 74% { transform: translateX(-3600px); }
+  77%, 85% { transform: translateX(-4200px); }
+  88%, 96% { transform: translateX(-4800px); }
+  100% { transform: translateX(0); }
+}
+</style>
+
+<details>
+  <summary>查看全部截图名称</summary>
+
+| 图片 | 说明 |
+| --- | --- |
+| `img/Home.png` | 首页工作台 |
+| `img/video_Link.png` | 视频链接导入与查询 |
+| `img/video_Material_Management1.png` | 视频素材管理列表 |
+| `img/video_Material_Management2.png` | 视频素材详情与预览 |
+| `img/copywriting_Generation1.png` | 发布文案生成 |
+| `img/copywriting_Generation2.png` | 发布文案编辑 |
+| `img/release_Center.png` | 发布中心 |
+| `img/account_Management.png` | 账号管理 |
+| `img/statistics_Page.png` | 处理统计 |
+
+</details>
 
 ## 功能概览
 
@@ -11,7 +86,7 @@ Vidferry 是一个本地优先的视频采集、处理、素材管理和多平�
 - 字幕处理：基于 `faster-whisper` 转写，生成目标语言字幕，并默认保留英文字幕。
 - 视频烧录：基于 FFmpeg 输出国内平台更兼容的 MP4，并在左上角烧录原作者信息。
 - 内容分析：基于 OpenAI-compatible LLM 生成标题候选、作品描述、话题标签、视频总结和高光片段建议。
-- 素材管理：区分下载原视频和处理后视频，支持预览、删除和状态同步。
+- 视频素材管理：区分下载原视频和处理后视频，支持预览、删除和状态同步。
 - 发布中心：选择处理后视频，自动带入发布稿，并按平台账号提交发布任务。
 - 账号管理：维护抖音、B站、快手、视频号、小红书账号 Cookie 状态。
 
@@ -36,11 +111,12 @@ Vidferry 是一个本地优先的视频采集、处理、素材管理和多平�
 - Git
 - Google Chrome
 - FFmpeg
-- uv，推荐；也可用 pip
+- Conda，推荐用于后端 Python 环境
 
 必须能在终端执行：
 
 ```powershell
+conda --version
 python --version
 node --version
 npm --version
@@ -61,27 +137,14 @@ git clone https://github.com/Thendras-1024/Vidferry.git
 cd Vidferry
 ```
 
-如果你使用的是上游仓库地址，也可以替换为：
-
-```powershell
-git clone https://github.com/dreammis/social-auto-upload.git
-cd social-auto-upload
-```
 
 ### 2. 创建后端虚拟环境
 
-推荐使用 uv：
+推荐使用 Conda 创建名为 `vidferry` 的后端环境：
 
 ```powershell
-python -m pip install uv
-uv sync --extra web
-```
-
-如果你希望尽量复现当前开发环境，也可以使用仓库中的 `requirements.txt`。这个文件来自当前可运行环境的 `pip freeze > requirements.txt`，版本锁定更完整，但也可能包含历史依赖或 Windows 平台相关依赖：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
+conda create -n vidferry python=3.12 -y
+conda activate vidferry
 python -m pip install -U pip
 pip install -r requirements.txt
 pip install -e .
@@ -89,23 +152,23 @@ pip install -e .
 
 说明：
 
-- `pip install -r requirements.txt` 用于安装当前环境快照中的依赖。
+- 后端运行、CLI、视频下载/处理、平台自动化发布都需要在 `vidferry` 环境中执行。
+- `pip install -r requirements.txt` 用于安装当前开发环境快照中的依赖。
 - `pip install -e .` 用于把项目本身以开发模式安装，并注册 `sau` 命令。
-- 如果你只想按项目声明的最小依赖安装，优先使用 `uv sync --extra web` 或 `pip install -e ".[web]"`。
+- 当前 `requirements.txt` 推荐环境是 Windows + Conda + Python 3.12；它不是严格跨平台锁文件，可能包含历史依赖，也包含 `pywin32`、`pywinpty` 等 Windows 相关依赖。
+- Linux/macOS 安装失败时，优先改用 `pip install -e ".[web]"`，或按平台调整不兼容依赖。
 
-如果不用 uv：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install -U pip
-pip install -e .[web]
-```
-
-如果你的 shell 不支持 `.[web]`，可以使用：
+可选：如果只想按项目声明的 Web 最小依赖安装，可以使用：
 
 ```powershell
 pip install -e ".[web]"
+```
+
+可选：如果仍想使用 uv，也可以执行：
+
+```powershell
+python -m pip install uv
+uv sync --extra web
 ```
 
 ### 3. 安装浏览器自动化依赖
@@ -113,8 +176,9 @@ pip install -e ".[web]"
 项目使用 `patchright` 驱动浏览器。国内网络可使用镜像：
 
 ```powershell
+conda activate vidferry
 $env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
-.\.venv\Scripts\patchright.exe install chromium
+patchright install chromium
 ```
 
 如果你已经安装了本机 Chrome，也建议在 `conf.py` 中配置 `LOCAL_CHROME_PATH`，扫码登录和发布流程通常更稳定。
@@ -156,6 +220,13 @@ YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
 # LLM_MODEL=qwen-plus
 # LLM_TIMEOUT=90
 # LLM_MAX_TRANSCRIPT_CHARS=28000
+
+# 可选：Whisper 转写模型下载和缓存
+# HF_HOME=./models/huggingface
+# HF_ENDPOINT=https://hf-mirror.com
+# WHISPER_MODEL_SIZE=small
+# WHISPER_DEVICE=cpu
+# WHISPER_COMPUTE_TYPE=int8
 ```
 
 说明：
@@ -165,6 +236,8 @@ YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
 - 两者都属于本地配置，不要提交到 Git。
 
 ### 5. 安装前端依赖
+
+前端不需要激活 `vidferry` Conda 环境，只需要本机 Node.js/npm 可用：
 
 ```powershell
 cd sau_frontend
@@ -177,7 +250,8 @@ cd ..
 在项目根目录打开第一个终端：
 
 ```powershell
-.\.venv\Scripts\python.exe run.py
+conda activate vidferry
+python run.py
 ```
 
 默认后端地址：
@@ -195,7 +269,7 @@ VIDFERRY_PORT=5409
 
 ### 7. 启动前端
 
-打开第二个终端：
+打开第二个终端。这个终端不需要激活 Conda 环境：
 
 ```powershell
 cd sau_frontend
@@ -246,7 +320,7 @@ cookiesFile/
 
 ### 4. 下载视频
 
-在线索列表中点击下载。下载完成后，原视频会进入“素材管理”的下载原视频区域。
+在线索列表中点击下载。下载完成后，原视频会进入“视频素材管理”的下载原视频区域。
 
 如果 YouTube 提示需要 JS runtime，可安装 Node.js 或 Deno，并在 `.env` 中配置 `YTDLP_JS_RUNTIME`。
 
@@ -345,7 +419,7 @@ LLM_TIMEOUT=90
 LLM_MAX_TRANSCRIPT_CHARS=28000
 ```
 
-不配置 LLM 时，下载、字幕处理和素材管理仍可使用，但内容总结和发布文案生成不可用或会失败。
+不配置 LLM 时，下载、字幕处理和视频素材管理仍可使用，但内容总结和发布文案生成不可用或会失败。
 
 ### YouTube 下载
 
@@ -363,32 +437,142 @@ YTDLP_JS_RUNTIME=deno
 YTDLP_JS_RUNTIME_PATH=C:/Users/you/.deno/bin/deno.exe
 ```
 
+## 第三方依赖下载与安装说明
+
+### biliup
+
+B站登录、检查和上传能力基于 `biliup`。用户通常不需要手动安装 `biliup`：
+
+- 首次运行 `sau bilibili ...` 或 Web 端 B站相关能力时，程序会自动检查并准备 `biliup` 运行时。
+- 如果本地没有可用的 `biliup`，程序会从 GitHub Release 下载适配当前系统的版本。
+- 如果自动下载失败，通常是网络无法访问 GitHub Release，可检查代理/VPN，或参考 [docs/install.md](docs/install.md) 中的 Bilibili 运行时说明。
+
+### yt-dlp
+
+YouTube 查询、导入和下载依赖 `yt-dlp`。它会随 Python 依赖安装：
+
+```powershell
+conda activate vidferry
+pip install -r requirements.txt
+pip install -e .
+```
+
+如果只安装项目声明的最小 Web 依赖，也可以使用：
+
+```powershell
+pip install -e ".[web]"
+```
+
+如果 YouTube 查询或下载异常，可单独更新：
+
+```powershell
+conda activate vidferry
+python -m pip install -U yt-dlp
+```
+
+### FFmpeg
+
+FFmpeg 是本机命令行工具，不会随 Python 依赖自动安装。它用于音视频合并、提取音频、字幕烧录、转码和剪辑拼接。
+
+安装后需要满足：
+
+```powershell
+ffmpeg -version
+```
+
+如果没有加入 PATH，可以在 `conf.py` 中配置绝对路径：
+
+```python
+FFMPEG_COMMAND = "D:/tools/ffmpeg/bin/ffmpeg.exe"
+```
+
+### faster-whisper / CTranslate2
+
+语音转写依赖 `faster-whisper`，底层推理依赖 `CTranslate2`。它们会安装到 Conda 的 `vidferry` 环境中；Whisper 模型文件不随 Python 包一起安装，默认在首次转写时自动下载。
+
+本项目当前默认模型是 `small`，对应代码会读取 `WHISPER_MODEL_SIZE`，默认值见 `app/core/subtitle_service.py`。如果没有指定缓存目录，模型通常会进入当前用户的 Hugging Face 缓存目录，例如 Windows 下的 `C:\Users\<用户名>\.cache\huggingface\hub`。如果不想占用 C 盘，建议在 `.env` 中指定：
+
+```env
+HF_HOME=./models/huggingface
+WHISPER_MODEL_SIZE=small
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+```
+
+常见模型体积大致如下，实际占用会随模型版本略有变化：
+
+| 模型 | 适用场景 | 下载体积 |
+| --- | --- | --- |
+| `tiny` | 最快，质量最低，适合测试安装 | 约 80 MB |
+| `base` | 比 `tiny` 稍准，仍很快 | 约 150 MB |
+| `small` | 当前默认，速度和质量比较均衡 | 约 500 MB |
+| `medium` | 更准，但 CPU 会明显变慢 | 约 1.5 GB |
+| `large-v3` | 质量更高，资源占用大 | 约 3.1 GB |
+
+国内网络如果无法直接访问 Hugging Face，可以使用 HF-Mirror 预下载模型。以当前默认 `small` 为例：
+
+```powershell
+conda activate vidferry
+python -m pip install -U huggingface_hub
+$env:HF_ENDPOINT="https://hf-mirror.com"
+huggingface-cli download Systran/faster-whisper-small --local-dir models/faster-whisper-small
+```
+
+然后在 `.env` 中指定本地模型目录：
+
+```env
+WHISPER_MODEL_SIZE=./models/faster-whisper-small
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+```
+
+如果只是想让首次运行自动走国内镜像，而不是提前下载，也可以在 `.env` 中配置：
+
+```env
+HF_ENDPOINT=https://hf-mirror.com
+HF_HOME=./models/huggingface
+WHISPER_MODEL_SIZE=small
+```
+
+CPU 可以运行 `tiny`、`base`、`small`，但长视频会比较慢；普通电脑优先用 `small` 或 `base`，显卡和内存充足时再考虑 `medium` 或 `large-v3`。
+
+### deep-translator
+
+字幕翻译依赖 `deep-translator`，会随 Python 依赖安装。它不需要额外下载二进制文件，但翻译效果和稳定性会受网络、目标翻译服务可用性影响。
+
+### social-auto-upload
+
+本项目参考并复用了 `social-auto-upload` 的多平台自动化发布思路和部分能力。当前 Vidferry 代码已在本仓库内维护，不需要额外再下载另一个 `social-auto-upload` 仓库。
+
 ## CLI 使用
 
 安装后可以使用 `sau` 命令：
 
 ```powershell
-.\.venv\Scripts\sau.exe --help
-.\.venv\Scripts\sau.exe douyin --help
-.\.venv\Scripts\sau.exe xiaohongshu --help
-.\.venv\Scripts\sau.exe kuaishou --help
-.\.venv\Scripts\sau.exe bilibili --help
+conda activate vidferry
+sau --help
+sau douyin --help
+sau xiaohongshu --help
+sau kuaishou --help
+sau bilibili --help
 ```
 
 示例：
 
 ```powershell
-.\.venv\Scripts\sau.exe douyin login --account creator
-.\.venv\Scripts\sau.exe douyin check --account creator
-.\.venv\Scripts\sau.exe douyin upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介"
+conda activate vidferry
+sau douyin login --account creator
+sau douyin check --account creator
+sau douyin upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介"
 ```
 
 B站示例：
 
 ```powershell
-.\.venv\Scripts\sau.exe bilibili login --account creator
-.\.venv\Scripts\sau.exe bilibili check --account creator
-.\.venv\Scripts\sau.exe bilibili upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tid 21
+conda activate vidferry
+sau bilibili login --account creator
+sau bilibili check --account creator
+sau bilibili upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tid 21
 ```
 
 更多 CLI 说明见 [docs/CLI.md](docs/CLI.md)。
@@ -397,15 +581,10 @@ B站示例：
 
 ### 后端启动失败：缺少 flask_cors
 
-说明 Web 依赖没有安装完整。使用：
+说明 Web 依赖没有安装完整。先激活后端环境，再补装 Web 依赖：
 
 ```powershell
-uv sync --extra web
-```
-
-或：
-
-```powershell
+conda activate vidferry
 pip install -e ".[web]"
 ```
 
@@ -441,7 +620,8 @@ ffmpeg -version
 可尝试：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -U yt-dlp
+conda activate vidferry
+python -m pip install -U yt-dlp
 ```
 
 并配置 Node.js 或 Deno。
@@ -495,7 +675,8 @@ sau_frontend/node_modules/
 后端语法检查：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile sau_backend.py
+conda activate vidferry
+python -m py_compile sau_backend.py
 ```
 
 前端构建：
@@ -507,7 +688,7 @@ npm run build
 
 启动顺序建议：
 
-1. 启动后端：`.\.venv\Scripts\python.exe run.py`
+1. 启动后端：`conda activate vidferry` 后执行 `python run.py`
 2. 启动前端：`cd sau_frontend && npm run dev`
 3. 修改后端配置或 Python 代码后，通常需要重启后端。
 4. 修改前端后，Vite 通常会热更新。
@@ -515,7 +696,7 @@ npm run build
 ## 项目状态
 
 - 当前定位：本地优先、单机工作流、开发验证。
-- 当前重点：稳定视频采集、下载、字幕处理、内容分析、素材管理和发布准备链路。
+- 当前重点：稳定视频采集、下载、字幕处理、内容分析、视频素材管理和发布准备链路。
 - 后续方向：更完整的剪辑版本二、封面帧、云端 OSS、多用户权限、任务队列和更严格的平台发布状态管理。
 
 ## 致谢

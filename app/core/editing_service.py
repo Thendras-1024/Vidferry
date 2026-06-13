@@ -157,6 +157,33 @@ def _split_transcript_lines(text, max_chars):
     return chunks or [text[:max_chars]]
 
 
+class LLMJsonParseError(RuntimeError):
+    def __init__(self, reason, raw_text="", detail=""):
+        super().__init__(reason)
+        self.raw_text = str(raw_text or "")
+        self.detail = detail or self.raw_text[:1200]
+
+
+def _json_error_context(text, position, radius=180):
+    content = str(text or "")
+    try:
+        position = int(position)
+    except (TypeError, ValueError):
+        position = 0
+    start = max(0, position - radius)
+    end = min(len(content), position + radius)
+    return content[start:end].replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _sanitize_json_candidate(content):
+    sanitized = str(content or "").strip().lstrip("\ufeff")
+    sanitized = sanitized.replace("\u201c", '"').replace("\u201d", '"')
+    sanitized = sanitized.replace("\u2018", "'").replace("\u2019", "'")
+    sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", sanitized)
+    sanitized = re.sub(r",\s*([}\]])", r"\1", sanitized)
+    return sanitized
+
+
 def _extract_json_object(text):
     content = str(text or "").strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.S)
@@ -167,7 +194,53 @@ def _extract_json_object(text):
         end = content.rfind("}")
         if start >= 0 and end > start:
             content = content[start:end + 1]
-    return json.loads(content)
+    content = _sanitize_json_candidate(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as exc:
+        context = _json_error_context(content, exc.pos)
+        raise LLMJsonParseError(
+            f"模型返回的 JSON 格式不合法：{exc.msg} (line {exc.lineno}, column {exc.colno})",
+            raw_text=content,
+            detail=f"解析位置附近内容：{context}",
+        ) from exc
+
+
+def _repair_llm_json(raw_text):
+    repair_payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是 JSON 修复器。只输出修复后的严格 JSON 对象，不要解释，不要 Markdown。",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "下面内容应当是一个 JSON 对象，但格式有错误。"
+                    "请保留原字段语义，修复缺失逗号、尾随逗号、非法引号或控制字符等问题，"
+                    "并只输出可被 json.loads 解析的 JSON：\n"
+                    f"{str(raw_text or '')[:12000]}"
+                ),
+            },
+        ],
+        "temperature": 0,
+        "max_tokens": 2200,
+        "response_format": {"type": "json_object"},
+    }
+    request_body = json.dumps(repair_payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{LLM_BASE_URL}/chat/completions",
+        data=request_body,
+        headers={
+            "Authorization": f"Bearer {LLM_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
 
 
 def _call_llm_json(messages, max_tokens=1800):
@@ -214,7 +287,17 @@ def _call_llm_json(messages, max_tokens=1800):
             raise RuntimeError(f"模型接口调用失败 HTTP {exc.code}: {body[:500]}") from exc
 
     message = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
-    result = _extract_json_object(message)
+    try:
+        result = _extract_json_object(message)
+    except LLMJsonParseError as exc:
+        try:
+            result = _extract_json_object(_repair_llm_json(exc.raw_text))
+        except Exception as repair_exc:
+            raise LLMJsonParseError(
+                f"{exc}；自动修复仍失败：{repair_exc}",
+                raw_text=exc.raw_text,
+                detail=exc.detail,
+            ) from repair_exc
     usage = data.get("usage") or {}
     total_tokens = int(usage.get("total_tokens") or 0)
     return result, {

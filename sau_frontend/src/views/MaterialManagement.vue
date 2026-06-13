@@ -2,9 +2,9 @@
   <div class="material-management">
     <section class="page-header">
       <div>
-        <span class="eyebrow">MATERIAL LIBRARY</span>
-        <h1>素材管理</h1>
-        <p>优先按视频线索信息管理素材，技术字段收纳到详情中。</p>
+        <span class="eyebrow">VIDEO MATERIAL LIBRARY</span>
+        <h1>视频素材管理</h1>
+        <p>按视频线索统一管理下载原视频、处理后视频和补充视频素材。</p>
       </div>
       <div class="summary-strip">
         <div class="summary-item">
@@ -16,7 +16,7 @@
           <strong>{{ downloadedTotal }}</strong>
         </div>
         <div class="summary-item">
-          <span>其他素材</span>
+          <span>补充视频素材</span>
           <strong>{{ otherTotal }}</strong>
         </div>
       </div>
@@ -32,7 +32,7 @@
         @input="handleSearch"
       />
       <div class="action-buttons">
-        <el-button type="primary" @click="handleUploadMaterial">上传素材</el-button>
+        <el-button type="primary" @click="handleUploadMaterial">上传视频素材</el-button>
         <el-button
           type="danger"
           plain
@@ -117,7 +117,7 @@
     <section class="material-section">
       <div class="section-header">
         <div>
-          <span class="section-kicker">原始素材</span>
+          <span class="section-kicker">原始视频</span>
           <h2>下载原视频</h2>
         </div>
         <div class="section-header-actions">
@@ -147,7 +147,7 @@
             <MaterialIdentity :material="row" />
           </template>
         </el-table-column>
-        <el-table-column label="素材类型" width="130">
+        <el-table-column label="视频类型" width="130">
           <template #default>
             <el-tag type="info" effect="light">原视频下载</el-tag>
           </template>
@@ -183,14 +183,14 @@
     <section v-if="otherMaterials.length > 0" class="material-section">
       <div class="section-header">
         <div>
-          <span class="section-kicker">补充素材</span>
-          <h2>其他素材</h2>
+          <span class="section-kicker">补充视频素材</span>
+          <h2>其他视频素材</h2>
         </div>
         <span class="section-count">{{ otherTotal }} 条</span>
       </div>
 
       <el-table :data="otherMaterials" class="material-table" style="width: 100%">
-        <el-table-column label="素材信息" min-width="420">
+        <el-table-column label="视频素材信息" min-width="420">
           <template #default="{ row }">
             <MaterialIdentity :material="row" />
           </template>
@@ -215,7 +215,7 @@
 
     <el-dialog
       v-model="uploadDialogVisible"
-      title="上传素材"
+      title="上传视频素材"
       width="40%"
       @close="handleUploadDialogClose"
     >
@@ -277,7 +277,7 @@
 
     <el-dialog
       v-model="previewDialogVisible"
-      :title="currentMaterial ? materialTitle(currentMaterial) : '素材预览'"
+      :title="currentMaterial ? materialTitle(currentMaterial) : '视频素材预览'"
       width="56%"
       :top="'8vh'"
       @close="handlePreviewDialogClose"
@@ -389,7 +389,7 @@ let searchTimer = null
 let materialPageWatchPaused = false
 
 const materialTitle = (material) => {
-  return material?.displayTitle || material?.metadata?.title || material?.original_filename || material?.filename || '未命名素材'
+  return material?.displayTitle || material?.metadata?.title || material?.original_filename || material?.filename || '未命名视频素材'
 }
 
 const materialUrl = (material) => {
@@ -697,7 +697,7 @@ const fetchMaterials = async ({ force = false, successMessage = false, manual = 
     if (successMessage) ElMessage.success('刷新成功')
   } catch (error) {
     console.error('获取素材列表出错:', error)
-    ElMessage.error('获取素材列表失败')
+    ElMessage.error('获取视频素材列表失败')
   } finally {
     if (manual) {
       isRefreshing.value = false
@@ -718,7 +718,7 @@ const refreshMaterialSection = async (sourceType, pagination, { force = false } 
     syncMaterialStoreSnapshot()
   } catch (error) {
     console.error('获取素材列表出错:', error)
-    ElMessage.error('获取素材列表失败')
+    ElMessage.error('获取视频素材列表失败')
   } finally {
     isPageLoading.value = false
   }
@@ -873,7 +873,7 @@ const handlePreview = async (material) => {
 const handleEditPublishDraft = (material) => {
   const videoId = materialVideoIdForDraft(material)
   if (!videoId) {
-    ElMessage.warning('该素材没有绑定视频线索，无法保存发布稿')
+    ElMessage.warning('该视频素材没有绑定视频线索，无法保存发布稿')
     return
   }
   currentDraftMaterial.value = material
@@ -932,8 +932,8 @@ const resetPreviewDialog = () => {
 
 const handleDelete = (material) => {
   ElMessageBox.confirm(
-    `确定要删除素材「${materialTitle(material)}」吗？`,
-    '删除素材',
+    `确定要删除视频素材「${materialTitle(material)}」吗？`,
+    '删除视频素材',
     {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -951,7 +951,7 @@ const handleDelete = (material) => {
           ElMessage.error(response.msg || '删除失败')
         }
       } catch (error) {
-        console.error('删除素材出错:', error)
+        console.error('删除视频素材出错:', error)
         ElMessage.error('删除失败')
       }
     })
@@ -968,7 +968,7 @@ const handleBatchDelete = async (scope = 'all') => {
   try {
     await ElMessageBox.confirm(
       `确定删除选中的 ${rows.length} 个视频素材吗？对应实际文件也会删除。已发布归档不会被删除。`,
-      '批量删除素材',
+      '批量删除视频素材',
       {
         confirmButtonText: '删除',
         cancelButtonText: '取消',
@@ -992,10 +992,10 @@ const handleBatchDelete = async (scope = 'all') => {
     if (result.failed > 0) {
       ElMessage.warning(`已删除 ${result.success} 个，${result.failed} 个删除失败`)
     } else {
-      ElMessage.success(`已删除 ${result.success} 个素材`)
+      ElMessage.success(`已删除 ${result.success} 个视频素材`)
     }
   } catch (error) {
-    console.error('批量删除素材出错:', error)
+    console.error('批量删除视频素材出错:', error)
     ElMessage.error('批量删除失败')
   }
 }

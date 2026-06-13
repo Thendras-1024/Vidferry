@@ -751,6 +751,18 @@ class DouYinVideo(DouYinBaseUploader):
                     douyin_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))
                     upload_success = True
                     break
+                except RuntimeError as exc:
+                    if str(exc).startswith("VF-PUBLISH-CONFIRM-TIMEOUT: 已进入作品管理页"):
+                        raise
+                    if await self.is_publish_success(page):
+                        douyin_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))
+                        upload_success = True
+                        break
+                    await self.handle_auto_video_cover(page)
+                    douyin_logger.info(_msg("🏃", "小人正在冲刺发布视频"))
+                    if self.debug:
+                        await page.screenshot(full_page=True)
+                    await asyncio.sleep(0.5)
                 except Exception:
                     if await self.is_publish_success(page):
                         douyin_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))

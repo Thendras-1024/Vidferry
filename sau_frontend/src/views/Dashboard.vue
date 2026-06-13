@@ -4,7 +4,7 @@
       <div class="hero-copy">
         <span class="eyebrow">VIDFERRY OPS</span>
         <h1>运营工作台</h1>
-        <p>集中查看账号、素材和发布入口，快速进入视频采集、处理、素材管理与多平台发布流程。</p>
+        <p>集中查看账号、视频素材和发布入口，快速进入视频采集、处理、视频素材管理与多平台发布流程。</p>
       </div>
       <div class="hero-actions">
         <el-button type="primary" @click="navigateTo('/youtube-research')">
@@ -30,7 +30,7 @@
         <small>抖音 {{ platformStats.douyin }} · B站 {{ platformStats.bilibili }} · 快手 {{ platformStats.kuaishou }} · 小红书 {{ platformStats.xiaohongshu }}</small>
       </button>
       <button class="metric-card" type="button" @click="navigateTo('/material-management')">
-        <span>素材总数</span>
+        <span>视频素材总数</span>
         <strong>{{ contentStats.total }}</strong>
         <small>视频 {{ contentStats.videos }} / 图片 {{ contentStats.images }} / 其他 {{ contentStats.others }}</small>
       </button>
@@ -170,7 +170,7 @@ const materialSummary = ref({ total: 0, processed: 0, downloaded: 0, other: 0 })
 const quickActions = [
   { title: '视频采集处理', desc: '查找线索、下载、翻译和烧录', path: '/youtube-research', icon: Search },
   { title: '账号管理', desc: '维护平台账号和 Cookie 状态', path: '/account-management', icon: User },
-  { title: '素材管理', desc: '查看原视频与处理后视频', path: '/material-management', icon: Picture },
+  { title: '视频素材管理', desc: '查看原视频与处理后视频', path: '/material-management', icon: Picture },
   { title: '发布中心', desc: '配置多平台发布任务', path: '/publish-center', icon: Upload },
   { title: '处理统计', desc: '查看阶段耗时与模型成本', path: '/workflow-statistics', icon: DataAnalysis },
   { title: '关于系统', desc: '查看能力和技术栈', path: '/about', icon: Timer }

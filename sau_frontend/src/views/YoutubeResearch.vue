@@ -1302,8 +1302,8 @@ const hasProcessedVideo = (item) => {
 const deleteBlockReason = (item) => {
   if (activeJobForVideo(item)) return '该视频存在运行中任务，请等待任务结束后再删除线索。'
   if (isPublished(item)) return ''
-  if (hasProcessedVideo(item)) return '该视频已存在处理后视频，请先到素材管理删除对应处理后视频，再删除线索。'
-  if (hasDownloadedVideo(item)) return '该视频已存在下载视频，请先到素材管理删除对应下载视频，再删除线索。'
+  if (hasProcessedVideo(item)) return '该视频已存在处理后视频，请先到视频素材管理删除对应处理后视频，再删除线索。'
+  if (hasDownloadedVideo(item)) return '该视频已存在下载视频，请先到视频素材管理删除对应下载视频，再删除线索。'
   return ''
 }
 
@@ -1984,7 +1984,7 @@ const batchDeleteVideos = async () => {
 
   try {
     await ElMessageBox.confirm(
-      `确定删除选中的 ${selectedRows.length} 条视频线索吗？删除后线索数据将不存在；如果仍有关联下载视频或处理后视频，请先到素材管理删除视频后再删除线索。`,
+      `确定删除选中的 ${selectedRows.length} 条视频线索吗？删除后线索数据将不存在；如果仍有关联下载视频或处理后视频，请先到视频素材管理删除视频后再删除线索。`,
       '批量删除视频线索',
       {
         confirmButtonText: '确定删除',

@@ -20,7 +20,6 @@ import math
 import urllib.parse
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from queue import Queue

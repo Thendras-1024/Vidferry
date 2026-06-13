@@ -101,7 +101,7 @@
             <el-carousel
               v-if="publishTargets(tab).length > 0"
               class="target-carousel"
-              height="244px"
+              height="340px"
               indicator-position="outside"
               :autoplay="false"
               arrow="always"
@@ -118,10 +118,17 @@
                     <span>描述</span>
                     <p>{{ tab.description || '选择素材后自动填充文案' }}</p>
                     <span>话题</span>
-                    <p>{{ tab.selectedTopics.length ? tab.selectedTopics.map(topic => `#${topic}`).join(' ') : '暂无话题' }}</p>
+                    <p>{{ formatTopicsForTarget(tab, target) }}</p>
                     <span>发布</span>
                     <p>{{ tab.scheduleEnabled ? `定时发布 · ${tab.dailyTimes.join('、')}` : '立即发布' }}</p>
                   </div>
+                  <el-alert
+                    v-if="isDouyinTopicTruncated(tab, target)"
+                    title="抖音最多支持一次选择 5 条话题，本次将只发布前 5 条。"
+                    type="warning"
+                    :closable="false"
+                    show-icon
+                  />
                   <div v-if="Number(target.platformType) === 3" class="platform-specific-panel">
                     <span class="platform-specific-title">抖音专属设置</span>
                     <div class="two-col">
@@ -892,6 +899,20 @@ const publishTargets = (tab) => {
     .filter(Boolean)
 }
 
+const topicsForTarget = (tab, target) => {
+  const topics = Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : []
+  return Number(target?.platformType) === 3 ? topics.slice(0, 5) : topics
+}
+
+const isDouyinTopicTruncated = (tab, target) => {
+  return Number(target?.platformType) === 3 && Array.isArray(tab?.selectedTopics) && tab.selectedTopics.length > 5
+}
+
+const formatTopicsForTarget = (tab, target) => {
+  const topics = topicsForTarget(tab, target)
+  return topics.length ? topics.map(topic => `#${topic}`).join(' ') : '暂无话题'
+}
+
 const targetStatusList = (tab) => {
   const statusMap = new Map((tab.publishTargetStatuses || []).map(item => [Number(item.platformType), item]))
   return publishTargets(tab).map(target => ({
@@ -1238,6 +1259,10 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error(`该视频已发布到${duplicatedTarget.platformName}`)
   }
+  const douyinTarget = targets.find(target => isDouyinTopicTruncated(tab, target))
+  if (douyinTarget) {
+    ElMessage.warning('抖音最多支持一次选择 5 条话题，本次发布将只使用前 5 条。')
+  }
   tab.publishTargetStatuses = targets.map((target, index) => ({
     platformType: target.platformType,
     platformName: target.platformName,
@@ -1256,6 +1281,7 @@ const confirmPublish = async (tab) => {
       accountFile: target.accountFile,
       accountId: target.accountId,
       accountName: target.accountName,
+      tags: topicsForTarget(tab, target),
       bilibiliTid: Number(target.platformType) === 5 ? Number(tab.bilibiliTid || defaultBilibiliTid.value) : undefined,
       productLink: Number(target.platformType) === 3 ? tab.productLink.trim() : undefined,
       productTitle: Number(target.platformType) === 3 ? tab.productTitle.trim() : undefined
@@ -1729,12 +1755,18 @@ $ink-strong: #172033;
   border-radius: 8px;
   background: #f8fbff;
 }
+.target-carousel :deep(.el-carousel__container) {
+  overflow: hidden;
+}
 .target-slide {
   display: grid;
   gap: 12px;
   align-content: start;
   height: 100%;
   padding: 14px 42px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .target-slide > div:first-child {
   display: flex;
@@ -1755,9 +1787,9 @@ $ink-strong: #172033;
   margin: 0;
   min-width: 0;
   color: $ink-strong;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .platform-specific-panel {
   display: grid;

@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">ABOUT VIDFERRY</span>
         <h1>Vidferry 自媒体自动化运营系统</h1>
-        <p>围绕 YouTube 线索采集、视频处理、素材管理和国内平台发布构建的一体化工作台。</p>
+        <p>围绕 YouTube 线索采集、视频处理、视频素材管理和国内平台发布构建的一体化工作台。</p>
       </div>
       <div class="version-card">
         <span>当前版本</span>
