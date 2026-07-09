@@ -183,8 +183,13 @@ package-lock.json
 # database
 db/database.db
 db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite-wal
 
 # 临时文件夹
 cookiesFile

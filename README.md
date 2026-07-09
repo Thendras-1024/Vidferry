@@ -4,6 +4,40 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 
 当前版本仍处于本地开发和个人工作流验证阶段，不建议直接作为生产 SaaS 使用。平台登录、发布和 YouTube 下载能力都依赖本机环境以及第三方平台规则，可能需要持续维护。
 
+## 🚀 快速部署（推荐：让 AI 帮你装）
+
+如果你不想手动逐步部署，可以把电脑上的 AI Agent（如 Claude Code、Cursor 等）叫来帮忙：先确认下面的前置条件，再把下方 Prompt 整段复制给它即可。
+
+### 部署前置条件
+
+这些需要你**自行准备**，Agent 无法替你完成：
+
+- ✅ **开启 VPN / 代理**：下载 YouTube 视频、从 GitHub 拉取 biliup 运行时等需要外网。（内容分析用的 DashScope 是国内服务，不需要 VPN）
+- ✅ **已安装 Google Chrome**：扫码登录和各平台发布依赖它
+- ✅ **终端可用以下命令**：`conda`、`python`（3.10–3.12）、`node`/`npm`（Node.js ≥18）、`git`、`ffmpeg -version`
+- ✅ **准备好 LLM API**：推荐阿里云 DashScope（通义千问），国内可直连，拿到 API Key 待用
+- ✅ **各平台账号**：抖音、B站、快手、小红书等，首次使用时需扫码登录
+
+> 详细版本要求和命令检查见下方「系统要求」。
+
+### 一键部署 Prompt
+
+把下面整段复制，发给你的 AI Agent，它会在你的电脑上完成部署：
+
+```
+你是 Vidferry 项目的部署助手。请在我的电脑上完成该项目的完整本地部署。
+
+执行步骤：
+1. 若尚未克隆：git clone https://github.com/Thendras-1024/Vidferry.git 并进入目录
+2. 仔细阅读仓库内的 README.md，尤其是「快速部署」和「关键配置说明」两节，严格按其步骤执行
+3. 流程概要：创建 Conda 环境(vidferry) → 装后端依赖(pip install -r requirements.txt && pip install -e .) → 装 patchright chromium → 配置 conf.py 与 .env → 装前端依赖(cd sau_frontend && npm install) → 启动后端(python run.py) → 启动前端(npm run dev)
+4. 目标：浏览器能打开 http://127.0.0.1:5173 且首页正常加载
+5. 每完成一步向我简短汇报；遇到报错先自行排查并重试
+6. 需要我提供的信息（LLM 的 API Key/Base URL/模型名、各平台账号扫码登录）请停下来问我，不要编造
+
+注意：YouTube 下载需我已开 VPN；conf.py 里 Chrome、ffmpeg 路径按我本机实际情况填写。
+```
+
 ## 界面预览
 
 <p align="center">
@@ -220,6 +254,7 @@ YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
 - `.env` 用于本地路径、LLM 和 yt-dlp 运行参数。
 - `conf.py` 用于本机 Chrome、FFmpeg、默认下载目录等本地配置。
 - 两者都属于本地配置，不要提交到 Git。
+- 各参数的具体含义见下方「关键配置说明」。
 
 ### 5. 安装前端依赖
 
@@ -433,44 +468,7 @@ B站登录、检查和上传能力基于 `biliup`。用户通常不需要手动�
 - 如果本地没有可用的 `biliup`，程序会从 GitHub Release 下载适配当前系统的版本。
 - 如果自动下载失败，通常是网络无法访问 GitHub Release，可检查代理/VPN，或参考 [docs/install.md](docs/install.md) 中的 Bilibili 运行时说明。
 
-### yt-dlp
-
-YouTube 查询、导入和下载依赖 `yt-dlp`。它会随 Python 依赖安装：
-
-```powershell
-conda activate vidferry
-pip install -r requirements.txt
-pip install -e .
-```
-
-如果只安装项目声明的最小 Web 依赖，也可以使用：
-
-```powershell
-pip install -e ".[web]"
-```
-
-如果 YouTube 查询或下载异常，可单独更新：
-
-```powershell
-conda activate vidferry
-python -m pip install -U yt-dlp
-```
-
-### FFmpeg
-
-FFmpeg 是本机命令行工具，不会随 Python 依赖自动安装。它用于音视频合并、提取音频、字幕烧录、转码和剪辑拼接。
-
-安装后需要满足：
-
-```powershell
-ffmpeg -version
-```
-
-如果没有加入 PATH，可以在 `conf.py` 中配置绝对路径：
-
-```python
-FFMPEG_COMMAND = "D:/tools/ffmpeg/bin/ffmpeg.exe"
-```
+> `yt-dlp` 与 `FFmpeg` 随 Python 依赖安装或属本机工具，其配置与排错统一见「关键配置说明」和「常见问题」，此处不再重复。
 
 ### faster-whisper / CTranslate2
 
@@ -529,39 +527,6 @@ CPU 可以运行 `tiny`、`base`、`small`，但长视频会比较慢；普通�
 ### social-auto-upload
 
 本项目参考并复用了 `social-auto-upload` 的多平台自动化发布思路和部分能力。当前 Vidferry 代码已在本仓库内维护，不需要额外再下载另一个 `social-auto-upload` 仓库。
-
-## CLI 使用
-
-安装后可以使用 `sau` 命令：
-
-```powershell
-conda activate vidferry
-sau --help
-sau douyin --help
-sau xiaohongshu --help
-sau kuaishou --help
-sau bilibili --help
-```
-
-示例：
-
-```powershell
-conda activate vidferry
-sau douyin login --account creator
-sau douyin check --account creator
-sau douyin upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介"
-```
-
-B站示例：
-
-```powershell
-conda activate vidferry
-sau bilibili login --account creator
-sau bilibili check --account creator
-sau bilibili upload-video --account creator --file videos/demo.mp4 --title "示例标题" --desc "示例简介" --tid 21
-```
-
-更多 CLI 说明见 [docs/CLI.md](docs/CLI.md)。
 
 ## 常见问题
 
@@ -633,6 +598,10 @@ WHISPER_COMPUTE_TYPE=int8
 - 确认 Cookie 文件存在于 `cookiesFile/`。
 - 发布过程中不要手动关闭自动化浏览器窗口。
 
+### LLM / 内容分析报错
+
+- `Remote end closed connection without response`：通常是请求被 LLM API 远端识别为异常。先检查 VPN/代理是否异常；若仍出现，尝试关闭 VPN 后重试（DashScope 为国内服务，关闭 VPN 通常不影响）。
+
 ## 本地数据与安全
 
 以下内容属于本地运行数据，不应提交到 Git：
@@ -656,29 +625,6 @@ sau_frontend/node_modules/
 - 发布、删除、下载接口都应只在可信本地环境使用。
 - 当前版本没有多用户权限系统，不建议暴露到公网。
 
-## 开发验证
-
-后端语法检查：
-
-```powershell
-conda activate vidferry
-python -m py_compile sau_backend.py
-```
-
-前端构建：
-
-```powershell
-cd sau_frontend
-npm run build
-```
-
-启动顺序建议：
-
-1. 启动后端：`conda activate vidferry` 后执行 `python run.py`
-2. 启动前端：`cd sau_frontend && npm run dev`
-3. 修改后端配置或 Python 代码后，通常需要重启后端。
-4. 修改前端后，Vite 通常会热更新。
-
 ## 项目状态
 
 - 当前定位：本地优先、单机工作流、开发验证。
@@ -700,7 +646,3 @@ Vidferry 基于并参考了以下开源项目和工具：
 ## License
 
 MIT License
-
-## 异常报错排查
-
-- `Remote end closed connection without response`：通常是请求被 LLM API 远端服务器识别为非法或异常请求。先检查 VPN/代理是否异常；如果仍然出现，尝试关闭 VPN 后重试。
