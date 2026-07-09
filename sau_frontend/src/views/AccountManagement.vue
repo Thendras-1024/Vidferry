@@ -8,7 +8,7 @@
       </div>
       <div class="hero-actions">
         <el-button type="primary" @click="handleAddAccount">添加账号</el-button>
-        <el-button type="warning" plain @click="handleCheckAllCookies" :disabled="checkingCookies || checkCooldownRemaining > 0">
+        <el-button type="warning" plain @click="handleCheckAllCookies" :disabled="checkingCookies">
           <el-icon><Refresh /></el-icon>
           <span>{{ checkingCookies ? '检查中' : (checkCooldownRemaining > 0 ? `${checkCooldownRemaining}s 后可检查` : '检查 Cookie') }}</span>
         </el-button>
@@ -257,7 +257,11 @@ const startCheckCooldown = (seconds = 60) => {
 }
 
 const handleCheckAllCookies = async () => {
-  if (checkingCookies.value || checkCooldownRemaining.value > 0) return
+  if (checkingCookies.value) return
+  if (checkCooldownRemaining.value > 0) {
+    ElMessage.warning(`为避免短时间频繁访问平台触发风控，请 ${checkCooldownRemaining.value}s 后再检测 Cookie`)
+    return
+  }
   checkingCookies.value = true
   try {
     const res = await accountApi.checkCookies({ all: true })
@@ -268,13 +272,17 @@ const handleCheckAllCookies = async () => {
     const invalid = res.data?.invalid || []
     const checkedCount = Number(res.data?.checkedCount || 0)
     const skippedCount = Number(res.data?.skippedCount || 0)
-    if (invalid.length > 0) {
+    const blockedCount = Number(res.data?.blockedCount || 0)
+    const retryAfterSeconds = Number(res.data?.retryAfterSeconds || res.data?.cooldownSeconds || 0)
+    if (blockedCount > 0 && checkedCount === 0) {
+      ElMessage.warning(`为避免短时间频繁访问平台触发风控，请 ${retryAfterSeconds}s 后再检测 Cookie`)
+    } else if (invalid.length > 0) {
       ElMessage.warning(`检查完成，${invalid.length} 个账号 Cookie 已过期，请重新连接`)
     } else {
       ElMessage.success(`检查完成，当前账号 Cookie 均可用${skippedCount ? `，${skippedCount} 个账号复用最近检查结果` : ''}`)
     }
-    if (checkedCount > 0 || skippedCount > 0) {
-      startCheckCooldown(res.data?.cooldownSeconds || 60)
+    if (retryAfterSeconds > 0) {
+      startCheckCooldown(retryAfterSeconds)
     }
   } catch (error) {
     console.error('检查 Cookie 失败:', error)

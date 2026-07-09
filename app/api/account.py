@@ -1,12 +1,17 @@
 ﻿ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
 _account_cookie_check_last_at = {}
+ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SECONDS = 600
+ACCOUNT_COOKIE_CHECK_FAILURE_COOLDOWN_SECONDS = 120
+ACCOUNT_COOKIE_CHECK_ERROR_COOLDOWN_SECONDS = 60
+ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SECONDS
+_account_cookie_check_state = {}
 
 
 def _account_row_to_list(row):
     return [row["id"], row["type"], row["filePath"], row["userName"], row["status"]]
 
 
-def _account_check_payload(row, *, checked=False, skipped=False, valid=False, message=""):
+def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, message="", retry_after_seconds=0):
     return {
         "id": row["id"],
         "type": row["type"],
@@ -16,8 +21,10 @@ def _account_check_payload(row, *, checked=False, skipped=False, valid=False, me
         "status": int(row["status"] if row["status"] is not None else 0),
         "checked": bool(checked),
         "skipped": bool(skipped),
+        "blocked": bool(blocked),
         "valid": bool(valid),
         "message": message,
+        "retryAfterSeconds": int(max(0, retry_after_seconds or 0)),
     }
 
 
@@ -84,21 +91,51 @@ def _run_cookie_check_sync(platform_type, file_path):
 def _check_account_cookie_row(cursor, row, *, force=False):
     now = time.time()
     account_id = int(row["id"])
-    last_checked_at = float(_account_cookie_check_last_at.get(account_id) or 0)
+    cached_state = _account_cookie_check_state.get(account_id) or {}
+    retry_after_seconds = int(max(0, float(cached_state.get("blocked_until") or 0) - now))
     current_status = int(row["status"] if row["status"] is not None else 0)
 
-    if not force and last_checked_at and now - last_checked_at < ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS:
+    if not force and retry_after_seconds > 0:
         return _account_check_payload(
             row,
             skipped=True,
+            blocked=True,
             valid=current_status == 1,
-            message="刚刚检查过，已复用当前账号状态。",
+            message=f"为避免短时间频繁访问平台触发风控，请 {retry_after_seconds} 秒后再检测。",
+            retry_after_seconds=retry_after_seconds,
         )
 
-    valid = _run_cookie_check_sync(row["type"], row["filePath"])
+    try:
+        valid = _run_cookie_check_sync(row["type"], row["filePath"])
+    except Exception as exc:
+        _account_cookie_check_state[account_id] = {
+            "checked_at": now,
+            "valid": False,
+            "error": str(exc),
+            "blocked_until": now + ACCOUNT_COOKIE_CHECK_ERROR_COOLDOWN_SECONDS,
+        }
+        return _account_check_payload(
+            row,
+            checked=True,
+            valid=False,
+            message=f"Cookie 检查异常: {exc}",
+            retry_after_seconds=ACCOUNT_COOKIE_CHECK_ERROR_COOLDOWN_SECONDS,
+        )
+
     next_status = 1 if valid else 0
     cursor.execute("UPDATE user_info SET status = ? WHERE id = ?", (next_status, account_id))
+    cooldown_seconds = (
+        ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SECONDS
+        if valid
+        else ACCOUNT_COOKIE_CHECK_FAILURE_COOLDOWN_SECONDS
+    )
     _account_cookie_check_last_at[account_id] = now
+    _account_cookie_check_state[account_id] = {
+        "checked_at": now,
+        "valid": valid,
+        "error": None,
+        "blocked_until": now + cooldown_seconds,
+    }
 
     checked_row = dict(row)
     checked_row["status"] = next_status
@@ -107,6 +144,7 @@ def _check_account_cookie_row(cursor, row, *, force=False):
         checked=True,
         valid=valid,
         message="Cookie 有效" if valid else "Cookie 已过期或不可用",
+        retry_after_seconds=cooldown_seconds,
     )
 
 
@@ -241,6 +279,7 @@ def check_account_cookies():
             accounts = _list_all_accounts(cursor)
 
         invalid = [item for item in results if not item.get("valid")]
+        retry_after_seconds = max((int(item.get("retryAfterSeconds") or 0) for item in results), default=0)
         return jsonify({
             "code": 200,
             "msg": None,
@@ -251,8 +290,10 @@ def check_account_cookies():
                 "invalidCount": len(invalid),
                 "checkedCount": len([item for item in results if item.get("checked")]),
                 "skippedCount": len([item for item in results if item.get("skipped")]),
+                "blockedCount": len([item for item in results if item.get("blocked")]),
                 "missingIds": missing_ids,
-                "cooldownSeconds": ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS,
+                "cooldownSeconds": retry_after_seconds or ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS,
+                "retryAfterSeconds": retry_after_seconds,
             }
         }), 200
     except Exception as e:
