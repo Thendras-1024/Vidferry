@@ -1,3 +1,6 @@
+"""CLI 上传请求的数据模型(各平台视频/笔记发布参数)。"""
+
+
 from __future__ import annotations
 
 from dataclasses import dataclass

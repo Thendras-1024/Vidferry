@@ -20,6 +20,7 @@ from utils.login_qrcode import decode_qrcode_from_path
 from utils.login_qrcode import print_terminal_qrcode
 from utils.login_qrcode import remove_qrcode_file
 from utils.login_qrcode import save_data_url_image
+from utils.humanize import human_delay, jitter_seconds
 from utils.log import xiaohongshu_logger
 
 XHS_LOGIN_URL = "https://creator.xiaohongshu.com/login"
@@ -310,8 +311,6 @@ class XiaoHongShuBaseUploader(BaseVideoUploader):
     async def validate_base_args(self):
         if not os.path.exists(self.account_file):
             raise RuntimeError(f"cookie文件不存在，请先完成小红书登录: {self.account_file}")
-        if not await cookie_auth(self.account_file):
-            raise RuntimeError(f"cookie文件已失效，请先完成小红书登录: {self.account_file}")
 
         if self.publish_strategy not in {
             XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE,
@@ -323,6 +322,19 @@ class XiaoHongShuBaseUploader(BaseVideoUploader):
             self.publish_date = self.validate_publish_date(self.publish_date)
         else:
             self.publish_date = 0
+
+    async def ensure_publish_session(self, page: Page) -> None:
+        if "login" in page.url:
+            raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 小红书 Cookie 已失效，请重新连接账号。")
+        for selector in (".login-box-container", 'text="APP扫一扫登录"', 'text="扫码登录"'):
+            try:
+                marker = page.locator(selector).first
+                if await marker.count() and await marker.is_visible():
+                    raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 小红书 Cookie 已失效，请重新连接账号。")
+            except RuntimeError:
+                raise
+            except Exception:
+                continue
 
     async def set_schedule_time_xiaohongshu(self, page: Page, publish_date: datetime):
         xiaohongshu_logger.info(_msg("🕒", f"小人准备设置定时发布时间: {publish_date.strftime(self.date_format)}"))
@@ -505,7 +517,13 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
         xiaohongshu_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
         xiaohongshu_logger.info(_msg("🧭", "小人正在赶往视频发布页"))
         await safe_goto_xhs(page, XHS_PUBLISH_VIDEO_URL)
-        await page.wait_for_url(XHS_PUBLISH_VIDEO_URL, timeout=XHS_GOTO_TIMEOUT_MS)
+        try:
+            await page.wait_for_url(XHS_PUBLISH_VIDEO_URL, timeout=XHS_GOTO_TIMEOUT_MS)
+        except Exception:
+            await self.ensure_publish_session(page)
+            raise
+        await self.ensure_publish_session(page)
+        await human_delay(1, 3)
         await page.locator("div[class^='upload-content'] input[class='upload-input']").set_input_files(self.file_path)
 
         upload_deadline = time.monotonic() + XHS_UPLOAD_WAIT_TIMEOUT
@@ -546,9 +564,10 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
                     xiaohongshu_logger.debug(_msg("🧍", "还没拿到预览区域，小人继续等一会"))
             except Exception as e:
                 xiaohongshu_logger.debug(_msg("😵", f"上传状态还没稳定下来，小人继续观察: {e}"))
-            await asyncio.sleep(2)
+            await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
         xiaohongshu_logger.info(_msg("✍️", "小人开始填标题、描述和话题"))
+        await human_delay(0.8, 2.5)
         await self.fill_meta(page)
 
         await self.set_thumbnail(page, self.thumbnail_path)
@@ -563,6 +582,7 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
             if time.monotonic() > publish_deadline:
                 raise RuntimeError("小红书发布确认超时")
             try:
+                await human_delay(1.5, 5)
                 if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED:
                     await page.locator('button:has-text("定时发布")').click()
                 else:
@@ -577,7 +597,7 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
                 xiaohongshu_logger.info(_msg("🏃", "小人正在冲刺发布视频"))
                 if self.debug:
                     await page.screenshot(full_page=True)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(jitter_seconds(0.5, min_seconds=0.3, max_seconds=0.9))
 
     async def upload(self, playwright: Playwright) -> None:
         xiaohongshu_logger.info(_msg("🧍", "小人先检查 cookie、视频文件、封面和发布时间"))
@@ -653,7 +673,13 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
         xiaohongshu_logger.info(_msg("🏃", f"小人开始搬运图文，共 {len(self.image_paths)} 张图片"))
         xiaohongshu_logger.info(_msg("🧭", "小人正在赶往图文发布页"))
         await safe_goto_xhs(page, XHS_PUBLISH_NOTE_URL)
-        await page.wait_for_url(XHS_PUBLISH_NOTE_URL, timeout=XHS_GOTO_TIMEOUT_MS)
+        try:
+            await page.wait_for_url(XHS_PUBLISH_NOTE_URL, timeout=XHS_GOTO_TIMEOUT_MS)
+        except Exception:
+            await self.ensure_publish_session(page)
+            raise
+        await self.ensure_publish_session(page)
+        await human_delay(1, 3)
 
         upload_input = page.locator('input[type="file"][accept*="image"]').first
         if not await upload_input.count():
@@ -674,9 +700,10 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
                 break
             except Exception:
                 xiaohongshu_logger.debug(_msg("🧍", "图文素材还在上传，小人继续等一会"))
-                await asyncio.sleep(1)
+                await asyncio.sleep(jitter_seconds(1, min_seconds=0.5, max_seconds=1.5))
 
         xiaohongshu_logger.info(_msg("✍️", "小人开始填标题、描述和话题"))
+        await human_delay(0.8, 2.5)
         await self.fill_meta(page)
 
         if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
@@ -687,6 +714,7 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
             if time.monotonic() > publish_deadline:
                 raise RuntimeError("小红书图文发布确认超时")
             try:
+                await human_delay(1.5, 5)
                 if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED:
                     await page.locator('button:has-text("定时发布")').click()
                 else:
@@ -701,7 +729,7 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
                 xiaohongshu_logger.info(_msg("🏃", "小人正在冲刺发布图文"))
                 if self.debug:
                     await page.screenshot(full_page=True)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(jitter_seconds(0.5, min_seconds=0.3, max_seconds=0.9))
 
     async def upload(self, playwright: Playwright) -> None:
         xiaohongshu_logger.info(_msg("🧍", "小人先检查 cookie、图片和发布时间"))

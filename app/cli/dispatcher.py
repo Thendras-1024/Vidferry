@@ -1,3 +1,6 @@
+"""CLI 命令分发:把解析后的 Namespace 路由到对应平台的上传/登录动作。"""
+
+
 from __future__ import annotations
 
 import argparse
@@ -31,7 +34,7 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
 
     if args.platform == "douyin":
         if args.action == "login":
-            result = await actions.login_douyin_account(args.account, headless=args.headless)
+            result = await actions.login_douyin_account(args.account, headless=args.headless, cdp_url=args.cdp_url)
             if not result["success"]:
                 raise RuntimeError(result["message"])
             print(f"Douyin login flow completed: {result['account_file']}")

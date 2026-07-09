@@ -220,7 +220,13 @@ def _workflow_publish_runner_command(task):
 
 def _is_cookie_invalid_error(message):
     text = str(message or "")
-    return "cookie文件已失效" in text or "cookie文件不存在或已失效" in text or "Cookie 已失效" in text
+    return (
+        "cookie文件已失效" in text
+        or "cookie文件不存在或已失效" in text
+        or "Cookie 已失效" in text
+        or "VF-PUBLISH-COOKIE-INVALID" in text
+        or "请重新连接账号" in text
+    )
 
 
 def _mark_account_abnormal(platform_type, account_file, reason=""):
@@ -482,8 +488,12 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
 
 def _run_publish_tasks(tasks):
     results = []
-    for task in tasks or []:
+    task_list = list(tasks or [])
+    for index, task in enumerate(task_list):
         results.append(_execute_publish_target(task))
+        if index < len(task_list) - 1:
+            from utils.humanize import jitter_seconds
+            time.sleep(jitter_seconds(3.5, ratio=0.43, min_seconds=2, max_seconds=5))
     return results
 
 

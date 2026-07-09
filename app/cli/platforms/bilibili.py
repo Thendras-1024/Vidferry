@@ -1,3 +1,6 @@
+"""B 站平台 CLI 动作:账号登录(biliup)、Cookie 续期、视频发布。"""
+
+
 from __future__ import annotations
 
 from datetime import datetime

@@ -30,47 +30,54 @@ async def safe_goto(page, url):
 
 
 async def cookie_auth_douyin(account_file):
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(**get_browser_options())
-        try:
-            context = await browser.new_context(storage_state=account_file)
-            context = await set_init_script(context)
-            page = await context.new_page()
-            await safe_goto(page, "https://creator.douyin.com/creator-micro/content/upload")
-            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(3000)
+    options = get_browser_options()
+    options["headless"] = os.environ.get("DOUYIN_COOKIE_AUTH_HEADLESS", "").lower() in {"1", "true", "yes"}
+    options["args"] = [*options.get("args", []), "--no-sandbox", "--disable-blink-features=AutomationControlled"]
 
-            login_markers = [
-                page.get_by_text("扫码登录", exact=True).first,
-                page.get_by_text("手机号登录", exact=True).first,
-                page.get_by_text("登录后即可", exact=False).first,
-                page.get_by_role("img", name="二维码").first,
-            ]
-            for marker in login_markers:
-                if not await marker.count():
-                    continue
-                try:
-                    if await marker.is_visible():
-                        douyin_logger.error("[+] cookie 失效，需要重新登录")
-                        return False
-                except Exception:
-                    continue
-
-            if page.url.startswith("https://creator.douyin.com/"):
-                douyin_logger.success(f"[+] cookie 有效，当前页面: {page.url}")
-                return True
-
-            douyin_logger.error(f"[+] cookie 校验未进入创作者中心，当前页面: {page.url}")
-            return False
-        except Exception as exc:
-            douyin_logger.error(f"[+] cookie 校验异常: {exc}")
-            return False
-        finally:
+    for _ in range(3):
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(**options)
+            context = None
             try:
-                await context.close()
-            except Exception:
-                pass
-            await browser.close()
+                context = await browser.new_context(storage_state=account_file)
+                context = await set_init_script(context)
+                page = await context.new_page()
+                await safe_goto(page, "https://creator.douyin.com/creator-micro/content/upload")
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(2500)
+
+                login_markers = [
+                    page.get_by_text("扫码登录", exact=True).first,
+                    page.get_by_text("手机号登录", exact=True).first,
+                    page.get_by_text("登录后即可", exact=False).first,
+                    page.get_by_role("img", name="二维码").first,
+                ]
+                has_login = False
+                for marker in login_markers:
+                    if not await marker.count():
+                        continue
+                    try:
+                        if await marker.is_visible():
+                            has_login = True
+                            break
+                    except Exception:
+                        continue
+
+                if "creator.douyin.com/creator-micro/content/upload" in page.url and not has_login:
+                    douyin_logger.success(f"[+] cookie 有效，当前页面: {page.url}")
+                    return True
+            except Exception as exc:
+                douyin_logger.error(f"[+] cookie 校验异常: {exc}")
+            finally:
+                if context:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                await browser.close()
+
+    douyin_logger.error("[+] cookie 失效，需要重新登录")
+    return False
 
 
 async def cookie_auth_tencent(account_file):

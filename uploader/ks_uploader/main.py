@@ -20,6 +20,7 @@ from utils.login_qrcode import decode_qrcode_from_path
 from utils.login_qrcode import print_terminal_qrcode
 from utils.login_qrcode import remove_qrcode_file
 from utils.login_qrcode import save_data_url_image
+from utils.humanize import human_delay, jitter_seconds
 from utils.log import kuaishou_logger
 
 KUAISHOU_UPLOAD_URL = "https://cp.kuaishou.com/article/publish/video"
@@ -291,8 +292,6 @@ class KSBaseUploader(BaseVideoUploader):
     async def validate_base_args(self):
         if not os.path.exists(self.account_file):
             raise RuntimeError(f"cookie文件不存在，请先完成快手登录: {self.account_file}")
-        if not await cookie_auth(self.account_file):
-            raise RuntimeError(f"cookie文件已失效，请先完成快手登录: {self.account_file}")
 
         if self.publish_strategy is None:
             self.publish_strategy = (
@@ -311,6 +310,10 @@ class KSBaseUploader(BaseVideoUploader):
             self.publish_date = self.validate_publish_date(self.publish_date)
         else:
             self.publish_date = 0
+
+    async def ensure_publish_session(self, page: Page) -> None:
+        if await _is_ks_cookie_invalid(page, timeout=1000):
+            raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 快手 Cookie 已失效，请重新连接账号。")
 
     async def set_schedule_time(self, page: Page, publish_date: datetime):
         kuaishou_logger.info(_msg("🕒", "小人准备设置定时发布时间"))
@@ -438,7 +441,13 @@ class KSVideo(KSBaseUploader):
             await page.goto(KUAISHOU_UPLOAD_URL)
             kuaishou_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
             kuaishou_logger.info(_msg("🧭", "小人正在赶往快手上传主页"))
-            await page.wait_for_url(KUAISHOU_UPLOAD_URL_PATTERN)
+            try:
+                await page.wait_for_url(KUAISHOU_UPLOAD_URL_PATTERN)
+            except Exception:
+                await self.ensure_publish_session(page)
+                raise
+            await self.ensure_publish_session(page)
+            await human_delay(1, 3)
 
             upload_button = page.locator("button[class^='_upload-btn']")
             await upload_button.wait_for(state="visible", timeout=10000)
@@ -448,7 +457,7 @@ class KSVideo(KSBaseUploader):
             file_chooser = await fc_info.value
             await file_chooser.set_files(self.file_path)
 
-            await asyncio.sleep(2)
+            await human_delay(0.8, 2.5)
 
             know_button = page.locator('button[type="button"] span:text("我知道了")').first
             try:
@@ -470,7 +479,7 @@ class KSVideo(KSBaseUploader):
             for index, tag in enumerate(self.tags[:3], start=1):
                 kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
                 await page.keyboard.type(f"#{tag} ")
-                await asyncio.sleep(2)
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
             max_retries = 60
             retry_count = 0
@@ -487,7 +496,7 @@ class KSVideo(KSBaseUploader):
                     if await page.locator("text=上传失败").count():
                         await self.handle_upload_error(page)
 
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
                 except Exception as exc:
                     kuaishou_logger.warning(_msg("😵", f"检查上传状态时出错，小人继续重试: {exc}"))
                     await asyncio.sleep(2)
@@ -503,11 +512,12 @@ class KSVideo(KSBaseUploader):
 
             while True:
                 try:
+                    await human_delay(1.5, 5)
                     publish_button = page.get_by_text("发布", exact=True)
                     if await publish_button.count() > 0:
                         await publish_button.click()
 
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(jitter_seconds(1, min_seconds=0.5, max_seconds=1.5))
                     confirm_button = page.get_by_text("确认发布")
                     if await confirm_button.count() > 0:
                         await confirm_button.click()
@@ -519,14 +529,14 @@ class KSVideo(KSBaseUploader):
                     kuaishou_logger.info(_msg("🏃", f"小人正在冲刺发布视频: {exc}"))
                     if self.debug:
                         await page.screenshot(full_page=True)
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(jitter_seconds(1, min_seconds=0.5, max_seconds=1.5))
 
             upload_success = True
         finally:
             if upload_success:
                 await context.storage_state(path=self.account_file)
                 kuaishou_logger.success(_msg("🥳", "cookie 更新完毕"))
-                await asyncio.sleep(2)
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
             await context.close()
             await browser.close()
 
@@ -579,7 +589,7 @@ class KSNote(KSBaseUploader):
         kuaishou_logger.info(_msg("🏃", f"小人开始搬运图文，共 {len(self.image_paths)} 张图片"))
         kuaishou_logger.info(_msg("🔀", "小人正在切换到图文发布"))
         await page.locator('div[role="tablist"] div[role="tab"]:has-text("图文")').click()
-        await page.wait_for_timeout(1000)
+        await human_delay(0.8, 1.5)
 
         kuaishou_logger.info(_msg("📤", "小人正在上传图片"))
         upload_button = page.locator("button[class^='_upload-btn']").filter(has_text="上传图片")
@@ -610,7 +620,7 @@ class KSNote(KSBaseUploader):
         for index, tag in enumerate(self.tags[:3], start=1):
             kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
             await page.keyboard.type(f"#{tag} ")
-            await asyncio.sleep(2)
+            await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
         max_retries = 60
         retry_count = 0
@@ -628,10 +638,10 @@ class KSNote(KSBaseUploader):
                     kuaishou_logger.warning(_msg("😵", "图文素材上传摔了一跤，小人马上重新上传"))
                     await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.image_paths)
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
             except Exception as exc:
                 kuaishou_logger.warning(_msg("😵", f"检查图文上传状态时出错，小人继续重试: {exc}"))
-                await asyncio.sleep(2)
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
             retry_count += 1
 
         if retry_count == max_retries:
@@ -642,11 +652,12 @@ class KSNote(KSBaseUploader):
 
         while True:
             try:
+                await human_delay(1.5, 5)
                 publish_button = page.get_by_text("发布", exact=True)
                 if await publish_button.count() > 0:
                     await publish_button.click()
 
-                await asyncio.sleep(1)
+                await asyncio.sleep(jitter_seconds(1, min_seconds=0.5, max_seconds=1.5))
                 confirm_button = page.get_by_text("确认发布")
                 if await confirm_button.count() > 0:
                     await confirm_button.click()
@@ -658,7 +669,7 @@ class KSNote(KSBaseUploader):
                 kuaishou_logger.info(_msg("🏃", f"小人正在冲刺发布图文: {exc}"))
                 if self.debug:
                     await page.screenshot(full_page=True)
-                await asyncio.sleep(1)
+                await asyncio.sleep(jitter_seconds(1, min_seconds=0.5, max_seconds=1.5))
 
     async def upload(self, playwright: Playwright) -> None:
         kuaishou_logger.info(_msg("🧍", "小人先检查 cookie、图片和发布时间"))
@@ -683,7 +694,13 @@ class KSNote(KSBaseUploader):
             page = await context.new_page()
             await page.goto(KUAISHOU_UPLOAD_URL)
             kuaishou_logger.info(_msg("🧭", "小人正在赶往快手图文发布页"))
-            await page.wait_for_url(KUAISHOU_UPLOAD_URL_PATTERN)
+            try:
+                await page.wait_for_url(KUAISHOU_UPLOAD_URL_PATTERN)
+            except Exception:
+                await self.ensure_publish_session(page)
+                raise
+            await self.ensure_publish_session(page)
+            await human_delay(1, 3)
 
             await self.upload_note_content(page)
             upload_success = True

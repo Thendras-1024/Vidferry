@@ -38,6 +38,21 @@ class BrowserCliParserTests(unittest.TestCase):
 
         self.assertEqual(args.desc, "视频简介")
 
+    def test_douyin_login_accepts_cdp_url(self):
+        parser = sau_cli.build_parser()
+        args = parser.parse_args(
+            [
+                "douyin",
+                "login",
+                "--account",
+                "creator",
+                "--cdp-url",
+                "http://127.0.0.1:9222",
+            ]
+        )
+
+        self.assertEqual(args.cdp_url, "http://127.0.0.1:9222")
+
     def test_kuaishou_upload_note_accepts_title_and_note(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             image_path = Path(tmp_dir) / "1.png"
@@ -114,6 +129,21 @@ class BrowserCliDispatchTests(unittest.TestCase):
         with patch("sau_cli.check_xiaohongshu_account", new=AsyncMock(return_value=True)):
             code = asyncio.run(sau_cli.dispatch(args))
         self.assertEqual(code, 0)
+
+    def test_dispatch_douyin_login_passes_cdp_url(self):
+        args = Namespace(
+            platform="douyin",
+            action="login",
+            account="creator",
+            headless=False,
+            cdp_url="http://127.0.0.1:9222",
+        )
+        result = {"success": True, "account_file": "cookie.json"}
+        with patch("sau_cli.login_douyin_account", new=AsyncMock(return_value=result)) as mock_login:
+            code = asyncio.run(sau_cli.dispatch(args))
+
+        self.assertEqual(code, 0)
+        mock_login.assert_awaited_once_with("creator", headless=False, cdp_url="http://127.0.0.1:9222")
 
     def test_dispatch_douyin_upload_note_uses_new_request_fields(self):
         args = Namespace(

@@ -1,3 +1,6 @@
+"""CLI 通用工具:账号文件定位、参数解析(标签/图片/定时)与运行时开关。"""
+
+
 from __future__ import annotations
 
 import argparse

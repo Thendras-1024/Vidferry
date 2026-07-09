@@ -1,3 +1,6 @@
+"""CLI 参数解析器:构建各平台子命令(login/check/upload-video/upload-note)的 argparse。"""
+
+
 from __future__ import annotations
 
 import argparse
@@ -21,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         action_parser.add_argument("--account", required=True, help="Douyin user-defined account_name")
         if action_name == "login":
             add_runtime_flags(action_parser)
+            action_parser.add_argument("--cdp-url", help="Optional Chrome DevTools Protocol URL for an existing browser")
 
     upload_video_parser = douyin_actions.add_parser("upload-video", help="Upload one video to Douyin")
     upload_video_parser.add_argument("--account", required=True, help="Douyin user-defined account_name")

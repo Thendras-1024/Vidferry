@@ -1,3 +1,6 @@
+"""各平台扫码登录与 Cookie 获取(抖音/视频号/快手/小红书)。"""
+
+
 import asyncio
 import base64
 import sqlite3
@@ -32,9 +35,8 @@ async def safe_goto(page, url):
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
     except Exception as e:
-        # Some creator sites abort the initial navigation while redirecting into
-        # their login shell. If a document still loaded, continue and let the
-        # selector waits below decide whether the page is usable.
+        # 部分创作者站点在跳转到登录壳时会中断首次导航。若文档仍已加载,
+        # 则继续执行,交由下面的选择器等待来判断页面是否可用。
         if page.url == "about:blank":
             raise e
 
@@ -113,12 +115,12 @@ async def douyin_cookie_gen(id,status_queue,account_id=None):
             url_changed_event.set()
     async with async_playwright() as playwright:
         options = get_browser_options()
-        # Make sure to run headed.
+        # 必须使用有头模式运行,否则无法扫码。
         browser = await playwright.chromium.launch(**options)
-        # Setup context however you like.
-        context = await browser.new_context()  # Pass any options
+        # 按需创建浏览器上下文。
+        context = await browser.new_context()  # 可传入任意上下文选项
         context = await set_init_script(context)
-        # Pause the page, and start recording manually.
+        # 暂停页面,开始手动操作(扫码)。
         page = await context.new_page()
         await safe_goto(page, "https://creator.douyin.com/")
         original_url = page.url
@@ -169,11 +171,11 @@ async def get_tencent_cookie(id,status_queue,account_id=None):
 
     async with async_playwright() as playwright:
         options = get_browser_options()
-        # Make sure to run headed.
+        # 必须使用有头模式运行,否则无法扫码。
         browser = await playwright.chromium.launch(**options)
-        # Setup context however you like.
-        context = await browser.new_context()  # Pass any options
-        # Pause the page, and start recording manually.
+        # 按需创建浏览器上下文。
+        context = await browser.new_context()  # 可传入任意上下文选项
+        # 暂停页面,开始手动操作(扫码)。
         context = await set_init_script(context)
         page = await context.new_page()
         await safe_goto(page, "https://channels.weixin.qq.com")
@@ -232,12 +234,12 @@ async def get_ks_cookie(id,status_queue,account_id=None):
             url_changed_event.set()
     async with async_playwright() as playwright:
         options = get_browser_options()
-        # Make sure to run headed.
+        # 必须使用有头模式运行,否则无法扫码。
         browser = await playwright.chromium.launch(**options)
-        # Setup context however you like.
-        context = await browser.new_context()  # Pass any options
+        # 按需创建浏览器上下文。
+        context = await browser.new_context()  # 可传入任意上下文选项
         context = await set_init_script(context)
-        # Pause the page, and start recording manually.
+        # 暂停页面,开始手动操作(扫码)。
         page = await context.new_page()
         await safe_goto(page, "https://cp.kuaishou.com")
 
@@ -294,12 +296,12 @@ async def xiaohongshu_cookie_gen(id,status_queue,account_id=None):
 
     async with async_playwright() as playwright:
         options = get_browser_options()
-        # Make sure to run headed.
+        # 必须使用有头模式运行,否则无法扫码。
         browser = await playwright.chromium.launch(**options)
-        # Setup context however you like.
-        context = await browser.new_context()  # Pass any options
+        # 按需创建浏览器上下文。
+        context = await browser.new_context()  # 可传入任意上下文选项
         context = await set_init_script(context)
-        # Pause the page, and start recording manually.
+        # 暂停页面,开始手动操作(扫码)。
         page = await context.new_page()
         await safe_goto(page, "https://creator.xiaohongshu.com/")
         await page.locator('img.css-wemwzq').click()

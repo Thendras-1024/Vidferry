@@ -1,3 +1,6 @@
+"""快手平台 CLI 动作:账号登录、Cookie 校验、视频/笔记发布。"""
+
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,13 +26,12 @@ async def check_kuaishou_account(account_name: str) -> bool:
 
 
 async def upload_kuaishou_video(request: KuaishouVideoUploadRequest) -> Path:
-    from uploader.ks_uploader.main import KSVideo, ks_setup
+    from uploader.ks_uploader.main import KSVideo
 
     account_file = resolve_account_file("kuaishou", request.account_name)
-    is_ready = await ks_setup(str(account_file), handle=False)
-    if not is_ready:
+    if not account_file.exists():
         raise RuntimeError(
-            f"Kuaishou cookie is missing or expired: {account_file}. Run `sau kuaishou login --account {request.account_name}` first."
+            f"Kuaishou cookie file is missing: {account_file}. Run `sau kuaishou login --account {request.account_name}` first."
         )
 
     app = KSVideo(
@@ -49,13 +51,12 @@ async def upload_kuaishou_video(request: KuaishouVideoUploadRequest) -> Path:
 
 
 async def upload_kuaishou_note(request: KuaishouNoteUploadRequest) -> Path:
-    from uploader.ks_uploader.main import KSNote, ks_setup
+    from uploader.ks_uploader.main import KSNote
 
     account_file = resolve_account_file("kuaishou", request.account_name)
-    is_ready = await ks_setup(str(account_file), handle=False)
-    if not is_ready:
+    if not account_file.exists():
         raise RuntimeError(
-            f"Kuaishou cookie is missing or expired: {account_file}. Run `sau kuaishou login --account {request.account_name}` first."
+            f"Kuaishou cookie file is missing: {account_file}. Run `sau kuaishou login --account {request.account_name}` first."
         )
 
     app = KSNote(

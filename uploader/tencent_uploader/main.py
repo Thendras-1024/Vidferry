@@ -14,6 +14,7 @@ from patchright.async_api import async_playwright
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
+from utils.humanize import human_delay, jitter_seconds
 from utils.log import tencent_logger
 
 TENCENT_LOGIN_URL = "https://channels.weixin.qq.com"
@@ -460,8 +461,6 @@ class TencentBaseUploader(BaseVideoUploader):
     async def validate_base_args(self):
         if not os.path.exists(self.account_file):
             raise RuntimeError(f"cookie文件不存在，请先完成视频号登录: {self.account_file}")
-        if not await cookie_auth(self.account_file):
-            raise RuntimeError(f"cookie文件已失效，请先完成视频号登录: {self.account_file}")
         if self.publish_strategy not in {TENCENT_PUBLISH_STRATEGY_IMMEDIATE, TENCENT_PUBLISH_STRATEGY_SCHEDULED}:
             raise ValueError(f"不支持的发布策略: {self.publish_strategy}")
 
@@ -496,7 +495,25 @@ class TencentBaseUploader(BaseVideoUploader):
 
     async def open_upload_page(self, page: Page) -> None:
         await page.goto(TENCENT_UPLOAD_URL)
-        await page.wait_for_url(TENCENT_UPLOAD_URL)
+        try:
+            await page.wait_for_url(TENCENT_UPLOAD_URL)
+        except Exception:
+            await self.ensure_publish_session(page)
+            raise
+        await self.ensure_publish_session(page)
+
+    async def ensure_publish_session(self, page: Page) -> None:
+        if "login" in page.url:
+            raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 视频号 Cookie 已失效，请重新连接账号。")
+        for selector in ('span:has-text("微信扫码登录 视频号助手")', 'text="扫码登录"'):
+            try:
+                marker = page.locator(selector).first
+                if await marker.count() and await marker.is_visible():
+                    raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 视频号 Cookie 已失效，请重新连接账号。")
+            except RuntimeError:
+                raise
+            except Exception:
+                continue
 
     async def upload_video_file(self, page: Page, file_path: str) -> None:
         file_input = page.locator('input[type="file"]')
@@ -583,7 +600,7 @@ class TencentBaseUploader(BaseVideoUploader):
                     break
 
                 tencent_logger.info(_msg("🏃", "正在上传视频中..."))
-                await asyncio.sleep(2)
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
                 upload_failed = await page.locator("div.status-msg.error").count()
                 delete_button = await page.locator('div.media-status-content div.tag-inner:has-text("删除")').count()
@@ -592,7 +609,7 @@ class TencentBaseUploader(BaseVideoUploader):
                     await self.handle_upload_error(page)
             except Exception:
                 tencent_logger.info(_msg("🏃", "正在上传视频中..."))
-                await asyncio.sleep(2)
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
     async def submit_publish(self, page: Page) -> None:
         while True:
@@ -606,6 +623,7 @@ class TencentBaseUploader(BaseVideoUploader):
                 else:
                     publish_button = page.locator('div.form-btns button:has-text("发表")')
                     if await publish_button.count():
+                        await human_delay(1.5, 5)
                         await publish_button.click()
                     await page.wait_for_url(TENCENT_MANAGE_URL, timeout=5000)
                     tencent_logger.success(_msg("🥳", "视频发布成功"))
@@ -622,7 +640,7 @@ class TencentBaseUploader(BaseVideoUploader):
                         break
                 tencent_logger.exception(f"  [-] Exception: {exc}")
                 tencent_logger.info(_msg("🏃", "视频正在发布中..."))
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(jitter_seconds(0.5, min_seconds=0.3, max_seconds=0.9))
 
 
 class TencentVideo(TencentBaseUploader):
@@ -751,7 +769,9 @@ class TencentVideo(TencentBaseUploader):
             await self.open_upload_page(page)
             tencent_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}"))
 
+            await human_delay(1, 3)
             await self.upload_video_file(page, self.file_path)
+            await human_delay(0.8, 2.5)
             await self.prepare_video_for_publish(page)
             await self.wait_for_upload_complete(page)
             await self.set_thumbnail(page)
@@ -855,6 +875,7 @@ class TencentNote(TencentBaseUploader):
             await self.open_upload_page(page)
             tencent_logger.info(_msg("🏃", f"小人开始搬运图文，共 {len(self.image_paths)} 张图片"))
 
+            await human_delay(1, 3)
             await self.upload_note_content(page)
 
             if self.publish_strategy == TENCENT_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:

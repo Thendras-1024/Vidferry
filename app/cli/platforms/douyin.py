@@ -1,3 +1,6 @@
+"""抖音平台 CLI 动作:账号登录、Cookie 校验、视频/笔记发布。"""
+
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,11 +9,11 @@ from app.cli.models import DouyinNoteUploadRequest, DouyinVideoUploadRequest
 from app.cli.utils import resolve_account_file
 
 
-async def login_douyin_account(account_name: str, headless: bool = True) -> dict:
+async def login_douyin_account(account_name: str, headless: bool = True, cdp_url: str | None = None) -> dict:
     from uploader.douyin_uploader.main import douyin_setup
 
     account_file = resolve_account_file("douyin", account_name)
-    return await douyin_setup(str(account_file), handle=True, return_detail=True, headless=headless)
+    return await douyin_setup(str(account_file), handle=True, return_detail=True, headless=headless, cdp_url=cdp_url)
 
 
 async def check_douyin_account(account_name: str) -> bool:
@@ -23,13 +26,12 @@ async def check_douyin_account(account_name: str) -> bool:
 
 
 async def upload_video(request: DouyinVideoUploadRequest) -> Path:
-    from uploader.douyin_uploader.main import DouYinVideo, douyin_setup
+    from uploader.douyin_uploader.main import DouYinVideo
 
     account_file = resolve_account_file("douyin", request.account_name)
-    is_ready = await douyin_setup(str(account_file), handle=False)
-    if not is_ready:
+    if not account_file.exists():
         raise RuntimeError(
-            f"Douyin cookie is missing or expired: {account_file}. Run `sau douyin login --account {request.account_name}` first."
+            f"Douyin cookie file is missing: {account_file}. Run `sau douyin login --account {request.account_name}` first."
         )
 
     app = DouYinVideo(
@@ -51,13 +53,12 @@ async def upload_video(request: DouyinVideoUploadRequest) -> Path:
 
 
 async def upload_note(request: DouyinNoteUploadRequest) -> Path:
-    from uploader.douyin_uploader.main import DouYinNote, douyin_setup
+    from uploader.douyin_uploader.main import DouYinNote
 
     account_file = resolve_account_file("douyin", request.account_name)
-    is_ready = await douyin_setup(str(account_file), handle=False)
-    if not is_ready:
+    if not account_file.exists():
         raise RuntimeError(
-            f"Douyin cookie is missing or expired: {account_file}. Run `sau douyin login --account {request.account_name}` first."
+            f"Douyin cookie file is missing: {account_file}. Run `sau douyin login --account {request.account_name}` first."
         )
 
     app = DouYinNote(

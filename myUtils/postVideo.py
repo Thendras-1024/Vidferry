@@ -1,3 +1,6 @@
+"""各平台视频发布封装(视频号/抖音/快手/小红书)。"""
+
+
 import asyncio
 from pathlib import Path
 
