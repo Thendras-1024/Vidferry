@@ -1,4 +1,4 @@
-def _material_file_path(record):
+﻿def _material_file_path(record):
     raw_path = record.get("storage_key") or record.get("file_path") or ""
     if not raw_path:
         return None
@@ -211,7 +211,7 @@ def delete_material_record(cursor, file_id):
 def delete_material_records(file_ids):
     init_database_tables()
     results = []
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         for file_id in file_ids:
@@ -336,7 +336,7 @@ def verify_youtube_file_consistency():
         "removedMaterialRecords": 0,
         "issues": [],
     }
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -650,7 +650,7 @@ def list_material_records(params=None):
     page = _parse_positive_int(params.get("page"), 1, 1, 100000)
     page_size = _parse_positive_int(params.get("pageSize"), 20, 1, 100)
     offset = (page - 1) * page_size
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         where_sql, values = _material_where(params)
@@ -744,7 +744,7 @@ def _row_to_published_material(row):
 def list_published_youtube_materials(limit=50):
     init_database_tables()
     limit = max(1, min(int(limit or 50), 200))
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
@@ -967,7 +967,7 @@ def register_material(
             duration_label = duration_label or _format_duration_label(duration_seconds)
         except Exception:
             duration_seconds = 0
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM file_records WHERE file_path = ? OR storage_key = ?", (file_path_value, file_path_value))
@@ -1030,7 +1030,7 @@ def _save_processed_video_to_material(file_path, job=None):
     video_id = job.get("videoId") or ""
     process_version = job.get("processVersion") or "translation_v1"
     if video_id:
-        with sqlite3.connect(_db_path()) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             replaced = _delete_replaced_processed_materials(
@@ -1070,7 +1070,7 @@ def _validate_publish_processed_files(file_list):
 
     materials = []
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         for file_path in normalized_paths:
@@ -1097,7 +1097,7 @@ def _assert_publish_targets_available(material, targets):
         raise ValueError("发布素材未绑定视频线索，无法校验平台发布状态")
 
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         for target in targets:
@@ -1142,7 +1142,7 @@ def _mark_published_materials(
     updated = []
 
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         for file_path in file_list:
@@ -1299,7 +1299,7 @@ def list_publish_tasks(limit=20):
     init_database_tables()
     limit = max(1, min(int(limit or 20), 100))
     fetch_limit = max(limit * 8, 80)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
@@ -1320,7 +1320,7 @@ def list_publish_tasks(limit=20):
 
 def delete_publish_target_record(record_id):
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM published_youtube_materials WHERE id = ?", (record_id,))

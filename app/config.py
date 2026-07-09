@@ -12,7 +12,7 @@ from conf import BASE_DIR
 
 
 APP_VERSION = "0.2.0"
-HOST = os.getenv("VIDFERRY_HOST", "0.0.0.0")
+HOST = os.getenv("VIDFERRY_HOST", "127.0.0.1")
 PORT = int(os.getenv("VIDFERRY_PORT", "5409"))
 
 
@@ -63,7 +63,11 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "90") or 90)
 LLM_MAX_TRANSCRIPT_CHARS = int(os.environ.get("LLM_MAX_TRANSCRIPT_CHARS", "28000") or 28000)
-
+SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "5000") or 5000)
+SQLITE_ENABLE_WAL = os.environ.get("SQLITE_ENABLE_WAL", "1").strip().lower() not in {"0", "false", "no"}
+WORKFLOW_MAX_DOWNLOAD_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_DOWNLOAD_JOBS", "2") or 2))
+WORKFLOW_MAX_PROCESSING_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_PROCESSING_JOBS", "1") or 1))
+WORKFLOW_MAX_ANALYSIS_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_ANALYSIS_JOBS", "2") or 2))
 _LLM_CONFIG_STATUS_CACHE = None
 
 
@@ -135,6 +139,14 @@ def get_llm_config_status():
             f"LLM 配置存在但模型接口不可用：{reason}。请检查 LLM_BASE_URL、LLM_MODEL、LLM_API_KEY 后重启后端。",
         )
     return _LLM_CONFIG_STATUS_CACHE
+CORS_ORIGINS = [
+    item.strip()
+    for item in os.environ.get(
+        "VIDFERRY_CORS_ORIGINS",
+        "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175",
+    ).split(",")
+    if item.strip()
+]
 
 SUBTITLE_LANGUAGES = {
     "zh-CN": {"label": "中文", "suffix": "zh"},
@@ -170,11 +182,11 @@ BURN_PROFILES = {
 DEFAULT_BURN_PROFILE = "stable"
 SUBTITLE_SIZE_PRESETS = {
     "standard": {"label": "标准", "scale": 1.0},
-    "large": {"label": "大号", "scale": 1.16},
-    "douyin": {"label": "抖音醒目", "scale": 1.48},
+    "large": {"label": "大号（抖音推荐）", "scale": 1.16},
+    "douyin": {"label": "超大号", "scale": 1.48},
 }
-DEFAULT_SUBTITLE_SIZE = "douyin"
-DEFAULT_TRANSLATOR_LABEL = "AI中文字幕"
+DEFAULT_SUBTITLE_SIZE = "large"
+DEFAULT_TRANSLATOR_LABEL = "Vidferry翻译"
 PROCESS_VERSION_TRANSLATION = "translation_v1"
 PROCESS_VERSION_EDITING = "editing_v1"
 PROCESS_VERSIONS = {PROCESS_VERSION_TRANSLATION, PROCESS_VERSION_EDITING}

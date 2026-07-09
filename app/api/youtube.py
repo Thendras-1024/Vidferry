@@ -255,9 +255,10 @@ def create_youtube_workflow():
         if payload.get("publishToTencent") and payload.get("tencentAccount"):
             _check_named_publish_account(2, payload.get("tencentAccount"))
         job = create_youtube_workflow_job(payload)
-        thread = threading.Thread(target=run_youtube_workflow, args=(job["id"],), daemon=True)
-        thread.start()
+        _submit_background_task("processing", run_youtube_workflow, job["id"])
         return _json_response(data=job, status=202)
+    except WorkflowConflictError as e:
+        return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
         return _json_response(500, f"创建工作流任务失败: {str(e)}", None, 500)
 
@@ -284,9 +285,10 @@ def create_youtube_download():
             "tags": payload.get("tags") or [],
             "schedule": "",
         })
-        thread = threading.Thread(target=run_youtube_download_job, args=(job["id"],), daemon=True)
-        thread.start()
+        _submit_background_task("download", run_youtube_download_job, job["id"])
         return _json_response(data=job, status=202)
+    except WorkflowConflictError as e:
+        return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
         return _json_response(500, f"创建下载任务失败: {str(e)}", None, 500)
 
@@ -313,9 +315,10 @@ def create_youtube_translate():
             "tags": payload.get("tags") or [],
             "schedule": "",
         })
-        thread = threading.Thread(target=run_youtube_translate_job, args=(job["id"],), daemon=True)
-        thread.start()
+        _submit_background_task("processing", run_youtube_translate_job, job["id"])
         return _json_response(data=job, status=202)
+    except WorkflowConflictError as e:
+        return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
         return _json_response(500, f"创建处理任务失败: {str(e)}", None, 500)
 

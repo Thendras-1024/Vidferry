@@ -1,4 +1,4 @@
-def _select_intro_highlight_segments(analysis_result, max_segments=3):
+﻿def _select_intro_highlight_segments(analysis_result, max_segments=3):
     raw_segments = (analysis_result or {}).get("highlight_segments") or []
     selected = []
     for segment in _normalize_highlight_segments(raw_segments):
@@ -650,7 +650,7 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         return None
 
     init_youtube_workflow_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT analysis_status FROM youtube_videos WHERE video_id = ?", (video_id,))
@@ -673,15 +673,10 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         "tags": base_job.get("tags") or [],
         "schedule": "",
     }
-    job = create_youtube_workflow_job(payload)
+    job = create_youtube_workflow_job(payload, allow_active_job=True)
     update_youtube_video_analysis_status(video_id, 2)
 
-    thread = threading.Thread(
-        target=run_youtube_analysis_job,
-        args=(job["id"], str(source_file or "")),
-        daemon=True,
-    )
-    thread.start()
+    _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
     return job
 
 

@@ -1,4 +1,4 @@
-def _publish_to_douyin(job, processed_file):
+﻿def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
     account_info = _check_named_publish_account(3, job["account"])
@@ -255,7 +255,7 @@ def _mark_account_abnormal(platform_type, account_file, reason=""):
     if not account_file:
         return
     try:
-        with sqlite3.connect(_db_path()) as conn:
+        with _db_connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''

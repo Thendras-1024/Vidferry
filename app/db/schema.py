@@ -1,6 +1,6 @@
-def init_database_tables():
+﻿def init_database_tables():
     Path(BASE_DIR / "db").mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_info (
@@ -59,6 +59,8 @@ def init_database_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_type ON file_records(source_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_type_upload ON file_records(source_type, upload_time, id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_video_type ON file_records(source_video_id, source_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_upload_order ON file_records(upload_time DESC, id DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_status_upload ON file_records(status, upload_time DESC, id DESC)")
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
@@ -120,6 +122,7 @@ def init_database_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_video_id ON youtube_workflow_events(video_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_stage ON youtube_workflow_events(stage)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_started ON youtube_workflow_events(started_at, id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_job_started ON youtube_workflow_events(job_id, started_at DESC, id DESC)")
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS published_youtube_materials (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,7 +214,7 @@ def init_database_tables():
 
 def init_youtube_video_table():
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS youtube_videos (
@@ -267,7 +270,7 @@ def init_youtube_video_table():
 
 def init_youtube_workflow_table():
     init_youtube_video_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS youtube_workflow_jobs (
@@ -291,8 +294,8 @@ def init_youtube_workflow_table():
             process_version TEXT DEFAULT 'translation_v1',
             subtitle_language TEXT DEFAULT 'zh-CN',
             burn_profile TEXT DEFAULT 'stable',
-            subtitle_size TEXT DEFAULT 'douyin',
-            translator_label TEXT DEFAULT 'AI中文字幕',
+            subtitle_size TEXT DEFAULT 'large',
+            translator_label TEXT DEFAULT 'Vidferry翻译',
             title TEXT,
             description TEXT,
             tags TEXT,
@@ -351,9 +354,9 @@ def init_youtube_workflow_table():
         if "burn_profile" not in existing_columns:
             cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN burn_profile TEXT DEFAULT 'stable'")
         if "subtitle_size" not in existing_columns:
-            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN subtitle_size TEXT DEFAULT 'douyin'")
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN subtitle_size TEXT DEFAULT 'large'")
         if "translator_label" not in existing_columns:
-            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN translator_label TEXT DEFAULT 'AI中文字幕'")
+            cursor.execute("ALTER TABLE youtube_workflow_jobs ADD COLUMN translator_label TEXT DEFAULT 'Vidferry翻译'")
         workflow_error_columns = {
             "error_code": "TEXT",
             "error_type": "TEXT",
@@ -368,6 +371,7 @@ def init_youtube_workflow_table():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status ON youtube_workflow_jobs(status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status_updated ON youtube_workflow_jobs(status, updated_at, created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_updated ON youtube_workflow_jobs(video_id, updated_at, created_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_status_updated ON youtube_workflow_jobs(video_id, status, updated_at DESC, created_at DESC)')
         conn.commit()
 
 

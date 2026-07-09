@@ -876,6 +876,8 @@ let jobsRequesting = false
 let workflowSettingsLoaded = false
 let loadingWorkflowSettings = false
 let workflowSettingsSaveTimer = null
+const JOBS_POLL_ACTIVE_MS = 1500
+const JOBS_POLL_IDLE_MS = 8000
 
 const openSettingsFromLayout = () => {
   settingsDialogVisible.value = true
@@ -913,8 +915,8 @@ const workflowForm = reactive({
   processVersion: 'translation_v1',
   subtitleLanguage: 'zh-CN',
   burnProfile: 'stable',
-  subtitleSize: 'douyin',
-  translatorLabel: 'AI中文字幕'
+  subtitleSize: 'large',
+  translatorLabel: 'Vidferry翻译'
 })
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
@@ -1065,12 +1067,12 @@ const subtitleSizes = [
   },
   {
     value: 'large',
-    label: '大号',
+    label: '大号（抖音推荐）',
     description: '比标准字号更醒目，适合大多数手机端播放场景。'
   },
   {
     value: 'douyin',
-    label: '抖音醒目（推荐）',
+    label: '超大号',
     description: '适合手机竖屏和国内平台预览，中文、英文和左上角说明都会明显放大。'
   }
 ]
@@ -1730,13 +1732,20 @@ const loadJobs = async ({ silent = false, recentOnly = false } = {}) => {
 
 const startJobsPolling = () => {
   if (jobsTimer) return
-  jobsTimer = window.setInterval(() => {
-    if (jobs.value.some(job => job.status === 'queued' || job.status === 'running') || Number(videoSummary.value?.running || 0) > 0) {
-      loadJobs({ silent: true, recentOnly: true }).then(changedVideoIds => {
+  const poll = async () => {
+    const hasRunning = jobs.value.some(job => job.status === 'queued' || job.status === 'running') || Number(videoSummary.value?.running || 0) > 0
+    try {
+      if (hasRunning) {
+        const changedVideoIds = await loadJobs({ silent: true, recentOnly: true })
         refreshVideosByIds(changedVideoIds)
-      })
+      } else {
+        await loadJobs({ silent: true, recentOnly: true })
+      }
+    } finally {
+      jobsTimer = window.setTimeout(poll, hasRunning ? JOBS_POLL_ACTIVE_MS : JOBS_POLL_IDLE_MS)
     }
-  }, 1500)
+  }
+  jobsTimer = window.setTimeout(poll, JOBS_POLL_ACTIVE_MS)
 }
 
 const hasActiveWorkflowJobs = () => jobs.value.some(job => job.status === 'queued' || job.status === 'running')
@@ -2320,7 +2329,7 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener('beforeunload', handleBeforeUnload)
   if (jobsTimer) {
-    window.clearInterval(jobsTimer)
+    window.clearTimeout(jobsTimer)
     jobsTimer = null
   }
   if (clockTimer) {

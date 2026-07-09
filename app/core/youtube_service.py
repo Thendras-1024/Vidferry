@@ -1,4 +1,4 @@
-def _row_to_youtube_video(row):
+﻿def _row_to_youtube_video(row):
     item = dict(row)
     analysis_result = _parse_json_object(item.get("analysis_result"))
     publish_draft = _parse_publish_draft(item.get("publish_draft"), analysis_result)
@@ -33,7 +33,7 @@ def _row_to_youtube_video(row):
 
 def save_new_youtube_videos(videos, query):
     init_youtube_video_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         normalized_videos = []
@@ -422,7 +422,7 @@ def list_youtube_videos(params=None):
     page = _parse_positive_int(params.get("page"), 1, 1, 100000)
     page_size = _parse_positive_int(params.get("pageSize"), 20, 1, 100)
     offset = (page - 1) * page_size
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         conn.create_function("duration_to_seconds", 1, _duration_text_to_seconds)
         cursor = conn.cursor()
@@ -458,7 +458,7 @@ def list_youtube_videos(params=None):
 
 def normalize_existing_youtube_subscribers():
     init_youtube_workflow_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         for table in ("youtube_videos", "youtube_workflow_jobs"):
             cursor.execute(f"SELECT id, subscribers FROM {table} WHERE subscribers IS NOT NULL AND subscribers != ''")
@@ -490,7 +490,7 @@ def update_youtube_video_status(video_id, download_status=None, publish_status=N
         raise ValueError("没有可更新的状态字段")
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(video_id)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(f'''
@@ -507,7 +507,7 @@ def update_youtube_video_status(video_id, download_status=None, publish_status=N
 
 def delete_youtube_video_record(video_id):
     init_youtube_video_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
@@ -607,7 +607,7 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
     process_version = _normalize_process_version(process_version) if process_version else ""
 
     deleted_materials = []
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))

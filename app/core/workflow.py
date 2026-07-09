@@ -1,4 +1,4 @@
-def _row_to_workflow_job(row):
+﻿def _row_to_workflow_job(row):
     item = dict(row)
     return {
         "id": item.get("id"),
@@ -111,7 +111,7 @@ def _normalize_process_version(value):
     return process_version if process_version in PROCESS_VERSIONS else PROCESS_VERSION_TRANSLATION
 
 
-def create_youtube_workflow_job(payload):
+def create_youtube_workflow_job(payload, *, allow_active_job=False):
     init_youtube_workflow_table()
     job_id = str(uuid.uuid4())
     subtitle_language = _normalize_subtitle_language(payload.get("subtitleLanguage"))
@@ -122,8 +122,20 @@ def create_youtube_workflow_job(payload):
     tags = payload.get("tags") or []
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
-    with sqlite3.connect(_db_path()) as conn:
+    video_id = payload.get("videoId") or ""
+    with _db_connect() as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        if video_id and not allow_active_job:
+            active_job = _active_job_for_video(cursor, video_id)
+            if active_job:
+                raise WorkflowConflictError(
+                    "该视频存在运行中任务，请等待任务结束后再操作。",
+                    WORKFLOW_ERROR_LOCK_ACTIVE_JOB,
+                    "ACTIVE_JOB_LOCK",
+                    {"job": active_job},
+                )
         cursor.execute('''
         INSERT INTO youtube_workflow_jobs (
             id, video_id, url, account, channel, subscribers, published_at,
@@ -135,7 +147,7 @@ def create_youtube_workflow_job(payload):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             job_id,
-            payload.get("videoId") or "",
+            video_id,
             payload["url"],
             payload.get("account") or "",
             payload.get("channel") or "",
@@ -170,7 +182,7 @@ def create_youtube_workflow_job(payload):
 
 def get_youtube_workflow_job(job_id):
     init_youtube_workflow_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
@@ -196,7 +208,7 @@ def list_youtube_workflow_jobs(limit=50, params=None):
     page = _parse_positive_int(params.get("page"), 1, 1, 100000)
     page_size = _parse_positive_int(params.get("pageSize") or params.get("limit"), limit, 1, 100)
     offset = (page - 1) * page_size
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         where = []
@@ -421,7 +433,7 @@ def update_youtube_workflow_job(job_id, **changes):
         values.append(value)
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(job_id)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute(f'''
         UPDATE youtube_workflow_jobs
@@ -435,7 +447,7 @@ def update_youtube_workflow_job(job_id, **changes):
 def mark_interrupted_workflow_jobs(error_code, error_type, reason, detail="", only_existing_active=True):
     init_youtube_workflow_table()
     now = _now_iso()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
@@ -514,7 +526,7 @@ def _parse_dt(value):
 def start_workflow_event(job, stage, message="", input_file_path="", metadata=None):
     init_database_tables()
     now = _now_iso()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
         INSERT INTO youtube_workflow_events (
@@ -554,7 +566,7 @@ def finish_workflow_event(event_id, status="success", message="", output_file_pa
         or 0
     )
     metadata = metadata or {}
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_workflow_events WHERE id = ?", (event_id,))
@@ -635,7 +647,7 @@ def list_workflow_events(limit=200, page=1, page_size=None):
     page_size = _parse_positive_int(page_size or limit, limit, 1, 1000)
     page = _parse_positive_int(page, 1, 1, 100000)
     offset = (page - 1) * page_size
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) AS total FROM youtube_workflow_events")
@@ -665,7 +677,7 @@ def get_workflow_statistics(limit=200, page=1, page_size=None):
     jobs_page = list_youtube_workflow_jobs(limit)
     jobs = jobs_page["items"]
     init_youtube_workflow_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
@@ -770,7 +782,7 @@ def update_youtube_video_artifacts(video_id, **changes):
         values.append(value)
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(video_id)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(f'''
@@ -794,7 +806,7 @@ def update_youtube_video_analysis_status(video_id, status, result=None):
         fields.append("analysis_result = ?")
         values.append(json.dumps(result, ensure_ascii=False))
     values.append(video_id)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(f'''
@@ -814,7 +826,7 @@ def save_youtube_video_analysis(video_id, result):
         raise ValueError("视频 ID 不能为空")
     init_youtube_video_table()
     default_draft = _build_default_publish_draft(result)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
@@ -868,7 +880,7 @@ def update_youtube_video_publish_draft(video_id, payload):
         "source": "user_saved",
         "updatedAt": _now_iso(),
     }
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('''
@@ -895,7 +907,7 @@ def ensure_youtube_publish_draft(video_id):
     if not result:
         return analysis
     draft = _build_default_publish_draft(result)
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
         UPDATE youtube_videos
@@ -909,7 +921,7 @@ def ensure_youtube_publish_draft(video_id):
 
 def get_youtube_video_analysis(video_id):
     init_youtube_video_table()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))

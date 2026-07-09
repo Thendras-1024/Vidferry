@@ -1,4 +1,4 @@
-WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
+﻿WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
 
 
 def _default_workflow_settings():
@@ -40,7 +40,7 @@ def _normalize_workflow_settings(payload=None):
 
 def get_workflow_settings():
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM app_settings WHERE key = ?", (WORKFLOW_SETTINGS_KEY,))
         row = cursor.fetchone()
@@ -55,7 +55,7 @@ def get_workflow_settings():
 def update_workflow_settings(payload):
     settings = _normalize_workflow_settings(payload)
     init_database_tables()
-    with sqlite3.connect(_db_path()) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute(
             '''

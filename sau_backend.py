@@ -10,6 +10,7 @@ load_backend_namespace(globals())
 
 def create_app():
     """Return the Flask application with all modular routes loaded."""
+    init_youtube_workflow_table()
     return app
 
 
