@@ -1,4 +1,10 @@
-﻿def _publish_to_douyin(job, processed_file):
+﻿"""多平台发布执行:发布任务构建、隔离子进程调用与账号失效处理。"""
+
+
+from app.utils.time_util import _build_publish_datetimes, _format_publish_schedule, _parse_publish_schedule
+
+
+def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
     account_info = _check_named_publish_account(3, job["account"])
@@ -139,28 +145,6 @@ def _publish_center_to_bilibili(title, description, file_list, tags, account_lis
                 raise RuntimeError((result.stderr or result.stdout or "").strip() or "B站发布失败")
 
 
-def _format_publish_schedule(value):
-    if not value:
-        return ""
-    if hasattr(value, "strftime"):
-        return value.strftime("%Y-%m-%d %H:%M")
-    return str(value)
-
-
-def _build_publish_datetimes(file_count, enable_timer=False, videos_per_day=1, daily_times=None, start_days=0):
-    if not enable_timer:
-        return [0 for _ in range(file_count)]
-    from utils.files_times import generate_schedule_time_next_day
-
-    normalized_daily_times = []
-    for item in daily_times or []:
-        if isinstance(item, str) and ":" in item:
-            normalized_daily_times.append(int(item.split(":", 1)[0]))
-        else:
-            normalized_daily_times.append(int(item))
-    return generate_schedule_time_next_day(file_count, videos_per_day, normalized_daily_times, start_days=start_days)
-
-
 def _publish_platform_slug(platform_type):
     return {
         1: "xiaohongshu",
@@ -193,18 +177,6 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
         "headless": False,
         "debug": True,
     }
-
-
-def _parse_publish_schedule(value):
-    value = str(value or "").strip()
-    if not value:
-        return 0
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.datetime.strptime(value, fmt)
-        except ValueError:
-            continue
-    return value
 
 
 def _workflow_publish_runner_command(task):

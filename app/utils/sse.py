@@ -1,3 +1,8 @@
+"""登录流程调度与 SSE 流式输出辅助函数。"""
+
+from app.utils.sse_util import build_sse_stream
+
+
 def run_async_function(type,id,status_queue,account_id=None):
     if type == '5':
         bilibili_cookie_gen(id, status_queue, account_id)
@@ -27,22 +32,8 @@ def run_async_function(type,id,status_queue,account_id=None):
     finally:
         loop.close()
 
-# SSE 流生成器函数
 def sse_stream(status_queue, queue_key=None):
-    try:
-        while True:
-            if not status_queue.empty():
-                msg = status_queue.get()
-                yield f"data: {msg}\n\n"
-                if msg in {"200", "500"}:
-                    break
-            else:
-                # 避免 CPU 占满
-                time.sleep(0.1)
-    finally:
-        if queue_key:
-            print(f"清理队列: {queue_key}")
-            active_queues.pop(queue_key, None)
+    yield from build_sse_stream(status_queue, active_queues, queue_key)
 
 
 _shutdown_marked = False

@@ -1,94 +1,13 @@
-def _ensure_dir(path):
-    resolved = Path(path)
-    resolved.mkdir(parents=True, exist_ok=True)
-    return resolved
+"""下载与命令执行基础设施:FFmpeg/yt-dlp 运行时解析、子进程封装、文件安全替换与下载进度回调。"""
 
-
-def _run_command(command, cwd=None, timeout=None):
-    if isinstance(command, str):
-        command = [
-            item.strip('"').strip("'")
-            for item in shlex.split(command, posix=(os.name != "nt"))
-            if item.strip('"').strip("'")
-        ]
-    if not command:
-        raise RuntimeError("命令不能为空")
-    env = os.environ.copy()
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONUTF8", "1")
-    result = subprocess.run(
-        command,
-        cwd=str(cwd or BASE_DIR),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        shell=False,
-        env=env,
-    )
-    output = "\n".join(part for part in [(result.stdout or "").strip(), (result.stderr or "").strip()] if part)
-    if result.returncode != 0:
-        display_command = " ".join(map(str, command))
-        raise RuntimeError(output or f"命令执行失败: {display_command}")
-    return result
-
-
-def _replace_file_with_backup(source_file, output_file):
-    source_file = Path(source_file)
-    output_file = Path(output_file)
-    backup_file = None
-    if output_file.exists():
-        backup_file = output_file.with_name(f"{output_file.stem}.previous{output_file.suffix}")
-        if backup_file.exists():
-            backup_file.unlink()
-        output_file.replace(backup_file)
-    try:
-        shutil.copy2(source_file, output_file)
-        if backup_file and backup_file.exists():
-            backup_file.unlink()
-    except Exception:
-        if output_file.exists():
-            output_file.unlink()
-        if backup_file and backup_file.exists():
-            backup_file.replace(output_file)
-        raise
-    return output_file
-
-
-def _replace_output_file(tmp_output_file, output_file):
-    tmp_output_file = Path(tmp_output_file)
-    output_file = Path(output_file)
-    backup_file = None
-    if output_file.exists():
-        backup_file = output_file.with_name(f"{output_file.stem}.previous{output_file.suffix}")
-        if backup_file.exists():
-            backup_file.unlink()
-        output_file.replace(backup_file)
-    try:
-        tmp_output_file.replace(output_file)
-        if backup_file and backup_file.exists():
-            backup_file.unlink()
-    except Exception:
-        if output_file.exists():
-            output_file.unlink()
-        if backup_file and backup_file.exists():
-            backup_file.replace(output_file)
-        raise
-    return output_file
-
-
-def _resolve_ffmpeg_command():
-    configured = str(FFMPEG_COMMAND or "").strip()
-    if configured and (shutil.which(configured) or Path(configured).exists()):
-        return configured
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as exc:
-        raise RuntimeError(
-            "未找到 FFmpeg。请安装 ffmpeg，或安装 imageio-ffmpeg，或在 conf.py/.env 配置 FFMPEG_COMMAND。"
-        ) from exc
+from app.utils.ffmpeg_util import _resolve_ffmpeg_command
+from app.utils.file_util import (
+    _ensure_dir,
+    _find_newest_video_file,
+    _replace_file_with_backup,
+    _replace_output_file,
+)
+from app.utils.process_util import _run_command
 
 
 def _resolve_ytdlp_js_runtimes():
@@ -126,17 +45,6 @@ def _render_command_template(template, **values):
     if not template:
         return ""
     return template.format(**values)
-
-
-def _find_newest_video_file(directory, since_timestamp):
-    allowed = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv"}
-    candidates = [
-        path for path in Path(directory).glob("**/*")
-        if path.is_file() and path.suffix.lower() in allowed and path.stat().st_mtime >= since_timestamp
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def _format_bytes_per_second(value):
