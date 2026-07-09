@@ -23,6 +23,98 @@ def _ffmpeg_concat_file_path(path):
     return Path(path).resolve().as_posix().replace("'", "'\\''")
 
 
+EDITING_UP_NEXT_TEXT = "精彩片段 Up Next"
+
+
+def _editing_up_next_layout(width, height):
+    width = max(320, int(width or 1080))
+    height = max(320, int(height or 1920))
+    short_side = min(width, height)
+    font_size = max(28, min(62, int(short_side * 0.052)))
+    box_x = max(24, int(width * 0.15))
+    box_y = max(18, int(height * 0.040))
+    box_w = min(width - box_x - 24, max(int(font_size * 8.8), int(width * 0.31)))
+    box_h = max(int(font_size * 1.45), 48)
+    box_w = max(box_w, int(font_size * 6.9))
+    center_x = box_x + box_w / 2
+    center_y = box_y + box_h / 2
+    return {
+        "font_size": font_size,
+        "box_x": box_x,
+        "box_y": box_y,
+        "box_w": box_w,
+        "box_h": box_h,
+        "center_x": round(center_x, 1),
+        "center_y": round(center_y, 1),
+    }
+
+
+def _editing_up_next_breath_tags(duration):
+    duration_ms = max(1200, int(float(duration or 0) * 1000))
+    tags = [
+        r"\t(0,220,\fscx106\fscy106)",
+        r"\t(220,800,\fscx100\fscy100)",
+    ]
+    for start in range(0, duration_ms, 1600):
+        mid = min(start + 800, duration_ms)
+        end = min(start + 1600, duration_ms)
+        tags.append(fr"\t({start},{mid},\alpha&H06&\blur0.2)")
+        tags.append(fr"\t({mid},{end},\alpha&H18&\blur0.8)")
+    return "".join(tags)
+
+
+def _write_editing_up_next_overlay_ass(ass_file, width, height, duration):
+    ass_file = Path(ass_file)
+    layout = _editing_up_next_layout(width, height)
+    start = _format_ass_timestamp(0)
+    end = _format_ass_timestamp(max(0.5, float(duration or 0.5)))
+    text = _escape_ass_text(EDITING_UP_NEXT_TEXT)
+    pos = fr"\pos({layout['center_x']},{layout['center_y']})"
+    breath_tags = _editing_up_next_breath_tags(duration)
+    glow_tags = _editing_up_next_breath_tags(duration).replace(r"\blur0.2", r"\blur5").replace(r"\blur0.8", r"\blur7")
+    dialogue_lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        f"PlayResX: {max(320, int(width or 1080))}",
+        f"PlayResY: {max(320, int(height or 1920))}",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: UpNextGlow,Microsoft YaHei,{layout['font_size']},&H00FFFFEB,&H000000FF,&H00FFE660,&H00000000,1,0,0,0,100,100,0,0,1,8,0,5,0,0,0,1",
+        f"Style: UpNextText,Microsoft YaHei,{layout['font_size']},&H00FFFFEB,&H000000FF,&H00FFE660,&H00000000,1,0,0,0,100,100,0,0,1,1.4,0,5,0,0,0,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        f"Dialogue: 0,{start},{end},UpNextGlow,,0,0,0,,{{\\an5{pos}\\alpha&H92&\\1c&HFFE660&\\3c&HFFE660&\\bord10\\blur7{glow_tags}}}{text}",
+        f"Dialogue: 1,{start},{end},UpNextGlow,,0,0,0,,{{\\an5{pos}\\alpha&H72&\\1c&HFFFFEB&\\3c&HFFE660&\\bord4\\blur3{glow_tags}}}{text}",
+        f"Dialogue: 2,{start},{end},UpNextText,,0,0,0,,{{\\an5{pos}\\alpha&H10&\\1c&HFFFFEB&\\3c&HFFE660&\\bord1.4\\blur0.4{breath_tags}}}{text}",
+    ]
+    ass_file.write_text("\n".join(dialogue_lines), encoding="utf-8")
+    return ass_file
+
+
+def _editing_up_next_overlay_filters(width, height, ass_file):
+    subtitle_filter = f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'"
+    return [subtitle_filter]
+
+
+def _editing_intro_video_filters(width, height, is_intro_clip=False, overlay_ass_file=None):
+    video_filters = []
+    if width and height:
+        video_filters.extend([
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+            "setsar=1",
+        ])
+    else:
+        video_filters.append("setsar=1")
+    if is_intro_clip and overlay_ass_file:
+        video_filters.extend(_editing_up_next_overlay_filters(width, height, overlay_ass_file))
+    return video_filters
+
+
 def _build_editing_intro_video(job, source_file, processed_file, analysis_result, work_dir):
     segments = _select_intro_highlight_segments(analysis_result, max_segments=3)
     if not segments:
@@ -53,22 +145,22 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
     final_tmp = work_dir / f"{output_file.stem}_editing_concat.mp4"
     concat_file = work_dir / f"{output_file.stem}_concat.txt"
 
-    def encode_clip(input_file, output_clip, start=None, end=None):
+    overlay_ass_file = work_dir / f"{output_file.stem}_up_next_overlay.ass"
+
+    def encode_clip(input_file, output_clip, start=None, end=None, is_intro_clip=False):
         command = [ffmpeg, "-y"]
+        clip_duration = None
         if start is not None:
             command.extend(["-ss", f"{start:.3f}"])
         if end is not None and start is not None:
-            command.extend(["-t", f"{max(0.5, end - start):.3f}"])
+            clip_duration = max(0.5, end - start)
+            command.extend(["-t", f"{clip_duration:.3f}"])
         command.extend(["-i", str(input_file)])
-        video_filters = []
-        if width and height:
-            video_filters.extend([
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos",
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
-                "setsar=1",
-            ])
+        if is_intro_clip:
+            _write_editing_up_next_overlay_ass(overlay_ass_file, width, height, clip_duration or 8)
+        video_filters = _editing_intro_video_filters(width, height, is_intro_clip, overlay_ass_file)
         command.extend([
-            "-vf", ",".join(video_filters) if video_filters else "setsar=1",
+            "-vf", ",".join(video_filters),
             "-fps_mode", "cfr",
             "-r", f"{fps:.3f}".rstrip("0").rstrip("."),
             "-c:v", "libx264",
@@ -92,7 +184,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
     _update_translate_progress(job_id, 86, "处理版本二：正在截取前三个高光片段", step="editing")
     for index, segment in enumerate(segments, start=1):
         clip_file = work_dir / f"{output_file.stem}_intro_{index}.mp4"
-        encode_clip(processed_file, clip_file, start=segment["start"], end=segment["end"])
+        encode_clip(processed_file, clip_file, start=segment["start"], end=segment["end"], is_intro_clip=True)
         clip_files.append(clip_file)
 
     _update_translate_progress(job_id, 91, "处理版本二：正在拼接高光开头与正片", step="editing")
