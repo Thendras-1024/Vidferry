@@ -499,6 +499,7 @@ def _publish_payload(data):
     file_list, publish_materials = _validate_publish_processed_files(file_list)
     publish_material = publish_materials[0]
     _assert_publish_targets_available(publish_material, targets)
+    agent_guard = validate_prepublish_guard_or_raise(data, file_list, targets, publish_materials)
     publish_task_id = uuid.uuid4().hex
     tasks = _build_publish_tasks(data, targets, file_list, publish_task_id=publish_task_id)
     for task in tasks:
@@ -527,4 +528,5 @@ def _publish_payload(data):
         "hasFailures": failed_count > 0,
         "successCount": success_count,
         "failedCount": failed_count,
+        "agentGuard": agent_guard,
     }

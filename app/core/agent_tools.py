@@ -1,0 +1,237 @@
+"""Agent 只读查询工具:工作流概览、视频/账号/发布记录查询与流程说明。"""
+
+
+from __future__ import annotations
+
+import os as _os
+import re as _re
+
+
+AGENT_VIDEO_STATUSES = {
+    "initial": "待处理",
+    "pending": "待处理",
+    "notDownloaded": "未下载",
+    "downloaded": "已下载未处理",
+    "processed": "已处理未发布",
+    "published": "已发布",
+    "failed": "失败",
+    "abnormal": "异常",
+    "running": "运行中",
+}
+
+
+def _agent_limit(limit=None):
+    return max(1, min(int(limit or AGENT_MAX_TOOL_ROWS), AGENT_MAX_TOOL_ROWS))
+
+
+def _agent_public_path(value):
+    text = str(value or "")
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    if ":" in text or "\\" in text or "/" in text:
+        return _os.path.basename(text.replace("\\", "/"))
+    return text
+
+
+def _agent_compact_video(item):
+    return {
+        "id": item.get("id") or "",
+        "title": item.get("title") or "",
+        "channel": item.get("channel") or "",
+        "duration": item.get("duration") or "",
+        "publishedAt": item.get("publishedAt") or "",
+        "downloadStatus": int(item.get("downloadStatus") or 0),
+        "translateStatus": int(item.get("translateStatus") or 0),
+        "analysisStatus": int(item.get("analysisStatus") or 0),
+        "publishStatus": int(item.get("publishStatus") or 0),
+        "processedFile": _agent_public_path(item.get("processedFilePath")),
+        "updatedAt": item.get("updatedAt") or "",
+    }
+
+
+def explain_vidferry_pipeline():
+    return {
+        "name": "Vidferry 本地视频工作流",
+        "steps": [
+            {"key": "research", "label": "线索导入", "description": "按关键词或链接导入 YouTube 候选视频。"},
+            {"key": "download", "label": "视频下载", "description": "使用 yt-dlp 下载原视频并登记素材。"},
+            {"key": "process", "label": "字幕/剪辑处理", "description": "转写、翻译、烧录字幕，并按处理版本生成成片。"},
+            {"key": "analysis", "label": "发布稿生成", "description": "LLM 生成标题、正文、话题、高光和风险提示。"},
+            {"key": "guard", "label": "发布前质检", "description": "Agent 审核文本和关键帧，严重风险会阻断发布。"},
+            {"key": "publish", "label": "多平台发布", "description": "按账号和平台提交发布，并记录每个平台结果。"},
+        ],
+    }
+
+
+def get_workflow_overview():
+    statuses = ["initial", "downloaded", "processed", "published", "failed", "abnormal", "running"]
+    counts = {}
+    for status in statuses:
+        try:
+            counts[status] = int(list_youtube_videos({"status": status, "page": 1, "pageSize": 1}).get("total") or 0)
+        except Exception:
+            counts[status] = 0
+    return {
+        "pipeline": explain_vidferry_pipeline()["steps"],
+        "counts": counts,
+        "labels": {key: AGENT_VIDEO_STATUSES.get(key, key) for key in statuses},
+    }
+
+
+def list_videos_by_status(status="initial", limit=None):
+    status = str(status or "initial").strip()
+    status = status if status in AGENT_VIDEO_STATUSES else "initial"
+    page = list_youtube_videos({"status": status, "page": 1, "pageSize": _agent_limit(limit)})
+    return {
+        "status": status,
+        "label": AGENT_VIDEO_STATUSES.get(status, status),
+        "total": int(page.get("total") or 0),
+        "items": [_agent_compact_video(item) for item in page.get("items") or []],
+    }
+
+
+def _agent_find_video(identifier):
+    text = str(identifier or "").strip()
+    if not text:
+        return None
+    with _db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (text,))
+        row = cursor.fetchone()
+        if not row:
+            like = f"%{text}%"
+            cursor.execute(
+                """
+                SELECT * FROM youtube_videos
+                WHERE title LIKE ? OR channel LIKE ? OR url LIKE ?
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (like, like, like),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return _row_to_youtube_video(row)
+
+
+def _agent_guess_identifier(message):
+    text = str(message or "").strip()
+    url_match = _re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{6,})", text)
+    if url_match:
+        return url_match.group(1)
+    id_match = _re.search(r"\b[A-Za-z0-9_-]{8,}\b", text)
+    if id_match:
+        return id_match.group(0)
+    quoted = _re.findall(r"[「《\"']([^」》\"']{2,80})[」》\"']", text)
+    if quoted:
+        return quoted[0]
+    return text
+
+
+def get_video_detail(video_id_or_keyword):
+    video = _agent_find_video(_agent_guess_identifier(video_id_or_keyword))
+    if not video:
+        return {"found": False, "message": "未找到匹配视频"}
+    detail = _agent_compact_video(video)
+    detail["found"] = True
+    detail["url"] = video.get("url") or ""
+    detail["publishDraft"] = {
+        "title": (video.get("publishDraft") or {}).get("title") or "",
+        "description": (video.get("publishDraft") or {}).get("description") or "",
+        "tags": (video.get("publishDraft") or {}).get("tags") or [],
+    }
+    detail["platforms"] = get_publish_platforms(video.get("id"))
+    return detail
+
+
+def get_publish_platforms(video_id):
+    video_id = str(video_id or "").strip()
+    if not video_id:
+        return {"videoId": "", "items": [], "total": 0}
+    with _db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM published_youtube_materials
+            WHERE video_id = ?
+              AND deleted_at IS NULL
+              AND COALESCE(NULLIF(status, ''), 'success') = 'success'
+            ORDER BY COALESCE(updated_at, published_at, created_at) DESC, id DESC
+            """,
+            (video_id,),
+        )
+        items = [_row_to_published_material(row) for row in cursor.fetchall()]
+    return {
+        "videoId": video_id,
+        "total": len(items),
+        "items": [
+            {
+                "platform": item.get("platform") or platform_name(item.get("platformType")),
+                "platformType": item.get("platformType"),
+                "accountName": item.get("accountName") or "",
+                "status": item.get("status") or "success",
+                "publishedAt": item.get("publishedAt") or item.get("updatedAt") or "",
+            }
+            for item in items
+        ],
+    }
+
+
+def agent_list_publish_tasks(limit=None):
+    return {"items": list_publish_tasks(_agent_limit(limit))}
+
+
+def list_failed_jobs(limit=None):
+    with _db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM youtube_workflow_jobs
+            WHERE status IN ('failed', 'abnormal')
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ?
+            """,
+            (_agent_limit(limit),),
+        )
+        return {
+            "items": [
+                {
+                    "id": row["id"],
+                    "videoId": row["video_id"] or "",
+                    "title": row["title"] or "",
+                    "status": row["status"] or "",
+                    "step": row["step"] or "",
+                    "message": row["message"] or row["error_reason"] or "",
+                    "errorCode": row["error_code"] or "",
+                    "updatedAt": row["updated_at"] or row["created_at"] or "",
+                }
+                for row in cursor.fetchall()
+            ]
+        }
+
+
+def get_account_status():
+    with _db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, type, userName, status FROM user_info ORDER BY type, id")
+        rows = cursor.fetchall()
+    return {
+        "items": [
+            {
+                "id": row["id"],
+                "platform": platform_name(row["type"]),
+                "platformType": int(row["type"] or 0),
+                "name": row["userName"] or "",
+                "status": "valid" if int(row["status"] or 0) == 1 else "abnormal",
+            }
+            for row in rows
+        ]
+    }
+

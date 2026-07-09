@@ -3,6 +3,8 @@ def postVideo():
     data = request.get_json()
     try:
         result = _publish_payload(data)
+    except AgentGuardError as exc:
+        return jsonify({"code": exc.status_code, "msg": str(exc), "data": {"errorCode": exc.error_code, "guard": exc.result}}), exc.status_code
     except WorkflowConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
     except ValueError as exc:
@@ -74,6 +76,13 @@ def postVideoBatch():
                 "status": "success",
                 "data": _publish_payload(data),
             })
+        except AgentGuardError as exc:
+            batch_results.append({
+                "index": index,
+                "status": "failed",
+                "message": str(exc),
+                "data": {"errorCode": exc.error_code, "guard": exc.result},
+            })
         except WorkflowConflictError as exc:
             batch_results.append({
                 "index": index,
@@ -88,7 +97,12 @@ def postVideoBatch():
                 "message": str(exc),
                 "data": None,
             })
-    failed_count = sum(1 for item in batch_results if item["status"] != "success" or item["data"].get("hasFailures"))
+    failed_count = sum(
+        1
+        for item in batch_results
+        if item["status"] != "success"
+        or (isinstance(item.get("data"), dict) and item["data"].get("hasFailures"))
+    )
     return jsonify({
         "code": 200,
         "msg": "部分批次发布失败" if failed_count else "发布任务已提交",

@@ -1,4 +1,4 @@
-"""Application configuration values."""
+"""应用配置值。"""
 
 from __future__ import annotations
 
@@ -63,6 +63,96 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "90") or 90)
 LLM_MAX_TRANSCRIPT_CHARS = int(os.environ.get("LLM_MAX_TRANSCRIPT_CHARS", "28000") or 28000)
+
+
+def _env_bool(name, default=False):
+    return os.environ.get(name, "1" if default else "0").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_int(name, default, minimum=None, maximum=None):
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _env_float(name, default, minimum=None, maximum=None):
+    try:
+        value = float(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _env_csv(name, default):
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def _env_keyword_map(name, default):
+    pairs = {}
+    for item in _env_csv(name, default):
+        if ":" in item:
+            keyword, category = item.split(":", 1)
+        else:
+            keyword, category = item, "内容风险"
+        keyword = keyword.strip()
+        category = category.strip() or "内容风险"
+        if keyword:
+            pairs[keyword] = category
+    return pairs
+
+
+def _env_float_list(name, default, minimum=None, maximum=None):
+    values = []
+    for item in _env_csv(name, default):
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if minimum is not None:
+            value = max(minimum, value)
+        if maximum is not None:
+            value = min(maximum, value)
+        values.append(value)
+    return values
+
+
+AGENT_ENABLED = os.environ.get("AGENT_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+AGENT_CHAT_MODEL = os.environ.get("AGENT_CHAT_MODEL", LLM_MODEL).strip() or LLM_MODEL
+AGENT_VISION_MODEL = os.environ.get("AGENT_VISION_MODEL", "").strip()
+AGENT_REQUIRE_PREPUBLISH_CHECK = os.environ.get("AGENT_REQUIRE_PREPUBLISH_CHECK", "true").strip().lower() not in {"0", "false", "no"}
+AGENT_BLOCK_LEVEL = os.environ.get("AGENT_BLOCK_LEVEL", "high").strip().lower() or "high"
+AGENT_MAX_TOOL_ROWS = max(1, min(int(os.environ.get("AGENT_MAX_TOOL_ROWS", "20") or 20), 50))
+AGENT_MAX_TOOL_CALLS = _env_int("AGENT_MAX_TOOL_CALLS", 5, 1, 12)
+AGENT_CHAT_TEMPERATURE = _env_float("AGENT_CHAT_TEMPERATURE", 0.2, 0, 2)
+AGENT_CHAT_MAX_TOKENS = _env_int("AGENT_CHAT_MAX_TOKENS", 900, 128, 8000)
+AGENT_GUARD_TEMPERATURE = _env_float("AGENT_GUARD_TEMPERATURE", 0, 0, 2)
+AGENT_GUARD_MAX_TOKENS = _env_int("AGENT_GUARD_MAX_TOKENS", 900, 128, 8000)
+AGENT_REQUIRE_VISION_CHECK = _env_bool("AGENT_REQUIRE_VISION_CHECK", True)
+AGENT_VISION_FAIL_CLOSED = _env_bool("AGENT_VISION_FAIL_CLOSED", True)
+AGENT_FRAME_MAX_COUNT = _env_int("AGENT_FRAME_MAX_COUNT", 8, 1, 16)
+AGENT_FRAME_SCALE_WIDTH = _env_int("AGENT_FRAME_SCALE_WIDTH", 640, 160, 1920)
+AGENT_FRAME_FIRST_SECOND = _env_float("AGENT_FRAME_FIRST_SECOND", 1, 0.1, None)
+AGENT_FRAME_END_OFFSET_SECONDS = _env_float("AGENT_FRAME_END_OFFSET_SECONDS", 2, 0, None)
+AGENT_FRAME_SAMPLE_RATIOS = _env_float_list("AGENT_FRAME_SAMPLE_RATIOS", "0.25,0.5,0.75", 0, 1) or [0.25, 0.5, 0.75]
+AGENT_HIGH_RISK_KEYWORDS = _env_keyword_map(
+    "AGENT_HIGH_RISK_KEYWORDS",
+    "色情:色情低俗,裸露:色情低俗,自杀:自伤自杀,杀人:暴力犯罪,诈骗:诈骗导流,赌博:违法违规,毒品:违法违规,台独:政治敏感,港独:政治敏感,恐怖:恐怖极端",
+)
+AGENT_MEDIUM_RISK_KEYWORDS = _env_keyword_map(
+    "AGENT_MEDIUM_RISK_KEYWORDS",
+    "减肥:医疗健康宣称,治疗:医疗健康宣称,赚钱:营销/收益承诺,稳赚:金融风险,搬运:低质搬运风险",
+)
 SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "5000") or 5000)
 SQLITE_ENABLE_WAL = os.environ.get("SQLITE_ENABLE_WAL", "1").strip().lower() not in {"0", "false", "no"}
 WORKFLOW_MAX_DOWNLOAD_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_DOWNLOAD_JOBS", "2") or 2))

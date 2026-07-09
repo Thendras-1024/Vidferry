@@ -1,9 +1,8 @@
-"""Runtime loader for the modularized legacy backend.
+"""模块化旧后端的运行时加载器。
 
-The old backend was a single file with many cross-calling functions.  During the
-modular transition we execute the split domain modules into one namespace so
-routes and services keep their existing behavior while the source is no longer a
-single monolith.
+旧后端曾是单个文件,内部函数大量互相调用。在模块化过渡期间,我们把拆分后的
+领域模块执行到同一个命名空间里,使路由和服务保持原有行为,同时源码不再是
+单体大文件。
 """
 
 from __future__ import annotations
@@ -22,6 +21,10 @@ MODULE_ORDER = [
     "app/core/subtitle_service.py",
     "app/core/editing_service.py",
     "app/core/material_service.py",
+    "app/core/agent_memory.py",
+    "app/core/agent_tools.py",
+    "app/core/agent_orchestrator.py",
+    "app/core/prepublish_guard.py",
     "app/core/publish_execution.py",
     "app/core/workflow_runner.py",
     "app/core/youtube_search_service.py",
@@ -31,6 +34,7 @@ MODULE_ORDER = [
     "app/api/youtube.py",
     "app/api/material.py",
     "app/api/publish_records.py",
+    "app/api/agent.py",
     "app/api/account.py",
     "app/api/login.py",
     "app/api/publish.py",

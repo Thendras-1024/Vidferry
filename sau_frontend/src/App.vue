@@ -65,6 +65,21 @@
               <el-icon class="toggle-sidebar" @click="toggleSidebar"><Fold /></el-icon>
             </div>
             <div class="header-right">
+              <el-tooltip content="打开 Vidferry Agent" placement="bottom">
+                <div class="agent-entry">
+                  <el-button
+                    class="agent-open-button"
+                    circle
+                    :icon="ChatDotRound"
+                    aria-label="打开 Vidferry Agent"
+                    @click="agentDrawerVisible = true"
+                  />
+                  <span
+                    class="agent-status-dot"
+                    :class="{ 'is-warning': agentConfigWarning }"
+                  />
+                </div>
+              </el-tooltip>
               <el-popover
                 placement="bottom-end"
                 trigger="click"
@@ -160,22 +175,105 @@
             :closable="false"
             :title="llmConfigWarning"
           />
+          <el-alert
+            v-if="agentConfigWarning"
+            class="runtime-config-alert"
+            type="warning"
+            show-icon
+            :closable="false"
+            :title="agentConfigWarning"
+          />
           <router-view />
         </el-main>
       </el-container>
     </el-container>
+    <el-drawer
+      v-model="agentDrawerVisible"
+      direction="rtl"
+      size="420px"
+      class="agent-drawer"
+      append-to-body
+    >
+      <template #header>
+        <div class="agent-drawer-header">
+          <div>
+            <span class="agent-drawer-kicker">PROJECT AGENT</span>
+            <strong>Vidferry Agent</strong>
+          </div>
+          <el-tag size="small" effect="plain" :type="agentConfigWarning ? 'warning' : 'success'">
+            只读
+          </el-tag>
+        </div>
+      </template>
+      <div class="agent-panel">
+        <div class="agent-context-card">
+          <div class="agent-avatar">
+            <el-icon><ChatDotRound /></el-icon>
+          </div>
+          <div class="agent-context-copy">
+            <strong>只读项目管家</strong>
+            <span>{{ agentContextLabel }} · {{ agentConfigWarning ? '等待视觉模型' : '在线' }}</span>
+          </div>
+        </div>
+        <div class="agent-quick-panel">
+          <div class="agent-section-title">快捷问题</div>
+          <div class="agent-quick-actions">
+            <el-button
+              v-for="question in agentQuickQuestions"
+              :key="question"
+              size="small"
+              plain
+              @click="sendAgentMessage(question)"
+            >
+              {{ question }}
+            </el-button>
+          </div>
+        </div>
+        <div class="agent-messages">
+          <div
+            v-for="message in agentMessages"
+            :key="message.id"
+            class="agent-message"
+            :class="`is-${message.role}`"
+          >
+            <div class="agent-message-role">{{ message.role === 'user' ? '你' : 'Agent' }}</div>
+            <div class="agent-message-content">{{ message.content }}</div>
+          </div>
+          <div v-if="agentMessages.length === 0" class="agent-empty">
+            <el-icon><ChatDotRound /></el-icon>
+            <strong>还没有对话</strong>
+            <span>从一个快捷问题开始。</span>
+          </div>
+        </div>
+        <div class="agent-input">
+          <el-input
+            v-model="agentInput"
+            type="textarea"
+            :rows="3"
+            maxlength="500"
+            show-word-limit
+            placeholder="例如：已处理但还没发布的视频有哪些？"
+            @keydown.ctrl.enter.prevent="sendAgentMessage()"
+          />
+          <el-button type="primary" :loading="agentLoading" @click="sendAgentMessage()">
+            发送
+          </el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElNotification } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis,
-  Fold, Picture, Upload, Search, Bell, Setting
+  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
+import { agentApi } from '@/api/agent'
 import { commonApi } from '@/api/common'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
@@ -187,6 +285,32 @@ const notificationStore = useNotificationStore()
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
 let accountCheckTimer = null
 const llmConfigWarning = ref('')
+const agentConfigWarning = ref('')
+const agentDrawerVisible = ref(false)
+const agentLoading = ref(false)
+const agentInput = ref('')
+const agentSessionId = ref(localStorage.getItem('vidferry:agent-session-id') || '')
+const agentMessages = ref([])
+let agentMessageId = 1
+
+const agentQuickQuestions = [
+  '完整流程现在有哪些步骤？',
+  '现在待处理的视频有哪些？',
+  '已处理但还没发布的视频有哪些？',
+  '已发布的视频有哪些？',
+  '最近失败的任务是什么原因？',
+  '账号状态怎么样？'
+]
+
+const agentRouteLabels = {
+  '/': '首页',
+  '/youtube-research': '视频采集处理',
+  '/account-management': '账号管理',
+  '/material-management': '视频素材管理',
+  '/publish-center': '发布中心',
+  '/workflow-statistics': '处理统计',
+  '/about': '关于'
+}
 
 // 当前激活的菜单项
 const activeMenu = computed(() => {
@@ -223,27 +347,87 @@ const refreshGlobalAccountMessages = async () => {
   }
 }
 
+const currentAgentContext = computed(() => ({
+  path: route.path,
+  query: route.query,
+  pageTitle: agentRouteLabels[route.path] || route.meta?.title || route.name || route.path
+}))
+
+const agentContextLabel = computed(() => currentAgentContext.value.pageTitle || '当前页面')
+
+const pushAgentMessage = (role, content) => {
+  agentMessages.value.push({
+    id: agentMessageId++,
+    role,
+    content: String(content || '')
+  })
+}
+
+const sendAgentMessage = async (presetMessage = '', extraContext = {}) => {
+  const message = String(presetMessage || agentInput.value || '').trim()
+  if (!message || agentLoading.value) return
+  agentDrawerVisible.value = true
+  agentInput.value = ''
+  pushAgentMessage('user', message)
+  agentLoading.value = true
+  try {
+    const res = await agentApi.chat({
+      message,
+      sessionId: agentSessionId.value,
+      context: {
+        ...currentAgentContext.value,
+        ...extraContext
+      }
+    })
+    const data = res?.data || {}
+    if (data.sessionId) {
+      agentSessionId.value = data.sessionId
+      localStorage.setItem('vidferry:agent-session-id', data.sessionId)
+    }
+    pushAgentMessage('assistant', data.answer || '我暂时没有查到结果。')
+  } catch (error) {
+    pushAgentMessage('assistant', error.message || 'Agent 暂时不可用，请稍后再试。')
+    ElMessage.error(error.message || 'Agent 暂时不可用')
+  } finally {
+    agentLoading.value = false
+  }
+}
+
+const handleAskAgentEvent = (event) => {
+  const detail = event?.detail || {}
+  const message = detail.message || ''
+  agentDrawerVisible.value = true
+  if (message) {
+    sendAgentMessage(message, detail.context || {})
+  }
+}
+
 const refreshRuntimeConfigStatus = async () => {
   try {
     const res = await commonApi.getRuntimeConfigStatus()
     const llm = res?.data?.llm
     if (!llm || llm.ready) {
       llmConfigWarning.value = ''
-      return
+    }
+    if (llm && !llm.ready) {
+      const missingText = Array.isArray(llm.missing) && llm.missing.length
+        ? ` 缺失：${llm.missing.join('、')}`
+        : ''
+      llmConfigWarning.value = `${llm.message || 'LLM 不可用，请检查配置并重启后端。'}${missingText}`
+
+      ElNotification({
+        title: 'LLM 配置不可用',
+        message: llmConfigWarning.value,
+        type: 'error',
+        position: 'top-right',
+        duration: 10000
+      })
     }
 
-    const missingText = Array.isArray(llm.missing) && llm.missing.length
-      ? ` 缺失：${llm.missing.join('、')}`
+    const agent = res?.data?.agent
+    agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.visionModelConfigured
+      ? 'Agent 发布前质检已启用，但 AGENT_VISION_MODEL 未配置；发布会被关键帧审核阻断。'
       : ''
-    llmConfigWarning.value = `${llm.message || 'LLM 不可用，请检查配置并重启后端。'}${missingText}`
-
-    ElNotification({
-      title: 'LLM 配置不可用',
-      message: llmConfigWarning.value,
-      type: 'error',
-      position: 'top-right',
-      duration: 10000
-    })
   } catch (error) {
     console.error('运行时配置状态检查失败:', error)
   }
@@ -270,6 +454,7 @@ onMounted(() => {
   refreshRuntimeConfigStatus()
   refreshGlobalAccountMessages()
   accountCheckTimer = window.setInterval(refreshGlobalAccountMessages, ACCOUNT_CHECK_INTERVAL_MS)
+  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
 })
 
 onBeforeUnmount(() => {
@@ -277,6 +462,7 @@ onBeforeUnmount(() => {
     window.clearInterval(accountCheckTimer)
     accountCheckTimer = null
   }
+  window.removeEventListener('vidferry:ask-agent', handleAskAgentEvent)
 })
 </script>
 
@@ -444,6 +630,265 @@ onBeforeUnmount(() => {
 
 .runtime-config-alert {
   margin-bottom: 16px;
+}
+
+.agent-entry {
+  position: relative;
+  width: 36px;
+  height: 36px;
+}
+
+.agent-open-button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  color: $text-regular;
+  background: transparent;
+
+  &:hover,
+  &:focus {
+    color: $primary-color;
+    background-color: $bg-color-page;
+  }
+}
+
+.agent-status-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: $success-color;
+  pointer-events: none;
+
+  &.is-warning {
+    background: $warning-color;
+  }
+}
+
+:global(.agent-drawer) {
+  box-shadow: -14px 0 34px rgba(0, 21, 41, 0.12);
+}
+
+:global(.agent-drawer .el-drawer__header) {
+  margin-bottom: 0;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid $border-lighter;
+}
+
+:global(.agent-drawer .el-drawer__body) {
+  padding: 0;
+}
+
+.agent-drawer-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: $text-primary;
+
+  > div {
+    display: grid;
+    gap: 3px;
+  }
+
+  strong {
+    font-size: 16px;
+    line-height: 1.2;
+  }
+}
+
+.agent-drawer-kicker {
+  color: $primary-color;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.agent-panel {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: $bg-color-page;
+}
+
+.agent-context-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 16px 10px;
+  padding: 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.agent-avatar {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  color: #fff;
+  background: linear-gradient(135deg, #2563eb, #0f9f8f);
+  box-shadow: 0 8px 18px rgba(64, 158, 255, 0.18);
+
+  .el-icon {
+    font-size: 19px;
+  }
+}
+
+.agent-context-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+
+  strong {
+    color: $text-primary;
+    font-size: 14px;
+  }
+
+  span {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+}
+
+.agent-quick-panel {
+  padding: 0 16px 14px;
+  border-bottom: 1px solid $border-light;
+}
+
+.agent-section-title {
+  margin-bottom: 8px;
+  color: $text-secondary;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-quick-actions :deep(.el-button) {
+  width: 100%;
+  min-height: 32px;
+  margin-left: 0;
+  justify-content: center;
+  border-radius: 6px;
+  color: $text-regular;
+  background: #fff;
+  white-space: normal;
+  line-height: 1.3;
+  padding: 6px 8px;
+}
+
+.agent-messages {
+  overflow-y: auto;
+  padding: 16px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.agent-message {
+  display: grid;
+  gap: 6px;
+  max-width: 90%;
+
+  &.is-user {
+    justify-self: end;
+
+    .agent-message-content {
+      background: #2563eb;
+      color: #fff;
+      border-color: #2563eb;
+    }
+  }
+
+  &.is-assistant {
+    justify-self: start;
+
+    .agent-message-content {
+      background: #fff;
+      color: $text-primary;
+      border: 1px solid $border-light;
+    }
+  }
+}
+
+.agent-message-role {
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.agent-message-content {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  box-shadow: 0 3px 10px rgba(0, 21, 41, 0.04);
+}
+
+.agent-empty {
+  align-self: center;
+  justify-self: center;
+  width: 100%;
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: $text-secondary;
+  text-align: center;
+
+  .el-icon {
+    width: 42px;
+    height: 42px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    color: $primary-color;
+    background: #eef6ff;
+    font-size: 22px;
+  }
+
+  strong {
+    color: $text-regular;
+    font-size: 14px;
+  }
+
+  span {
+    font-size: 12px;
+  }
+}
+
+.agent-input {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid $border-light;
+  background: #fff;
+}
+
+.agent-input :deep(.el-textarea__inner) {
+  border-radius: 6px;
+  background: #fbfcff;
+}
+
+.agent-input :deep(.el-button) {
+  height: 34px;
+  border-radius: 6px;
 }
 
 :global(.message-popover) {
