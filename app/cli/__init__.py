@@ -1,1 +1,1 @@
-"""CLI package for social-auto-upload."""
+"""Vidferry CLI 命令行包(登录/发布等多平台子命令入口)。"""

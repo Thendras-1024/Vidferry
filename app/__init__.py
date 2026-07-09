@@ -1,4 +1,4 @@
-"""Flask application factory for the Vidferry backend."""
+"""Vidferry 后端的 Flask 应用工厂。"""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ def _backend():
 
 
 def create_app():
-    """Return the Flask app instance with all modular routes registered."""
+    """返回注册了所有模块化路由的 Flask 应用实例。"""
     return _backend().create_app()
 
 
 def initialize_runtime() -> None:
-    """Run backend startup hooks shared by the formal ``run.py`` entry."""
+    """执行后端启动钩子,与正式入口 ``run.py`` 共用。"""
     backend = _backend()
     backend.init_youtube_video_table()
     recovered_jobs = backend.recover_interrupted_workflow_jobs()

@@ -1,1 +1,1 @@
-"""Table-specific CRUD helpers."""
+"""按表划分的 CRUD 辅助函数。"""

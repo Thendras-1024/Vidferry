@@ -1,1 +1,1 @@
-"""Platform-specific CLI actions."""
+"""各平台 CLI 动作实现(登录/校验/发布)。"""

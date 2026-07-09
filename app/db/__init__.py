@@ -1,1 +1,1 @@
-"""Database package."""
+"""数据库包。"""
