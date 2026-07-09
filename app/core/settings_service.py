@@ -1,4 +1,7 @@
-﻿WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
+﻿"""工作流默认设置的读写与归一化(存储在 app_settings 键值表)。"""
+
+
+WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
 
 
 def _default_workflow_settings():

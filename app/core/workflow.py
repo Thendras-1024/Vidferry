@@ -1,4 +1,7 @@
-﻿def _row_to_workflow_job(row):
+﻿"""YouTube 工作流任务的创建、状态更新、阶段事件记录与统计。"""
+
+
+def _row_to_workflow_job(row):
     item = dict(row)
     return {
         "id": item.get("id"),

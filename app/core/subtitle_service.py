@@ -1,3 +1,6 @@
+"""字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 烧录。"""
+
+
 def _format_ass_timestamp(seconds):
     seconds = max(0, float(seconds or 0))
     hours = int(seconds // 3600)
@@ -446,6 +449,7 @@ def _compatible_video_dimensions(width, height, max_long_side=1920, max_short_si
     if scale >= 1.0:
         return None
 
+    # 宽高对齐到偶数:FFmpeg 的 libx264 编码 yuv420p 时要求宽高均为偶数
     target_width = max(2, int(width * scale) // 2 * 2)
     target_height = max(2, int(height * scale) // 2 * 2)
     return target_width, target_height

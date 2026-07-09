@@ -1,3 +1,6 @@
+"""YouTube 视频搜索与元数据抓取:yt-dlp 搜索、网页兜底解析、订阅数与发布日期补全。"""
+
+
 def _extract_yt_initial_data(content):
     marker = "var ytInitialData = "
     start = content.find(marker)

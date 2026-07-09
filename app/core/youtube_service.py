@@ -1,4 +1,7 @@
-﻿def _row_to_youtube_video(row):
+﻿"""YouTube 视频线索的存储、状态流转与列表查询(含阶段排序与状态对账)。"""
+
+
+def _row_to_youtube_video(row):
     item = dict(row)
     analysis_result = _parse_json_object(item.get("analysis_result"))
     publish_draft = _parse_publish_draft(item.get("publish_draft"), analysis_result)

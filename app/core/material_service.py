@@ -1,4 +1,7 @@
-﻿def _material_file_path(record):
+﻿"""素材库服务:素材登记、查询、删除、发布记录归档与视频状态同步。"""
+
+
+def _material_file_path(record):
     raw_path = record.get("storage_key") or record.get("file_path") or ""
     if not raw_path:
         return None

@@ -1,4 +1,7 @@
-﻿def _get_youtube_video_record(video_id):
+﻿"""YouTube 工作流执行编排:下载/转写/分析/剪辑/发布各阶段的串联与状态流转。"""
+
+
+def _get_youtube_video_record(video_id):
     if not video_id:
         return None
     init_youtube_video_table()

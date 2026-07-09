@@ -1,4 +1,7 @@
-﻿def _select_intro_highlight_segments(analysis_result, max_segments=3):
+﻿"""处理版本二的剪辑增强:高光片段开头混剪与「Up Next」覆盖层生成。"""
+
+
+def _select_intro_highlight_segments(analysis_result, max_segments=3):
     raw_segments = (analysis_result or {}).get("highlight_segments") or []
     selected = []
     for segment in _normalize_highlight_segments(raw_segments):
@@ -116,6 +119,7 @@ def _editing_intro_video_filters(width, height, is_intro_clip=False, overlay_ass
 
 
 def _build_editing_intro_video(job, source_file, processed_file, analysis_result, work_dir):
+    # 处理版本二核心:截取前 3 个高光片段作开头(带 Up Next 覆盖层),与正片重新归一化后拼接
     segments = _select_intro_highlight_segments(analysis_result, max_segments=3)
     if not segments:
         return {

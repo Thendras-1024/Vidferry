@@ -1,3 +1,6 @@
+"""工作流任务的关闭与中断处理。"""
+
+
 def _mark_shutdown_once():
     global _shutdown_marked
     if _shutdown_marked:

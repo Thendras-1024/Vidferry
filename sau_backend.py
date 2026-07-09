@@ -1,4 +1,4 @@
-"""Compatibility entrypoint for the modular Vidferry backend."""
+"""模块化 Vidferry 后端的兼容入口。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ load_backend_namespace(globals())
 
 
 def create_app():
-    """Return the Flask application with all modular routes loaded."""
+    """返回加载了所有模块化路由的 Flask 应用。"""
     init_youtube_workflow_table()
     return app
 
