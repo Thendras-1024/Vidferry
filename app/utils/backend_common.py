@@ -2,10 +2,6 @@ class NoSpeechDetectedError(RuntimeError):
     pass
 
 
-@app.before_request
-def ensure_database_tables():
-    init_youtube_workflow_table()
-
 def _parse_upload_date(value):
     if not value:
         return ""
@@ -74,8 +70,48 @@ def _db_path():
     return Path(BASE_DIR / "db" / "database.db")
 
 
+def _db_connect(*, row_factory=False):
+    Path(BASE_DIR / "db").mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_db_path(), timeout=max(1, SQLITE_BUSY_TIMEOUT_MS) / 1000)
+    conn.execute(f"PRAGMA busy_timeout = {max(1, SQLITE_BUSY_TIMEOUT_MS)}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    if SQLITE_ENABLE_WAL:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _json_response(code=200, msg="success", data=None, status=200):
     return jsonify({"code": code, "msg": msg, "data": data}), status
+
+
+def _safe_filename(value, default="file"):
+    filename = secure_filename(str(value or "").strip())
+    return filename or default
+
+
+def _safe_child_path(base_dir, filename, *, must_exist=False):
+    base_path = Path(base_dir).resolve()
+    safe_name = _safe_filename(filename)
+    candidate = (base_path / safe_name).resolve()
+    if not candidate.is_relative_to(base_path):
+        raise ValueError("非法文件路径")
+    if must_exist and not candidate.is_file():
+        raise FileNotFoundError("文件不存在")
+    return candidate
+
+
+def _safe_cookie_filename(value):
+    filename = _safe_filename(value, "cookie.json")
+    if Path(filename).suffix.lower() != ".json":
+        filename = f"{Path(filename).stem or 'cookie'}.json"
+    return filename
+
+
+def _safe_cookie_path(filename, *, must_exist=False):
+    return _safe_child_path(BASE_DIR / "cookiesFile", _safe_cookie_filename(filename), must_exist=must_exist)
 
 
 def _clean_unique_list(values):
@@ -92,6 +128,23 @@ def _clean_unique_list(values):
 
 _publish_account_locks = {}
 _publish_account_locks_guard = threading.Lock()
+_workflow_executors = {
+    "download": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_DOWNLOAD_JOBS, thread_name_prefix="vidferry-download"),
+    "processing": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_PROCESSING_JOBS, thread_name_prefix="vidferry-processing"),
+    "analysis": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_ANALYSIS_JOBS, thread_name_prefix="vidferry-analysis"),
+}
+
+
+def _run_background_task(target, args):
+    try:
+        target(*args)
+    except Exception as exc:
+        print(f"后台任务未捕获异常: {getattr(target, '__name__', target)} {exc}", flush=True)
+
+
+def _submit_background_task(resource, target, *args):
+    executor = _workflow_executors.get(resource) or _workflow_executors["processing"]
+    return executor.submit(_run_background_task, target, args)
 
 
 def _safe_text(value, default=""):

@@ -1,4 +1,4 @@
-@app.route('/uploadCookie', methods=['POST'])
+﻿@app.route('/uploadCookie', methods=['POST'])
 def upload_cookie():
     try:
         if 'file' not in request.files:
@@ -16,7 +16,7 @@ def upload_cookie():
                 "data": None
             }), 400
 
-        if not file.filename.endswith('.json'):
+        if Path(file.filename).suffix.lower() != '.json':
             return jsonify({
                 "code": 400,
                 "msg": "Cookie文件必须是JSON格式",
@@ -52,7 +52,7 @@ def upload_cookie():
             }), 400
 
         # 从数据库获取账号的文件路径
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT type, filePath FROM user_info WHERE id = ?', (account_id,))
@@ -73,7 +73,7 @@ def upload_cookie():
                 }), 400
 
             # 保存上传的Cookie文件到对应路径
-            cookie_file_path = Path(BASE_DIR / "cookiesFile" / result['filePath'])
+            cookie_file_path = _safe_cookie_path(result['filePath'])
             cookie_file_path.parent.mkdir(parents=True, exist_ok=True)
 
             file.save(str(cookie_file_path))
@@ -108,18 +108,11 @@ def download_cookie():
                 "data": None
             }), 400
 
-        # 验证文件路径的安全性，防止路径遍历攻击
-        cookie_file_path = Path(BASE_DIR / "cookiesFile" / file_path).resolve()
-        base_path = Path(BASE_DIR / "cookiesFile").resolve()
-
-        if not cookie_file_path.is_relative_to(base_path):
-            return jsonify({
-                "code": 500,
-                "msg": "非法文件路径",
-                "data": None
-            }), 400
-
-        if not cookie_file_path.exists():
+        try:
+            cookie_file_path = _safe_cookie_path(file_path, must_exist=True)
+        except ValueError:
+            return jsonify({"code": 500, "msg": "非法文件路径", "data": None}), 400
+        except FileNotFoundError:
             return jsonify({
                 "code": 500,
                 "msg": "Cookie文件不存在",

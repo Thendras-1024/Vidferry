@@ -1,5 +1,12 @@
 import { http } from '@/utils/request'
 
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL
+const apiBaseUrl = configuredApiBaseUrl && configuredApiBaseUrl !== '/'
+  ? configuredApiBaseUrl.replace(/\/$/, '')
+  : ''
+
+const fileUrl = (filename) => `${apiBaseUrl}/getFile?filename=${encodeURIComponent(filename)}`
+
 // 素材管理API
 export const materialApi = {
   // 获取所有素材
@@ -15,7 +22,7 @@ export const materialApi = {
   
   // 删除素材
   deleteMaterial: (id) => {
-    return http.get(`/deleteFile?id=${id}`)
+    return http.delete('/deleteFile', { id })
   },
 
   deleteMaterials: (ids) => {
@@ -36,11 +43,11 @@ export const materialApi = {
   
   // 下载素材
   downloadMaterial: (filePath) => {
-    return `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:5409'}/download/${encodeURIComponent(filePath)}`
+    return fileUrl(filePath)
   },
   
   // 获取素材预览URL
   getMaterialPreviewUrl: (filename) => {
-    return `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:5409'}/getFile?filename=${encodeURIComponent(filename)}`
+    return fileUrl(filename)
   }
 }

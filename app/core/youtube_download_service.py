@@ -5,7 +5,14 @@ def _ensure_dir(path):
 
 
 def _run_command(command, cwd=None, timeout=None):
-    is_shell_command = isinstance(command, str)
+    if isinstance(command, str):
+        command = [
+            item.strip('"').strip("'")
+            for item in shlex.split(command, posix=(os.name != "nt"))
+            if item.strip('"').strip("'")
+        ]
+    if not command:
+        raise RuntimeError("命令不能为空")
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
@@ -17,12 +24,12 @@ def _run_command(command, cwd=None, timeout=None):
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
-        shell=is_shell_command,
+        shell=False,
         env=env,
     )
     output = "\n".join(part for part in [(result.stdout or "").strip(), (result.stderr or "").strip()] if part)
     if result.returncode != 0:
-        display_command = command if is_shell_command else " ".join(command)
+        display_command = " ".join(map(str, command))
         raise RuntimeError(output or f"命令执行失败: {display_command}")
     return result
 

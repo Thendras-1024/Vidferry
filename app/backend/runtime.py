@@ -48,7 +48,9 @@ def load_backend_namespace(target_globals: dict, repo_root: Path | None = None) 
     target_globals.setdefault("__builtins__", __builtins__)
 
     for relative_path in MODULE_ORDER:
-        path = root / relative_path
+        path = (root / relative_path).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise RuntimeError(f"拒绝加载仓库目录外的后端模块: {relative_path}")
         source = path.read_text(encoding="utf-8-sig")
         code = compile(source, str(path), "exec")
         exec(code, target_globals)

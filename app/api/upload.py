@@ -1,4 +1,4 @@
-@app.route('/upload', methods=['POST'])
+﻿@app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return jsonify({
@@ -17,9 +17,12 @@ def upload_file():
         # 保存文件到指定位置
         uuid_v1 = uuid.uuid1()
         print(f"UUID v1: {uuid_v1}")
-        filepath = Path(BASE_DIR / "videoFile" / f"{uuid_v1}_{file.filename}")
+        safe_upload_name = _safe_filename(file.filename)
+        final_filename = f"{uuid_v1}_{safe_upload_name}"
+        filepath = _safe_child_path(BASE_DIR / "videoFile", final_filename)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
         file.save(filepath)
-        return jsonify({"code":200,"msg": "File uploaded successfully", "data": f"{uuid_v1}_{file.filename}"}), 200
+        return jsonify({"code":200,"msg": "File uploaded successfully", "data": final_filename}), 200
     except Exception as e:
         return jsonify({"code":500,"msg": str(e),"data":None}), 500
 
@@ -76,15 +79,16 @@ def upload_save():
     # 获取表单中的自定义文件名（可选）
     custom_filename = request.form.get('filename', None)
     if custom_filename:
-        filename = custom_filename + "." + file.filename.split('.')[-1]
+        filename = _safe_filename(custom_filename) + "." + _safe_filename(file.filename).split('.')[-1]
     else:
-        filename = file.filename
+        filename = _safe_filename(file.filename)
 
     try:
         asset_id = uuid.uuid4().hex
         suffix = Path(filename).suffix or Path(file.filename).suffix
         final_filename = f"{asset_id}{suffix}"
-        filepath = Path(BASE_DIR / "videoFile" / final_filename)
+        filepath = _safe_child_path(BASE_DIR / "videoFile", final_filename)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
 
         # 保存文件
         file.save(filepath)
@@ -97,7 +101,7 @@ def upload_save():
             except Exception:
                 duration_seconds = 0
 
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
             INSERT INTO file_records (

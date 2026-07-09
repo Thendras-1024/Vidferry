@@ -1,4 +1,4 @@
-def _safe_account_name(value):
+﻿def _safe_account_name(value):
     return re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", "_", str(value or "").strip()).strip("_") or uuid.uuid4().hex
 
 
@@ -66,7 +66,7 @@ def _terminal_qrcode_to_data_url(output):
 
 def _save_bilibili_login_account(user_name, account_file, status_queue, account_id=None):
     relative_cookie_file = Path(account_file).name
-    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         if account_id is not None:
             cursor.execute("SELECT type FROM user_info WHERE id = ?", (account_id,))
@@ -190,7 +190,7 @@ def login():
 
     if account_id is not None:
         try:
-            with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+            with _db_connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT type FROM user_info WHERE id = ?", (account_id,))
                 row = cursor.fetchone()

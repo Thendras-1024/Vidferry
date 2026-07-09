@@ -1,6 +1,7 @@
-@app.route('/deleteFile', methods=['GET'])
+﻿@app.route('/deleteFile', methods=['DELETE'])
 def delete_file():
-    file_id = request.args.get('id')
+    payload = request.get_json(silent=True) or {}
+    file_id = payload.get('id') or request.args.get('id')
 
     if not file_id or not file_id.isdigit():
         return jsonify({
@@ -10,7 +11,7 @@ def delete_file():
         }), 400
 
     try:
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 

@@ -28,6 +28,6 @@ export const accountApi = {
 
   // 删除账号
   deleteAccount(id) {
-    return http.get(`/deleteAccount?id=${id}`)
+    return http.delete('/deleteAccount', { id })
   }
 }

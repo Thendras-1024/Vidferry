@@ -1,4 +1,4 @@
-ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
+﻿ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
 _account_cookie_check_last_at = {}
 
 
@@ -22,7 +22,7 @@ def _account_check_payload(row, *, checked=False, skipped=False, valid=False, me
 
 
 def _run_bilibili_cookie_check_sync(file_path):
-    account_file = Path(BASE_DIR / "cookiesFile" / str(file_path or ""))
+    account_file = _safe_cookie_path(file_path)
     if not account_file.is_file():
         return False
 
@@ -56,6 +56,8 @@ def _run_cookie_check_sync(platform_type, file_path):
 
     if check_cookie is None:
         raise RuntimeError("后端未加载 Cookie 检查模块，请检查依赖。")
+
+    file_path = _safe_cookie_filename(file_path)
 
     result = {"value": False, "error": None}
 
@@ -125,7 +127,7 @@ def _list_all_accounts(cursor):
 def _check_accounts_for_publish(targets):
     if not targets:
         return []
-    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         results = []
@@ -156,7 +158,7 @@ def _check_named_publish_account(platform_type, account_name):
     account_name = str(account_name or "").strip()
     if not account_name:
         return None
-    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -175,17 +177,13 @@ def _check_named_publish_account(platform_type, account_name):
 def getAccounts():
     """快速获取所有账号信息，不进行cookie验证"""
     try:
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('''
             SELECT * FROM user_info''')
             rows = cursor.fetchall()
             rows_list = [list(row) for row in rows]
-
-            print("\n📋 当前数据表内容（快速获取）：")
-            for row in rows:
-                print(row)
 
             return jsonify(
                 {
@@ -204,7 +202,7 @@ def getAccounts():
 
 @app.route("/getValidAccounts",methods=['GET'])
 def getValidAccounts():
-    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+    with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         rows = _load_accounts(cursor)
@@ -232,7 +230,7 @@ def check_account_cookies():
         ]
         check_all = bool(payload.get("all")) or not account_ids
 
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             rows = _load_accounts(cursor, None if check_all else account_ids)
@@ -264,9 +262,10 @@ def check_account_cookies():
             "data": None
         }), 500
 
-@app.route('/deleteAccount', methods=['GET'])
+@app.route('/deleteAccount', methods=['DELETE'])
 def delete_account():
-    account_id = request.args.get('id')
+    payload = request.get_json(silent=True) or {}
+    account_id = payload.get('id') or request.args.get('id')
 
     if not account_id or not account_id.isdigit():
         return jsonify({
@@ -279,7 +278,7 @@ def delete_account():
 
     try:
         # 获取数据库连接
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -298,8 +297,12 @@ def delete_account():
 
             # 删除关联的cookie文件
             if record.get('filePath'):
-                cookie_file_path = Path(BASE_DIR / "cookiesFile" / record['filePath'])
-                if cookie_file_path.exists():
+                try:
+                    cookie_file_path = _safe_cookie_path(record['filePath'])
+                except ValueError as exc:
+                    cookie_file_path = None
+                    print(f"⚠️ 跳过非法Cookie路径: {record['filePath']} {exc}")
+                if cookie_file_path and cookie_file_path.exists():
                     try:
                         cookie_file_path.unlink()
                         print(f"✅ Cookie文件已删除: {cookie_file_path}")
@@ -336,6 +339,8 @@ def create_account():
             return jsonify({"code": 400, "msg": "不支持的平台类型", "data": None}), 400
         if not user_name:
             return jsonify({"code": 400, "msg": "账号名称不能为空", "data": None}), 400
+        if file_path:
+            file_path = _safe_cookie_filename(file_path)
         if not file_path:
             file_prefix_map = {
                 1: "xiaohongshu",
@@ -347,7 +352,7 @@ def create_account():
             safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", user_name).strip("_") or uuid.uuid4().hex
             file_path = f"{file_prefix_map[platform_type]}_{safe_name}.json"
 
-        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+        with _db_connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('''

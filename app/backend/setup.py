@@ -8,6 +8,7 @@ import os
 import random
 import re
 import signal
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -20,11 +21,13 @@ import math
 import urllib.parse
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from queue import Queue
 from flask_cors import CORS
 from flask import Flask, request, jsonify, Response, render_template, send_from_directory
+from werkzeug.utils import secure_filename
 from app.publishing import (
     BILIBILI_DEFAULT_TID,
     bilibili_categories,
@@ -37,11 +40,13 @@ from app.config import (
     ACTIVE_JOB_STATUSES,
     BASE_DIR,
     BURN_PROFILES,
+    CORS_ORIGINS,
     DEFAULT_BURN_PROFILE,
     DEFAULT_SUBTITLE_LANGUAGE,
     DEFAULT_SUBTITLE_SIZE,
     DEFAULT_TRANSLATOR_LABEL,
     FFMPEG_COMMAND,
+    PORT,
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MAX_TRANSCRIPT_CHARS,
@@ -51,9 +56,14 @@ from app.config import (
     PROCESS_VERSION_TRANSLATION,
     PROCESS_VERSIONS,
     SAU_COMMAND,
+    SQLITE_BUSY_TIMEOUT_MS,
+    SQLITE_ENABLE_WAL,
     SUBTITLE_COMMAND_TEMPLATE,
     SUBTITLE_LANGUAGES,
     SUBTITLE_SIZE_PRESETS,
+    WORKFLOW_MAX_ANALYSIS_JOBS,
+    WORKFLOW_MAX_DOWNLOAD_JOBS,
+    WORKFLOW_MAX_PROCESSING_JOBS,
     WORKFLOW_ERROR_BOOT_INTERRUPTED,
     WORKFLOW_ERROR_DELETE_DOWNLOAD_EXISTS,
     WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,
@@ -104,8 +114,30 @@ def _bootstrap_local_tool_path():
 
 _bootstrap_local_tool_path()
 
-#允许所有来源跨域访问
-CORS(app)
+# 默认仅允许本地前端访问，避免局域网/网页跨源调用本机敏感接口。
+CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
+
+
+def _request_origin_allowed():
+    allowed = set(CORS_ORIGINS)
+    allowed.update({
+        f"http://127.0.0.1:{PORT}",
+        f"http://localhost:{PORT}",
+    })
+    origin = request.headers.get("Origin")
+    if not origin:
+        referer = request.headers.get("Referer")
+        if not referer:
+            return True
+        parsed = urllib.parse.urlparse(referer)
+        origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+    return origin in allowed
+
+
+@app.before_request
+def reject_cross_origin_writes():
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _request_origin_allowed():
+        return jsonify({"code": 403, "msg": "跨来源请求被拒绝", "data": None}), 403
 
 # 限制上传文件大小为160MB
 app.config['MAX_CONTENT_LENGTH'] = 160 * 1024 * 1024
