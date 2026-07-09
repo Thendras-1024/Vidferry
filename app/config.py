@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from conf import BASE_DIR
@@ -60,6 +63,78 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "90") or 90)
 LLM_MAX_TRANSCRIPT_CHARS = int(os.environ.get("LLM_MAX_TRANSCRIPT_CHARS", "28000") or 28000)
+
+_LLM_CONFIG_STATUS_CACHE = None
+
+
+def _build_llm_config_status(ready, missing=None, message=""):
+    return {
+        "ready": bool(ready),
+        "checked": True,
+        "missing": missing or [],
+        "message": message,
+    }
+
+
+def _format_llm_probe_error(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        body = exc.read().decode("utf-8", errors="replace").strip()
+        detail = body[:200] if body else exc.reason
+        return f"HTTP {exc.code}: {detail}"
+    if isinstance(exc, urllib.error.URLError):
+        return str(exc.reason or exc)[:200]
+    return str(exc)[:200]
+
+
+def get_llm_config_status():
+    global _LLM_CONFIG_STATUS_CACHE
+    if _LLM_CONFIG_STATUS_CACHE is not None:
+        return _LLM_CONFIG_STATUS_CACHE
+
+    missing = []
+    if not LLM_API_KEY:
+        missing.append("LLM_API_KEY")
+    if not LLM_BASE_URL:
+        missing.append("LLM_BASE_URL")
+    if not LLM_MODEL:
+        missing.append("LLM_MODEL")
+
+    if missing:
+        _LLM_CONFIG_STATUS_CACHE = _build_llm_config_status(
+            False,
+            missing,
+            f"LLM 不可用：缺少 {', '.join(missing)}。请在 .env 或环境变量中配置后重启后端。",
+        )
+        return _LLM_CONFIG_STATUS_CACHE
+
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [{"role": "user", "content": "回复 OK"}],
+        "temperature": 0,
+        "max_tokens": 2,
+    }
+    req = urllib.request.Request(
+        f"{LLM_BASE_URL}/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {LLM_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=min(LLM_TIMEOUT, 10)) as response:
+            json.loads(response.read().decode("utf-8"))
+        _LLM_CONFIG_STATUS_CACHE = _build_llm_config_status(True, [], "")
+    except Exception as exc:
+        reason = _format_llm_probe_error(exc)
+        _LLM_CONFIG_STATUS_CACHE = _build_llm_config_status(
+            False,
+            [],
+            f"LLM 配置存在但模型接口不可用：{reason}。请检查 LLM_BASE_URL、LLM_MODEL、LLM_API_KEY 后重启后端。",
+        )
+    return _LLM_CONFIG_STATUS_CACHE
 
 SUBTITLE_LANGUAGES = {
     "zh-CN": {"label": "中文", "suffix": "zh"},

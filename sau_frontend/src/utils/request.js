@@ -39,12 +39,18 @@ request.interceptors.response.use(
     if (data.code === 200 || data.success) {
       return data
     } else {
+      if (response.config?.silentError) {
+        return Promise.reject(new Error(data.msg || data.message || '请求失败'))
+      }
       ElMessage.error(data.msg || data.message || '请求失败')
       return Promise.reject(new Error(data.msg || data.message || '请求失败'))
     }
   },
   (error) => {
     console.error('响应错误:', error)
+    if (error.config?.silentError) {
+      return Promise.reject(error)
+    }
     
     // 处理HTTP错误状态码
     if (error.response) {

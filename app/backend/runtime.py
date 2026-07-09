@@ -25,6 +25,7 @@ MODULE_ORDER = [
     "app/core/publish_execution.py",
     "app/core/workflow_runner.py",
     "app/core/youtube_search_service.py",
+    "app/api/common.py",
     "app/api/static.py",
     "app/api/upload.py",
     "app/api/youtube.py",

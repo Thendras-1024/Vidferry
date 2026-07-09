@@ -152,6 +152,14 @@
           </div>
         </el-header>
         <el-main>
+          <el-alert
+            v-if="llmConfigWarning"
+            class="runtime-config-alert"
+            type="error"
+            show-icon
+            :closable="false"
+            :title="llmConfigWarning"
+          />
           <router-view />
         </el-main>
       </el-container>
@@ -162,11 +170,13 @@
 <script setup>
 import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis,
   Fold, Picture, Upload, Search, Bell, Setting
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
+import { commonApi } from '@/api/common'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 
@@ -176,6 +186,7 @@ const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
 let accountCheckTimer = null
+const llmConfigWarning = ref('')
 
 // 当前激活的菜单项
 const activeMenu = computed(() => {
@@ -212,6 +223,32 @@ const refreshGlobalAccountMessages = async () => {
   }
 }
 
+const refreshRuntimeConfigStatus = async () => {
+  try {
+    const res = await commonApi.getRuntimeConfigStatus()
+    const llm = res?.data?.llm
+    if (!llm || llm.ready) {
+      llmConfigWarning.value = ''
+      return
+    }
+
+    const missingText = Array.isArray(llm.missing) && llm.missing.length
+      ? ` 缺失：${llm.missing.join('、')}`
+      : ''
+    llmConfigWarning.value = `${llm.message || 'LLM 不可用，请检查配置并重启后端。'}${missingText}`
+
+    ElNotification({
+      title: 'LLM 配置不可用',
+      message: llmConfigWarning.value,
+      type: 'error',
+      position: 'top-right',
+      duration: 10000
+    })
+  } catch (error) {
+    console.error('运行时配置状态检查失败:', error)
+  }
+}
+
 const formatMessageTime = (timestamp) => {
   if (!timestamp) return ''
 
@@ -230,6 +267,7 @@ const handleMessageAction = (message) => {
 }
 
 onMounted(() => {
+  refreshRuntimeConfigStatus()
   refreshGlobalAccountMessages()
   accountCheckTimer = window.setInterval(refreshGlobalAccountMessages, ACCOUNT_CHECK_INTERVAL_MS)
 })
@@ -402,6 +440,10 @@ onBeforeUnmount(() => {
   background-color: $bg-color-page;
   padding: 20px;
   overflow-y: auto;
+}
+
+.runtime-config-alert {
+  margin-bottom: 16px;
 }
 
 :global(.message-popover) {
