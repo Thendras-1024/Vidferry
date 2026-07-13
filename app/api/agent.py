@@ -3,23 +3,7 @@ def agent_status():
     return jsonify({
         "code": 200,
         "msg": "success",
-        "data": {
-            "enabled": AGENT_ENABLED,
-            "chatModel": AGENT_CHAT_MODEL,
-            "visionModelConfigured": bool(AGENT_VISION_MODEL),
-            "requirePrepublishCheck": AGENT_REQUIRE_PREPUBLISH_CHECK,
-            "blockLevel": AGENT_BLOCK_LEVEL,
-            "maxToolRows": AGENT_MAX_TOOL_ROWS,
-            "maxToolCalls": AGENT_MAX_TOOL_CALLS,
-            "chatTemperature": AGENT_CHAT_TEMPERATURE,
-            "chatMaxTokens": AGENT_CHAT_MAX_TOKENS,
-            "guardTemperature": AGENT_GUARD_TEMPERATURE,
-            "guardMaxTokens": AGENT_GUARD_MAX_TOKENS,
-            "requireVisionCheck": AGENT_REQUIRE_VISION_CHECK,
-            "visionFailClosed": AGENT_VISION_FAIL_CLOSED,
-            "frameMaxCount": AGENT_FRAME_MAX_COUNT,
-            "frameScaleWidth": AGENT_FRAME_SCALE_WIDTH,
-        }
+        "data": _agent_status_payload()
     }), 200
 
 

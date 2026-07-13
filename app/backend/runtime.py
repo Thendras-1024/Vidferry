@@ -23,6 +23,7 @@ MODULE_ORDER = [
     "app/core/material_service.py",
     "app/core/agent_memory.py",
     "app/core/agent_tools.py",
+    "app/core/agent_policy.py",
     "app/core/agent_orchestrator.py",
     "app/core/prepublish_guard.py",
     "app/core/publish_execution.py",

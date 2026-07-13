@@ -19,6 +19,84 @@ AGENT_VIDEO_STATUSES = {
     "running": "运行中",
 }
 
+AGENT_TOOL_SPECS = [
+    {
+        "name": "explain_vidferry_pipeline",
+        "description": "说明 Vidferry 从线索导入、下载、处理、质检到发布的本地工作流。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "readOnly": True,
+    },
+    {
+        "name": "get_workflow_overview",
+        "description": "查询当前视频工作流各状态数量概览。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "readOnly": True,
+    },
+    {
+        "name": "list_videos_by_status",
+        "description": "按状态查询视频列表。status 可为 initial/downloaded/processed/published/failed/abnormal/running。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS},
+            },
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "get_video_detail",
+        "description": "按视频 ID、YouTube URL、标题或关键词查询单个视频详情和发布记录。",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "get_publish_platforms",
+        "description": "按内部视频 ID 查询已成功发布的平台记录。",
+        "parameters": {
+            "type": "object",
+            "properties": {"videoId": {"type": "string"}},
+            "required": ["videoId"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "list_publish_tasks",
+        "description": "查询最近的发布任务记录。",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS}},
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "list_failed_jobs",
+        "description": "查询最近失败或异常的视频工作流任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS}},
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "get_account_status",
+        "description": "查询已配置平台账号的状态概览。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "readOnly": True,
+    },
+]
+
+AGENT_TOOL_SPEC_MAP = {item["name"]: item for item in AGENT_TOOL_SPECS}
+
 
 def _agent_limit(limit=None):
     return max(1, min(int(limit or AGENT_MAX_TOOL_ROWS), AGENT_MAX_TOOL_ROWS))
@@ -234,4 +312,3 @@ def get_account_status():
             for row in rows
         ]
     }
-
