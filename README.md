@@ -104,8 +104,9 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 - 视频采集处理：关键词批量查询 YouTube、单链接导入、线索状态筛选、下载和处理任务追踪。
 - 视频下载：基于 `yt-dlp` 下载视频，并写入本地素材库。
 - 字幕处理：基于 `faster-whisper` 转写，生成目标语言字幕，并默认保留英文字幕。
-- 视频烧录：基于 FFmpeg 输出国内平台更兼容的 MP4，并在左上角烧录原作者信息。
+- 视频烧录：基于 FFmpeg 输出国内平台更兼容的 MP4，烧录左上角原作者信息，并可在处理设置中启用文字水印。
 - 内容分析：基于 OpenAI-compatible LLM 生成标题候选、作品描述、话题标签、视频总结和高光片段建议。
+- 发布前审核：Agent 对发布文案进行风险检查，并可抽取视频关键帧交由视觉模型复核；未配置视觉模型时，默认阻止提交发布。
 - 视频素材管理：区分下载原视频和处理后视频，支持预览、删除和状态同步。
 - 发布中心：选择处理后视频，自动带入发布稿，并按平台账号提交发布任务。
 - 账号管理：维护抖音、B站、快手、视频号、小红书账号 Cookie 状态。
@@ -241,12 +242,17 @@ YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
 # LLM_TIMEOUT=90
 # LLM_MAX_TRANSCRIPT_CHARS=28000
 
+# 可选：Agent 文本模型和视觉审核模型。发布前审核默认启用；
+# 未配置 AGENT_VISION_MODEL 时，发布会被阻止，直到完成视觉审核配置。
+# AGENT_CHAT_MODEL=qwen3.6-27b
+# AGENT_VISION_MODEL=your-vision-model
+
 # 可选：Whisper 转写模型下载和缓存
 # HF_HOME=./models/huggingface
 # HF_ENDPOINT=https://hf-mirror.com
-# WHISPER_MODEL_SIZE=small
-# WHISPER_DEVICE=cpu
-# WHISPER_COMPUTE_TYPE=int8
+WHISPER_MODEL_SIZE=small
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
 ```
 
 说明：
@@ -355,7 +361,7 @@ cookiesFile/
 
 处理版本：
 
-- 处理版本一：基础字幕处理和左上角原作者信息。
+- 处理版本一：基础字幕处理和左上角原作者信息；可在处理设置中启用文字水印，水印内容最长 32 个字符。
 - 处理版本二：在基础处理上叠加高光片段分析和剪辑增强，仍在迭代中。
 
 ### 6. 生成和编辑发布稿
@@ -370,6 +376,17 @@ LLM 配置完成后，系统可以生成：
 
 LLM 原始结果只读保存。用户最终发布使用的标题、文案、话题会作为发布稿单独保存。
 
+### Agent 发布前审核
+
+发布前审核默认启用。系统会检查发布文案，并从视频抽取关键帧交由视觉模型复核；高风险结论或审核失败会阻止提交发布。除 `LLM_BASE_URL`、`LLM_API_KEY` 外，还需要在 `.env` 配置与当前云服务兼容的视觉模型：
+
+```env
+AGENT_CHAT_MODEL=qwen3.6-27b
+AGENT_VISION_MODEL=your-vision-model
+```
+
+`AGENT_CHAT_MODEL` 留空时使用 `LLM_MODEL`。`AGENT_VISION_MODEL` 为空时，默认策略会阻止发布，避免绕过关键帧审核；内部的抽帧数量、风险阈值和模型参数由程序统一维护，不需要写入 `.env`。
+
 ### 7. 发布中心发布
 
 进入“发布中心”：
@@ -383,6 +400,18 @@ LLM 原始结果只读保存。用户最终发布使用的标题、文案、话�
 5. 提交发布。
 
 已成功发布过的平台会被限制重复发布，避免同一个视频重复发到同一平台。
+
+### 8. 视频号 CLI 发布
+
+视频号当前支持账号登录、Cookie 校验和视频发布；图文发布尚未实现。登录时会打开浏览器并展示二维码：
+
+```powershell
+sau tencent login --account your_account
+sau tencent check --account your_account
+sau tencent upload-video --account your_account --file D:/videos/output.mp4 --title "视频标题" --desc "发布说明" --tags "话题1,话题2"
+```
+
+`upload-video` 可额外使用 `--thumbnail` 指定封面、`--draft` 保存草稿、`--schedule "2026-07-13 20:00:00"` 定时发布，以及 `--headless` 在无头模式运行。平台页面和登录规则可能变化，发布前请先执行 `check` 确认 Cookie 有效。
 
 ## 目录说明
 
@@ -492,6 +521,8 @@ WHISPER_COMPUTE_TYPE=int8
 | `small` | 当前默认，速度和质量比较均衡 | 约 500 MB |
 | `medium` | 更准，但 CPU 会明显变慢 | 约 1.5 GB |
 | `large-v3` | 质量更高，资源占用大 | 约 3.1 GB |
+
+`large-v3` 首次下载及缓存建议预留至少 5 GB 磁盘空间。CPU 模式建议使用至少 16 GB 内存，但处理速度会明显低于 `small`；如使用 NVIDIA CUDA，建议至少 8 GB 显存，并将 `WHISPER_DEVICE` 改为 `cuda`、`WHISPER_COMPUTE_TYPE` 改为 `float16` 或 `int8_float16`。资源不足时保持默认 `small`。修改 `.env` 后需要重启后端；已有转写缓存会被复用，不会因为切换模型自动重新转写。
 
 国内网络如果无法直接访问 Hugging Face，可以使用 HF-Mirror 预下载模型。以当前默认 `small` 为例：
 
