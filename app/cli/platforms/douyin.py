@@ -26,12 +26,17 @@ async def check_douyin_account(account_name: str) -> bool:
 
 
 async def upload_video(request: DouyinVideoUploadRequest) -> Path:
-    from uploader.douyin_uploader.main import DouYinVideo
+    from uploader.douyin_uploader.main import DouYinVideo, douyin_setup
 
     account_file = resolve_account_file("douyin", request.account_name)
     if not account_file.exists():
         raise RuntimeError(
             f"Douyin cookie file is missing: {account_file}. Run `sau douyin login --account {request.account_name}` first."
+        )
+    # 发布前实测登录态,避免 cookie 文件存在但会话已过期,导致上传流程卡在登录页
+    if not await douyin_setup(str(account_file), handle=False):
+        raise RuntimeError(
+            f"Douyin cookie is missing or expired: {account_file}. Run `sau douyin login --account {request.account_name}` first."
         )
 
     app = DouYinVideo(
@@ -53,12 +58,17 @@ async def upload_video(request: DouyinVideoUploadRequest) -> Path:
 
 
 async def upload_note(request: DouyinNoteUploadRequest) -> Path:
-    from uploader.douyin_uploader.main import DouYinNote
+    from uploader.douyin_uploader.main import DouYinNote, douyin_setup
 
     account_file = resolve_account_file("douyin", request.account_name)
     if not account_file.exists():
         raise RuntimeError(
             f"Douyin cookie file is missing: {account_file}. Run `sau douyin login --account {request.account_name}` first."
+        )
+    # 发布前实测登录态,避免 cookie 文件存在但会话已过期,导致上传流程卡在登录页
+    if not await douyin_setup(str(account_file), handle=False):
+        raise RuntimeError(
+            f"Douyin cookie is missing or expired: {account_file}. Run `sau douyin login --account {request.account_name}` first."
         )
 
     app = DouYinNote(

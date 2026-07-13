@@ -26,12 +26,17 @@ async def check_xiaohongshu_account(account_name: str) -> bool:
 
 
 async def upload_xiaohongshu_video(request: XiaohongshuVideoUploadRequest) -> Path:
-    from uploader.xiaohongshu_uploader.main import XiaoHongShuVideo
+    from uploader.xiaohongshu_uploader.main import XiaoHongShuVideo, xiaohongshu_setup
 
     account_file = resolve_account_file("xiaohongshu", request.account_name)
     if not account_file.exists():
         raise RuntimeError(
             f"Xiaohongshu cookie file is missing: {account_file}. Run `sau xiaohongshu login --account {request.account_name}` first."
+        )
+    # 发布前实测登录态,避免 cookie 文件存在但会话已过期,导致上传流程卡在登录页
+    if not await xiaohongshu_setup(str(account_file), handle=False):
+        raise RuntimeError(
+            f"Xiaohongshu cookie is missing or expired: {account_file}. Run `sau xiaohongshu login --account {request.account_name}` first."
         )
 
     app = XiaoHongShuVideo(
@@ -51,12 +56,17 @@ async def upload_xiaohongshu_video(request: XiaohongshuVideoUploadRequest) -> Pa
 
 
 async def upload_xiaohongshu_note(request: XiaohongshuNoteUploadRequest) -> Path:
-    from uploader.xiaohongshu_uploader.main import XiaoHongShuNote
+    from uploader.xiaohongshu_uploader.main import XiaoHongShuNote, xiaohongshu_setup
 
     account_file = resolve_account_file("xiaohongshu", request.account_name)
     if not account_file.exists():
         raise RuntimeError(
             f"Xiaohongshu cookie file is missing: {account_file}. Run `sau xiaohongshu login --account {request.account_name}` first."
+        )
+    # 发布前实测登录态,避免 cookie 文件存在但会话已过期,导致上传流程卡在登录页
+    if not await xiaohongshu_setup(str(account_file), handle=False):
+        raise RuntimeError(
+            f"Xiaohongshu cookie is missing or expired: {account_file}. Run `sau xiaohongshu login --account {request.account_name}` first."
         )
 
     app = XiaoHongShuNote(
