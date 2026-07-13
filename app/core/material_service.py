@@ -1018,6 +1018,11 @@ def _youtube_material_metadata(job, stage):
         "subtitleLanguageLabel": language_meta["label"],
         "subtitleSize": _normalize_subtitle_size(job.get("subtitleSize")),
         "translatorLabel": _normalize_translator_label(job.get("translatorLabel")),
+        "watermarkEnabled": bool(job.get("watermarkEnabled")),
+        "watermarkText": (
+            _normalize_watermark_text(job.get("watermarkText")) or DEFAULT_WATERMARK_TEXT
+            if job.get("watermarkEnabled") else ""
+        ),
     }
 
 

@@ -11,6 +11,8 @@ def _default_workflow_settings():
         "burnProfile": DEFAULT_BURN_PROFILE,
         "subtitleSize": DEFAULT_SUBTITLE_SIZE,
         "translatorLabel": DEFAULT_TRANSLATOR_LABEL,
+        "watermarkEnabled": False,
+        "watermarkText": "",
     }
 
 
@@ -36,7 +38,11 @@ def _normalize_workflow_settings(payload=None):
 
     translator_label = str(payload.get("translatorLabel") or "").strip()
     if translator_label:
-        settings["translatorLabel"] = translator_label[:32]
+        settings["translatorLabel"] = translator_label[:20]
+
+    settings["watermarkEnabled"] = bool(payload.get("watermarkEnabled", False))
+    watermark_text = str(payload.get("watermarkText") or "").strip()[:16]
+    settings["watermarkText"] = watermark_text if len(watermark_text) >= 2 else ""
 
     return settings
 

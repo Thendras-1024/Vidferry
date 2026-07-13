@@ -17,6 +17,18 @@ def _escape_ass_text(text):
     return str(text or "").replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
 
 
+def _watermark_enabled(job):
+    return bool((job or {}).get("watermarkEnabled"))
+
+
+def _watermark_text(job):
+    return _normalize_watermark_text((job or {}).get("watermarkText")) or DEFAULT_WATERMARK_TEXT
+
+
+def _watermark_burns_with_subtitles(job):
+    return _watermark_enabled(job) and _normalize_process_version(job.get("processVersion")) != PROCESS_VERSION_EDITING
+
+
 def _extract_audio_for_whisper(source_file, work_dir):
     ffmpeg = _resolve_ffmpeg_command()
     audio_file = Path(work_dir) / f"{Path(source_file).stem}_16k.wav"
@@ -364,7 +376,7 @@ def _split_ass_text_to_single_lines(text, max_chars, max_parts=4):
     return [part for part in parts[:max_parts] if part]
 
 
-def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None):
+def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, include_subtitles=True):
     ass_file = Path(ass_file)
     video_info = video_info or {}
     width = max(320, int(video_info.get("width") or 1080))
@@ -387,6 +399,9 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None):
     subtitle_outline = max(4, int(short_side * 0.0065))
     info_outline = max(3, int(short_side * 0.0055))
     subtitle_shadow = max(1, int(short_side * 0.0022))
+    watermark_font_size = max(20, min(54, int(short_side * 0.032)))
+    watermark_margin = max(20, int(width * 0.042))
+    watermark_margin_v = max(40, int(height * 0.070))
     max_subtitle_chars = max(8, int(width / max(subtitle_font_size * (0.92 if is_vertical else 0.86), 1)))
     max_english_chars = max(12, int(width / max(english_font_size * (0.62 if is_vertical else 0.55), 1)))
     always_show_english_line = True
@@ -406,22 +421,28 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None):
         f"Style: Subtitle,Microsoft YaHei,{subtitle_font_size},&H0000E6FF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{subtitle_margin_v},1",
         f"Style: English,Arial,{english_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{english_margin_v},1",
         f"Style: Info,Microsoft YaHei,{info_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{info_outline},{subtitle_shadow},7,{horizontal_margin},{horizontal_margin},{info_margin_v},1",
+        f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,0,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-        f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}",
     ]
-    for segment in segments:
-        start = _format_ass_timestamp(segment["start"])
-        end = _format_ass_timestamp(max(segment["end"], segment["start"] + 0.5))
-        english_text = _escape_ass_text(segment.get("text") or "")
-        if always_show_english_line and english_text:
-            dialogue_lines.append(f"Dialogue: 0,{start},{end},English,,0,0,0,,{english_text}")
-        if has_translated_line:
-            wrapped_text = _wrap_ass_text(segment.get("subtitle") or "", max_subtitle_chars)
-            text = _escape_ass_text(wrapped_text)
-            if text:
-                dialogue_lines.append(f"Dialogue: 1,{start},{end},Subtitle,,0,0,0,,{text}")
+    if include_subtitles:
+        dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
+        for segment in segments:
+            start = _format_ass_timestamp(segment["start"])
+            end = _format_ass_timestamp(max(segment["end"], segment["start"] + 0.5))
+            english_text = _escape_ass_text(segment.get("text") or "")
+            if always_show_english_line and english_text:
+                dialogue_lines.append(f"Dialogue: 0,{start},{end},English,,0,0,0,,{english_text}")
+            if has_translated_line:
+                wrapped_text = _wrap_ass_text(segment.get("subtitle") or "", max_subtitle_chars)
+                text = _escape_ass_text(wrapped_text)
+                if text:
+                    dialogue_lines.append(f"Dialogue: 1,{start},{end},Subtitle,,0,0,0,,{text}")
+    if _watermark_enabled(job) and (not include_subtitles or _watermark_burns_with_subtitles(job)):
+        dialogue_lines.append(
+            f"Dialogue: 2,{_format_ass_timestamp(0)},{_format_ass_timestamp(max(0.1, audio_duration or 0.1))},Watermark,,0,0,0,,{_escape_ass_text(_watermark_text(job))}"
+        )
     ass_file.write_text("\n".join(dialogue_lines), encoding="utf-8")
     return ass_file
 
@@ -455,7 +476,7 @@ def _compatible_video_dimensions(width, height, max_long_side=1920, max_short_si
     return target_width, target_height
 
 
-def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_id=""):
+def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_id="", progress_label="字幕"):
     ffmpeg = _resolve_ffmpeg_command()
     subtitle_filter = f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'"
     output_file = Path(output_file)
@@ -551,7 +572,7 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
                     _update_translate_progress(
                         job_id,
                         round(progress, 1),
-                        f"FFmpeg 正在烧录字幕 {min(100, burn_progress * 100):.1f}%",
+                        f"FFmpeg 正在烧录{progress_label} {min(100, burn_progress * 100):.1f}%",
                     )
                     last_update = now
 
@@ -579,6 +600,20 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
             backup_output_file.replace(output_file)
         raise RuntimeError(f"FFmpeg 已执行，但未生成最终 MP4: {output_file}")
     return output_file
+
+
+def _apply_watermark_to_mp4(media_file, job):
+    if not _watermark_enabled(job):
+        return Path(media_file)
+    media_file = Path(media_file)
+    video_info = _get_video_info(media_file)
+    duration = video_info.get("duration") or 0.1
+    ass_file = media_file.with_name(f"{media_file.stem}_watermark.ass")
+    output_file = media_file.with_name(f"{media_file.stem}.watermarked{media_file.suffix}")
+    _build_ass_file(job, [], ass_file, duration, video_info, include_subtitles=False)
+    _burn_subtitles_to_mp4(media_file, ass_file, output_file, duration=duration, job_id=job.get("id") or "", progress_label="水印")
+    output_file.replace(media_file)
+    return media_file
 
 
 def _download_youtube_video(job):
@@ -667,6 +702,9 @@ def _process_subtitles(job, source_file):
             if previous_output_file and previous_output_file.exists():
                 previous_output_file.replace(output_file)
             raise
+        if _watermark_burns_with_subtitles(job):
+            _update_translate_progress(job_id, 92, "自定义字幕处理完成，正在烧录水印")
+            _apply_watermark_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, "自定义字幕处理完成，正在保存结果")
         return {"path": output_file, "skipped": False}
 
@@ -677,6 +715,9 @@ def _process_subtitles(job, source_file):
         segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir)
     except NoSpeechDetectedError as exc:
         _replace_file_with_backup(source_file, output_file)
+        if _watermark_burns_with_subtitles(job):
+            _update_translate_progress(job_id, 92, "未检测到人声，正在烧录水印")
+            _apply_watermark_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, str(exc))
         return {"path": output_file, "skipped": True}
     _update_translate_progress(job_id, 34, f"已识别 {len(segments)} 段字幕，正在处理为{language_meta['label']}")

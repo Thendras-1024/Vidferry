@@ -26,13 +26,15 @@ def _row_to_workflow_job(row):
         "burnProfile": _normalize_burn_profile(item.get("burn_profile")),
         "subtitleSize": _normalize_subtitle_size(item.get("subtitle_size")),
         "translatorLabel": _normalize_translator_label(item.get("translator_label")),
+        "watermarkEnabled": bool(item.get("watermark_enabled") or 0),
+        "watermarkText": _normalize_watermark_text(item.get("watermark_text")),
         "title": item.get("title") or "",
         "description": item.get("description") or "",
         "tags": json.loads(item.get("tags") or "[]"),
         "schedule": item.get("schedule") or "",
         "status": item.get("status") or "",
         "step": item.get("step") or "",
-        "message": item.get("message") or "",
+        "message": clean_display_text(item.get("message")),
         "sourceFilePath": item.get("source_file_path") or "",
         "processedFilePath": item.get("processed_file_path") or "",
         "publishCommand": item.get("publish_command") or "",
@@ -41,8 +43,8 @@ def _row_to_workflow_job(row):
         "eta": item.get("eta") or "",
         "errorCode": item.get("error_code") or "",
         "errorType": item.get("error_type") or "",
-        "errorReason": item.get("error_reason") or "",
-        "errorDetail": item.get("error_detail") or "",
+        "errorReason": clean_display_text(item.get("error_reason")),
+        "errorDetail": clean_display_text(item.get("error_detail")),
         "interruptedAt": item.get("interrupted_at") or "",
         "createdAt": item.get("created_at") or "",
         "updatedAt": item.get("updated_at") or "",
@@ -106,7 +108,12 @@ def _subtitle_size_config(value):
 
 def _normalize_translator_label(value):
     label = str(value or "").strip()
-    return label[:32] if label else DEFAULT_TRANSLATOR_LABEL
+    return label[:20] if label else DEFAULT_TRANSLATOR_LABEL
+
+
+def _normalize_watermark_text(value):
+    text = str(value or "").strip()[:16]
+    return text if len(text) >= 2 else ""
 
 
 def _normalize_process_version(value):
@@ -121,6 +128,8 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False):
     burn_profile = _normalize_burn_profile(payload.get("burnProfile"))
     subtitle_size = _normalize_subtitle_size(payload.get("subtitleSize"))
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
+    watermark_enabled = bool(payload.get("watermarkEnabled", False))
+    watermark_text = _normalize_watermark_text(payload.get("watermarkText"))
     process_version = _normalize_process_version(payload.get("processVersion"))
     tags = payload.get("tags") or []
     if isinstance(tags, str):
@@ -144,10 +153,10 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False):
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text,
             title, description, tags, schedule, status, step, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             job_id,
             video_id,
@@ -171,6 +180,8 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False):
             burn_profile,
             subtitle_size,
             translator_label,
+            int(watermark_enabled),
+            watermark_text,
             payload.get("title") or "",
             payload.get("description") or "",
             json.dumps(tags, ensure_ascii=False),
@@ -429,6 +440,9 @@ def _assert_no_active_youtube_job(cursor, video_id):
 def update_youtube_workflow_job(job_id, **changes):
     if not changes:
         return get_youtube_workflow_job(job_id)
+    for text_key in ("message", "error_reason", "error_detail"):
+        if text_key in changes:
+            changes[text_key] = clean_display_text(changes[text_key])
     fields = []
     values = []
     for key, value in changes.items():
@@ -529,6 +543,8 @@ def _parse_dt(value):
 def start_workflow_event(job, stage, message="", input_file_path="", metadata=None):
     init_database_tables()
     now = _now_iso()
+    message = clean_display_text(message)
+    stage_label = clean_display_text(WORKFLOW_STAGE_LABELS.get(stage, stage))
     with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -541,7 +557,7 @@ def start_workflow_event(job, stage, message="", input_file_path="", metadata=No
             job.get("id") or "",
             job.get("videoId") or "",
             stage,
-            WORKFLOW_STAGE_LABELS.get(stage, stage),
+            stage_label,
             "running",
             message,
             str(input_file_path or ""),
@@ -558,6 +574,7 @@ def finish_workflow_event(event_id, status="success", message="", output_file_pa
         return None
     init_database_tables()
     now = _now_iso()
+    message = clean_display_text(message)
     cloud_usage = cloud_usage or {}
     prompt_tokens = int(cloud_usage.get("promptTokens") or cloud_usage.get("prompt_tokens") or 0)
     completion_tokens = int(cloud_usage.get("completionTokens") or cloud_usage.get("completion_tokens") or 0)
@@ -625,9 +642,9 @@ def _row_to_workflow_event(row):
         "jobId": item.get("job_id") or "",
         "videoId": item.get("video_id") or "",
         "stage": item.get("stage") or "",
-        "stageLabel": item.get("stage_label") or item.get("stage") or "",
+        "stageLabel": clean_display_text(item.get("stage_label") or item.get("stage") or ""),
         "status": item.get("status") or "",
-        "message": item.get("message") or "",
+        "message": clean_display_text(item.get("message")),
         "inputFilePath": item.get("input_file_path") or "",
         "outputFilePath": item.get("output_file_path") or "",
         "inputSizeMb": float(item.get("input_size_mb") or 0),
@@ -726,7 +743,7 @@ def get_workflow_statistics(limit=200, page=1, page_size=None):
         for row in cursor.fetchall():
             stages.append({
                 "stage": row["stage"] or "",
-                "stageLabel": row["stage_label"] or row["stage"] or "",
+                "stageLabel": clean_display_text(row["stage_label"] or row["stage"] or ""),
                 "count": int(row["count"] or 0),
                 "success": int(row["success"] or 0),
                 "failed": int(row["failed"] or 0),

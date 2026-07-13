@@ -579,113 +579,108 @@
     <el-dialog
       v-model="settingsDialogVisible"
       title="设置"
-      width="460px"
+      width="920px"
       class="process-settings-dialog"
     >
       <div class="settings-panel">
-        <div class="settings-section">
-          <div class="settings-section-header">
-            <span class="panel-kicker">基础设置</span>
-            <h3>处理方式</h3>
-          </div>
-        <div class="settings-field">
-          <span class="settings-label">字幕语言</span>
-          <el-select v-model="workflowForm.subtitleLanguage" class="process-version-select">
-            <el-option
-              v-for="language in subtitleLanguages"
-              :key="language.value"
-              :label="language.label"
-              :value="language.value"
-            />
-          </el-select>
-        </div>
-        <div class="settings-field">
-          <span class="settings-label">处理版本</span>
-          <el-select v-model="workflowForm.processVersion" class="process-version-select">
-            <el-option
-              v-for="version in processVersions"
-              :key="version.value"
-              :label="version.label"
-              :value="version.value"
-            />
-          </el-select>
-        </div>
-        <div class="version-note">
-          <strong>{{ currentProcessVersion.label }}</strong>
-          <span>{{ currentProcessVersion.description }}</span>
-        </div>
-        <div class="version-note">
-          <strong>当前字幕语言：{{ currentSubtitleLanguage.label }}</strong>
-          <span>处理版本一会把识别到的字幕翻译成该语言后再烧录到视频中；处理版本二会在此基础上提取前三个高光片段并拼接到视频开头。</span>
-        </div>
-        </div>
-
-        <div class="settings-section">
-          <div class="settings-section-header">
-            <span class="panel-kicker">烧录设置</span>
-            <h3>FFmpeg 输出预设</h3>
-          </div>
-          <div class="settings-field">
-            <span class="settings-label">烧录预设</span>
-            <el-select v-model="workflowForm.burnProfile" class="process-version-select">
-              <el-option
-                v-for="profile in burnProfiles"
-                :key="profile.value"
-                :label="profile.label"
-                :value="profile.value"
-              />
-            </el-select>
-          </div>
-          <div class="settings-field">
-            <span class="settings-label">字幕字号</span>
-            <el-select v-model="workflowForm.subtitleSize" class="process-version-select">
-              <el-option
-                v-for="size in subtitleSizes"
-                :key="size.value"
-                :label="size.label"
-                :value="size.value"
-              />
-            </el-select>
-          </div>
-          <div class="settings-field">
-            <span class="settings-label">翻译署名</span>
-            <el-input
-              v-model="workflowForm.translatorLabel"
-              maxlength="32"
-              show-word-limit
-              placeholder="例如：AI中文字幕"
-            />
-          </div>
-          <div class="version-note">
-            <div class="version-note-title">
-              <strong>{{ currentBurnProfile.label }}</strong>
-              <el-popover placement="left" trigger="click" width="340">
-                <div class="profile-popover">
-                  <p>{{ currentBurnProfile.description }}</p>
-                  <dl>
-                    <template v-for="param in currentBurnProfile.params" :key="param.name">
-                      <dt>{{ param.name }}：{{ param.value }}</dt>
-                      <dd>{{ param.description }}</dd>
-                    </template>
-                  </dl>
-                </div>
-                <template #reference>
-                  <el-button class="param-info-button" text circle aria-label="查看预设参数说明">
-                    <el-icon><InfoFilled /></el-icon>
-                  </el-button>
-                </template>
-              </el-popover>
+        <el-tabs v-model="settingsTab" class="process-settings-tabs">
+          <el-tab-pane label="处理方案" name="processing">
+            <div class="settings-section settings-grid">
+              <div class="settings-field">
+                <span class="settings-label">字幕语言</span>
+                <el-select v-model="workflowForm.subtitleLanguage" class="process-version-select">
+                  <el-option v-for="language in subtitleLanguages" :key="language.value" :label="language.label" :value="language.value" />
+                </el-select>
+              </div>
+              <div class="settings-field">
+                <span class="settings-label">处理版本</span>
+                <el-select v-model="workflowForm.processVersion" class="process-version-select">
+                  <el-option v-for="version in processVersions" :key="version.value" :label="version.label" :value="version.value" />
+                </el-select>
+              </div>
+              <div class="version-note settings-span-full">
+                <strong>{{ currentProcessVersion.label }}</strong>
+                <span>{{ currentProcessVersion.description }}</span>
+              </div>
+              <div class="setting-status settings-span-full">
+                当前字幕输出：{{ currentSubtitleLanguage.label }}
+              </div>
             </div>
-            <span>点击感叹号查看该预设的编码参数和说明。</span>
-          </div>
-          <div class="version-note">
-            <strong>{{ currentSubtitleSize.label }}</strong>
-            <span>{{ currentSubtitleSize.description }}</span>
-          </div>
-        </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="字幕与输出" name="output">
+            <div class="settings-section settings-grid">
+              <div class="settings-field">
+                <span class="settings-label">烧录预设</span>
+                <el-select v-model="workflowForm.burnProfile" class="process-version-select">
+                  <el-option v-for="profile in burnProfiles" :key="profile.value" :label="profile.label" :value="profile.value" />
+                </el-select>
+              </div>
+              <div class="settings-field">
+                <span class="settings-label">字幕字号</span>
+                <el-select v-model="workflowForm.subtitleSize" class="process-version-select">
+                  <el-option v-for="size in subtitleSizes" :key="size.value" :label="size.label" :value="size.value" />
+                </el-select>
+              </div>
+              <div class="settings-field settings-span-full">
+                <span class="settings-label">翻译署名</span>
+                <el-input v-model="workflowForm.translatorLabel" maxlength="20" show-word-limit placeholder="例如：AI 中文字幕" />
+              </div>
+              <div class="version-note settings-span-full">
+                <div class="version-note-title">
+                  <strong>{{ currentBurnProfile.label }}</strong>
+                  <el-popover placement="bottom-start" trigger="click" width="340">
+                    <div class="profile-popover">
+                      <p>{{ currentBurnProfile.description }}</p>
+                      <dl>
+                        <template v-for="param in currentBurnProfile.params" :key="param.name">
+                          <dt>{{ param.name }}：{{ param.value }}</dt>
+                          <dd>{{ param.description }}</dd>
+                        </template>
+                      </dl>
+                    </div>
+                    <template #reference>
+                      <el-button class="param-info-button" text circle aria-label="查看编码预设参数">
+                        <el-icon><InfoFilled /></el-icon>
+                      </el-button>
+                    </template>
+                  </el-popover>
+                </div>
+                <span>{{ currentSubtitleSize.description }}</span>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="水印标识" name="watermark">
+            <div class="settings-section watermark-settings">
+              <div class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">启用水印</span>
+                  <span class="setting-hint">整段视频右上角持续显示</span>
+                </div>
+                <el-switch v-model="workflowForm.watermarkEnabled" @change="flushWorkflowSettings" />
+              </div>
+              <div class="settings-field">
+                <span class="settings-label">水印内容</span>
+                <el-input
+                  v-model="workflowForm.watermarkText"
+                  :disabled="!workflowForm.watermarkEnabled"
+                  minlength="2"
+                  maxlength="16"
+                  show-word-limit
+                  placeholder="留空时使用 Vidferry；填写 2-16 个字符"
+                  @change="normalizeWatermarkText"
+                />
+              </div>
+              <div class="watermark-preview" :class="{ 'is-muted': !workflowForm.watermarkEnabled }">
+                <span>{{ workflowForm.watermarkText || 'Vidferry' }}</span>
+              </div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </div>
       <template #footer>
-        <el-button type="primary" @click="settingsDialogVisible = false">确定</el-button>
+        <el-button type="primary" @click="settingsDialogVisible = false">完成</el-button>
       </template>
     </el-dialog>
 
@@ -841,6 +836,7 @@ const deletingId = ref('')
 const batchDeleting = ref(false)
 const resettingId = ref('')
 const settingsDialogVisible = ref(false)
+const settingsTab = ref('processing')
 const route = useRoute()
 const router = useRouter()
 const analysisDialogVisible = ref(false)
@@ -916,7 +912,9 @@ const workflowForm = reactive({
   subtitleLanguage: 'zh-CN',
   burnProfile: 'stable',
   subtitleSize: 'large',
-  translatorLabel: 'Vidferry翻译'
+  translatorLabel: 'Vidferry翻译',
+  watermarkEnabled: false,
+  watermarkText: ''
 })
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
@@ -1109,7 +1107,14 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
     next.subtitleSize = settings.subtitleSize
   }
   if (typeof settings.translatorLabel === 'string' && settings.translatorLabel.trim()) {
-    next.translatorLabel = settings.translatorLabel.trim().slice(0, 32)
+    next.translatorLabel = settings.translatorLabel.trim().slice(0, 20)
+  }
+  if (typeof settings.watermarkEnabled === 'boolean') {
+    next.watermarkEnabled = settings.watermarkEnabled
+  }
+  if (typeof settings.watermarkText === 'string') {
+    const watermarkText = settings.watermarkText.trim().slice(0, 16)
+    next.watermarkText = watermarkText.length >= 2 ? watermarkText : ''
   }
   return next
 }
@@ -1138,8 +1143,19 @@ const currentWorkflowSettingsPayload = () => ({
   subtitleLanguage: workflowForm.subtitleLanguage,
   burnProfile: workflowForm.burnProfile,
   subtitleSize: workflowForm.subtitleSize,
-  translatorLabel: workflowForm.translatorLabel
+  translatorLabel: workflowForm.translatorLabel,
+  watermarkEnabled: workflowForm.watermarkEnabled,
+  watermarkText: workflowForm.watermarkText
 })
+
+const normalizeWatermarkText = () => {
+  const watermarkText = workflowForm.watermarkText.trim().slice(0, 16)
+  workflowForm.watermarkText = watermarkText.length >= 2 ? watermarkText : ''
+  if (watermarkText.length === 1) {
+    ElMessage.warning('水印内容至少需要 2 个字符')
+  }
+  flushWorkflowSettings()
+}
 
 const loadWorkflowSettings = async () => {
   const localSettings = readLocalWorkflowSettings()
@@ -1210,7 +1226,9 @@ watch(
     subtitleLanguage: workflowForm.subtitleLanguage,
     burnProfile: workflowForm.burnProfile,
     subtitleSize: workflowForm.subtitleSize,
-    translatorLabel: workflowForm.translatorLabel
+    translatorLabel: workflowForm.translatorLabel,
+    watermarkEnabled: workflowForm.watermarkEnabled,
+    watermarkText: workflowForm.watermarkText
   }),
   saveWorkflowSettings,
   { deep: true }
@@ -1897,7 +1915,9 @@ const createJob = async (row) => {
       subtitleLanguage: workflowForm.subtitleLanguage,
       burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize,
-      translatorLabel: workflowForm.translatorLabel
+      translatorLabel: workflowForm.translatorLabel,
+      watermarkEnabled: workflowForm.watermarkEnabled,
+      watermarkText: workflowForm.watermarkText
     })
     jobs.value.unshift(res.data)
     ElMessage.success('工作流任务已创建')
@@ -2116,7 +2136,9 @@ const createAnalysisJob = async (row) => {
       subtitleLanguage: workflowForm.subtitleLanguage,
       burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize,
-      translatorLabel: workflowForm.translatorLabel
+      translatorLabel: workflowForm.translatorLabel,
+      watermarkEnabled: workflowForm.watermarkEnabled,
+      watermarkText: workflowForm.watermarkText
     })
     jobs.value.unshift(res.data)
     items.value = items.value.map(item => item.id === row.id ? { ...item, analysisStatus: 2, hasAnalysis: false, analysisDraft: null } : item)
@@ -2202,7 +2224,9 @@ const processVideo = async (row) => {
       subtitleLanguage: workflowForm.subtitleLanguage,
       burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize,
-      translatorLabel: workflowForm.translatorLabel
+      translatorLabel: workflowForm.translatorLabel,
+      watermarkEnabled: workflowForm.watermarkEnabled,
+      watermarkText: workflowForm.watermarkText
     }
     const res = await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)
@@ -3176,18 +3200,125 @@ $ink-strong: #172033;
 }
 
 .settings-panel {
-  display: grid;
-  gap: 16px;
+  min-height: 356px;
+}
+
+:global(.process-settings-dialog) {
+  max-width: calc(100vw - 32px);
+
+  .el-dialog__body {
+    padding: 22px 28px 18px;
+  }
+
+  .el-dialog__footer {
+    padding: 14px 28px 20px;
+
+    .el-button {
+      min-height: 40px;
+      padding: 0 24px;
+    }
+  }
 }
 
 .settings-section {
   display: grid;
-  gap: 12px;
+  gap: 18px;
 }
 
-.settings-section + .settings-section {
-  padding-top: 14px;
-  border-top: 1px solid #e2eaf5;
+.process-settings-tabs {
+  :deep(.el-tabs__header) {
+    margin: 0 0 26px;
+  }
+
+  :deep(.el-tabs__nav-wrap::after) {
+    height: 1px;
+    background: #dbe5f1;
+  }
+
+  :deep(.el-tabs__item) {
+    height: 42px;
+    padding: 0 22px;
+    color: #66758a;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  :deep(.el-tabs__item.is-active) {
+    color: #1769aa;
+  }
+
+  :deep(.el-tabs__active-bar) {
+    height: 3px;
+    border-radius: 2px;
+    background: #169c98;
+  }
+
+  :deep(.el-input__wrapper),
+  :deep(.el-select__wrapper) {
+    min-height: 42px;
+    padding: 1px 14px;
+  }
+}
+
+.settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+}
+
+.settings-span-full {
+  grid-column: 1 / -1;
+}
+
+.watermark-settings {
+  max-width: 680px;
+  margin: 2px auto 0;
+}
+
+.watermark-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 76px;
+  padding: 0 22px;
+  border-left: 3px solid #169c98;
+  background: #f1f9f8;
+}
+
+.setting-hint {
+  display: block;
+  margin-top: 5px;
+  color: $text-secondary;
+  font-size: 13px;
+}
+
+.setting-status {
+  padding-top: 2px;
+  color: #39708a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.watermark-preview {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  height: 144px;
+  padding: 26px 32px;
+  overflow: hidden;
+  border: 1px solid #d7e7e5;
+  background: #f1f7f7;
+
+  span {
+    color: rgba(23, 45, 62, 0.30);
+    font-size: 22px;
+    font-weight: 700;
+    transform: rotate(-15deg);
+  }
+
+  &.is-muted span {
+    opacity: 0.35;
+  }
 }
 
 .settings-section-header {
@@ -3204,12 +3335,12 @@ $ink-strong: #172033;
 
 .settings-field {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .settings-label {
   color: $text-regular;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -3219,20 +3350,20 @@ $ink-strong: #172033;
 
 .version-note {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 8px;
+  padding: 16px;
   border: 1px solid #dce6f2;
   border-radius: 8px;
   background: #f7faff;
 
   strong {
     color: $ink-strong;
-    font-size: 14px;
+    font-size: 15px;
   }
 
   span {
     color: $text-secondary;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.6;
   }
 }
@@ -3596,6 +3727,26 @@ $ink-strong: #172033;
 }
 
 @media (max-width: 640px) {
+  .settings-panel {
+    min-height: 0;
+  }
+
+  .process-settings-tabs {
+    :deep(.el-tabs__item) {
+      padding: 0 10px;
+      font-size: 13px;
+    }
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .settings-span-full {
+    grid-column: auto;
+  }
+
   .workspace-hero {
     padding: 14px;
   }

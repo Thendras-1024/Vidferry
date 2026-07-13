@@ -122,11 +122,17 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
     # 处理版本二核心:截取前 3 个高光片段作开头(带 Up Next 覆盖层),与正片重新归一化后拼接
     segments = _select_intro_highlight_segments(analysis_result, max_segments=3)
     if not segments:
+        output_file = Path(processed_file)
+        watermarked = False
+        if _watermark_enabled(job):
+            _apply_watermark_to_mp4(output_file, job)
+            watermarked = True
         return {
-            "path": Path(processed_file),
+            "path": output_file,
             "segments": [],
             "skipped": True,
             "reason": "未找到可用于开头混剪的高光片段",
+            "watermarked": watermarked,
         }
 
     job_id = job.get("id")
@@ -206,11 +212,17 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
         str(final_tmp),
     ], cwd=BASE_DIR)
     _replace_output_file(final_tmp, output_file)
+    watermarked = False
+    if _watermark_enabled(job):
+        _update_translate_progress(job_id, 95, "处理版本二：正在烧录水印", step="editing")
+        _apply_watermark_to_mp4(output_file, job)
+        watermarked = True
     return {
         "path": output_file,
         "segments": segments,
         "skipped": False,
         "reason": "",
+        "watermarked": watermarked,
     }
 
 
@@ -682,5 +694,3 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
 
     _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
     return job
-
-
