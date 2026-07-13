@@ -59,24 +59,11 @@ def _publish_to_kuaishou(job, processed_file):
 def _publish_to_tencent(job, processed_file):
     if not job.get("publishToTencent") or not job.get("tencentAccount"):
         return ""
-    if post_video_tencent is None:
-        raise RuntimeError("后端未加载视频号发布模块，请检查依赖。")
-
     account_info = _check_named_publish_account(2, job["tencentAccount"])
-    source_path = Path(processed_file)
-    video_filename = source_path.name
-    video_file = Path(BASE_DIR / "videoFile" / video_filename)
-    if not video_file.is_file():
-        shutil.copy2(source_path, video_file)
-
-    post_video_tencent(
-        job["title"] or "YouTube 视频",
-        [video_filename],
-        job["tags"],
-        [account_info["filePath"]],
-        enableTimer=False,
-    )
-    return f"videohao upload {video_filename} --account {job['tencentAccount']}"
+    task = _workflow_publish_task(job, processed_file, 2, account_info)
+    command = _workflow_publish_runner_command(task)
+    _run_workflow_publish_command(command, 2, account_info["filePath"])
+    return " ".join(command)
 
 
 def _publish_platform_account_file(platform_type, account_name):
@@ -148,6 +135,7 @@ def _publish_center_to_bilibili(title, description, file_list, tags, account_lis
 def _publish_platform_slug(platform_type):
     return {
         1: "xiaohongshu",
+        2: "tencent",
         4: "kuaishou",
         3: "douyin",
         5: "bilibili",
@@ -173,6 +161,7 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
         "productLink": "",
         "productTitle": "",
         "bilibiliTid": normalize_bilibili_tid(job.get("bilibiliTid")),
+        "isDraft": bool(job.get("isDraft")) if platform_type == 2 else False,
         "publishDatetimes": [_parse_publish_schedule(job.get("schedule"))],
         "headless": False,
         "debug": True,
@@ -180,6 +169,10 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
 
 
 def _workflow_publish_runner_command(task):
+    return _publish_runner_command(task, task["absoluteFiles"][0], 0)
+
+
+def _publish_runner_command(task, file_path, index=0):
     platform_slug = _publish_platform_slug(task["platformType"])
     if not platform_slug:
         raise RuntimeError(f"{task['platformName']} 暂未接入发布适配器")
@@ -192,7 +185,7 @@ def _workflow_publish_runner_command(task):
         "--account-file",
         str(task["accountPath"]),
         "--file",
-        str(task["absoluteFiles"][0]),
+        str(file_path),
         "--title",
         task["title"],
         "--desc",
@@ -204,7 +197,7 @@ def _workflow_publish_runner_command(task):
         command.append("--headless")
     if task.get("debug"):
         command.append("--debug")
-    schedule = _format_publish_schedule(task["publishDatetimes"][0])
+    schedule = _format_publish_schedule(task["publishDatetimes"][index] if index < len(task["publishDatetimes"]) else 0)
     if schedule:
         command.extend(["--schedule", schedule])
     if task.get("thumbnailPath"):
@@ -215,6 +208,8 @@ def _workflow_publish_runner_command(task):
         command.extend(["--product-title", task["productTitle"]])
     if task["platformType"] == 5:
         command.extend(["--tid", str(normalize_bilibili_tid(task.get("bilibiliTid")))])
+    if task["platformType"] == 2 and task.get("isDraft"):
+        command.append("--draft")
     return command
 
 
@@ -352,38 +347,7 @@ def _execute_publish_target(task):
                 )
             else:
                 for index, file_path in enumerate(task["absoluteFiles"]):
-                    command = [
-                        sys.executable,
-                        "-m",
-                        "app.publish_runner",
-                        "--platform",
-                        platform_slug,
-                        "--account-file",
-                        str(task["accountPath"]),
-                        "--file",
-                        str(file_path),
-                        "--title",
-                        task["title"],
-                        "--desc",
-                        task["description"],
-                        "--tags",
-                        ",".join(task["tags"]),
-                    ]
-                    if task.get("headless"):
-                        command.append("--headless")
-                    if task.get("debug"):
-                        command.append("--debug")
-                    schedule = _format_publish_schedule(task["publishDatetimes"][index] if index < len(task["publishDatetimes"]) else 0)
-                    if schedule:
-                        command.extend(["--schedule", schedule])
-                    if task.get("thumbnailPath"):
-                        command.extend(["--thumbnail", task["thumbnailPath"]])
-                    if task.get("productLink"):
-                        command.extend(["--product-link", task["productLink"]])
-                    if task.get("productTitle"):
-                        command.extend(["--product-title", task["productTitle"]])
-                    if platform_type == 5:
-                        command.extend(["--tid", str(normalize_bilibili_tid(task.get("bilibiliTid")))])
+                    command = _publish_runner_command(task, file_path, index)
                     process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
                     if process_result.returncode != 0:
                         output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
@@ -462,6 +426,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
         target_product_link = _safe_text(target.get("productLink")) if platform_type == 3 else product_link
         target_product_title = _safe_text(target.get("productTitle")) if platform_type == 3 else product_title
         target_bilibili_tid = normalize_bilibili_tid(target.get("bilibiliTid") or fallback_bilibili_tid) if platform_type == 5 else ""
+        target_is_draft = bool(target.get("isDraft") or data.get("isDraft")) if platform_type == 2 else False
         tasks.append({
             "publishTaskId": publish_task_id,
             "platformType": platform_type,
@@ -478,6 +443,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
             "productLink": target_product_link,
             "productTitle": target_product_title,
             "bilibiliTid": target_bilibili_tid,
+            "isDraft": target_is_draft,
             "publishDatetimes": publish_datetimes,
             "timeoutSeconds": int(data.get("publishTimeoutSeconds") or 3600),
             "headless": bool(data.get("headless", False)),

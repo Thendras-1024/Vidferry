@@ -10,6 +10,7 @@ from pathlib import Path
 DOUYIN_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 KUAISHOU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
+TENCENT_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 
 @dataclass(slots=True)
 class DouyinVideoUploadRequest:
@@ -92,6 +93,21 @@ class XiaohongshuNoteUploadRequest:
     publish_strategy: str = XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE
     debug: bool = True
     headless: bool = True
+
+
+@dataclass(slots=True)
+class TencentVideoUploadRequest:
+    account_name: str
+    video_file: Path
+    title: str
+    description: str
+    tags: list[str]
+    publish_date: datetime | int
+    thumbnail_file: Path | None = None
+    is_draft: bool = False
+    publish_strategy: str = TENCENT_PUBLISH_STRATEGY_IMMEDIATE
+    debug: bool = True
+    headless: bool = False
 
 
 @dataclass(slots=True)

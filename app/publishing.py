@@ -115,6 +115,7 @@ def normalize_publish_targets(payload):
                 "bilibiliTid": normalize_bilibili_tid(raw.get("bilibiliTid") or payload.get("bilibiliTid")) if platform_type == 5 else "",
                 "productLink": str(raw.get("productLink") or payload.get("productLink") or "").strip() if platform_type == 3 else "",
                 "productTitle": str(raw.get("productTitle") or payload.get("productTitle") or "").strip() if platform_type == 3 else "",
+                "isDraft": bool(raw.get("isDraft") or payload.get("isDraft")) if platform_type == 2 else False,
             })
         return targets
 
@@ -137,4 +138,5 @@ def normalize_publish_targets(payload):
         "bilibiliTid": normalize_bilibili_tid(payload.get("bilibiliTid")) if platform_type == 5 else "",
         "productLink": str(payload.get("productLink") or "").strip() if platform_type == 3 else "",
         "productTitle": str(payload.get("productTitle") or "").strip() if platform_type == 3 else "",
+        "isDraft": bool(payload.get("isDraft")) if platform_type == 2 else False,
     }]

@@ -4,6 +4,11 @@ import asyncio
 import sys
 from typing import Sequence
 
+from app.utils.text_util import ensure_utf8_stdio
+
+
+ensure_utf8_stdio()
+
 from app.cli.dispatcher import dispatch as _dispatch
 from app.cli.models import (
     BilibiliVideoUploadRequest,
@@ -11,6 +16,7 @@ from app.cli.models import (
     DouyinVideoUploadRequest,
     KuaishouNoteUploadRequest,
     KuaishouVideoUploadRequest,
+    TencentVideoUploadRequest,
     XiaohongshuNoteUploadRequest,
     XiaohongshuVideoUploadRequest,
 )
@@ -23,6 +29,7 @@ from app.cli.platforms.kuaishou import (
     upload_kuaishou_note,
     upload_kuaishou_video,
 )
+from app.cli.platforms.tencent import check_tencent_account, login_tencent_account, upload_tencent_video
 from app.cli.platforms.xiaohongshu import (
     check_xiaohongshu_account,
     login_xiaohongshu_account,

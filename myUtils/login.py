@@ -163,67 +163,32 @@ async def douyin_cookie_gen(id,status_queue,account_id=None):
 
 # 视频号登录
 async def get_tencent_cookie(id,status_queue,account_id=None):
-    url_changed_event = asyncio.Event()
-    async def on_url_change():
-        # 检查是否是主框架的变化
-        if page.url != original_url:
-            url_changed_event.set()
+    from uploader.tencent_uploader.main import tencent_setup
 
-    async with async_playwright() as playwright:
-        options = get_browser_options()
-        # 必须使用有头模式运行,否则无法扫码。
-        browser = await playwright.chromium.launch(**options)
-        # 按需创建浏览器上下文。
-        context = await browser.new_context()  # 可传入任意上下文选项
-        # 暂停页面,开始手动操作(扫码)。
-        context = await set_init_script(context)
-        page = await context.new_page()
-        await safe_goto(page, "https://channels.weixin.qq.com")
-        original_url = page.url
+    uuid_v1 = uuid.uuid1()
+    cookie_file = f"tencent_{uuid_v1}.json"
+    cookies_dir = Path(BASE_DIR / "cookiesFile")
+    cookies_dir.mkdir(exist_ok=True)
+    account_file = cookies_dir / cookie_file
 
-        # 监听页面的 'framenavigated' 事件，只关注主框架的变化
-        page.on('framenavigated',
-                lambda frame: asyncio.create_task(on_url_change()) if frame == page.main_frame else None)
+    def on_qrcode(payload):
+        image_data_url = (payload or {}).get("image_data_url")
+        if image_data_url:
+            status_queue.put(image_data_url)
 
-        # 等待 iframe 出现（最多等 60 秒）
-        iframe_locator = page.frame_locator("iframe").first
+    result = await tencent_setup(
+        str(account_file),
+        handle=True,
+        return_detail=True,
+        qrcode_callback=on_qrcode,
+        headless=False,
+    )
+    if not result.get("success"):
+        status_queue.put("500")
+        return None
 
-        # 获取 iframe 中的第一个 img 元素
-        img_locator = iframe_locator.get_by_role("img").first
-
-        src = await send_qr_from_locator(img_locator, status_queue)
-        print("✅ 图片地址:", src)
-
-        try:
-            # 等待 URL 变化或超时
-            await asyncio.wait_for(url_changed_event.wait(), timeout=200)  # 最多等待 200 秒
-            print("监听页面跳转成功")
-        except asyncio.TimeoutError:
-            status_queue.put("500")
-            print("监听页面跳转超时")
-            await page.close()
-            await context.close()
-            await browser.close()
-            return None
-        uuid_v1 = uuid.uuid1()
-        print(f"UUID v1: {uuid_v1}")
-        # 确保cookiesFile目录存在
-        cookies_dir = Path(BASE_DIR / "cookiesFile")
-        cookies_dir.mkdir(exist_ok=True)
-        await context.storage_state(path=cookies_dir / f"{uuid_v1}.json")
-        result = await check_cookie(2,f"{uuid_v1}.json")
-        if not result:
-            status_queue.put("500")
-            await page.close()
-            await context.close()
-            await browser.close()
-            return None
-        await page.close()
-        await context.close()
-        await browser.close()
-
-        if save_login_account(2, f"{uuid_v1}.json", id, status_queue, account_id):
-            status_queue.put("200")
+    if save_login_account(2, cookie_file, id, status_queue, account_id):
+        status_queue.put("200")
 
 # 快手登录
 async def get_ks_cookie(id,status_queue,account_id=None):

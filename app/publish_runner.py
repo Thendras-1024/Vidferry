@@ -118,9 +118,29 @@ async def _upload_bilibili(args: argparse.Namespace) -> None:
         raise RuntimeError(((result.stderr or "") + "\n" + (result.stdout or "")).strip() or "B站发布失败")
 
 
+async def _upload_tencent(args: argparse.Namespace) -> None:
+    from uploader.tencent_uploader.main import TencentVideo
+
+    publish_date = _parse_schedule(args.schedule)
+    app = TencentVideo(
+        title=_safe_text(args.title),
+        file_path=str(args.file),
+        tags=_parse_tags(args.tags),
+        publish_date=publish_date,
+        account_file=str(args.account_file),
+        is_draft=args.draft,
+        desc=_safe_text(args.desc),
+        thumbnail_path=str(args.thumbnail) if args.thumbnail else None,
+        publish_strategy=PUBLISH_STRATEGY_SCHEDULED if args.schedule else PUBLISH_STRATEGY_IMMEDIATE,
+        debug=args.debug,
+        headless=args.headless,
+    )
+    await app.tencent_upload_video()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Backend isolated publish runner")
-    parser.add_argument("--platform", required=True, choices=["douyin", "xiaohongshu", "kuaishou", "bilibili"])
+    parser.add_argument("--platform", required=True, choices=["douyin", "xiaohongshu", "kuaishou", "bilibili", "tencent"])
     parser.add_argument("--account-file", required=True, type=Path)
     parser.add_argument("--file", required=True, type=Path)
     parser.add_argument("--title", required=True)
@@ -131,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--product-link", default="")
     parser.add_argument("--product-title", default="")
     parser.add_argument("--tid", type=int, default=None)
+    parser.add_argument("--draft", action="store_true", default=False)
     parser.add_argument("--headless", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
     return parser
@@ -155,6 +176,9 @@ async def dispatch(args: argparse.Namespace) -> None:
         return
     if args.platform == "bilibili":
         await _upload_bilibili(args)
+        return
+    if args.platform == "tencent":
+        await _upload_tencent(args)
         return
     raise RuntimeError(f"不支持的平台: {args.platform}")
 

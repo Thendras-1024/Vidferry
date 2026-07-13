@@ -22,6 +22,9 @@ TENCENT_UPLOAD_URL = "https://channels.weixin.qq.com/platform/post/create"
 TENCENT_MANAGE_URL = "https://channels.weixin.qq.com/platform/post/list"
 TENCENT_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 TENCENT_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+TENCENT_UPLOAD_RETRY_LIMIT = int(os.environ.get("TENCENT_UPLOAD_RETRY_LIMIT", "1") or 1)
+TENCENT_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("TENCENT_UPLOAD_WAIT_TIMEOUT", "1800") or 1800)
+TENCENT_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("TENCENT_PUBLISH_CONFIRM_TIMEOUT", "300") or 300)
 
 
 def _msg(emoji: str, text: str) -> str:
@@ -591,7 +594,14 @@ class TencentBaseUploader(BaseVideoUploader):
                 await declare_button.click()
 
     async def wait_for_upload_complete(self, page: Page) -> None:
+        upload_deadline = asyncio.get_running_loop().time() + TENCENT_UPLOAD_WAIT_TIMEOUT
+        retry_count = 0
         while True:
+            if asyncio.get_running_loop().time() > upload_deadline:
+                raise RuntimeError(
+                    f"VF-PUBLISH-UPLOAD-TIMEOUT: 视频号上传等待超过 {TENCENT_UPLOAD_WAIT_TIMEOUT} 秒，"
+                    "页面仍未进入可发布状态，请检查网络、平台页面或重新发起发布。"
+                )
             try:
                 publish_button = page.get_by_role("button", name="发表")
                 button_class = await publish_button.get_attribute("class")
@@ -605,14 +615,28 @@ class TencentBaseUploader(BaseVideoUploader):
                 upload_failed = await page.locator("div.status-msg.error").count()
                 delete_button = await page.locator('div.media-status-content div.tag-inner:has-text("删除")').count()
                 if upload_failed and delete_button:
+                    if retry_count >= TENCENT_UPLOAD_RETRY_LIMIT:
+                        raise RuntimeError(
+                            f"VF-PUBLISH-UPLOAD-FAILED: 视频号上传失败，已停止自动重传。"
+                            f"当前自动重试上限为 {TENCENT_UPLOAD_RETRY_LIMIT} 次。"
+                        )
                     tencent_logger.error(_msg("😵", "发现上传出错了，准备重试"))
+                    retry_count += 1
                     await self.handle_upload_error(page)
-            except Exception:
-                tencent_logger.info(_msg("🏃", "正在上传视频中..."))
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                tencent_logger.info(_msg("🏃", f"正在上传视频中，继续观察: {exc}"))
                 await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
     async def submit_publish(self, page: Page) -> None:
+        publish_deadline = asyncio.get_running_loop().time() + TENCENT_PUBLISH_CONFIRM_TIMEOUT
         while True:
+            if asyncio.get_running_loop().time() > publish_deadline:
+                raise RuntimeError(
+                    f"VF-PUBLISH-CONFIRM-TIMEOUT: 视频号发布确认超过 {TENCENT_PUBLISH_CONFIRM_TIMEOUT} 秒，"
+                    "未确认跳转到发布列表。"
+                )
             try:
                 if getattr(self, "is_draft", False):
                     draft_button = page.locator('div.form-btns button:has-text("保存草稿")')
@@ -628,6 +652,8 @@ class TencentBaseUploader(BaseVideoUploader):
                     await page.wait_for_url(TENCENT_MANAGE_URL, timeout=5000)
                     tencent_logger.success(_msg("🥳", "视频发布成功"))
                 break
+            except RuntimeError:
+                raise
             except Exception as exc:
                 current_url = page.url
                 if getattr(self, "is_draft", False):

@@ -103,6 +103,28 @@ def build_parser() -> argparse.ArgumentParser:
     xiaohongshu_upload_note_parser.add_argument("--schedule", type=schedule_value, help=f"Schedule time in {schedule_help}")
     add_runtime_flags(xiaohongshu_upload_note_parser)
 
+    tencent_parser = platform_parsers.add_parser("tencent", help="Tencent Channels operations")
+    tencent_actions = tencent_parser.add_subparsers(dest="action", required=True)
+
+    for action_name in ("login", "check"):
+        action_parser = tencent_actions.add_parser(action_name, help=f"Tencent Channels {action_name}")
+        action_parser.add_argument("--account", required=True, help="Tencent Channels user-defined account_name")
+        if action_name == "login":
+            add_runtime_flags(action_parser)
+            action_parser.set_defaults(headless=False)
+
+    tencent_upload_video_parser = tencent_actions.add_parser("upload-video", help="Upload one video to Tencent Channels")
+    tencent_upload_video_parser.add_argument("--account", required=True, help="Tencent Channels user-defined account_name")
+    tencent_upload_video_parser.add_argument("--file", required=True, type=existing_file_path, help="Video file path")
+    tencent_upload_video_parser.add_argument("--title", required=True, help="Video title")
+    tencent_upload_video_parser.add_argument("--desc", default="", help="Optional video description")
+    tencent_upload_video_parser.add_argument("--tags", default="", help="Comma-separated tags, such as tag1,tag2")
+    tencent_upload_video_parser.add_argument("--schedule", type=schedule_value, help=f"Schedule time in {schedule_help}")
+    tencent_upload_video_parser.add_argument("--thumbnail", type=existing_file_path, help="Optional thumbnail path")
+    tencent_upload_video_parser.add_argument("--draft", action="store_true", help="Save as draft instead of publishing")
+    add_runtime_flags(tencent_upload_video_parser)
+    tencent_upload_video_parser.set_defaults(headless=False)
+
     bilibili_parser = platform_parsers.add_parser("bilibili", help="Bilibili operations")
     bilibili_actions = bilibili_parser.add_subparsers(dest="action", required=True)
 

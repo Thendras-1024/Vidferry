@@ -13,6 +13,7 @@ from app.cli.models import (
     DouyinVideoUploadRequest,
     KuaishouNoteUploadRequest,
     KuaishouVideoUploadRequest,
+    TencentVideoUploadRequest,
     XiaohongshuNoteUploadRequest,
     XiaohongshuVideoUploadRequest,
 )
@@ -24,6 +25,8 @@ KUAISHOU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 KUAISHOU_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
 XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+TENCENT_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
+TENCENT_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
 
 def _provider(provider: ModuleType | None = None) -> ModuleType:
     return provider or sys.modules.get("sau_cli") or sys.modules[__name__]
@@ -185,6 +188,41 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
             return 0
 
         raise RuntimeError(f"Unsupported Xiaohongshu action: {args.action}")
+
+    if args.platform == "tencent":
+        if args.action == "login":
+            result = await actions.login_tencent_account(args.account, headless=args.headless)
+            if not result["success"]:
+                raise RuntimeError(result["message"])
+            print(f"Tencent Channels login flow completed: {result['account_file']}")
+            return 0
+
+        if args.action == "check":
+            is_valid = await actions.check_tencent_account(args.account)
+            print("valid" if is_valid else "invalid")
+            return 0 if is_valid else 1
+
+        publish_strategy = TENCENT_PUBLISH_STRATEGY_SCHEDULED if args.schedule else TENCENT_PUBLISH_STRATEGY_IMMEDIATE
+
+        if args.action == "upload-video":
+            request = TencentVideoUploadRequest(
+                account_name=args.account,
+                video_file=args.file,
+                title=args.title,
+                description=args.desc,
+                tags=parse_tags(args.tags),
+                publish_date=args.schedule or 0,
+                thumbnail_file=args.thumbnail,
+                is_draft=args.draft,
+                publish_strategy=publish_strategy,
+                debug=args.debug,
+                headless=args.headless,
+            )
+            await actions.upload_tencent_video(request)
+            print(f"Tencent Channels video upload submitted: {request.video_file}")
+            return 0
+
+        raise RuntimeError(f"Unsupported Tencent Channels action: {args.action}")
 
     if args.platform == "bilibili":
         if args.action == "login":
