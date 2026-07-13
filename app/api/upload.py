@@ -18,6 +18,12 @@ def upload_file():
         uuid_v1 = uuid.uuid1()
         print(f"UUID v1: {uuid_v1}")
         safe_upload_name = _safe_filename(file.filename)
+        # secure_filename 会丢弃中文等非 ASCII 字符,纯中文文件名(如"视频.mp4")会被折叠为 "mp4"
+        # 并丢掉开头的点,导致扩展名缺失、后续按扩展名识别视频的逻辑失效。这里回退用原始扩展名补齐。
+        original_suffix = Path(file.filename).suffix
+        if original_suffix and not safe_upload_name.lower().endswith(original_suffix.lower()):
+            stem = "file" if safe_upload_name.lower() == original_suffix.lstrip(".").lower() else safe_upload_name
+            safe_upload_name = f"{stem}{original_suffix}"
         final_filename = f"{uuid_v1}_{safe_upload_name}"
         filepath = _safe_child_path(BASE_DIR / "videoFile", final_filename)
         filepath.parent.mkdir(parents=True, exist_ok=True)
