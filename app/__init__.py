@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from importlib import import_module
 
+from app.utils.text_util import ensure_utf8_stdio
+
+
+ensure_utf8_stdio()
+
 
 def _backend():
     return import_module("sau_backend")

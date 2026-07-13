@@ -31,6 +31,7 @@ from queue import Queue
 from flask_cors import CORS
 from flask import Flask, request, jsonify, Response, render_template, send_from_directory
 from werkzeug.utils import secure_filename
+from app.utils.text_util import clean_display_text, ensure_utf8_stdio
 from app.publishing import (
     BILIBILI_DEFAULT_TID,
     bilibili_categories,
@@ -56,6 +57,7 @@ from app.config import (
     AGENT_HIGH_RISK_KEYWORDS,
     AGENT_MAX_TOOL_ROWS,
     AGENT_MAX_TOOL_CALLS,
+    AGENT_REACT_MAX_STEPS,
     AGENT_MEDIUM_RISK_KEYWORDS,
     AGENT_REQUIRE_PREPUBLISH_CHECK,
     AGENT_REQUIRE_VISION_CHECK,
@@ -68,6 +70,7 @@ from app.config import (
     DEFAULT_SUBTITLE_LANGUAGE,
     DEFAULT_SUBTITLE_SIZE,
     DEFAULT_TRANSLATOR_LABEL,
+    DEFAULT_WATERMARK_TEXT,
     FFMPEG_COMMAND,
     PORT,
     LLM_API_KEY,
@@ -101,6 +104,8 @@ from app.config import (
     YTDLP_JS_RUNTIME_PATH,
     YTDLP_REMOTE_COMPONENTS,
 )
+
+ensure_utf8_stdio()
 
 try:
     from myUtils.auth import check_cookie

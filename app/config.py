@@ -8,8 +8,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from app.utils.text_util import ensure_utf8_stdio
 from conf import BASE_DIR
 
+
+ensure_utf8_stdio()
 
 APP_VERSION = "0.2.0"
 HOST = os.getenv("VIDFERRY_HOST", "127.0.0.1")
@@ -27,7 +30,8 @@ def _load_local_env() -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        os.environ.setdefault(key, value)
+        if key not in os.environ or not os.environ.get(key, "").strip():
+            os.environ[key] = value
 
 
 _load_local_env()
@@ -134,15 +138,16 @@ AGENT_REQUIRE_PREPUBLISH_CHECK = os.environ.get("AGENT_REQUIRE_PREPUBLISH_CHECK"
 AGENT_BLOCK_LEVEL = os.environ.get("AGENT_BLOCK_LEVEL", "high").strip().lower() or "high"
 AGENT_MAX_TOOL_ROWS = max(1, min(int(os.environ.get("AGENT_MAX_TOOL_ROWS", "20") or 20), 50))
 AGENT_MAX_TOOL_CALLS = _env_int("AGENT_MAX_TOOL_CALLS", 5, 1, 12)
+AGENT_REACT_MAX_STEPS = _env_int("AGENT_REACT_MAX_STEPS", 6, 1, 20)
 AGENT_CHAT_TEMPERATURE = _env_float("AGENT_CHAT_TEMPERATURE", 0.2, 0, 2)
-AGENT_CHAT_MAX_TOKENS = _env_int("AGENT_CHAT_MAX_TOKENS", 900, 128, 8000)
+AGENT_CHAT_MAX_TOKENS = _env_int("AGENT_CHAT_MAX_TOKENS", 5000, 128, 8000)
 AGENT_GUARD_TEMPERATURE = _env_float("AGENT_GUARD_TEMPERATURE", 0, 0, 2)
 AGENT_GUARD_MAX_TOKENS = _env_int("AGENT_GUARD_MAX_TOKENS", 900, 128, 8000)
 AGENT_REQUIRE_VISION_CHECK = _env_bool("AGENT_REQUIRE_VISION_CHECK", True)
 AGENT_VISION_FAIL_CLOSED = _env_bool("AGENT_VISION_FAIL_CLOSED", True)
 AGENT_FRAME_MAX_COUNT = _env_int("AGENT_FRAME_MAX_COUNT", 8, 1, 16)
 AGENT_FRAME_SCALE_WIDTH = _env_int("AGENT_FRAME_SCALE_WIDTH", 640, 160, 1920)
-AGENT_FRAME_FIRST_SECOND = _env_float("AGENT_FRAME_FIRST_SECOND", 1, 0.1, None)
+AGENT_FRAME_FIRST_SECOND = _env_float("AGENT_FRAME_FIRST_SECOND", 60, 0.1, None)
 AGENT_FRAME_END_OFFSET_SECONDS = _env_float("AGENT_FRAME_END_OFFSET_SECONDS", 2, 0, None)
 AGENT_FRAME_SAMPLE_RATIOS = _env_float_list("AGENT_FRAME_SAMPLE_RATIOS", "0.25,0.5,0.75", 0, 1) or [0.25, 0.5, 0.75]
 AGENT_HIGH_RISK_KEYWORDS = _env_keyword_map(
@@ -277,6 +282,7 @@ SUBTITLE_SIZE_PRESETS = {
 }
 DEFAULT_SUBTITLE_SIZE = "large"
 DEFAULT_TRANSLATOR_LABEL = "Vidferry翻译"
+DEFAULT_WATERMARK_TEXT = "Vidferry"
 PROCESS_VERSION_TRANSLATION = "translation_v1"
 PROCESS_VERSION_EDITING = "editing_v1"
 PROCESS_VERSIONS = {PROCESS_VERSION_TRANSLATION, PROCESS_VERSION_EDITING}

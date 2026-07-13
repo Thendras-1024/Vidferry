@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from app.utils.text_util import ensure_utf8_stdio
+
+
+ensure_utf8_stdio()
+
 from app.backend.runtime import load_backend_namespace
 from app.config import HOST, PORT
 
