@@ -38,3 +38,6 @@ langgraph-checkpoint-sqlite==3.1.0
 qrcode==8.2
 segno>=1.6.6
 xhs>=0.2.13
+
+# Windows 下 B 站扫码登录的伪终端支持
+pywinpty==3.0.5; sys_platform == "win32"

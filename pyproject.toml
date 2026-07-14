@@ -16,6 +16,7 @@ dependencies = [
   "opencv-python>=4.13.0.92",
   "patchright==1.58.2",
   "playwright>=1.53.0",
+  "pywinpty==3.0.5; sys_platform == 'win32'",
   "langgraph==1.2.8",
   "langgraph-checkpoint-sqlite==3.1.0",
   "qrcode==8.2",
