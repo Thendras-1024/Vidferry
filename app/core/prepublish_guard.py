@@ -9,6 +9,9 @@ import json as _json
 import tempfile as _tempfile
 import time as _time
 
+from app.core.llm_harness import call_json_contract, validate_guard_result
+from app.core import llm_prompts
+
 
 AGENT_ERROR_BLOCKED = "VF-AGENT-BLOCKED"
 AGENT_ERROR_REQUIRES_CONFIRMATION = "VF-AGENT-REQUIRES-CONFIRMATION"
@@ -91,29 +94,19 @@ def _keyword_issues(text):
     return issues
 
 
-def _call_guard_llm(messages, model, max_tokens=900):
-    if not LLM_API_KEY or not LLM_BASE_URL or not model:
-        raise RuntimeError("LLM 或视觉模型未配置")
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": AGENT_GUARD_TEMPERATURE,
-        "max_tokens": int(max_tokens or AGENT_GUARD_MAX_TOKENS),
-        "response_format": {"type": "json_object"},
-    }
-    req = urllib.request.Request(
-        f"{LLM_BASE_URL}/chat/completions",
-        data=_json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {LLM_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+def _call_guard_llm(messages, model, contract_id, validator, max_tokens=900):
+    return call_json_contract(
+        messages=messages,
+        contract_id=contract_id,
+        validator=validator,
+        model=model,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        temperature=AGENT_GUARD_TEMPERATURE,
+        max_tokens=int(max_tokens or AGENT_GUARD_MAX_TOKENS),
+        prompt_version=llm_prompts.GUARD_PROMPT_VERSION,
     )
-    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as response:
-        data = _json.loads(response.read().decode("utf-8"))
-    content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
-    return _json.loads(content)
 
 
 def _text_guard_result(summary):
@@ -125,17 +118,12 @@ def _text_guard_result(summary):
     issues = _keyword_issues(text)
     if _agent_llm_available():
         try:
-            result = _call_guard_llm([
-                {
-                    "role": "system",
-                    "content": (
-                        "你是 Vidferry 发布前文本安全质检器。只输出 JSON："
-                        "issues 数组，每项含 category,severity,evidence,reason,suggestion,blocking；"
-                        "suggestedEdits 对象，含 title,description,tags。severity 只能 none/low/medium/high/critical。"
-                    ),
-                },
-                {"role": "user", "content": _json.dumps(summary, ensure_ascii=False)},
-            ], AGENT_CHAT_MODEL)
+            result, _, _ = _call_guard_llm(
+                llm_prompts.prepublish_text_guard_messages(summary),
+                AGENT_CHAT_MODEL,
+                "prepublish_text_guard",
+                lambda value: validate_guard_result(value, with_suggested_edits=True),
+            )
             if isinstance(result.get("issues"), list):
                 issues.extend(result.get("issues"))
             suggested = result.get("suggestedEdits") if isinstance(result.get("suggestedEdits"), dict) else {}
@@ -222,7 +210,16 @@ def _vision_guard_result(summary, publish_materials):
     for frame in frames:
         content.append({"type": "text", "text": f"关键帧时间：{frame['timestamp']}秒"})
         content.append({"type": "image_url", "image_url": {"url": frame["dataUrl"]}})
-    result = _call_guard_llm([{"role": "user", "content": content}], AGENT_VISION_MODEL, max_tokens=AGENT_GUARD_MAX_TOKENS)
+    result, _, _ = _call_guard_llm(
+        [
+            {"role": "system", "content": llm_prompts.prepublish_vision_system_prompt()},
+            {"role": "user", "content": content},
+        ],
+        AGENT_VISION_MODEL,
+        "prepublish_vision_guard",
+        lambda value: validate_guard_result(value, with_suggested_edits=False),
+        max_tokens=AGENT_GUARD_MAX_TOKENS,
+    )
     return result.get("issues") if isinstance(result.get("issues"), list) else []
 
 

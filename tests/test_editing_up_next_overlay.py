@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import app.core.editing_service as editing_service
+from app.core.llm_harness import LLMContractError
 
 
 def _format_ass_timestamp(seconds):
@@ -79,6 +81,44 @@ class EditingUpNextOverlayTests(unittest.TestCase):
         joined = ",".join(filters)
         self.assertNotIn("drawbox=", joined)
         self.assertNotIn("subtitles=", joined)
+
+    def test_intro_highlights_skip_the_first_thirty_seconds(self):
+        segments = editing_service._select_intro_highlight_segments({
+            "highlight_segments": [
+                {"start": 8, "end": 16},
+                {"start": 29.9, "end": 38},
+                {"start": 30, "end": 38},
+                {"start": 48, "end": 56},
+            ]
+        })
+
+        self.assertEqual([segment["start"] for segment in segments], [30.0, 48.0])
+
+    def test_unsafe_transcript_ranges_are_excluded_from_highlight_candidates(self):
+        ranges = editing_service._unsafe_transcript_ranges([
+            {"start": 44, "end": 52, "text": "Fucking big"},
+            {"start": 54, "end": 58, "text": "I hate this terrible traffic"},
+            {"start": 60, "end": 68, "text": "重庆夜景很有层次"},
+        ])
+
+        self.assertEqual(ranges, [(44.0, 52.0)])
+
+    def test_editing_plan_uses_friendly_error_after_safe_highlights_remain_insufficient(self):
+        contract_error = LLMContractError(
+            "editing_plan",
+            ["可用安全高光不足 6 条，请人工检查转写内容或重新生成剪辑方案"],
+        )
+        with (
+            patch.object(editing_service, "_format_transcript_for_model", return_value="转写内容"),
+            patch.object(editing_service, "_max_transcript_seconds", return_value=60),
+            patch.object(editing_service, "_unsafe_transcript_ranges", return_value=[]),
+            patch.object(editing_service, "_summarize_transcript_chunks", return_value=("转写内容", None)),
+            patch.object(editing_service, "_normalize_process_version", return_value="editing", create=True),
+            patch.object(editing_service, "PROCESS_VERSION_EDITING", "editing", create=True),
+            patch.object(editing_service, "_call_editing_contract", side_effect=contract_error),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "可用安全高光不足 6 条"):
+                editing_service._generate_editing_plan({"processVersion": "editing"}, [{}])
 
 
 if __name__ == "__main__":

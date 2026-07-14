@@ -1,6 +1,13 @@
 ﻿"""处理版本二的剪辑增强:高光片段开头混剪与「Up Next」覆盖层生成。"""
 
 
+from app.core.llm_harness import LLMContractError, call_json_contract, contains_profanity, validate_chunk_summary, validate_editing_plan
+from app.core import llm_prompts
+
+
+EDITING_INTRO_MIN_START_SECONDS = 30
+
+
 def _select_intro_highlight_segments(analysis_result, max_segments=3):
     raw_segments = (analysis_result or {}).get("highlight_segments") or []
     selected = []
@@ -10,7 +17,7 @@ def _select_intro_highlight_segments(analysis_result, max_segments=3):
             end = max(start + 1, float(segment.get("end") or 0))
         except (TypeError, ValueError):
             continue
-        if end - start < 2:
+        if start < EDITING_INTRO_MIN_START_SECONDS or end - start < 2:
             continue
         selected.append({
             **segment,
@@ -265,226 +272,80 @@ def _split_transcript_lines(text, max_chars):
     return chunks or [text[:max_chars]]
 
 
-class LLMJsonParseError(RuntimeError):
-    def __init__(self, reason, raw_text="", detail=""):
-        super().__init__(reason)
-        self.raw_text = str(raw_text or "")
-        self.detail = detail or self.raw_text[:1200]
-
-
-def _json_error_context(text, position, radius=180):
-    content = str(text or "")
-    try:
-        position = int(position)
-    except (TypeError, ValueError):
-        position = 0
-    start = max(0, position - radius)
-    end = min(len(content), position + radius)
-    return content[start:end].replace("\r", "\\r").replace("\n", "\\n")
-
-
-def _sanitize_json_candidate(content):
-    sanitized = str(content or "").strip().lstrip("\ufeff")
-    sanitized = sanitized.replace("\u201c", '"').replace("\u201d", '"')
-    sanitized = sanitized.replace("\u2018", "'").replace("\u2019", "'")
-    sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", sanitized)
-    sanitized = re.sub(r",\s*([}\]])", r"\1", sanitized)
-    return sanitized
-
-
-def _extract_json_object(text):
-    content = str(text or "").strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, flags=re.S)
-    if fenced:
-        content = fenced.group(1).strip()
-    else:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start >= 0 and end > start:
-            content = content[start:end + 1]
-    content = _sanitize_json_candidate(content)
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError as exc:
-        context = _json_error_context(content, exc.pos)
-        raise LLMJsonParseError(
-            f"模型返回的 JSON 格式不合法：{exc.msg} (line {exc.lineno}, column {exc.colno})",
-            raw_text=content,
-            detail=f"解析位置附近内容：{context}",
-        ) from exc
-
-
-def _repair_llm_json(raw_text):
-    repair_payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是 JSON 修复器。只输出修复后的严格 JSON 对象，不要解释，不要 Markdown。",
-            },
-            {
-                "role": "user",
-                "content": (
-                    "下面内容应当是一个 JSON 对象，但格式有错误。"
-                    "请保留原字段语义，修复缺失逗号、尾随逗号、非法引号或控制字符等问题，"
-                    "并只输出可被 json.loads 解析的 JSON：\n"
-                    f"{str(raw_text or '')[:12000]}"
-                ),
-            },
-        ],
-        "temperature": 0,
-        "max_tokens": 2200,
-        "response_format": {"type": "json_object"},
-    }
-    request_body = json.dumps(repair_payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        f"{LLM_BASE_URL}/chat/completions",
-        data=request_body,
-        headers={
-            "Authorization": f"Bearer {LLM_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
-
-
-def _call_llm_json(messages, max_tokens=1800):
-    if not LLM_API_KEY:
-        raise RuntimeError("未配置 LLM_API_KEY，无法生成处理版本二的剪辑方案。")
-    if not LLM_BASE_URL or not LLM_MODEL:
-        raise RuntimeError("LLM_BASE_URL 或 LLM_MODEL 未配置，无法生成剪辑方案。")
-
-    payload = {
-        "model": LLM_MODEL,
-        "messages": messages,
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-    }
-    started_at = time.time()
-
-    def request_completion(current_payload):
-        request_body = json.dumps(current_payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            f"{LLM_BASE_URL}/chat/completions",
-            data=request_body,
-            headers={
-                "Authorization": f"Bearer {LLM_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    try:
-        data = request_completion(payload)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        if exc.code == 400 and "response_format" in payload:
-            payload.pop("response_format", None)
-            try:
-                data = request_completion(payload)
-            except urllib.error.HTTPError as retry_exc:
-                retry_body = retry_exc.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"模型接口调用失败 HTTP {retry_exc.code}: {retry_body[:500]}") from retry_exc
-        else:
-            raise RuntimeError(f"模型接口调用失败 HTTP {exc.code}: {body[:500]}") from exc
-
-    message = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "{}"
-    try:
-        result = _extract_json_object(message)
-    except LLMJsonParseError as exc:
+def _max_transcript_seconds(segments):
+    values = []
+    for segment in segments or []:
         try:
-            result = _extract_json_object(_repair_llm_json(exc.raw_text))
-        except Exception as repair_exc:
-            raise LLMJsonParseError(
-                f"{exc}；自动修复仍失败：{repair_exc}",
-                raw_text=exc.raw_text,
-                detail=exc.detail,
-            ) from repair_exc
-    usage = data.get("usage") or {}
-    total_tokens = int(usage.get("total_tokens") or 0)
-    return result, {
-        "provider": "openai-compatible",
-        "model": LLM_MODEL,
-        "latencyMs": round((time.time() - started_at) * 1000, 2),
-        "tokens": total_tokens,
-        "totalTokens": total_tokens,
-        "promptTokens": int(usage.get("prompt_tokens") or 0),
-        "completionTokens": int(usage.get("completion_tokens") or 0),
-    }
+            values.append(float(segment.get("end") or 0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return max(values, default=0.0)
+
+
+def _unsafe_transcript_ranges(segments):
+    ranges = []
+    for segment in segments or []:
+        if not contains_profanity(segment.get("text")):
+            continue
+        try:
+            start = float(segment.get("start") or 0)
+            end = float(segment.get("end") or 0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if end > start:
+            ranges.append((start, end))
+    return ranges
+
+
+def _call_editing_contract(messages, contract_id, validator, max_tokens):
+    return call_json_contract(
+        messages=messages,
+        contract_id=contract_id,
+        validator=validator,
+        model=LLM_MODEL,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        temperature=0.4,
+        max_tokens=max_tokens,
+        prompt_version=llm_prompts.EDITING_PROMPT_VERSION,
+    )
 
 
 def _editing_analysis_system_prompt():
-    return (
-        "你是 Vidferry 的短视频二创剪辑策划助手。"
-        "你的任务是基于英文转写和视频元数据，找出适合中文平台二次创作的高光片段。"
-        "优先选择外国人明显震惊、惊喜、反差、夸赞中国效率/安全/城市/交通/消费/服务的内容，"
-        "尤其关注中外对比、认知反转和可做钩子的片段。"
-        "高光片段必须短而明确，每个片段时长控制在 5-10 秒，禁止返回超过 10 秒的片段；"
-        "如果原始亮点更长，需要拆分成多个 5-10 秒片段或选取最有冲击力的 5-10 秒。"
-        "所有高光片段必须严格按照视频时间轴升序排列，即 start 从小到大输出。"
-        "publish_copy 只写正文文案，禁止包含 #话题、标签列表、标题类型话题或 hashtags；"
-        "所有话题必须只放在 tags 数组中，因为各平台会以独立字段上传话题。"
-        "只输出严格 JSON，不要输出 Markdown。"
-    )
+    return llm_prompts.editing_analysis_system_prompt()
 
 
 def _editing_analysis_user_prompt(job, transcript_text, chunk_context=""):
-    metadata = {
-        "title": job.get("title") or "",
-        "channel": job.get("channel") or "",
-        "subscribers": job.get("subscribers") or "",
-        "publishedAt": job.get("publishedAt") or "",
-        "url": job.get("url") or "",
-    }
-    return (
-        f"视频元数据：{json.dumps(metadata, ensure_ascii=False)}\n"
-        f"{chunk_context}\n"
-        "请生成处理版本二的剪辑方案。输出 JSON 字段必须包含："
-        "summary 字符串；china_view_angle 字符串；title_options 字符串数组；"
-        "publish_copy 字符串，必须是不带 #话题/标签的正文文案；tags 字符串数组，单独存放话题；"
-        "highlight_segments 数组，每项包含 start 数字秒、end 数字秒、type 字符串、reason 字符串、suggested_caption 字符串；"
-        "risk_notes 字符串数组；editing_focus 字符串。"
-        "不要在 publish_copy 末尾追加 #中国旅行 #老外看中国 这类话题，也不要把话题写成正文的一部分；"
-        "highlight_segments 控制在 5-8 个，优先外国人震惊点和中外对比点；"
-        "每个片段 end - start 必须在 5 到 10 秒之间，没有明确时间也要根据转写时间估计；"
-        "highlight_segments 必须按 start 从小到大排序，方便后续按时间顺序进行高光剪辑。\n"
-        f"转写内容：\n{transcript_text}"
-    )
+    return llm_prompts.build_editing_analysis_prompt(job, transcript_text, chunk_context)
 
 
-def _summarize_transcript_chunks(job, transcript_text):
+def _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ranges):
     max_chars = max(4000, LLM_MAX_TRANSCRIPT_CHARS)
     chunks = _split_transcript_lines(transcript_text, max_chars)
     if len(chunks) <= 1:
         return transcript_text, None
 
     summaries = []
-    usage_total = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0, "latencyMs": 0}
+    usage_total = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0, "latencyMs": 0, "attemptCount": 0, "validationRetries": 0}
     for index, chunk in enumerate(chunks, start=1):
-        result, usage = _call_llm_json([
-            {"role": "system", "content": _editing_analysis_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"这是第 {index}/{len(chunks)} 段转写。请只输出 JSON："
-                    "chunk_summary 字符串；highlight_candidates 数组，每项包含 start、end、type、reason、suggested_caption。"
-                    "重点找外国人震惊、认知反转、中外对比。\n"
-                    f"{chunk}"
-                ),
-            },
-        ], max_tokens=1200)
+        result, usage, generation_meta = _call_editing_contract(
+            [
+                {"role": "system", "content": _editing_analysis_system_prompt()},
+                {"role": "user", "content": llm_prompts.build_chunk_summary_prompt(index, len(chunks), chunk)},
+            ],
+            "editing_chunk_summary",
+            lambda value: validate_chunk_summary(value, max_timestamp, blocked_ranges),
+            1200,
+        )
         summaries.append(result)
         usage_total["tokens"] += int(usage.get("tokens") or 0)
         usage_total["totalTokens"] += int(usage.get("totalTokens") or usage.get("tokens") or 0)
         usage_total["promptTokens"] += int(usage.get("promptTokens") or 0)
         usage_total["completionTokens"] += int(usage.get("completionTokens") or 0)
         usage_total["latencyMs"] += float(usage.get("latencyMs") or 0)
+        usage_total["attemptCount"] += int(generation_meta.get("attemptCount") or 0)
+        usage_total["validationRetries"] += int(generation_meta.get("validationRetries") or 0)
     return json.dumps(summaries, ensure_ascii=False), usage_total
 
 
@@ -504,6 +365,8 @@ def _normalize_highlight_segments(segments):
             end = float(segment.get("end") or 0)
         except (TypeError, ValueError):
             end = 0.0
+        if start < EDITING_INTRO_MIN_START_SECONDS:
+            continue
         if end <= start:
             end = start + 5
         duration = end - start
@@ -536,15 +399,28 @@ def _generate_editing_plan(job, segments):
     if not transcript_text.strip():
         raise NoSpeechDetectedError("未识别到可用于剪辑分析的字幕文本。")
 
-    compact_text, chunk_usage = _summarize_transcript_chunks(job, transcript_text)
+    max_timestamp = _max_transcript_seconds(segments)
+    blocked_ranges = _unsafe_transcript_ranges(segments)
+    compact_text, chunk_usage = _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ranges)
     chunk_context = ""
     if chunk_usage:
         chunk_context = "下面是长视频分块后的摘要和候选片段，请基于它们汇总最终剪辑方案。"
 
-    result, usage = _call_llm_json([
-        {"role": "system", "content": _editing_analysis_system_prompt()},
-        {"role": "user", "content": _editing_analysis_user_prompt(job, compact_text, chunk_context)},
-    ], max_tokens=2200)
+    minimum_highlights = 6 if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING else 0
+    try:
+        result, usage, generation_meta = _call_editing_contract(
+            [
+                {"role": "system", "content": _editing_analysis_system_prompt()},
+                {"role": "user", "content": _editing_analysis_user_prompt(job, compact_text, chunk_context)},
+            ],
+            "editing_plan",
+            lambda value: validate_editing_plan(value, max_timestamp, blocked_ranges, minimum_highlights),
+            2200,
+        )
+    except LLMContractError as exc:
+        if minimum_highlights and any("可用安全高光不足" in item for item in exc.violations):
+            raise RuntimeError("可用安全高光不足 6 条，请人工检查转写内容或重新生成剪辑方案。") from exc
+        raise
     if chunk_usage:
         base_tokens = int(usage.get("tokens") or 0)
         usage["tokens"] = base_tokens + int(chunk_usage.get("tokens") or 0)
@@ -552,22 +428,17 @@ def _generate_editing_plan(job, segments):
         usage["promptTokens"] = int(usage.get("promptTokens") or 0) + int(chunk_usage.get("promptTokens") or 0)
         usage["completionTokens"] = int(usage.get("completionTokens") or 0) + int(chunk_usage.get("completionTokens") or 0)
         usage["latencyMs"] = round(float(usage.get("latencyMs") or 0) + float(chunk_usage.get("latencyMs") or 0), 2)
+        generation_meta["attemptCount"] += int(chunk_usage.get("attemptCount") or 0)
+        generation_meta["validationRetries"] += int(chunk_usage.get("validationRetries") or 0)
 
-    result.setdefault("summary", "")
-    result.setdefault("china_view_angle", "")
-    result.setdefault("title_options", [])
-    result.setdefault("publish_copy", "")
     result["publish_copy"] = _strip_topics_from_publish_copy(result.get("publish_copy"))
-    result.setdefault("tags", [])
-    result.setdefault("highlight_segments", [])
     result["highlight_segments"] = _normalize_highlight_segments(result.get("highlight_segments"))
-    result.setdefault("risk_notes", [])
-    result["editing_focus"] = result.get("editing_focus") or "foreigner_shock_and_country_comparison"
     result["process_version"] = PROCESS_VERSION_EDITING
     result["model"] = {
         "provider": usage.get("provider") or "openai-compatible",
         "name": usage.get("model") or LLM_MODEL,
     }
+    result["generationMeta"] = generation_meta
     return result, usage
 
 
@@ -689,7 +560,10 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         "tags": base_job.get("tags") or [],
         "schedule": "",
     }
-    job = create_youtube_workflow_job(payload, allow_active_job=True)
+    try:
+        job = create_youtube_workflow_job(payload, allow_active_job=True, lock_scope="analysis")
+    except WorkflowConflictError:
+        return None
     update_youtube_video_analysis_status(video_id, 2)
 
     _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
