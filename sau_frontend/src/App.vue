@@ -193,6 +193,7 @@
       size="420px"
       class="agent-drawer"
       append-to-body
+      @open="restoreAgentMessages"
     >
       <template #header>
         <div class="agent-drawer-header">
@@ -203,6 +204,14 @@
           <el-tag size="small" effect="plain" :type="agentConfigWarning ? 'warning' : 'success'">
             只读
           </el-tag>
+          <el-tooltip content="历史会话" placement="bottom">
+            <el-button text circle title="历史会话" aria-label="历史会话" @click="openAgentHistory">
+              <el-icon><Clock /></el-icon>
+            </el-button>
+          </el-tooltip>
+          <el-button text circle title="新建对话" aria-label="新建对话" @click="newAgentConversation">
+            <el-icon><Plus /></el-icon>
+          </el-button>
         </div>
       </template>
       <div class="agent-panel">
@@ -229,7 +238,11 @@
             </el-button>
           </div>
         </div>
-        <div class="agent-messages">
+        <div ref="agentMessagesRef" class="agent-messages" @scroll.passive="handleAgentMessagesScroll">
+          <div v-if="agentOlderMessagesLoading" class="agent-older-loading" aria-live="polite">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            <span>正在加载更早消息</span>
+          </div>
           <div
             v-for="message in agentMessages"
             :key="message.id"
@@ -237,7 +250,35 @@
             :class="`is-${message.role}`"
           >
             <div class="agent-message-role">{{ message.role === 'user' ? '你' : 'Agent' }}</div>
-            <div class="agent-message-content">{{ message.content }}</div>
+            <div class="agent-message-content">
+              <div v-if="message.thinking" class="agent-thinking" aria-live="polite">
+                <el-icon class="agent-thinking-icon is-loading"><Loading /></el-icon>
+                <span>{{ message.statusMessage || '正在思考' }}</span>
+              </div>
+              <span v-if="message.content">{{ message.content }}</span>
+            </div>
+            <div v-for="card in message.cards || []" :key="`${message.id}-${card.type}-${card.title}`" class="agent-result-card">
+              <div class="agent-card-title"><span>{{ card.title }}</span><strong>{{ card.count }}</strong></div>
+              <div v-for="item in card.items || []" :key="`${item.title}-${item.detail || item.status}`" class="agent-card-item">
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.detail || item.channel || item.status }}</span>
+              </div>
+            </div>
+            <div v-if="message.actions?.length" class="agent-actions">
+              <el-button v-for="action in message.actions" :key="`${message.id}-${action.label}`" size="small" plain @click="confirmAgentAction(action)">{{ action.label }}</el-button>
+            </div>
+            <div v-if="showAgentMessageTools(message)" class="agent-message-tools">
+              <el-tooltip content="复制" placement="bottom">
+                <el-button text circle aria-label="复制消息" @click="copyAgentMessage(message)">
+                  <el-icon><DocumentCopy /></el-icon>
+                </el-button>
+              </el-tooltip>
+              <el-tooltip v-if="message.role === 'user' && !agentLoading" content="重试" placement="bottom">
+                <el-button text circle aria-label="重试问题" @click="prepareAgentRetry(message)">
+                  <el-icon><RefreshRight /></el-icon>
+                </el-button>
+              </el-tooltip>
+            </div>
           </div>
           <div v-if="agentMessages.length === 0" class="agent-empty">
             <el-icon><ChatDotRound /></el-icon>
@@ -247,13 +288,14 @@
         </div>
         <div class="agent-input">
           <el-input
+            ref="agentInputRef"
             v-model="agentInput"
             type="textarea"
             :rows="3"
             maxlength="500"
             show-word-limit
             placeholder="例如：已处理但还没发布的视频有哪些？"
-            @keydown.ctrl.enter.prevent="sendAgentMessage()"
+            @keydown="handleAgentInputKeydown"
           />
           <el-button type="primary" :loading="agentLoading" @click="sendAgentMessage()">
             发送
@@ -261,16 +303,70 @@
         </div>
       </div>
     </el-drawer>
+    <el-dialog
+      v-model="agentHistoryVisible"
+      title="历史会话"
+      width="min(560px, calc(100vw - 32px))"
+      append-to-body
+    >
+      <div class="agent-history-toolbar">
+        <span>{{ agentHistoryLoading ? '正在读取' : `共 ${agentHistory.length} 个会话` }}</span>
+        <div class="agent-history-filter">
+          <el-date-picker
+            v-model="agentHistoryRange"
+            type="daterange"
+            size="small"
+            value-format="YYYY-MM-DD"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            unlink-panels
+            @change="loadAgentHistory"
+          />
+          <el-button text type="primary" :loading="agentHistoryLoading" @click="loadAgentHistory">刷新</el-button>
+        </div>
+      </div>
+      <el-empty v-if="!agentHistoryLoading && agentHistory.length === 0" description="暂无历史会话" :image-size="72" />
+      <el-scrollbar v-else max-height="420px">
+        <div class="agent-history-list">
+          <div
+            v-for="session in agentHistory"
+            :key="session.id"
+            class="agent-history-item"
+            :class="{ 'is-current': session.id === agentSessionId }"
+            @click="selectAgentSession(session)"
+          >
+            <div class="agent-history-item-main">
+              <strong>{{ session.title || session.preview || 'Vidferry Agent' }}</strong>
+              <span>{{ session.preview || '暂无用户消息' }}</span>
+            </div>
+            <div class="agent-history-item-meta">
+              <span>{{ formatAgentSessionTime(session.updatedAt) }}</span>
+              <span>{{ session.messageCount || 0 }} 条消息</span>
+            </div>
+            <el-button
+              text
+              circle
+              type="danger"
+              title="删除会话"
+              aria-label="删除会话"
+              @click.stop="removeAgentSession(session)"
+            >
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+        </div>
+      </el-scrollbar>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElNotification } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis,
-  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound
+  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { agentApi } from '@/api/agent'
@@ -283,6 +379,7 @@ const router = useRouter()
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
+const AGENT_MESSAGE_PAGE_SIZE = 12
 let accountCheckTimer = null
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
@@ -291,7 +388,21 @@ const agentLoading = ref(false)
 const agentInput = ref('')
 const agentSessionId = ref(localStorage.getItem('vidferry:agent-session-id') || '')
 const agentMessages = ref([])
+const agentMessagesRef = ref(null)
+const agentOlderMessagesLoading = ref(false)
+const agentHasOlderMessages = ref(false)
+const agentMessagesBeforeId = ref(null)
+const agentSessionRestoreLoading = ref(false)
+const agentInputRef = ref(null)
+const agentRetryContext = ref(null)
+const agentHistoryVisible = ref(false)
+const agentHistoryLoading = ref(false)
+const agentHistory = ref([])
+const agentHistoryRange = ref([])
 let agentMessageId = 1
+let restoredAgentSessionId = ''
+let restoringAgentSessionId = ''
+let agentRestoreRequestId = 0
 
 const agentQuickQuestions = [
   '完整流程现在有哪些步骤？',
@@ -355,12 +466,111 @@ const currentAgentContext = computed(() => ({
 
 const agentContextLabel = computed(() => currentAgentContext.value.pageTitle || '当前页面')
 
-const pushAgentMessage = (role, content) => {
-  agentMessages.value.push({
+const scrollAgentMessages = async () => {
+  await nextTick()
+  const container = agentMessagesRef.value
+  if (container) container.scrollTop = container.scrollHeight
+}
+
+const mapAgentHistoryMessage = item => ({
+  id: `history-${item.id}`,
+  historyId: Number(item.id),
+  role: item.role,
+  content: item.content || '',
+  context: item.context || {},
+  cards: item.context?.cards || [],
+  actions: item.context?.actions || []
+})
+
+const pushAgentMessage = (role, content, extra = {}) => {
+  const item = {
     id: agentMessageId++,
     role,
-    content: String(content || '')
-  })
+    content: String(content || ''),
+    ...extra
+  }
+  agentMessages.value.push(item)
+  scrollAgentMessages()
+  return agentMessages.value[agentMessages.value.length - 1]
+}
+
+const saveAgentSessionId = (sessionId) => {
+  if (!sessionId) return
+  agentSessionId.value = sessionId
+  localStorage.setItem('vidferry:agent-session-id', sessionId)
+}
+
+const restoreAgentMessages = async () => {
+  const sessionId = agentSessionId.value
+  if (!sessionId || restoredAgentSessionId === sessionId || agentLoading.value) return
+  if (agentSessionRestoreLoading.value && restoringAgentSessionId === sessionId) return
+  const requestId = ++agentRestoreRequestId
+  restoringAgentSessionId = sessionId
+  agentSessionRestoreLoading.value = true
+  try {
+    const res = await agentApi.getMessages(sessionId, AGENT_MESSAGE_PAGE_SIZE)
+    if (requestId !== agentRestoreRequestId || sessionId !== agentSessionId.value) return
+    agentMessages.value = (res?.data?.items || []).map(mapAgentHistoryMessage)
+    agentHasOlderMessages.value = Boolean(res?.data?.hasMore)
+    agentMessagesBeforeId.value = res?.data?.nextBeforeId || null
+    restoredAgentSessionId = sessionId
+    await scrollAgentMessages()
+  } catch (error) {
+    if (requestId === agentRestoreRequestId) console.warn('恢复 Agent 会话失败:', error)
+  } finally {
+    if (requestId === agentRestoreRequestId) {
+      agentSessionRestoreLoading.value = false
+      restoringAgentSessionId = ''
+    }
+  }
+}
+
+const loadOlderAgentMessages = async () => {
+  const sessionId = agentSessionId.value
+  const beforeId = agentMessagesBeforeId.value
+  const container = agentMessagesRef.value
+  if (!sessionId || !beforeId || !container || !agentHasOlderMessages.value || agentOlderMessagesLoading.value || agentLoading.value) return
+
+  const previousHeight = container.scrollHeight
+  agentOlderMessagesLoading.value = true
+  try {
+    const res = await agentApi.getMessages(sessionId, AGENT_MESSAGE_PAGE_SIZE, beforeId)
+    if (sessionId !== agentSessionId.value) return
+    const knownIds = new Set(agentMessages.value.map(item => item.historyId).filter(Number.isFinite))
+    const olderMessages = (res?.data?.items || [])
+      .map(mapAgentHistoryMessage)
+      .filter(item => !knownIds.has(item.historyId))
+    agentMessages.value = [...olderMessages, ...agentMessages.value]
+    agentHasOlderMessages.value = Boolean(res?.data?.hasMore)
+    agentMessagesBeforeId.value = res?.data?.nextBeforeId || null
+  } catch (error) {
+    console.warn('加载更早 Agent 消息失败:', error)
+    ElMessage.error(error?.message || '加载更早消息失败')
+  } finally {
+    agentOlderMessagesLoading.value = false
+    await nextTick()
+    if (sessionId === agentSessionId.value && agentMessagesRef.value) {
+      agentMessagesRef.value.scrollTop = Math.max(0, agentMessagesRef.value.scrollHeight - previousHeight)
+    }
+  }
+}
+
+const handleAgentMessagesScroll = event => {
+  if (event.currentTarget.scrollTop <= 8) loadOlderAgentMessages()
+}
+
+const newAgentConversation = () => {
+  agentSessionId.value = ''
+  agentRestoreRequestId += 1
+  agentSessionRestoreLoading.value = false
+  restoringAgentSessionId = ''
+  restoredAgentSessionId = ''
+  agentMessages.value = []
+  agentOlderMessagesLoading.value = false
+  agentHasOlderMessages.value = false
+  agentMessagesBeforeId.value = null
+  agentRetryContext.value = null
+  localStorage.removeItem('vidferry:agent-session-id')
 }
 
 const sendAgentMessage = async (presetMessage = '', extraContext = {}) => {
@@ -368,28 +578,140 @@ const sendAgentMessage = async (presetMessage = '', extraContext = {}) => {
   if (!message || agentLoading.value) return
   agentDrawerVisible.value = true
   agentInput.value = ''
-  pushAgentMessage('user', message)
+  const messageContext = {
+    ...currentAgentContext.value,
+    ...(presetMessage ? {} : (agentRetryContext.value || {})),
+    ...extraContext
+  }
+  agentRetryContext.value = null
+  pushAgentMessage('user', message, { context: messageContext })
+  const pending = pushAgentMessage('assistant', '', { thinking: true, statusMessage: '正在理解你的问题', retryMessage: message })
   agentLoading.value = true
+  let completed = false
   try {
-    const res = await agentApi.chat({
+    await agentApi.chatStream({
       message,
       sessionId: agentSessionId.value,
-      context: {
-        ...currentAgentContext.value,
-        ...extraContext
+      context: messageContext
+    }, (event, data) => {
+      if (event === 'status') {
+        pending.statusMessage = data.message || '正在思考'
+      } else if (event === 'delta') {
+        pending.thinking = false
+        pending.content += data.content || ''
+      } else if (event === 'result') {
+        completed = true
+        pending.thinking = false
+        pending.error = false
+        pending.content = data.answer || pending.content || '我暂时没有查到结果。'
+        pending.cards = data.cards || []
+        pending.actions = data.actions || []
+        saveAgentSessionId(data.sessionId)
+      } else if (event === 'error') {
+        throw new Error(data.message || 'Agent 暂时不可用')
       }
+      scrollAgentMessages()
     })
-    const data = res?.data || {}
-    if (data.sessionId) {
-      agentSessionId.value = data.sessionId
-      localStorage.setItem('vidferry:agent-session-id', data.sessionId)
-    }
-    pushAgentMessage('assistant', data.answer || '我暂时没有查到结果。')
+    if (!completed) throw new Error('Agent 响应中断，请重试。')
   } catch (error) {
-    pushAgentMessage('assistant', error.message || 'Agent 暂时不可用，请稍后再试。')
+    pending.thinking = false
+    pending.error = true
+    pending.content = error.message || 'Agent 暂时不可用，请稍后再试。'
     ElMessage.error(error.message || 'Agent 暂时不可用')
   } finally {
     agentLoading.value = false
+  }
+}
+
+const showAgentMessageTools = (message) => {
+  if (!message?.content) return false
+  return message.role === 'user' || (message.role === 'assistant' && !message.thinking && !message.error)
+}
+
+const copyAgentMessage = async (message) => {
+  try {
+    await navigator.clipboard.writeText(message.content)
+    ElMessage.success('已复制')
+  } catch (error) {
+    ElMessage.error('复制失败')
+  }
+}
+
+const loadAgentHistory = async () => {
+  agentHistoryLoading.value = true
+  try {
+    const [from = '', to = ''] = agentHistoryRange.value || []
+    const res = await agentApi.getSessions({ page: 1, pageSize: 50, from, to })
+    agentHistory.value = res?.data?.items || []
+  } catch (error) {
+    console.warn('读取 Agent 历史会话失败:', error)
+  } finally {
+    agentHistoryLoading.value = false
+  }
+}
+
+const openAgentHistory = async () => {
+  agentHistoryVisible.value = true
+  await loadAgentHistory()
+}
+
+const selectAgentSession = async (session) => {
+  if (!session?.id || agentLoading.value) return
+  saveAgentSessionId(session.id)
+  restoredAgentSessionId = ''
+  agentMessages.value = []
+  agentOlderMessagesLoading.value = false
+  agentHasOlderMessages.value = false
+  agentMessagesBeforeId.value = null
+  agentRetryContext.value = null
+  agentHistoryVisible.value = false
+  agentDrawerVisible.value = true
+  await restoreAgentMessages()
+}
+
+const removeAgentSession = async (session) => {
+  if (!session?.id || agentLoading.value) return
+  try {
+    await ElMessageBox.confirm(
+      `删除“${session.title || session.preview || '该会话'}”后，消息和会话摘要将无法恢复。`,
+      '确认删除会话',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+    await agentApi.deleteSession(session.id)
+    if (session.id === agentSessionId.value) {
+      newAgentConversation()
+    }
+    await loadAgentHistory()
+    ElMessage.success('会话已删除')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error?.message || '删除会话失败')
+    }
+  }
+}
+
+const prepareAgentRetry = async (message) => {
+  if (agentLoading.value || !message?.content) return
+  agentInput.value = message.content
+  agentRetryContext.value = message.context || {}
+  await nextTick()
+  agentInputRef.value?.focus()
+}
+
+const handleAgentInputKeydown = (event) => {
+  if (event.key !== 'Enter' || event.isComposing || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  sendAgentMessage()
+}
+
+const confirmAgentAction = async (action) => {
+  if (action?.type !== 'navigate' || !['/youtube-research', '/account-management'].includes(action.path)) return
+  try {
+    await ElMessageBox.confirm(`将打开“${action.label}”。`, '确认查看', { confirmButtonText: '打开', cancelButtonText: '取消', type: 'info' })
+    await router.push({ path: action.path, query: action.query || {} })
+    agentDrawerVisible.value = false
+  } catch (_) {
+    // 用户取消导航不需要提示。
   }
 }
 
@@ -437,6 +759,17 @@ const formatMessageTime = (timestamp) => {
   if (!timestamp) return ''
 
   return new Date(timestamp).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+const formatAgentSessionTime = (timestamp) => {
+  if (!timestamp) return ''
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -710,6 +1043,83 @@ onBeforeUnmount(() => {
   letter-spacing: 0;
 }
 
+.agent-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.agent-history-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-history-filter :deep(.el-date-editor) {
+  width: min(320px, 100%);
+}
+
+.agent-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid $border-lighter;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+
+  &:hover,
+  &.is-current {
+    border-color: rgba(64, 158, 255, 0.55);
+    background: #f6f9ff;
+  }
+}
+
+.agent-history-item-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+
+  strong,
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: $text-primary;
+    font-size: 13px;
+  }
+
+  span {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+}
+
+.agent-history-item-meta {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  color: $text-secondary;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .agent-panel {
   height: 100%;
   display: grid;
@@ -799,6 +1209,16 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.agent-older-loading {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
 .agent-message {
   display: grid;
   gap: 6px;
@@ -838,6 +1258,98 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   font-size: 14px;
   box-shadow: 0 3px 10px rgba(0, 21, 41, 0.04);
+}
+
+.agent-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  color: $text-regular;
+}
+
+.agent-thinking-icon {
+  color: $primary-color;
+  font-size: 16px;
+}
+
+.agent-result-card {
+  overflow: hidden;
+  border: 1px solid $border-lighter;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.agent-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  color: $text-regular;
+  background: #f6f9ff;
+  font-size: 12px;
+
+  strong {
+    color: $primary-color;
+    font-size: 14px;
+  }
+}
+
+.agent-card-item {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-top: 1px solid $border-lighter;
+
+  strong {
+    overflow: hidden;
+    color: $text-primary;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    overflow: hidden;
+    color: $text-secondary;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
+.agent-message-tools {
+  display: flex;
+  gap: 2px;
+  min-height: 24px;
+}
+
+.agent-message-tools :deep(.el-button) {
+  width: 24px;
+  height: 24px;
+  margin-left: 0;
+  padding: 0;
+  color: $text-secondary;
+
+  &:hover,
+  &:focus-visible {
+    color: $primary-color;
+    background: #eef6ff;
+  }
+}
+
+.agent-message.is-user .agent-message-tools {
+  justify-self: end;
 }
 
 .agent-empty {

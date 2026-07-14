@@ -145,12 +145,17 @@ def explain_vidferry_pipeline():
 
 def get_workflow_overview():
     statuses = ["initial", "downloaded", "processed", "published", "failed", "abnormal", "running"]
-    counts = {}
-    for status in statuses:
-        try:
-            counts[status] = int(list_youtube_videos({"status": status, "page": 1, "pageSize": 1}).get("total") or 0)
-        except Exception:
-            counts[status] = 0
+    counts = {status: 0 for status in statuses}
+    init_youtube_video_table()
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        _reconcile_youtube_statuses_with_material_records(cursor)
+        conn.commit()
+        for status in statuses:
+            clause, values = _youtube_video_status_clause(status)
+            where_sql = f" WHERE {clause}" if clause else ""
+            cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_videos{where_sql}", values)
+            counts[status] = int((cursor.fetchone() or {})["total"] or 0)
     return {
         "pipeline": explain_vidferry_pipeline()["steps"],
         "counts": counts,
