@@ -1,5 +1,18 @@
 """字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 烧录。"""
 
+from app.core.llm_harness import redact_profanity
+
+
+# 词级时间戳仅用于把较长转写段拆为可读的短语，不暴露为用户配置。
+CUE_SOFT_PAUSE_SECONDS = 0.45
+CUE_HARD_PAUSE_SECONDS = 0.8
+CUE_MIN_DURATION_SECONDS = 1.2
+CUE_TARGET_DURATION_SECONDS = 3.8
+CUE_MAX_DURATION_SECONDS = 5.0
+CUE_MIN_VISIBLE_WORDS = 2
+CUE_MAX_SPACED_CHARS = 42
+CUE_MAX_CJK_CHARS = 18
+
 
 def _format_ass_timestamp(seconds):
     seconds = max(0, float(seconds or 0))
@@ -97,12 +110,44 @@ def _transcribe_audio(audio_file):
     device = os.environ.get("WHISPER_DEVICE", "cpu")
     compute_type = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    segments, info = model.transcribe(str(audio_file), beam_size=5, vad_filter=True)
+    segments, info = model.transcribe(
+        str(audio_file),
+        beam_size=5,
+        vad_filter=True,
+        word_timestamps=True,
+    )
     result = []
     for segment in segments:
         text = segment.text.strip()
         if text:
-            result.append({"start": float(segment.start), "end": float(segment.end), "text": text})
+            words = []
+            raw_words = list(getattr(segment, "words", None) or [])
+            valid_words = bool(raw_words)
+            for word in raw_words:
+                try:
+                    value = str(getattr(word, "word", "") or "").strip()
+                    start = float(getattr(word, "start", None))
+                    end = float(getattr(word, "end", None))
+                except (TypeError, ValueError):
+                    valid_words = False
+                    break
+                if not value or start < 0 or end <= start:
+                    valid_words = False
+                    break
+                item = {"word": value, "start": start, "end": end}
+                probability = getattr(word, "probability", None)
+                if probability is not None:
+                    try:
+                        item["probability"] = float(probability)
+                    except (TypeError, ValueError):
+                        pass
+                words.append(item)
+            result.append({
+                "start": float(segment.start),
+                "end": float(segment.end),
+                "text": text,
+                "words": words if valid_words else [],
+            })
     if not result:
         raise NoSpeechDetectedError("未检测到可识别人声，已跳过字幕处理。")
     return result, getattr(info, "language", "")
@@ -154,6 +199,7 @@ def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, prog
     _update_translate_progress(job_id, max(progress_base + 10, 20), "正在进行语音识别，长视频可能需要较久")
     segments, language = _transcribe_audio(audio_file)
     payload = {
+        "schemaVersion": 2,
         "videoId": video_id,
         "sourceFile": str(source_file),
         "language": language or "",
@@ -320,6 +366,14 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
     return translated
 
 
+def _redact_generated_subtitles(segments, target_language):
+    if target_language != "zh-CN":
+        return segments
+    for segment in segments or []:
+        segment["subtitle"] = redact_profanity(segment.get("subtitle"))
+    return segments
+
+
 def _author_overlay_lines(job):
     return [
         f"博主: {job.get('channel') or job.get('account') or '未知'}",
@@ -329,70 +383,333 @@ def _author_overlay_lines(job):
     ]
 
 
-def _wrap_ass_text(text, max_chars):
-    text = str(text or "").strip()
-    if not text or len(text) <= max_chars:
-        return text
-    chunks = []
-    current = ""
-    for char in text:
-        current += char
-        if len(current) >= max_chars and char in " ，。！？、,.!?;；:":
-            chunks.append(current.strip())
-            current = ""
-    if current:
-        chunks.append(current.strip())
-    if len(chunks) <= 1:
-        chunks = [text[index:index + max_chars] for index in range(0, len(text), max_chars)]
-    return "\n".join(chunks[:3])
+def _is_cjk_language(language):
+    return str(language or "").lower().startswith(("zh", "ja", "ko"))
 
 
-def _split_ass_text_to_single_lines(text, max_chars, max_parts=4):
-    text = re.sub(r"\s+", " ", str(text or "").strip())
-    if not text:
-        return []
-    max_chars = max(8, int(max_chars or 40))
-    max_parts = max(1, int(max_parts or 1))
-    if len(text) <= max_chars:
+def _join_cue_words(words, language):
+    values = [str(item.get("word") or "").strip() for item in words]
+    values = [value for value in values if value]
+    return "".join(values) if _is_cjk_language(language) else " ".join(values)
+
+
+def _visible_text_length(text):
+    return len("".join(str(text or "").split()))
+
+
+def _valid_segment_words(segment):
+    words = []
+    previous_end = -1.0
+    for raw_word in (segment or {}).get("words") or []:
+        if not isinstance(raw_word, dict):
+            return []
+        try:
+            word = str(raw_word.get("word") or "").strip()
+            start = float(raw_word.get("start"))
+            end = float(raw_word.get("end"))
+        except (TypeError, ValueError):
+            return []
+        if not word or start < 0 or end <= start or start + 0.001 < previous_end:
+            return []
+        item = {"word": word, "start": start, "end": end}
+        if raw_word.get("probability") is not None:
+            try:
+                item["probability"] = float(raw_word["probability"])
+            except (TypeError, ValueError):
+                pass
+        words.append(item)
+        previous_end = end
+    return words
+
+
+def _cue_from_words(words, segment_index, source_text, language):
+    if not words:
+        return None
+    start = float(words[0]["start"])
+    end = float(words[-1]["end"])
+    return {
+        "start": start,
+        "end": end,
+        "text": _join_cue_words(words, language),
+        "sourceSegmentIndex": segment_index,
+        "sourceText": source_text,
+        "words": words,
+    }
+
+
+def _fallback_subtitle_cue(segment, segment_index):
+    start = max(0.0, float(segment.get("start") or 0))
+    end = max(float(segment.get("end") or 0), start + 0.5)
+    return {
+        "start": start,
+        "end": end,
+        "text": str(segment.get("text") or "").strip(),
+        "sourceSegmentIndex": segment_index,
+        "sourceText": str(segment.get("text") or "").strip(),
+        "words": [],
+    }
+
+
+def _finalize_cue_timings(cues):
+    for index, cue in enumerate(cues):
+        start = max(0.0, float(cue.get("start") or 0))
+        end = max(float(cue.get("end") or 0), start + 0.5)
+        next_start = None
+        if index + 1 < len(cues):
+            next_start = float(cues[index + 1].get("start") or 0)
+        if next_start is not None and next_start > start and end > next_start:
+            end = next_start
+        cue["start"] = start
+        cue["end"] = max(end, start + 0.01)
+    return cues
+
+
+def _build_subtitle_cues(segments, language):
+    """把 Whisper 原始段落拆为可独立显示的短语时间轴。"""
+    cues = []
+    max_chars = CUE_MAX_CJK_CHARS if _is_cjk_language(language) else CUE_MAX_SPACED_CHARS
+    sentence_endings = ".!?。！？"
+
+    for segment_index, segment in enumerate(segments or []):
+        words = _valid_segment_words(segment)
+        source_text = str((segment or {}).get("text") or "").strip()
+        if not words:
+            fallback = _fallback_subtitle_cue(segment or {}, segment_index)
+            if fallback["text"]:
+                cues.append(fallback)
+            continue
+
+        current = []
+        for word_index, word in enumerate(words):
+            if current and float(word["end"]) - float(current[0]["start"]) > CUE_MAX_DURATION_SECONDS:
+                cue = _cue_from_words(current, segment_index, source_text, language)
+                if cue and cue["text"]:
+                    cues.append(cue)
+                current = []
+            current.append(word)
+            next_word = words[word_index + 1] if word_index + 1 < len(words) else None
+            current_text = _join_cue_words(current, language)
+            duration = float(current[-1]["end"]) - float(current[0]["start"])
+            gap = float(next_word["start"]) - float(current[-1]["end"]) if next_word else 0.0
+            sentence_end = current_text.rstrip().endswith(tuple(sentence_endings))
+            should_break = (
+                not next_word
+                or sentence_end
+                or gap >= CUE_HARD_PAUSE_SECONDS
+                or duration >= CUE_MAX_DURATION_SECONDS
+                or _visible_text_length(current_text) >= max_chars
+                or (
+                    len(current) >= CUE_MIN_VISIBLE_WORDS
+                    and duration >= CUE_MIN_DURATION_SECONDS
+                    and (gap >= CUE_SOFT_PAUSE_SECONDS or duration >= CUE_TARGET_DURATION_SECONDS)
+                )
+            )
+            if should_break:
+                cue = _cue_from_words(current, segment_index, source_text, language)
+                if cue and cue["text"]:
+                    cues.append(cue)
+                current = []
+    return _finalize_cue_timings(cues)
+
+
+def _translation_split_points(text, target_index, minimum, maximum):
+    preferred = []
+    for index, char in enumerate(text):
+        if minimum <= index + 1 <= maximum and char in "，。！？；：、,.!?;:":
+            preferred.append(index + 1)
+    if preferred:
+        return min(preferred, key=lambda point: abs(point - target_index))
+    return max(minimum, min(target_index, maximum))
+
+
+def _allocate_translated_cues(cues, translated_text):
+    """按原文短语权重分配整句译文；无法保证每段非空时返回 None。"""
+    text = " ".join(str(translated_text or "").split())
+    if not cues or not text or _visible_text_length(text) < len(cues):
+        return None
+    if len(cues) == 1:
         return [text]
 
+    weights = [max(1, _visible_text_length(cue.get("text"))) for cue in cues]
+    total_weight = sum(weights)
     parts = []
-    current = ""
-    tokens = text.split(" ")
-    for token in tokens:
-        candidate = f"{current} {token}".strip() if current else token.strip()
-        if not current or len(candidate) <= max_chars:
-            current = candidate
-            continue
-        parts.append(current.strip())
-        current = token.strip()
-        while len(current) > max_chars:
-            parts.append(current[:max_chars].strip())
-            current = current[max_chars:].strip()
-        if len(parts) >= max_parts:
-            break
-    if current and len(parts) < max_parts:
-        parts.append(current.strip())
-    return [part for part in parts[:max_parts] if part]
+    cursor = 0
+    completed_weight = 0
+    for index, weight in enumerate(weights[:-1]):
+        completed_weight += weight
+        remaining_parts = len(cues) - index - 1
+        target = round(len(text) * completed_weight / total_weight)
+        split_at = _translation_split_points(
+            text,
+            target,
+            cursor + 1,
+            len(text) - remaining_parts,
+        )
+        part = text[cursor:split_at].strip()
+        if not part:
+            return None
+        parts.append(part)
+        cursor = split_at
+    final_part = text[cursor:].strip()
+    if not final_part:
+        return None
+    parts.append(final_part)
+    return parts
 
 
-def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, include_subtitles=True):
-    ass_file = Path(ass_file)
+def _split_translated_subtitle(text, max_visible_chars):
+    """把超长译文拆成单行短句，优先保留标点作为断句位置。"""
+    text = " ".join(str(text or "").split())
+    max_visible_chars = max(1, int(max_visible_chars or 1))
+    if _visible_text_length(text) <= max_visible_chars:
+        return [text] if text else []
+
+    parts = []
+    while text:
+        visible_chars = 0
+        split_at = 0
+        punctuation_at = 0
+        for index, char in enumerate(text):
+            if not char.isspace():
+                visible_chars += 1
+            if visible_chars > max_visible_chars:
+                break
+            split_at = index + 1
+            if char in "，。！？；：、,.!?;:":
+                punctuation_at = split_at
+        if punctuation_at and _visible_text_length(text[:punctuation_at]) >= 2:
+            split_at = punctuation_at
+        if split_at <= 0:
+            split_at = 1
+        remainder = text[split_at:].strip()
+        if _visible_text_length(remainder) == 1 and remainder in "，。！？；：、,.!?;:" and split_at > 1:
+            split_at -= 1
+        parts.append(text[:split_at].strip())
+        text = text[split_at:].strip()
+    return [part for part in parts if part]
+
+
+def _source_text_parts(cue, part_weights, language):
+    """按译文比例分配英文词；没有足够词时，后续 cue 不重复英文。"""
+    count = len(part_weights)
+    words = list(cue.get("words") or [])
+    if not words:
+        return [(str(cue.get("text") or ""), [])] + [("", [])] * (count - 1)
+    if len(words) < count:
+        return [
+            (_join_cue_words(words[index:index + 1], language), words[index:index + 1])
+            if index < len(words) else ("", [])
+            for index in range(count)
+        ]
+
+    total_weight = max(1, sum(part_weights))
+    source_parts = []
+    cursor = 0
+    completed_weight = 0
+    for index, weight in enumerate(part_weights):
+        completed_weight += weight
+        remaining_parts = count - index - 1
+        target = round(len(words) * completed_weight / total_weight)
+        word_end = min(len(words) - remaining_parts, max(cursor + 1, target)) if cursor < len(words) else cursor
+        part_words = words[cursor:word_end]
+        source_parts.append((_join_cue_words(part_words, language), part_words))
+        cursor = word_end
+    return source_parts
+
+
+def _split_rendered_cue(cue, subtitles, language):
+    if len(subtitles) <= 1:
+        item = dict(cue)
+        item["subtitle"] = subtitles[0] if subtitles else ""
+        return [item]
+
+    weights = [max(1, _visible_text_length(subtitle)) for subtitle in subtitles]
+    total_weight = sum(weights)
+    start = float(cue.get("start") or 0)
+    end = max(start, float(cue.get("end") or start))
+    duration = end - start
+    source_parts = _source_text_parts(cue, weights, language)
+    rendered = []
+    completed_weight = 0
+    for index, (subtitle, weight) in enumerate(zip(subtitles, weights)):
+        completed_weight += weight
+        item = dict(cue)
+        item["start"] = start + duration * (completed_weight - weight) / total_weight
+        item["end"] = end if index == len(subtitles) - 1 else start + duration * completed_weight / total_weight
+        item["text"], item["words"] = source_parts[index]
+        item["subtitle"] = subtitle
+        rendered.append(item)
+    return rendered
+
+
+def _assign_translated_cues(cues, translated_segments, language, max_single_line_chars=0):
+    """把按原段落翻译的结果可靠地映射回短语 cue。"""
+    by_source = {}
+    for cue in cues or []:
+        by_source.setdefault(cue.get("sourceSegmentIndex"), []).append(cue)
+
+    rendered = []
+    for source_index, source_cues in by_source.items():
+        source = translated_segments[source_index] if source_index is not None and source_index < len(translated_segments or []) else {}
+        translated_text = str(source.get("subtitle") or "").strip()
+        active_cues = list(source_cues)
+        allocated = _allocate_translated_cues(active_cues, translated_text)
+
+        if not allocated or len(allocated) != len(active_cues):
+            print(
+                f"字幕译文分配失败，已回退原始段落: segment={source_index}",
+                flush=True,
+            )
+            fallback = _fallback_subtitle_cue(source or (source_cues[0] if source_cues else {}), source_index)
+            active_cues = [fallback]
+            allocated = [translated_text or fallback["text"]]
+
+        for cue, subtitle in zip(active_cues, allocated):
+            subtitles = _split_translated_subtitle(subtitle, max_single_line_chars) if max_single_line_chars else [subtitle]
+            rendered.extend(_split_rendered_cue(cue, subtitles, language))
+    return rendered
+
+
+def _subtitle_render_layout(job, video_info):
     video_info = video_info or {}
     width = max(320, int(video_info.get("width") or 1080))
     height = max(320, int(video_info.get("height") or 1920))
     short_side = min(width, height)
     is_vertical = height > width
-    target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
     _, size_config = _subtitle_size_config(job.get("subtitleSize"))
     font_scale = float(size_config.get("scale") or 1)
     subtitle_floor = 56 if is_vertical else 48
+    subtitle_font_size = int(max(subtitle_floor, min(112, int(short_side * 0.092))) * font_scale)
+    horizontal_margin = max(22, int(width * (0.046 if is_vertical else 0.055)))
+    usable_width = max(1, width - 2 * horizontal_margin)
+    single_line_capacity = max(1, int(usable_width / max(subtitle_font_size * 0.92, 1)))
+    return {
+        "width": width,
+        "height": height,
+        "shortSide": short_side,
+        "isVertical": is_vertical,
+        "fontScale": font_scale,
+        "subtitleFontSize": subtitle_font_size,
+        "horizontalMargin": horizontal_margin,
+        "singleLineCapacity": single_line_capacity,
+    }
+
+
+def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, include_subtitles=True):
+    ass_file = Path(ass_file)
+    layout = _subtitle_render_layout(job, video_info)
+    width = layout["width"]
+    height = layout["height"]
+    short_side = layout["shortSide"]
+    is_vertical = layout["isVertical"]
+    target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
+    font_scale = layout["fontScale"]
+    subtitle_font_size = layout["subtitleFontSize"]
     english_floor = 40 if is_vertical else 34
     info_floor = 36 if is_vertical else 30
-    subtitle_font_size = int(max(subtitle_floor, min(112, int(short_side * 0.092))) * font_scale)
     english_font_size = int(max(english_floor, min(82, int(short_side * 0.052))) * font_scale)
     info_font_size = int(max(info_floor, min(72, int(short_side * 0.060))) * min(font_scale, 1.14))
-    horizontal_margin = max(22, int(width * (0.046 if is_vertical else 0.055)))
+    horizontal_margin = layout["horizontalMargin"]
     subtitle_margin_v = max(92 if is_vertical else 78, int(height * (0.092 if is_vertical else 0.086)))
     english_margin_v = max(34, int(subtitle_margin_v - english_font_size * 1.38))
     info_margin_v = max(28, int(height * 0.028))
@@ -402,8 +719,6 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     watermark_font_size = max(20, min(54, int(short_side * 0.032)))
     watermark_margin = max(20, int(width * 0.042))
     watermark_margin_v = max(40, int(height * 0.070))
-    max_subtitle_chars = max(8, int(width / max(subtitle_font_size * (0.92 if is_vertical else 0.86), 1)))
-    max_english_chars = max(12, int(width / max(english_font_size * (0.62 if is_vertical else 0.55), 1)))
     always_show_english_line = True
     has_translated_line = target_language != "en"
 
@@ -435,8 +750,8 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
             if always_show_english_line and english_text:
                 dialogue_lines.append(f"Dialogue: 0,{start},{end},English,,0,0,0,,{english_text}")
             if has_translated_line:
-                wrapped_text = _wrap_ass_text(segment.get("subtitle") or "", max_subtitle_chars)
-                text = _escape_ass_text(wrapped_text)
+                subtitle_text = " ".join(str(segment.get("subtitle") or "").split())
+                text = _escape_ass_text(subtitle_text)
                 if text:
                     dialogue_lines.append(f"Dialogue: 1,{start},{end},Subtitle,,0,0,0,,{text}")
     if _watermark_enabled(job) and (not include_subtitles or _watermark_burns_with_subtitles(job)):
@@ -720,11 +1035,29 @@ def _process_subtitles(job, source_file):
             _apply_watermark_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, str(exc))
         return {"path": output_file, "skipped": True}
-    _update_translate_progress(job_id, 34, f"已识别 {len(segments)} 段字幕，正在处理为{language_meta['label']}")
+    cues = _build_subtitle_cues(segments, language)
+    _update_translate_progress(
+        job_id,
+        34,
+        f"已识别 {len(segments)} 段字幕，已切分为 {len(cues)} 条短语，正在处理为{language_meta['label']}",
+    )
     translated_segments = _translate_segments(segments, target_language, job_id=job_id)
+    translated_segments = _redact_generated_subtitles(translated_segments, target_language)
+    if target_language == "en":
+        rendered_segments = cues
+    else:
+        rendered_segments = _assign_translated_cues(
+            cues,
+            translated_segments,
+            language,
+            max_single_line_chars=(
+                _subtitle_render_layout(job, video_info)["singleLineCapacity"]
+                if target_language == "zh-CN" else 0
+            ),
+        )
     _update_translate_progress(job_id, 46, f"{language_meta['label']}字幕已生成，正在构建自适应字幕样式")
     duration = video_info.get("duration") or max((segment.get("end") or 0) for segment in segments)
-    ass_file = _build_ass_file(job, translated_segments, work_dir / f"{Path(source_file).stem}.ass", duration, video_info)
+    ass_file = _build_ass_file(job, rendered_segments, work_dir / f"{Path(source_file).stem}.ass", duration, video_info)
     _update_translate_progress(job_id, 50, f"正在使用 FFmpeg 烧录{language_meta['label']}字幕")
     result = _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=duration, job_id=job_id)
     _update_translate_progress(job_id, 98, "视频已生成，正在写入素材库")
