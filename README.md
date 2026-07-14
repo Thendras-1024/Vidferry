@@ -103,7 +103,7 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 
 - 视频采集处理：关键词批量查询 YouTube、单链接导入、线索状态筛选、下载和处理任务追踪。
 - 视频下载：基于 `yt-dlp` 下载视频，并写入本地素材库。
-- 字幕处理：基于 `faster-whisper` 转写，生成目标语言字幕，并默认保留英文字幕。
+- 字幕处理：基于 `faster-whisper` 词级时间戳生成短语级字幕，生成目标语言字幕，并默认保留英文字幕；旧转写缓存仍可使用，主动重新处理会重新转写以应用新的字幕节奏。
 - 视频烧录：基于 FFmpeg 输出国内平台更兼容的 MP4，烧录左上角原作者信息，并可在处理设置中启用文字水印。
 - 内容分析：基于 OpenAI-compatible LLM 生成标题候选、作品描述、话题标签、视频总结和高光片段建议。
 - 发布前审核：Agent 对发布文案进行风险检查，并可抽取视频关键帧交由视觉模型复核；未配置视觉模型时，默认阻止提交发布。
@@ -176,7 +176,7 @@ pip install -e .
 - 后端运行、CLI、视频下载/处理、平台自动化发布都需要在 `vidferry` 环境中执行。
 - `pip install -r requirements.txt` 用于安装当前开发环境快照中的依赖。
 - `pip install -e .` 用于把项目本身以开发模式安装，并注册 `sau` 命令。
-- 当前 `requirements.txt` 推荐环境是 Windows + Conda + Python 3.12；它不是严格跨平台锁文件，可能包含历史依赖，也包含 `pywin32`、`pywinpty` 等 Windows 相关依赖。
+- 当前 `requirements.txt` 推荐环境是 Windows + Conda + Python 3.12；它不是严格跨平台锁文件，可能包含历史依赖，也包含 `pywinpty` 等 Windows 相关依赖。
 - Linux/macOS 安装失败时，优先改用 `pip install -e ".[web]"`，或按平台调整不兼容依赖。
 
 可选：如果只想按项目声明的 Web 最小依赖安装，可以使用：
@@ -423,7 +423,9 @@ sau_frontend/        Vue 3 + Vite 前端
 uploader/            各平台上传适配器
 myUtils/             账号、登录和历史工具函数
 utils/               通用工具
+logs/                后端关键流程与各平台上传日志，排查任务失败时优先查看
 videos/              下载、转写、处理输出目录
+  youtube/            YouTube 原视频及同视频 ID 的本地封面文件，供素材管理页离线预览
 videoFile/           素材库文件目录
 db/                  本地 SQLite 数据库
 cookiesFile/         平台账号 Cookie 文件

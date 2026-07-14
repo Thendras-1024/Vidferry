@@ -18,6 +18,7 @@ def delete_file():
             data = delete_material_record(cursor, int(file_id))
             conn.commit()
 
+        backend_logger.info("素材已删除 material_id=%s source_type=%s", file_id, data.get("sourceType", ""))
         return jsonify({
             "code": 200,
             "msg": "File deleted successfully",
@@ -43,6 +44,7 @@ def delete_file():
         }), 409
 
     except Exception:
+        backend_logger.exception("删除素材失败 material_id=%s", file_id)
         return jsonify({
             "code": 500,
             "msg": str("delete failed!"),
@@ -61,10 +63,14 @@ def batch_delete_files():
         ]
         if not file_ids:
             return jsonify({"code": 400, "msg": "请选择要删除的素材", "data": None}), 400
+        backend_logger.info("批量删除素材开始 count=%s", len(file_ids))
+        result = delete_material_records(file_ids)
+        backend_logger.info("批量删除素材完成 count=%s", len(result))
         return jsonify({
             "code": 200,
             "msg": "Files deleted",
-            "data": delete_material_records(file_ids)
+            "data": result
         }), 200
     except Exception as e:
+        backend_logger.exception("批量删除素材失败")
         return jsonify({"code": 500, "msg": f"batch delete failed: {str(e)}", "data": None}), 500

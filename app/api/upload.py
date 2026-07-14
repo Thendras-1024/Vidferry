@@ -40,29 +40,32 @@ def get_file():
     if not filename:
         return jsonify({"code": 400, "msg": "filename is required", "data": None}), 400
 
-    candidate = Path(filename)
-    if candidate.is_absolute():
-        allowed_roots = [
-            Path(BASE_DIR / "videoFile").resolve(),
-            Path(YOUTUBE_DOWNLOAD_DIR).resolve(),
-            Path(YOUTUBE_PROCESSED_DIR).resolve(),
-        ]
-        resolved = candidate.resolve()
-        if not any(resolved.is_relative_to(root) for root in allowed_roots):
-            return jsonify({"code": 400, "msg": "Invalid filename", "data": None}), 400
-        if not resolved.is_file():
-            return jsonify({"code": 404, "msg": "File not found", "data": None}), 404
-        return send_from_directory(str(resolved.parent), resolved.name)
-
-    # 防止路径穿越攻击
-    if '..' in filename or filename.startswith('/'):
+    normalized_filename = filename.replace("\\", "/")
+    candidate = Path(normalized_filename)
+    if '..' in normalized_filename or normalized_filename.startswith('/'):
         return jsonify({"code": 400, "msg": "Invalid filename", "data": None}), 400
 
-    # 拼接完整路径
-    file_path = str(Path(BASE_DIR / "videoFile"))
+    allowed_roots = [
+        Path(BASE_DIR / "videoFile").resolve(),
+        Path(YOUTUBE_DOWNLOAD_DIR).resolve(),
+        Path(YOUTUBE_PROCESSED_DIR).resolve(),
+    ]
+    candidates = [candidate] if candidate.is_absolute() else [
+        Path(BASE_DIR / candidate),
+        Path(BASE_DIR / "videoFile" / candidate),
+    ]
+    found_allowed_path = False
+    for candidate_path in candidates:
+        resolved = candidate_path.resolve()
+        if not any(resolved.is_relative_to(root) for root in allowed_roots):
+            continue
+        found_allowed_path = True
+        if resolved.is_file():
+            return send_from_directory(str(resolved.parent), resolved.name)
 
-    # 返回文件
-    return send_from_directory(file_path,filename)
+    if found_allowed_path:
+        return jsonify({"code": 404, "msg": "File not found", "data": None}), 404
+    return jsonify({"code": 400, "msg": "Invalid filename", "data": None}), 400
 
 
 @app.route('/uploadSave', methods=['POST'])

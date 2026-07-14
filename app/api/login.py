@@ -64,6 +64,15 @@ def _terminal_qrcode_to_data_url(output):
     return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"
 
 
+def _read_bilibili_pty_output(process, output_queue):
+    while True:
+        try:
+            output_queue.put(("chunk", process.read(4096)))
+        except Exception:
+            output_queue.put(("closed", ""))
+            return
+
+
 def _save_bilibili_login_account(user_name, account_file, status_queue, account_id=None):
     relative_cookie_file = Path(account_file).name
     with _db_connect() as conn:
@@ -116,34 +125,60 @@ def bilibili_cookie_gen(user_name, status_queue, account_id=None):
         return
 
     command = [str(biliup_binary), "-u", str(account_file), "login"]
+    backend_logger.info("B站扫码登录开始 account_id=%s", account_id or "new")
+    qrcode_path = Path(BASE_DIR / "qrcode.png")
+    try:
+        initial_qrcode_mtime = qrcode_path.stat().st_mtime_ns
+    except OSError:
+        initial_qrcode_mtime = None
     sent_qrcode = False
     started_at = time.time()
     output_buffer = ""
     process = None
     try:
         process = PtyProcess.spawn(command, cwd=str(BASE_DIR), dimensions=(42, 160))
+        output_queue = Queue()
+        threading.Thread(
+            target=_read_bilibili_pty_output,
+            args=(process, output_queue),
+            daemon=True,
+        ).start()
         selected_scan_login = False
+        reader_closed = False
         while True:
-            try:
-                chunk = process.read(4096)
-            except Exception:
-                chunk = ""
+            chunks = []
+            while True:
+                try:
+                    event, payload = output_queue.get_nowait()
+                except Empty:
+                    break
+                if event == "closed":
+                    reader_closed = True
+                elif payload:
+                    chunks.append(payload)
 
-            if chunk:
-                output_buffer = (output_buffer + chunk)[-30000:]
+            if chunks:
+                output_buffer = (output_buffer + "".join(chunks))[-30000:]
                 plain_output = _strip_ansi(output_buffer)
                 if not selected_scan_login and "选择一种登录方式" in plain_output and "扫码登录" in plain_output:
                     process.write("\x1b[B\r")
                     selected_scan_login = True
-                    time.sleep(0.5)
 
-                if not sent_qrcode:
-                    qrcode_data_url = _terminal_qrcode_to_data_url(output_buffer)
-                    if qrcode_data_url:
-                        status_queue.put(qrcode_data_url)
-                        sent_qrcode = True
+            if not sent_qrcode:
+                qrcode_data_url = _terminal_qrcode_to_data_url(output_buffer)
+                if not qrcode_data_url:
+                    try:
+                        current_qrcode_mtime = qrcode_path.stat().st_mtime_ns
+                        if current_qrcode_mtime != initial_qrcode_mtime:
+                            qrcode_data_url = _image_file_to_data_url(qrcode_path)
+                    except OSError:
+                        pass
+                if qrcode_data_url:
+                    status_queue.put(qrcode_data_url)
+                    sent_qrcode = True
+                    backend_logger.info("B站扫码登录二维码已生成 account_id=%s", account_id or "new")
 
-            if not process.isalive():
+            if not process.isalive() and reader_closed:
                 break
 
             if time.time() - started_at > 180:
@@ -157,14 +192,16 @@ def bilibili_cookie_gen(user_name, status_queue, account_id=None):
         if exit_status == 0 and account_file.is_file():
             if _save_bilibili_login_account(user_name, account_file, status_queue, account_id):
                 status_queue.put("200")
+                backend_logger.info("B站扫码登录成功 account_id=%s", account_id or "new")
             else:
                 _emit_sse_error(status_queue, "B站登录成功但保存账号失败，请检查账号记录。")
         else:
             plain_output = _strip_ansi(output_buffer)
             tail = "\n".join([line.strip() for line in plain_output.splitlines() if line.strip()][-8:])
+            backend_logger.error("B站扫码登录失败 account_id=%s exit_status=%s", account_id or "new", exit_status)
             _emit_sse_error(status_queue, tail or f"B站登录失败，biliup 退出码: {exit_status}")
     except Exception as exc:
-        print(f"B站登录流程异常: {exc}")
+        backend_logger.exception("B站扫码登录异常 account_id=%s", account_id or "new")
         _emit_sse_error(status_queue, f"B站登录流程异常: {exc}")
     finally:
         if process is not None:

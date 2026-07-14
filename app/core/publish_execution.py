@@ -74,6 +74,7 @@ def _publish_platform_account_file(platform_type, account_name):
 def _publish_workflow_platform(job, processed_file, material, platform_type, account_name, command_factory):
     if not account_name:
         return ""
+    backend_logger.info("发布开始 job_id=%s platform_type=%s", job.get("id", ""), platform_type)
     command = command_factory(job, processed_file)
     if not command:
         return ""
@@ -85,6 +86,7 @@ def _publish_workflow_platform(job, processed_file, material, platform_type, acc
         account_file=_publish_platform_account_file(platform_type, account_name),
         account_name=account_name,
     )
+    backend_logger.info("发布完成 job_id=%s platform_type=%s", job.get("id", ""), platform_type)
     return command
 
 
@@ -127,9 +129,12 @@ def _publish_center_to_bilibili(title, description, file_list, tags, account_lis
             publish_datetime = publish_datetimes[index] if index < len(publish_datetimes) else 0
             if publish_datetime:
                 command.extend(["--dtime", str(int(publish_datetime.timestamp()))])
+            backend_logger.info("发布中心 B站发布开始 file_index=%s", index)
             result = _run_command(command, cwd=BASE_DIR)
             if result.returncode != 0:
+                backend_logger.error("发布中心 B站发布失败 file_index=%s returncode=%s", index, result.returncode)
                 raise RuntimeError((result.stderr or result.stdout or "").strip() or "B站发布失败")
+            backend_logger.info("发布中心 B站发布完成 file_index=%s", index)
 
 
 def _publish_platform_slug(platform_type):
