@@ -5,15 +5,17 @@ def _row_to_youtube_video(row):
     item = dict(row)
     analysis_result = _parse_json_object(item.get("analysis_result"))
     publish_draft = _parse_publish_draft(item.get("publish_draft"), analysis_result)
+    video_id = item.get("video_id") or ""
     return {
         "dbId": item.get("id"),
-        "id": item.get("video_id"),
+        "id": video_id,
         "title": item.get("title") or "",
         "channel": item.get("channel") or "",
         "subscribers": _format_subscribers_w(item.get("subscribers")),
         "publishedAt": item.get("published_at") or "",
         "url": item.get("url") or "",
-        "thumbnail": item.get("thumbnail") or "",
+        # hqdefault 对所有公开视频都可用；搜索结果中的 maxresdefault 并不保证存在。
+        "thumbnail": _youtube_thumbnail_url(video_id) or item.get("thumbnail") or "",
         "duration": item.get("duration") or "",
         "query": item.get("query") or "",
         "downloadStatus": int(item.get("download_status") or 0),
@@ -117,6 +119,60 @@ def save_new_youtube_videos(videos, query):
             "publishedDuplicate": published_duplicate_count,
             "requested": len(videos),
         }
+
+
+def _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at=""):
+    video_id = str(video.get("id") or "").strip()
+    url = str(video.get("url") or "").strip()
+    if not video_id or not url:
+        return {"decision": "skipped", "item": None}
+
+    if job_created_at:
+        cursor.execute(
+            "SELECT deleted_at FROM youtube_video_deletions WHERE video_id = ?",
+            (video_id,),
+        )
+        deletion = cursor.fetchone()
+        deleted_at = deletion["deleted_at"] if deletion else ""
+        if deleted_at and str(deleted_at) >= str(job_created_at):
+            return {"decision": "skipped", "item": None}
+
+    cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+    existing = cursor.fetchone()
+    published_ids, published_urls = _published_youtube_identity_sets(cursor)
+    canonical_url = _canonical_youtube_url(url, video_id)
+    if existing or video_id in published_ids or canonical_url in published_urls:
+        return {
+            "decision": "duplicate",
+            "item": _row_to_youtube_video(existing) if existing else None,
+        }
+
+    cursor.execute('''
+    INSERT INTO youtube_videos (
+        video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        video_id,
+        video.get("title") or "",
+        video.get("channel") or "",
+        _format_subscribers_w(video.get("subscribers")),
+        video.get("publishedAt") or "",
+        url,
+        video.get("thumbnail") or "",
+        video.get("duration") or "",
+        query,
+    ))
+    cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+    return {"decision": "created", "item": _row_to_youtube_video(cursor.fetchone())}
+
+
+def save_one_youtube_video(video, query, job_created_at=""):
+    init_youtube_video_table()
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        return _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at)
 
 
 def upsert_youtube_videos(videos, query):
@@ -419,6 +475,34 @@ def _reconcile_youtube_statuses_with_material_records(cursor):
     ''')
 
 
+def _reconcile_youtube_generated_publish_drafts(cursor):
+    """修复历史自动稿与最新分析结果不一致的记录，不触碰人工编辑稿。"""
+    cursor.execute('''
+    SELECT video_id, analysis_result, publish_draft
+    FROM youtube_videos
+    WHERE analysis_status = 1
+      AND analysis_result IS NOT NULL AND analysis_result != ''
+      AND publish_draft IS NOT NULL AND publish_draft != ''
+    ''')
+    for row in cursor.fetchall():
+        result = _parse_json_object(row["analysis_result"])
+        draft = _parse_publish_draft(row["publish_draft"], result)
+        if not result or draft.get("source") != "llm_default":
+            continue
+        expected = _build_default_publish_draft(result)
+        if draft.get("title") in (result.get("title_options") or []):
+            expected["title"] = draft["title"]
+        if (
+            draft.get("title") == expected.get("title")
+            and draft.get("description") == expected.get("description")
+            and draft.get("tags") == expected.get("tags")
+        ):
+            continue
+        cursor.execute('''
+        UPDATE youtube_videos
+        SET publish_draft = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE video_id = ?
+        ''', (json.dumps(expected, ensure_ascii=False), row["video_id"]))
 def list_youtube_videos(params=None):
     init_youtube_video_table()
     params = params or {}
@@ -430,6 +514,7 @@ def list_youtube_videos(params=None):
         conn.create_function("duration_to_seconds", 1, _duration_text_to_seconds)
         cursor = conn.cursor()
         _reconcile_youtube_statuses_with_material_records(cursor)
+        _reconcile_youtube_generated_publish_drafts(cursor)
         conn.commit()
         where_sql, values, ids = _youtube_video_where(params)
         sort_sql = _youtube_video_sort_sql(str(params.get("sort") or "default"))
@@ -513,6 +598,7 @@ def delete_youtube_video_record(video_id):
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
         video = cursor.fetchone()
         if not video:
@@ -564,6 +650,20 @@ def delete_youtube_video_record(video_id):
                 },
             )
 
+        if not is_published_archived:
+            cursor.execute('''
+            DELETE FROM youtube_workflow_events
+            WHERE video_id = ?
+               OR job_id IN (SELECT id FROM youtube_workflow_jobs WHERE video_id = ?)
+            ''', (video_id, video_id))
+            cursor.execute("DELETE FROM youtube_workflow_jobs WHERE video_id = ?", (video_id,))
+
+        deleted_at = datetime.datetime.now().isoformat(timespec="microseconds")
+        cursor.execute('''
+        INSERT INTO youtube_video_deletions (video_id, deleted_at)
+        VALUES (?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET deleted_at = excluded.deleted_at
+        ''', (video_id, deleted_at))
         cursor.execute("DELETE FROM youtube_videos WHERE video_id = ?", (video_id,))
         deleted = cursor.rowcount
         conn.commit()
@@ -603,13 +703,53 @@ def delete_youtube_video_records(video_ids):
     }
 
 
-def reset_youtube_video_processing(video_id, delete_processed=True, process_version=""):
+def _delete_youtube_transcript_cache(video):
+    video = dict(video or {})
+    video_id = str(video.get("video_id") or video.get("videoId") or "").strip()
+    paths = set()
+    stored_path = str(video.get("transcript_file_path") or video.get("transcriptFilePath") or "").strip()
+    if stored_path:
+        paths.add(Path(stored_path))
+    if video_id:
+        key = re.sub(r"[^A-Za-z0-9_-]+", "_", video_id)
+        paths.add(Path(YOUTUBE_TRANSCRIPT_DIR) / f"{key}.json")
+
+    deleted = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"删除转写缓存失败: {path}") from exc
+        deleted.append(str(path))
+    return deleted
+
+
+def _delete_reset_youtube_workflow_history(cursor, video_id, process_version=""):
+    conditions = ["video_id = ?", "status NOT IN ('queued', 'running')"]
+    values = [video_id]
+    if process_version:
+        conditions.append("process_version = ?")
+        values.append(process_version)
+    where_sql = " AND ".join(conditions)
+    cursor.execute(f'''
+    DELETE FROM youtube_workflow_events
+    WHERE job_id IN (SELECT id FROM youtube_workflow_jobs WHERE {where_sql})
+    ''', values)
+    cursor.execute(f"DELETE FROM youtube_workflow_jobs WHERE {where_sql}", values)
+    return max(0, int(getattr(cursor, "rowcount", 0) or 0))
+
+
+def reset_youtube_video_processing(video_id, delete_processed=True, process_version="", refresh_transcript=False):
     init_youtube_workflow_table()
     if not video_id:
         raise ValueError("视频 ID 不能为空")
     process_version = _normalize_process_version(process_version) if process_version else ""
 
     deleted_materials = []
+    deleted_transcript_files = []
+    deleted_workflow_job_count = 0
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -652,6 +792,22 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
                     (video_id,),
                 )
 
+        if refresh_transcript:
+            deleted_transcript_files = _delete_youtube_transcript_cache(video)
+            cursor.execute('''
+            UPDATE youtube_videos
+            SET transcript_status = 0,
+                transcript_file_path = '',
+                transcript_language = '',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = ?
+            ''', (video_id,))
+
+        deleted_workflow_job_count = _delete_reset_youtube_workflow_history(
+            cursor,
+            video_id,
+            process_version,
+        )
         sync_result = _sync_youtube_processed_state(cursor, video_id)
         if deleted_materials and not sync_result.get("analysisCleared"):
             sync_result.update(_clear_youtube_analysis_state(cursor, video_id))
@@ -663,6 +819,9 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
         "video": updated_video,
         "deletedMaterials": deleted_materials,
         "deletedMaterialCount": len(deleted_materials),
+        "deletedTranscriptFiles": deleted_transcript_files,
+        "deletedWorkflowJobCount": deleted_workflow_job_count,
+        "transcriptRefreshed": bool(refresh_transcript),
         "processVersion": process_version,
         "sync": sync_result,
     }

@@ -5,6 +5,14 @@ export const youtubeApi = {
     return request.get('/youtube/search', { params })
   },
 
+  createSearchJob(data) {
+    return request.post('/youtube/search/jobs', data)
+  },
+
+  getSearchJob(jobId) {
+    return request.get(`/youtube/search/jobs/${jobId}`, { silentError: true })
+  },
+
   list(params = {}) {
     return request.get('/youtube/videos', { params })
   },

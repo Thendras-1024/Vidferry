@@ -3,7 +3,7 @@ import { http } from '@/utils/request'
 const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL
 const apiBaseUrl = configuredApiBaseUrl && configuredApiBaseUrl !== '/'
   ? configuredApiBaseUrl.replace(/\/$/, '')
-  : ''
+  : (import.meta.env.DEV ? '/api' : '')
 
 const fileUrl = (filename) => `${apiBaseUrl}/getFile?filename=${encodeURIComponent(filename)}`
 

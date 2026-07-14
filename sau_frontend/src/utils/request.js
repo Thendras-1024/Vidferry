@@ -36,7 +36,7 @@ request.interceptors.response.use(
     const { data } = response
     
     // 根据后端接口规范处理响应
-    if (data.code === 200 || data.success) {
+    if ((Number(data.code) >= 200 && Number(data.code) < 300) || data.success) {
       return data
     } else {
       if (response.config?.silentError) {

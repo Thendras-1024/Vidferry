@@ -2,7 +2,6 @@
 
 import datetime
 import json
-import random
 import re
 
 
@@ -136,7 +135,7 @@ def _build_default_publish_draft(analysis_result):
         for title in (result.get("title_options") if isinstance(result.get("title_options"), list) else [])
         if str(title or "").strip()
     ]
-    selected_title = random.choice(title_options) if title_options else ""
+    selected_title = title_options[0] if title_options else ""
     return {
         "title": selected_title,
         "description": str(result.get("publish_copy") or "").strip(),

@@ -84,12 +84,13 @@
                 v-model="form.query"
                 clearable
                 placeholder="foreigner China travel vlog first time in China"
+                @change="flushWorkflowSettings"
               />
             </el-form-item>
             <el-form-item label="数量" class="limit-field">
               <el-input-number v-model="form.limit" :min="1" :max="30" controls-position="right" />
             </el-form-item>
-            <el-button type="primary" :loading="loading" @click="handleSearch">
+            <el-button type="primary" :loading="searchLoading" @click="handleSearch">
               <el-icon><Search /></el-icon>
               <span>开始查询</span>
             </el-button>
@@ -97,9 +98,9 @@
           <div v-if="searchProgress.visible" class="search-progress-panel">
             <div class="search-progress-text">
               <span>{{ searchProgress.message }}</span>
-              <strong>{{ searchProgress.loaded }} / {{ searchProgress.total }}</strong>
+              <strong>{{ searchProgressSummary }}</strong>
             </div>
-            <el-progress :percentage="searchProgressPercent" :stroke-width="8" :status="loading ? undefined : 'success'" />
+            <el-progress :percentage="searchProgressPercent" :stroke-width="8" :status="searchProgressStatus" />
           </div>
         </div>
       </el-form>
@@ -293,7 +294,7 @@
         <el-table-column label="视频" min-width="420">
           <template #default="{ row }">
             <div class="video-cell">
-              <img v-if="row.thumbnail" :src="row.thumbnail" alt="" class="thumbnail">
+              <img v-if="videoThumbnail(row)" :src="videoThumbnail(row)" alt="" class="thumbnail">
               <div v-else class="thumbnail thumbnail-empty">
                 <el-icon><VideoCamera /></el-icon>
               </div>
@@ -825,6 +826,7 @@ import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 
 const loading = ref(false)
+const searchLoading = ref(false)
 const jobsLoading = ref(false)
 const importing = ref(false)
 const downloadingId = ref('')
@@ -859,21 +861,31 @@ const editingPublishDraftForms = reactive({})
 const selectedVideos = ref([])
 const searchProgress = reactive({
   visible: false,
-  loaded: 0,
-  total: 0,
+  jobId: '',
+  found: 0,
+  requested: 0,
+  created: 0,
+  duplicate: 0,
+  skipped: 0,
+  failed: 0,
+  status: '',
   message: ''
 })
 const notificationStore = useNotificationStore()
 const appStore = useAppStore()
 const accountStore = useAccountStore()
 let jobsTimer = null
+let searchJobTimer = null
 let clockTimer = null
 let jobsRequesting = false
+let searchJobRequesting = false
+let searchJobPollFailures = 0
 let workflowSettingsLoaded = false
 let loadingWorkflowSettings = false
 let workflowSettingsSaveTimer = null
 const JOBS_POLL_ACTIVE_MS = 1500
 const JOBS_POLL_IDLE_MS = 8000
+const SEARCH_JOB_POLL_MS = 1200
 
 const openSettingsFromLayout = () => {
   settingsDialogVisible.value = true
@@ -1109,6 +1121,9 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
   if (typeof settings.translatorLabel === 'string' && settings.translatorLabel.trim()) {
     next.translatorLabel = settings.translatorLabel.trim().slice(0, 20)
   }
+  if (typeof settings.searchQuery === 'string' && settings.searchQuery.trim()) {
+    next.searchQuery = settings.searchQuery.trim().slice(0, 160)
+  }
   if (typeof settings.watermarkEnabled === 'boolean') {
     next.watermarkEnabled = settings.watermarkEnabled
   }
@@ -1144,9 +1159,16 @@ const currentWorkflowSettingsPayload = () => ({
   burnProfile: workflowForm.burnProfile,
   subtitleSize: workflowForm.subtitleSize,
   translatorLabel: workflowForm.translatorLabel,
+  searchQuery: form.query,
   watermarkEnabled: workflowForm.watermarkEnabled,
   watermarkText: workflowForm.watermarkText
 })
+
+const applyStoredWorkflowSettings = (settings) => {
+  const { searchQuery, ...workflowSettings } = normalizeStoredWorkflowSettings(settings)
+  Object.assign(workflowForm, workflowSettings)
+  if (searchQuery) form.query = searchQuery
+}
 
 const normalizeWatermarkText = () => {
   const watermarkText = workflowForm.watermarkText.trim().slice(0, 16)
@@ -1157,15 +1179,22 @@ const normalizeWatermarkText = () => {
   flushWorkflowSettings()
 }
 
+const consumeAgentStatusQuery = async () => {
+  const status = String(route.query.status || '')
+  if (!['initial', 'downloaded', 'processed', 'published', 'running', 'failed', 'abnormal'].includes(status)) return
+  videoFilter.status = status
+  await router.replace({ path: route.path, query: { ...route.query, status: undefined } })
+}
+
 const loadWorkflowSettings = async () => {
   const localSettings = readLocalWorkflowSettings()
   if (Object.keys(localSettings).length) {
-    Object.assign(workflowForm, localSettings)
+    applyStoredWorkflowSettings(localSettings)
   }
   try {
     const response = await youtubeApi.getWorkflowSettings()
     const settings = normalizeStoredWorkflowSettings(response.data || response)
-    Object.assign(workflowForm, settings)
+    applyStoredWorkflowSettings(settings)
     persistLocalWorkflowSettings(currentWorkflowSettingsPayload())
   } catch (error) {
     console.warn('读取后端处理设置失败，使用本地缓存', error)
@@ -1233,6 +1262,8 @@ watch(
   saveWorkflowSettings,
   { deep: true }
 )
+
+watch(() => form.query, saveWorkflowSettings)
 
 const hasCurrentProcessVersion = (item) => {
   return Array.isArray(item.processedVersions) && item.processedVersions.some(version => version.processVersion === workflowForm.processVersion)
@@ -1411,6 +1442,11 @@ const normalizeVideoItem = (item) => {
   }
 }
 
+const videoThumbnail = (item) => {
+  const videoId = String(item?.id || '').trim()
+  return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : item?.thumbnail || ''
+}
+
 const showInlinePublishDraft = (item) => {
   return Number(item.translateStatus) === 1 && Number(item.publishStatus) !== 1 && Number(item.analysisStatus) === 1 && item.analysisDraft
 }
@@ -1562,32 +1598,133 @@ const pipelineStages = computed(() => [
 ])
 
 const searchProgressPercent = computed(() => {
-  if (!searchProgress.total) return 0
-  return Math.min(100, Math.round((searchProgress.loaded / searchProgress.total) * 100))
+  if (!searchProgress.requested) return 0
+  return Math.min(100, Math.round((searchProgress.found / searchProgress.requested) * 100))
 })
 
-const handleSearch = async () => {
-  loading.value = true
-  searchProgress.visible = true
-  searchProgress.loaded = 0
-  searchProgress.total = Number(form.limit || 0)
-  searchProgress.message = '正在向 YouTube 请求候选视频'
+const searchProgressSummary = computed(() => {
+  const parts = [
+    `已检索 ${searchProgress.found} / ${searchProgress.requested}`,
+    `新增 ${searchProgress.created}`,
+    `重复 ${searchProgress.duplicate}`
+  ]
+  if (searchProgress.skipped > 0) parts.push(`跳过 ${searchProgress.skipped}`)
+  if (searchProgress.failed > 0) parts.push(`失败 ${searchProgress.failed}`)
+  return parts.join(' · ')
+})
+
+const searchProgressStatus = computed(() => {
+  if (searchProgress.status === 'failed') return 'exception'
+  if (searchProgress.status === 'success') return 'success'
+  return undefined
+})
+
+const applySearchJobProgress = (job = {}) => {
+  searchProgress.jobId = String(job.jobId || searchProgress.jobId || '')
+  searchProgress.found = Number(job.found || 0)
+  searchProgress.requested = Number(job.requested || searchProgress.requested || 0)
+  searchProgress.created = Number(job.created || 0)
+  searchProgress.duplicate = Number(job.duplicate || 0)
+  searchProgress.skipped = Number(job.skipped || 0)
+  searchProgress.failed = Number(job.failed || 0)
+  searchProgress.status = String(job.status || '')
+  searchProgress.message = job.message || '正在查询候选视频'
+  lastResult.value = job
+}
+
+const stopSearchJobPolling = () => {
+  if (searchJobTimer) {
+    window.clearTimeout(searchJobTimer)
+    searchJobTimer = null
+  }
+}
+
+const scheduleSearchJobPoll = (jobId, delay = SEARCH_JOB_POLL_MS) => {
+  stopSearchJobPolling()
+  searchJobTimer = window.setTimeout(() => pollSearchJob(jobId), delay)
+}
+
+const finishSearchJobPolling = (job) => {
+  stopSearchJobPolling()
+  searchLoading.value = false
+  if (job.status === 'failed') {
+    ElMessage.error(job.message || '关键词查询失败')
+    return
+  }
+  const warnings = []
+  if (Number(job.skipped || 0) > 0) warnings.push(`跳过 ${job.skipped} 条`)
+  if (Number(job.failed || 0) > 0) warnings.push(`失败 ${job.failed} 条`)
+  if (warnings.length > 0) {
+    ElMessage.warning(`查询完成，新增 ${job.created || 0} 条，${warnings.join('，')}`)
+  } else {
+    showImportResultMessage(job, '查询完成')
+  }
+}
+
+const pollSearchJob = async (jobId) => {
+  if (!jobId || jobId !== searchProgress.jobId || searchJobRequesting) return
+  searchJobRequesting = true
+  const previousFound = searchProgress.found
   try {
-    const res = await youtubeApi.search({
+    const res = await youtubeApi.getSearchJob(jobId)
+    const job = res.data || {}
+    searchJobPollFailures = 0
+    applySearchJobProgress(job)
+    const terminal = ['success', 'failed'].includes(job.status)
+    if (searchProgress.found !== previousFound || terminal) {
+      try {
+        await loadVideos(false, { force: true })
+      } catch (refreshError) {
+        console.warn('查询进度对应的候选列表刷新失败', refreshError)
+      }
+    }
+    if (terminal) {
+      finishSearchJobPolling(job)
+    } else {
+      scheduleSearchJobPoll(jobId)
+    }
+  } catch (error) {
+    searchJobPollFailures += 1
+    searchProgress.message = '查询仍在后台执行，正在重新获取进度'
+    if (searchJobPollFailures >= 3) {
+      searchLoading.value = false
+      searchProgress.status = 'failed'
+      searchProgress.message = '连续读取查询进度失败，请稍后刷新页面确认结果'
+      stopSearchJobPolling()
+    } else {
+      scheduleSearchJobPoll(jobId)
+    }
+  } finally {
+    searchJobRequesting = false
+  }
+}
+
+const handleSearch = async () => {
+  if (searchLoading.value) return
+  searchLoading.value = true
+  stopSearchJobPolling()
+  searchProgress.visible = true
+  searchProgress.jobId = ''
+  searchProgress.found = 0
+  searchProgress.requested = Number(form.limit || 0)
+  searchProgress.created = 0
+  searchProgress.duplicate = 0
+  searchProgress.skipped = 0
+  searchProgress.failed = 0
+  searchProgress.status = 'queued'
+  searchProgress.message = '正在提交查询任务'
+  try {
+    const res = await youtubeApi.createSearchJob({
       query: form.query,
       limit: form.limit
     })
-    lastResult.value = res.data
-    const loadedCount = Array.isArray(res.data?.items) ? res.data.items.length : Number(res.data?.created || 0) + Number(res.data?.duplicate || 0)
-    searchProgress.loaded = loadedCount
-    searchProgress.total = Number(res.data?.requested || form.limit || loadedCount)
-    searchProgress.message = `查询完成，实际加载 ${searchProgress.loaded} 条`
-    await loadVideos(false, { force: true })
-    showImportResultMessage(res.data, '查询完成')
+    applySearchJobProgress(res.data || {})
+    searchProgress.message = res.data?.message || '查询任务已提交'
+    scheduleSearchJobPoll(searchProgress.jobId, 100)
   } catch (error) {
+    searchLoading.value = false
+    searchProgress.status = 'failed'
     searchProgress.message = '查询失败，请检查网络或关键词后重试'
-  } finally {
-    loading.value = false
   }
 }
 
@@ -1802,22 +1939,28 @@ const displayProgress = (job) => {
 }
 
 const jobTimeText = (job) => {
-  const startedAt = parseJobTime(job.createdAt)
-  if (!startedAt) return job.status === 'running' ? '计时中' : '-'
+  const createdAt = parseJobTime(job.createdAt)
+  if (job.status === 'queued') {
+    return createdAt ? `排队 ${formatDuration((nowTick.value - createdAt) / 1000)}` : '等待执行'
+  }
+
+  const startedAt = parseJobTime(job.startedAt)
+  const executionStartedAt = startedAt || createdAt
+  if (!executionStartedAt) return job.status === 'running' ? '计时中' : '-'
 
   const endedAt = job.status === 'running'
     ? nowTick.value
     : (parseJobTime(job.updatedAt) || nowTick.value)
-  const elapsedSeconds = (endedAt - startedAt) / 1000
+  const elapsedSeconds = (endedAt - executionStartedAt) / 1000
 
-  if (job.status !== 'running') return `耗时 ${formatDuration(elapsedSeconds)}`
+  if (job.status !== 'running') {
+    return `${startedAt ? '耗时' : '总历时'} ${formatDuration(elapsedSeconds)}`
+  }
 
-  const progress = displayProgress(job)
-  if (progress <= 0) return `已用 ${formatDuration(elapsedSeconds)}`
-
-  const estimatedTotal = elapsedSeconds / (progress / 100)
-  const remainingSeconds = Math.max(0, estimatedTotal - elapsedSeconds)
-  return `已用 ${formatDuration(elapsedSeconds)} / 约 ${formatDuration(remainingSeconds)}`
+  if (job.step === 'download' && job.eta) {
+    return `已用 ${formatDuration(elapsedSeconds)} / 剩余约 ${job.eta}`
+  }
+  return `已用 ${formatDuration(elapsedSeconds)}`
 }
 
 const confirmReplacingCurrentVersion = async (row) => {
@@ -2073,10 +2216,10 @@ const resetProcessing = async (row) => {
 
   try {
     await ElMessageBox.confirm(
-      `确定删除「${row.title || row.url}」的${processVersionLabel(workflowForm.processVersion)}处理后视频吗？其他处理版本和下载原视频会保留。`,
+      `确定删除「${row.title || row.url}」的${processVersionLabel(workflowForm.processVersion)}处理后视频并清除转写缓存吗？下次点击处理时会重新转写，其他处理版本和下载原视频会保留。`,
       '重新处理视频',
       {
-        confirmButtonText: '删除该版本成品',
+        confirmButtonText: '清除缓存并准备处理',
         cancelButtonText: '取消',
         type: 'warning'
       }
@@ -2089,13 +2232,14 @@ const resetProcessing = async (row) => {
   try {
     const res = await youtubeApi.resetProcessing(row.id, {
       deleteProcessed: true,
-      processVersion: workflowForm.processVersion
+      processVersion: workflowForm.processVersion,
+      refreshTranscript: true
     })
     const updatedVideo = res.data.video
     items.value = items.value.map(item => item.id === row.id ? normalizeVideoItem(updatedVideo) : item)
     await refreshVideosByIds([row.id])
     await loadJobs({ silent: true })
-    ElMessage.success(`已回退为可重新处理状态，删除处理后素材 ${res.data.deletedMaterialCount || 0} 个`)
+    ElMessage.success(`已回退为可重新处理状态，将在下次处理时重新转写字幕`)
   } finally {
     resettingId.value = ''
   }
@@ -2340,11 +2484,16 @@ onMounted(async () => {
   startClock()
   window.__VIDFERRY_OPEN_PROCESS_SETTINGS__ = openSettingsFromLayout
   consumeOpenSettingsQuery()
+  consumeAgentStatusQuery()
   window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
 watch(() => route.query.openSettings, () => {
   consumeOpenSettingsQuery()
+})
+
+watch(() => route.query.status, () => {
+  consumeAgentStatusQuery()
 })
 
 onBeforeUnmount(() => {
@@ -2356,6 +2505,7 @@ onBeforeUnmount(() => {
     window.clearTimeout(jobsTimer)
     jobsTimer = null
   }
+  stopSearchJobPolling()
   if (clockTimer) {
     window.clearInterval(clockTimer)
     clockTimer = null
@@ -2695,13 +2845,20 @@ $ink-strong: #172033;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   color: $text-secondary;
   font-size: 12px;
 
+  span {
+    min-width: 0;
+  }
+
   strong {
+    min-width: 0;
     color: $accent-blue;
     font-size: 13px;
+    text-align: right;
   }
 }
 

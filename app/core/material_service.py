@@ -41,6 +41,24 @@ def _material_subtitle_language(record):
     return metadata.get("subtitleLanguage") or ""
 
 
+def _local_youtube_thumbnail_path(video_id, media_file="", metadata=None):
+    candidates = []
+    saved_path = (metadata or {}).get("thumbnailPath") or ""
+    if saved_path:
+        candidates.append(Path(saved_path))
+    if media_file:
+        candidates.append(Path(media_file))
+    if video_id:
+        candidates.append(Path(YOUTUBE_DOWNLOAD_DIR) / f"{video_id}.mp4")
+
+    for candidate in candidates:
+        for extension in (".webp", ".jpg", ".jpeg", ".png"):
+            thumbnail_path = candidate.with_suffix(extension)
+            if thumbnail_path.is_file():
+                return str(thumbnail_path)
+    return ""
+
+
 def _find_latest_youtube_material(cursor, video_id, source_type):
     if not video_id:
         return None
@@ -487,6 +505,7 @@ def _row_to_material(row):
     display_published_at = metadata.get("publishedAt") or (source_video or {}).get("publishedAt") or ""
     video_id = metadata.get("videoId") or item.get("source_video_id") or (source_video or {}).get("id") or ""
     display_thumbnail = metadata.get("thumbnail") or (source_video or {}).get("thumbnail") or _youtube_thumbnail_url(video_id)
+    local_thumbnail_path = _local_youtube_thumbnail_path(video_id, item.get("file_path"), metadata)
     duration_label, duration_seconds = _material_duration(item, source_video)
     inferred_language = _infer_subtitle_language_from_filename(item.get("filename")) if item["source_type"] == "youtube_processed" else ""
     subtitle_language = metadata.get("subtitleLanguage") or inferred_language
@@ -500,6 +519,7 @@ def _row_to_material(row):
     item["displaySubscribers"] = _format_subscribers_w(display_subscribers) if display_subscribers else ""
     item["displayPublishedAt"] = display_published_at
     item["displayThumbnail"] = display_thumbnail
+    item["localThumbnailPath"] = local_thumbnail_path
     item["duration"] = duration_label
     item["durationSeconds"] = round(float(duration_seconds or 0), 2)
     item["processVersion"] = metadata.get("processVersion") or "translation_v1"
@@ -541,6 +561,7 @@ def _row_to_material_fast(row, source_video=None, analysis=None, workflow_job=No
     display_published_at = metadata.get("publishedAt") or video.get("publishedAt") or ""
     video_id = metadata.get("videoId") or item.get("source_video_id") or video.get("id") or ""
     display_thumbnail = metadata.get("thumbnail") or video.get("thumbnail") or _youtube_thumbnail_url(video_id)
+    local_thumbnail_path = _local_youtube_thumbnail_path(video_id, item.get("file_path"), metadata)
     duration_label, duration_seconds = _material_duration(item, video, probe_missing=False)
     inferred_language = _infer_subtitle_language_from_filename(item.get("filename")) if item["source_type"] == "youtube_processed" else ""
     subtitle_language = metadata.get("subtitleLanguage") or inferred_language
@@ -554,6 +575,7 @@ def _row_to_material_fast(row, source_video=None, analysis=None, workflow_job=No
     item["displaySubscribers"] = _format_subscribers_w(display_subscribers) if display_subscribers else ""
     item["displayPublishedAt"] = display_published_at
     item["displayThumbnail"] = display_thumbnail
+    item["localThumbnailPath"] = local_thumbnail_path
     item["duration"] = duration_label
     item["durationSeconds"] = round(float(duration_seconds or 0), 2)
     item["processVersion"] = metadata.get("processVersion") or "translation_v1"
@@ -1003,8 +1025,9 @@ def register_material(
         return _row_to_material(cursor.fetchone())
 
 
-def _youtube_material_metadata(job, stage):
+def _youtube_material_metadata(job, stage, file_path):
     target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
+    thumbnail_path = _local_youtube_thumbnail_path(job.get("videoId"), file_path)
     return {
         "stage": stage,
         "videoId": job.get("videoId") or "",
@@ -1018,6 +1041,7 @@ def _youtube_material_metadata(job, stage):
         "subtitleLanguageLabel": language_meta["label"],
         "subtitleSize": _normalize_subtitle_size(job.get("subtitleSize")),
         "translatorLabel": _normalize_translator_label(job.get("translatorLabel")),
+        "thumbnailPath": thumbnail_path,
         "watermarkEnabled": bool(job.get("watermarkEnabled")),
         "watermarkText": (
             _normalize_watermark_text(job.get("watermarkText")) or DEFAULT_WATERMARK_TEXT
@@ -1032,7 +1056,7 @@ def _save_processed_video_to_material(file_path, job=None):
         file_path,
         source_type="youtube_processed",
         source_video_id=job.get("videoId") or "",
-        metadata=_youtube_material_metadata(job, "processed"),
+        metadata=_youtube_material_metadata(job, "processed", file_path),
         copy_to_library=True,
     )
     video_id = job.get("videoId") or ""
@@ -1060,7 +1084,7 @@ def _register_downloaded_video_material(file_path, job=None):
         file_path,
         source_type="youtube_download",
         source_video_id=job.get("videoId") or "",
-        metadata=_youtube_material_metadata(job, "downloaded"),
+        metadata=_youtube_material_metadata(job, "downloaded", file_path),
         copy_to_library=False,
     )
 

@@ -38,11 +38,11 @@ def _resolve_downloaded_source_file(job):
 
 
 def _workflow_error_fields(exc):
-    if exc.__class__.__name__ == "LLMJsonParseError":
+    if exc.__class__.__name__ == "LLMContractError":
         return {
-            "error_code": "VF-LLM-JSON-INVALID",
-            "error_type": "LLM_JSON_PARSE_ERROR",
-            "error_reason": "模型返回的发布文案 JSON 格式不合法，系统已尝试自动修复但仍失败。",
+            "error_code": "VF-LLM-CONTRACT-INVALID",
+            "error_type": "LLM_CONTRACT_ERROR",
+            "error_reason": "模型输出未满足中文与结构化约束，系统已尝试定向修正但仍失败。",
             "error_detail": getattr(exc, "detail", "") or str(exc),
         }
     return {
@@ -56,15 +56,17 @@ def _workflow_error_fields(exc):
 def run_youtube_download_job(job_id):
     event_id = None
     try:
-        job = update_youtube_workflow_job(
+        job = claim_youtube_workflow_job(
             job_id,
-            status="running",
             step="download",
             message="正在使用 yt-dlp 下载视频",
             progress=0,
             speed="",
             eta="",
         )
+        if not job:
+            return
+        backend_logger.info("下载任务开始 job_id=%s video_id=%s", job_id, job.get("videoId", ""))
         event_id = start_workflow_event(job, "download", "开始下载 YouTube 原视频")
         source_file = _download_youtube_video(job)
         finish_workflow_event(event_id, "success", "下载完成", output_file_path=source_file)
@@ -86,8 +88,11 @@ def run_youtube_download_job(job_id):
             speed="",
             eta="",
         )
+        backend_logger.info("下载任务完成 job_id=%s video_id=%s material_id=%s", job_id, job.get("videoId", ""), material.get("id", ""))
     except Exception as exc:
+        backend_logger.exception("下载任务失败 job_id=%s", job_id)
         finish_workflow_event(event_id, "failed", str(exc))
+        finish_open_workflow_events(job_id, "failed", str(exc))
         error_fields = _workflow_error_fields(exc)
         update_youtube_workflow_job(
             job_id,
@@ -105,18 +110,25 @@ def run_youtube_translate_job(job_id):
     analysis_event_id = None
     editing_event_id = None
     try:
-        initial_job = get_youtube_workflow_job(job_id) or {}
-        _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
-        process_version = _normalize_process_version(initial_job.get("processVersion"))
-        job = update_youtube_workflow_job(
+        initial_job = claim_youtube_workflow_job(
             job_id,
-            status="running",
             step="subtitle",
-            message=f"正在准备{language_meta['label']}字幕处理任务",
+            message="正在准备字幕处理任务",
             progress=2,
             speed="",
             eta="",
         )
+        if not initial_job:
+            return
+        backend_logger.info(
+            "字幕处理任务开始 job_id=%s video_id=%s process_version=%s",
+            job_id,
+            initial_job.get("videoId", ""),
+            initial_job.get("processVersion", ""),
+        )
+        _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
+        process_version = _normalize_process_version(initial_job.get("processVersion"))
+        job = initial_job
         source_file = _resolve_downloaded_source_file(job)
 
         analysis_result = None
@@ -147,7 +159,10 @@ def run_youtube_translate_job(job_id):
                     "completionTokens": int(usage.get("completionTokens") or 0),
                     "latencyMs": float(usage.get("latencyMs") or 0),
                 },
-                metadata={"highlightCount": len(analysis_result.get("highlight_segments") or [])},
+                metadata={
+                    "highlightCount": len(analysis_result.get("highlight_segments") or []),
+                    "generationMeta": analysis_result.get("generationMeta") or {},
+                },
             )
 
         event_id = start_workflow_event(job, "subtitle", f"开始{language_meta['label']}字幕处理", input_file_path=source_file)
@@ -206,8 +221,11 @@ def run_youtube_translate_job(job_id):
             speed="",
             eta="",
         )
+        backend_logger.info("字幕处理任务完成 job_id=%s video_id=%s material_id=%s", job_id, job.get("videoId", ""), material.get("id", ""))
     except Exception as exc:
+        backend_logger.exception("字幕处理任务失败 job_id=%s", job_id)
         finish_workflow_event(editing_event_id or event_id or analysis_event_id, "failed", str(exc))
+        finish_open_workflow_events(job_id, "failed", str(exc))
         error_fields = _workflow_error_fields(exc)
         update_youtube_workflow_job(
             job_id,
@@ -223,15 +241,17 @@ def run_youtube_translate_job(job_id):
 def run_youtube_analysis_job(job_id, source_file_override=""):
     event_id = None
     try:
-        job = update_youtube_workflow_job(
+        job = claim_youtube_workflow_job(
             job_id,
-            status="running",
             step="analysis",
             message="正在准备处理版本二剪辑方案",
             progress=4,
             speed="",
             eta="",
         )
+        if not job:
+            return
+        backend_logger.info("剪辑方案任务开始 job_id=%s video_id=%s", job_id, job.get("videoId", ""))
         source_file = Path(source_file_override) if source_file_override else _resolve_downloaded_source_file(job)
         event_id = start_workflow_event(job, "analysis", "开始生成发布文案与内容总结", input_file_path=source_file)
         update_youtube_workflow_job(
@@ -254,7 +274,10 @@ def run_youtube_analysis_job(job_id, source_file_override=""):
                 "completionTokens": int(usage.get("completionTokens") or 0),
                 "latencyMs": float(usage.get("latencyMs") or 0),
             },
-            metadata={"highlightCount": len(result.get("highlight_segments") or [])},
+            metadata={
+                "highlightCount": len(result.get("highlight_segments") or []),
+                "generationMeta": result.get("generationMeta") or {},
+            },
         )
         update_youtube_workflow_job(
             job_id,
@@ -265,8 +288,11 @@ def run_youtube_analysis_job(job_id, source_file_override=""):
             speed="",
             eta="",
         )
+        backend_logger.info("剪辑方案任务完成 job_id=%s video_id=%s", job_id, job.get("videoId", ""))
     except Exception as exc:
+        backend_logger.exception("剪辑方案任务失败 job_id=%s", job_id)
         finish_workflow_event(event_id, "failed", str(exc))
+        finish_open_workflow_events(job_id, "failed", str(exc))
         try:
             failed_job = get_youtube_workflow_job(job_id)
             update_youtube_video_analysis_status(failed_job.get("videoId"), 3, _analysis_error_payload(exc, failed_job))
@@ -295,10 +321,14 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         (4, latest_job.get("kuaishouAccount") or "", _publish_to_kuaishou),
         (2, latest_job.get("tencentAccount") or "", _publish_to_tencent),
     ]
-    for platform_type, account_name, command_factory in publish_specs:
-        command = _publish_workflow_platform(latest_job, processed_file, material, platform_type, account_name, command_factory)
-        if command:
-            publish_commands.append(command)
+    try:
+        for platform_type, account_name, command_factory in publish_specs:
+            command = _publish_workflow_platform(latest_job, processed_file, material, platform_type, account_name, command_factory)
+            if command:
+                publish_commands.append(command)
+    except Exception as exc:
+        finish_workflow_event(publish_event_id, "failed", str(exc))
+        raise
 
     final_message = "任务完成"
     if not publish_commands:
@@ -373,7 +403,22 @@ def run_youtube_workflow(job_id):
     editing_event_id = None
     subtitle_event_id = None
     try:
-        initial_job = get_youtube_workflow_job(job_id) or {}
+        initial_job = claim_youtube_workflow_job(
+            job_id,
+            step="workflow",
+            message="正在准备完整工作流",
+            progress=0,
+            speed="",
+            eta="",
+        )
+        if not initial_job:
+            return
+        backend_logger.info(
+            "完整工作流开始 job_id=%s video_id=%s process_version=%s",
+            job_id,
+            initial_job.get("videoId", ""),
+            initial_job.get("processVersion", ""),
+        )
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
         process_version = _normalize_process_version(initial_job.get("processVersion"))
         video_record = _get_youtube_video_record(initial_job.get("videoId")) or {}
@@ -462,7 +507,10 @@ def run_youtube_workflow(job_id):
                     "completionTokens": int(usage.get("completionTokens") or 0),
                     "latencyMs": float(usage.get("latencyMs") or 0),
                 },
-                metadata={"highlightCount": len(analysis_result.get("highlight_segments") or [])},
+                metadata={
+                    "highlightCount": len(analysis_result.get("highlight_segments") or []),
+                    "generationMeta": analysis_result.get("generationMeta") or {},
+                },
             )
 
         job = update_youtube_workflow_job(
@@ -525,10 +573,13 @@ def run_youtube_workflow(job_id):
             skipped_subtitles=skipped_subtitles,
             editing_result=editing_result,
         )
+        backend_logger.info("完整工作流完成 job_id=%s video_id=%s", job_id, job.get("videoId", ""))
     except Exception as exc:
+        backend_logger.exception("完整工作流失败 job_id=%s", job_id)
         finish_workflow_event(editing_event_id or subtitle_event_id or analysis_event_id or download_event_id or workflow_event_id, "failed", str(exc))
         if workflow_event_id:
             finish_workflow_event(workflow_event_id, "failed", str(exc))
+        finish_open_workflow_events(job_id, "failed", str(exc))
         update_youtube_workflow_job(
             job_id,
             status="failed",

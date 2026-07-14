@@ -11,6 +11,7 @@ def _default_workflow_settings():
         "burnProfile": DEFAULT_BURN_PROFILE,
         "subtitleSize": DEFAULT_SUBTITLE_SIZE,
         "translatorLabel": DEFAULT_TRANSLATOR_LABEL,
+        "searchQuery": YOUTUBE_DEFAULT_QUERY,
         "watermarkEnabled": False,
         "watermarkText": "",
     }
@@ -40,6 +41,9 @@ def _normalize_workflow_settings(payload=None):
     if translator_label:
         settings["translatorLabel"] = translator_label[:20]
 
+    search_query = str(payload.get("searchQuery") or "").strip()[:160]
+    settings["searchQuery"] = search_query or YOUTUBE_DEFAULT_QUERY
+
     settings["watermarkEnabled"] = bool(payload.get("watermarkEnabled", False))
     watermark_text = str(payload.get("watermarkText") or "").strip()[:16]
     settings["watermarkText"] = watermark_text if len(watermark_text) >= 2 else ""
@@ -62,7 +66,8 @@ def get_workflow_settings():
 
 
 def update_workflow_settings(payload):
-    settings = _normalize_workflow_settings(payload)
+    current_settings = get_workflow_settings()
+    settings = _normalize_workflow_settings({**current_settings, **(payload if isinstance(payload, dict) else {})})
     init_database_tables()
     with _db_connect() as conn:
         cursor = conn.cursor()

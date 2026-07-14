@@ -458,10 +458,14 @@ const materialVideoId = (material) => {
 }
 
 const materialThumbnail = (material) => {
+  if (material?.localThumbnailPath) {
+    return materialApi.getMaterialPreviewUrl(material.localThumbnailPath)
+  }
+  const videoId = materialVideoId(material)
+  if (videoId) return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
   if (material?.displayThumbnail) return material.displayThumbnail
   if (material?.metadata?.thumbnail) return material.metadata.thumbnail
-  const videoId = materialVideoId(material)
-  return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : ''
+  return ''
 }
 
 const materialDuration = (material) => {

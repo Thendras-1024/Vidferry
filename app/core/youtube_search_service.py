@@ -67,7 +67,7 @@ def _search_youtube_with_ytdlp(query, limit):
 
     ydl_opts = {
         **_base_ytdlp_opts(include_ffmpeg=True),
-        "extract_flat": False,
+        "extract_flat": True,
         "quiet": True,
         "skip_download": True,
         "noplaylist": True,
@@ -265,4 +265,221 @@ def _dedupe_videos(videos, limit):
 
 def _enrich_videos(videos):
     return [_enrich_video_from_watch_page(video) for video in videos]
+
+
+def _row_to_youtube_search_job(row):
+    item = dict(row)
+    return {
+        "jobId": item.get("id") or "",
+        "query": item.get("query") or "",
+        "requested": int(item.get("requested") or 0),
+        "found": int(item.get("found") or 0),
+        "created": int(item.get("created_count") or 0),
+        "duplicate": int(item.get("duplicate_count") or 0),
+        "skipped": int(item.get("skipped_count") or 0),
+        "failed": int(item.get("failed_count") or 0),
+        "status": item.get("status") or "queued",
+        "message": item.get("message") or "",
+        "source": item.get("source") or "",
+        "createdAt": item.get("created_at") or "",
+        "startedAt": item.get("started_at") or "",
+        "finishedAt": item.get("finished_at") or "",
+        "updatedAt": item.get("updated_at") or "",
+    }
+
+
+def create_youtube_search_job(query, requested):
+    init_youtube_video_table()
+    job_id = uuid.uuid4().hex
+    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    with _db_connect(row_factory=True) as conn:
+        conn.execute('''
+        INSERT INTO youtube_search_jobs (
+            id, query, requested, status, message, created_at, updated_at
+        )
+        VALUES (?, ?, ?, 'queued', ?, ?, ?)
+        ''', (job_id, query, requested, "查询任务已提交", timestamp, timestamp))
+    return get_youtube_search_job(job_id)
+
+
+def get_youtube_search_job(job_id):
+    init_youtube_video_table()
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+    if not row:
+        raise LookupError("查询任务不存在")
+    return _row_to_youtube_search_job(row)
+
+
+def _claim_youtube_search_job(job_id):
+    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute('''
+        UPDATE youtube_search_jobs
+        SET status = 'running', message = ?, started_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'queued'
+        ''', ("正在向 YouTube 请求候选视频", timestamp, timestamp, job_id))
+        if cursor.rowcount == 0:
+            return None
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        return _row_to_youtube_search_job(cursor.fetchone())
+
+
+def _update_youtube_search_source(job_id, source):
+    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    with _db_connect() as conn:
+        conn.execute('''
+        UPDATE youtube_search_jobs
+        SET source = ?, message = ?, updated_at = ?
+        WHERE id = ? AND status = 'running'
+        ''', (source, "正在逐条处理候选视频", timestamp, job_id))
+
+
+def _existing_youtube_search_item(cursor, job_id, ordinal, video_id):
+    if video_id:
+        cursor.execute('''
+        SELECT decision FROM youtube_search_job_items
+        WHERE job_id = ? AND (ordinal = ? OR video_id = ?)
+        LIMIT 1
+        ''', (job_id, ordinal, video_id))
+    else:
+        cursor.execute('''
+        SELECT decision FROM youtube_search_job_items
+        WHERE job_id = ? AND ordinal = ?
+        LIMIT 1
+        ''', (job_id, ordinal))
+    return cursor.fetchone()
+
+
+def _record_youtube_search_item(cursor, job, ordinal, video, decision, error=""):
+    video_id = str(video.get("id") or "").strip()
+    if _existing_youtube_search_item(cursor, job["jobId"], ordinal, video_id):
+        return False
+
+    cursor.execute('''
+    INSERT INTO youtube_search_job_items (
+        job_id, ordinal, video_id, title, decision, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ''', (
+        job["jobId"],
+        ordinal,
+        video_id,
+        str(video.get("title") or "")[:500],
+        decision,
+        str(error or "")[:1000],
+    ))
+    count_column = {
+        "created": "created_count",
+        "duplicate": "duplicate_count",
+        "skipped": "skipped_count",
+        "failed": "failed_count",
+    }[decision]
+    found = int(job.get("found") or 0) + 1
+    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    cursor.execute(f'''
+    UPDATE youtube_search_jobs
+    SET found = found + 1,
+        {count_column} = {count_column} + 1,
+        message = ?,
+        updated_at = ?
+    WHERE id = ? AND status = 'running'
+    ''', (f"已检索 {found} / {job['requested']}", timestamp, job["jobId"]))
+    return cursor.rowcount > 0
+
+
+def _process_youtube_search_candidate(job_id, ordinal, video):
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        if not row or row["status"] != "running":
+            return None
+        job = _row_to_youtube_search_job(row)
+        video_id = str(video.get("id") or "").strip()
+        if _existing_youtube_search_item(cursor, job_id, ordinal, video_id):
+            return None
+        result = _save_one_youtube_video_with_cursor(
+            cursor,
+            video,
+            job["query"],
+            job["createdAt"],
+        )
+        _record_youtube_search_item(cursor, job, ordinal, video, result["decision"])
+        return result["decision"]
+
+
+def _record_youtube_search_failure(job_id, ordinal, video, error):
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        if not row or row["status"] != "running":
+            return False
+        job = _row_to_youtube_search_job(row)
+        return _record_youtube_search_item(cursor, job, ordinal, video, "failed", error)
+
+
+def _finish_youtube_search_job(job_id, status, message):
+    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    with _db_connect() as conn:
+        conn.execute('''
+        UPDATE youtube_search_jobs
+        SET status = ?, message = ?, finished_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'running'
+        ''', (status, message, timestamp, timestamp, job_id))
+
+
+def run_youtube_search_job(job_id):
+    job = _claim_youtube_search_job(job_id)
+    if not job:
+        return
+
+    try:
+        try:
+            videos = _search_youtube_with_ytdlp(job["query"], job["requested"])
+        except Exception:
+            backend_logger.exception("YouTube 异步查询 yt-dlp 失败，准备使用网页兜底 job_id=%s", job_id)
+            videos = []
+        source = "yt-dlp"
+        if not videos:
+            videos = _search_youtube_fallback(job["query"], job["requested"])
+            source = "youtube-search-page"
+        videos = _dedupe_videos(videos, job["requested"])
+        _update_youtube_search_source(job_id, source)
+
+        for ordinal, video in enumerate(videos, start=1):
+            try:
+                enriched = _enrich_video_from_watch_page(video)
+                _process_youtube_search_candidate(job_id, ordinal, enriched)
+            except Exception as exc:
+                backend_logger.exception(
+                    "YouTube 异步查询候选处理失败 job_id=%s ordinal=%s",
+                    job_id,
+                    ordinal,
+                )
+                _record_youtube_search_failure(job_id, ordinal, video, exc)
+
+        current = get_youtube_search_job(job_id)
+        message = f"查询完成，实际检索 {current['found']} 条"
+        _finish_youtube_search_job(job_id, "success", message)
+        backend_logger.info(
+            "YouTube 异步查询完成 job_id=%s source=%s found=%s created=%s duplicate=%s skipped=%s failed=%s",
+            job_id,
+            source,
+            current["found"],
+            current["created"],
+            current["duplicate"],
+            current["skipped"],
+            current["failed"],
+        )
+    except Exception as exc:
+        backend_logger.exception("YouTube 异步查询失败 job_id=%s", job_id)
+        _finish_youtube_search_job(job_id, "failed", f"查询失败: {str(exc)}")
 

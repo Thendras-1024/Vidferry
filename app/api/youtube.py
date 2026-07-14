@@ -1,6 +1,10 @@
 @app.route('/youtube/search', methods=['GET'])
 def youtube_search():
-    query = request.args.get('query') or YOUTUBE_DEFAULT_QUERY
+    query = (
+        request.args.get('query')
+        or get_workflow_settings().get("searchQuery")
+        or YOUTUBE_DEFAULT_QUERY
+    ).strip()
     try:
         limit = int(request.args.get('limit', 8))
     except (TypeError, ValueError):
@@ -8,6 +12,7 @@ def youtube_search():
     limit = max(1, min(limit, 30))
 
     try:
+        backend_logger.info("YouTube 查询开始 query=%r limit=%s", query[:120], limit)
         started_at = datetime.datetime.now().isoformat(timespec='seconds')
         videos = _search_youtube_with_ytdlp(query, limit)
         source = "yt-dlp"
@@ -17,6 +22,12 @@ def youtube_search():
         videos = _dedupe_videos(videos, limit)
         videos = _enrich_videos(videos)
         save_result = save_new_youtube_videos(videos, query)
+        backend_logger.info(
+            "YouTube 查询完成 source=%s created=%s duplicate=%s",
+            source,
+            save_result["created"],
+            save_result["duplicate"],
+        )
         return jsonify({
             "code": 200,
             "msg": "success",
@@ -33,11 +44,50 @@ def youtube_search():
             }
         }), 200
     except Exception as e:
+        backend_logger.exception("YouTube 查询失败")
         return jsonify({
             "code": 500,
             "msg": f"YouTube 查询失败: {str(e)}",
             "data": None
         }), 500
+
+
+@app.route('/youtube/search/jobs', methods=['POST'])
+def create_youtube_search_job_route():
+    try:
+        payload = request.get_json(silent=True) or {}
+        query = str(
+            (
+                payload.get("query")
+                or get_workflow_settings().get("searchQuery")
+                or YOUTUBE_DEFAULT_QUERY
+            )
+        ).strip()
+        if not query:
+            return _json_response(400, "搜索关键词不能为空", None, 400)
+        limit = _parse_positive_int(payload.get("limit"), 8, 1, 30)
+        job = create_youtube_search_job(query, limit)
+        _submit_background_task("search", run_youtube_search_job, job["jobId"])
+        backend_logger.info(
+            "YouTube 异步查询已提交 job_id=%s query=%r limit=%s",
+            job["jobId"],
+            query[:120],
+            limit,
+        )
+        return _json_response(202, "accepted", job, 202)
+    except Exception as e:
+        backend_logger.exception("创建 YouTube 查询任务失败")
+        return _json_response(500, f"创建 YouTube 查询任务失败: {str(e)}", None, 500)
+
+
+@app.route('/youtube/search/jobs/<job_id>', methods=['GET'])
+def get_youtube_search_job_route(job_id):
+    try:
+        return _json_response(data=get_youtube_search_job(job_id))
+    except LookupError as e:
+        return _json_response(404, str(e), None, 404)
+    except Exception as e:
+        return _json_response(500, f"获取 YouTube 查询任务失败: {str(e)}", None, 500)
 
 
 @app.route('/youtube/videos', methods=['GET'])
@@ -86,9 +136,12 @@ def import_youtube_video():
         if not _extract_youtube_video_id(url):
             return _json_response(400, "请输入有效的 YouTube 视频链接", None, 400)
 
+        video_id = _extract_youtube_video_id(url)
+        backend_logger.info("YouTube 单链接导入开始 video_id=%s", video_id)
         started_at = datetime.datetime.now().isoformat(timespec='seconds')
         video = _import_youtube_video_by_url(url)
         save_result = save_new_youtube_videos([video], "manual-url")
+        backend_logger.info("YouTube 单链接导入完成 video_id=%s created=%s", video_id, save_result["created"])
         return _json_response(data={
             "query": url,
             "source": "manual-url",
@@ -101,6 +154,7 @@ def import_youtube_video():
             "items": save_result["items"],
         })
     except Exception as e:
+        backend_logger.exception("YouTube 单链接导入失败")
         return _json_response(500, f"导入 YouTube 视频失败: {str(e)}", None, 500)
 
 
@@ -117,10 +171,23 @@ def youtube_video_status(video_id):
 def reset_youtube_video_processing_route(video_id):
     try:
         payload = request.get_json(silent=True) or {}
+        backend_logger.info(
+            "重新处理重置开始 video_id=%s process_version=%s refresh_transcript=%s",
+            video_id,
+            payload.get("processVersion") or "",
+            bool(payload.get("refreshTranscript", False)),
+        )
         result = reset_youtube_video_processing(
             video_id,
             delete_processed=bool(payload.get("deleteProcessed", True)),
             process_version=payload.get("processVersion") or "",
+            refresh_transcript=bool(payload.get("refreshTranscript", False)),
+        )
+        backend_logger.info(
+            "重新处理重置完成 video_id=%s deleted_materials=%s deleted_jobs=%s",
+            video_id,
+            result.get("deletedMaterialCount", 0),
+            result.get("deletedWorkflowJobCount", 0),
         )
         return _json_response(data=result)
     except WorkflowConflictError as e:
@@ -128,6 +195,7 @@ def reset_youtube_video_processing_route(video_id):
     except LookupError as e:
         return _json_response(404, str(e), None, 404)
     except Exception as e:
+        backend_logger.exception("重新处理重置失败 video_id=%s", video_id)
         return _json_response(500, f"重置视频处理状态失败: {str(e)}", None, 500)
 
 
@@ -256,10 +324,17 @@ def create_youtube_workflow():
             _check_named_publish_account(2, payload.get("tencentAccount"))
         job = create_youtube_workflow_job(payload)
         _submit_background_task("processing", run_youtube_workflow, job["id"])
+        backend_logger.info(
+            "完整工作流已提交 job_id=%s video_id=%s process_version=%s",
+            job["id"],
+            job.get("videoId", ""),
+            job.get("processVersion", ""),
+        )
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
         return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
+        backend_logger.exception("创建完整工作流失败")
         return _json_response(500, f"创建工作流任务失败: {str(e)}", None, 500)
 
 
@@ -286,10 +361,12 @@ def create_youtube_download():
             "schedule": "",
         })
         _submit_background_task("download", run_youtube_download_job, job["id"])
+        backend_logger.info("下载任务已提交 job_id=%s video_id=%s", job["id"], job.get("videoId", ""))
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
         return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
+        backend_logger.exception("创建下载任务失败")
         return _json_response(500, f"创建下载任务失败: {str(e)}", None, 500)
 
 
@@ -316,10 +393,17 @@ def create_youtube_translate():
             "schedule": "",
         })
         _submit_background_task("processing", run_youtube_translate_job, job["id"])
+        backend_logger.info(
+            "字幕处理任务已提交 job_id=%s video_id=%s process_version=%s",
+            job["id"],
+            job.get("videoId", ""),
+            job.get("processVersion", ""),
+        )
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
         return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
+        backend_logger.exception("创建字幕处理任务失败")
         return _json_response(500, f"创建处理任务失败: {str(e)}", None, 500)
 
 
@@ -344,10 +428,12 @@ def create_youtube_analysis():
         }, force=force)
         if not job:
             return _json_response(409, "该视频已有文案生成任务正在执行。", existing, 409)
+        backend_logger.info("剪辑方案任务已提交 job_id=%s video_id=%s", job["id"], job.get("videoId", ""))
         return _json_response(data=job, status=202)
     except LookupError as e:
         return _json_response(404, str(e), None, 404)
     except Exception as e:
+        backend_logger.exception("创建剪辑方案任务失败")
         return _json_response(500, f"创建剪辑方案任务失败: {str(e)}", None, 500)
 
 

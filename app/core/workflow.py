@@ -1,6 +1,19 @@
 ﻿"""YouTube 工作流任务的创建、状态更新、阶段事件记录与统计。"""
 
 
+_WORKFLOW_JOB_MUTABLE_FIELDS = {
+    "status", "step", "message", "source_file_path", "processed_file_path",
+    "publish_command", "progress", "speed", "eta", "error_code", "error_type",
+    "error_reason", "error_detail", "interrupted_at",
+}
+
+
+def _validate_workflow_job_changes(changes):
+    invalid_fields = set(changes) - _WORKFLOW_JOB_MUTABLE_FIELDS
+    if invalid_fields:
+        raise ValueError(f"不允许更新工作流字段: {', '.join(sorted(invalid_fields))}")
+
+
 def _row_to_workflow_job(row):
     item = dict(row)
     return {
@@ -47,6 +60,7 @@ def _row_to_workflow_job(row):
         "errorDetail": clean_display_text(item.get("error_detail")),
         "interruptedAt": item.get("interrupted_at") or "",
         "createdAt": item.get("created_at") or "",
+        "startedAt": item.get("started_at") or "",
         "updatedAt": item.get("updated_at") or "",
     }
 
@@ -116,25 +130,39 @@ def _normalize_watermark_text(value):
     return text if len(text) >= 2 else ""
 
 
+def _workflow_watermark_settings(payload):
+    saved_settings = get_workflow_settings()
+    watermark_enabled = bool(
+        payload["watermarkEnabled"]
+        if "watermarkEnabled" in payload else saved_settings.get("watermarkEnabled")
+    )
+    watermark_text = _normalize_watermark_text(
+        payload["watermarkText"]
+        if "watermarkText" in payload else saved_settings.get("watermarkText")
+    )
+    return watermark_enabled, watermark_text
+
+
 def _normalize_process_version(value):
     process_version = str(value or PROCESS_VERSION_TRANSLATION).strip()
     return process_version if process_version in PROCESS_VERSIONS else PROCESS_VERSION_TRANSLATION
 
 
-def create_youtube_workflow_job(payload, *, allow_active_job=False):
+def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="media"):
     init_youtube_workflow_table()
     job_id = str(uuid.uuid4())
     subtitle_language = _normalize_subtitle_language(payload.get("subtitleLanguage"))
     burn_profile = _normalize_burn_profile(payload.get("burnProfile"))
     subtitle_size = _normalize_subtitle_size(payload.get("subtitleSize"))
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
-    watermark_enabled = bool(payload.get("watermarkEnabled", False))
-    watermark_text = _normalize_watermark_text(payload.get("watermarkText"))
+    watermark_enabled, watermark_text = _workflow_watermark_settings(payload)
     process_version = _normalize_process_version(payload.get("processVersion"))
     tags = payload.get("tags") or []
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
     video_id = payload.get("videoId") or ""
+    if lock_scope not in {"media", "analysis"}:
+        raise ValueError("任务锁范围不合法")
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -148,6 +176,24 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False):
                     "ACTIVE_JOB_LOCK",
                     {"job": active_job},
                 )
+        if video_id:
+            try:
+                cursor.execute(
+                    "INSERT INTO youtube_workflow_locks (video_id, scope, job_id) VALUES (?, ?, ?)",
+                    (video_id, lock_scope, job_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                cursor.execute(
+                    "SELECT job_id FROM youtube_workflow_locks WHERE video_id = ? AND scope = ?",
+                    (video_id, lock_scope),
+                )
+                lock = cursor.fetchone()
+                raise WorkflowConflictError(
+                    "该视频存在同类型运行中任务，请等待任务结束后再操作。",
+                    WORKFLOW_ERROR_LOCK_ACTIVE_JOB,
+                    "ACTIVE_JOB_LOCK",
+                    {"jobId": lock["job_id"] if lock else ""},
+                ) from exc
         cursor.execute('''
         INSERT INTO youtube_workflow_jobs (
             id, video_id, url, account, channel, subscribers, published_at,
@@ -190,6 +236,29 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False):
             "queued",
             "任务已创建，等待后台执行",
         ))
+        conn.commit()
+    return get_youtube_workflow_job(job_id)
+
+
+def claim_youtube_workflow_job(job_id, **changes):
+    """仅允许 queued 任务被一个后台执行器领取。"""
+    init_youtube_workflow_table()
+    _validate_workflow_job_changes(changes)
+    fields = [
+        "status = 'running'",
+        "started_at = COALESCE(started_at, CURRENT_TIMESTAMP)",
+        "updated_at = CURRENT_TIMESTAMP",
+    ]
+    values = []
+    for key, value in changes.items():
+        fields.append(f"{key} = ?")
+        values.append(clean_display_text(value) if key == "message" else value)
+    values.append(job_id)
+    with _db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE youtube_workflow_jobs SET {', '.join(fields)} WHERE id = ? AND status = 'queued'", values)
+        if cursor.rowcount != 1:
+            return None
         conn.commit()
     return get_youtube_workflow_job(job_id)
 
@@ -313,14 +382,7 @@ def _latest_workflow_job_for_material(cursor, video_id, process_version=""):
         if row:
             return _row_to_workflow_job(row)
 
-    cursor.execute('''
-    SELECT * FROM youtube_workflow_jobs
-    WHERE video_id = ?
-    ORDER BY updated_at DESC, created_at DESC
-    LIMIT 1
-    ''', (video_id,))
-    row = cursor.fetchone()
-    return _row_to_workflow_job(row) if row else None
+    return None
 
 
 def _attach_material_workflow_state(cursor, material):
@@ -381,6 +443,10 @@ def _material_workflow_job(material, jobs_by_video, jobs_by_video_version):
         job = jobs_by_video_version.get((video_id, normalized_version))
         if job:
             return job
+        fallback_job = jobs_by_video.get(video_id)
+        if fallback_job and fallback_job.get("status") in {"queued", "running"}:
+            return fallback_job
+        return None
     return jobs_by_video.get(video_id)
 
 
@@ -440,6 +506,7 @@ def _assert_no_active_youtube_job(cursor, video_id):
 def update_youtube_workflow_job(job_id, **changes):
     if not changes:
         return get_youtube_workflow_job(job_id)
+    _validate_workflow_job_changes(changes)
     for text_key in ("message", "error_reason", "error_detail"):
         if text_key in changes:
             changes[text_key] = clean_display_text(changes[text_key])
@@ -457,6 +524,8 @@ def update_youtube_workflow_job(job_id, **changes):
         SET {", ".join(fields)}
         WHERE id = ?
         ''', values)
+        if changes.get("status") in {"success", "failed", "abnormal", "cancelled"}:
+            cursor.execute("DELETE FROM youtube_workflow_locks WHERE job_id = ?", (job_id,))
         conn.commit()
     return get_youtube_workflow_job(job_id)
 
@@ -487,8 +556,12 @@ def mark_interrupted_workflow_jobs(error_code, error_type, reason, detail="", on
             updated_at = CURRENT_TIMESTAMP
         WHERE status IN ('queued', 'running')
         ''', (reason, error_code, error_type, reason, detail, now))
+        cursor.execute("DELETE FROM youtube_workflow_locks")
         conn.commit()
-        return [get_youtube_workflow_job(row["id"]) for row in rows]
+        job_ids = [row["id"] for row in rows]
+    for job_id in job_ids:
+        finish_open_workflow_events(job_id, "failed", reason)
+    return [get_youtube_workflow_job(job_id) for job_id in job_ids]
 
 
 def recover_interrupted_workflow_jobs():
@@ -631,6 +704,42 @@ def finish_workflow_event(event_id, status="success", message="", output_file_pa
         return _row_to_workflow_event(cursor.fetchone())
 
 
+def finish_open_workflow_events(job_id, status="failed", message=""):
+    """收口异常退出的阶段，避免已结束任务留下运行中统计记录。"""
+    if not job_id:
+        return []
+    init_database_tables()
+    with _db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM youtube_workflow_events WHERE job_id = ? AND status = 'running'",
+            (job_id,),
+        )
+        event_ids = [row[0] for row in cursor.fetchall()]
+    return [
+        finish_workflow_event(event_id, status, message)
+        for event_id in event_ids
+    ]
+
+
+def reconcile_finished_workflow_events():
+    """收口历史上已结束任务遗留的 running 阶段事件。"""
+    init_youtube_workflow_table()
+    with _db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+        SELECT DISTINCT e.job_id
+        FROM youtube_workflow_events e
+        LEFT JOIN youtube_workflow_jobs j ON j.id = e.job_id
+        WHERE e.status = 'running'
+          AND (j.id IS NULL OR j.status NOT IN ('queued', 'running'))
+        ''')
+        job_ids = [row[0] for row in cursor.fetchall()]
+    for job_id in job_ids:
+        finish_open_workflow_events(job_id, "failed", "任务已结束，已自动收口历史阶段记录")
+    return job_ids
+
+
 def _row_to_workflow_event(row):
     item = dict(row)
     try:
@@ -710,6 +819,7 @@ def get_workflow_statistics(limit=200, page=1, page_size=None):
             SUM(CASE WHEN cloud_latency_ms > 0 OR total_tokens > 0 THEN 1 ELSE 0 END) AS cloud_call_count,
             AVG(CASE WHEN cloud_latency_ms > 0 OR total_tokens > 0 THEN cloud_latency_ms ELSE NULL END) AS avg_cloud_latency
         FROM youtube_workflow_events
+        WHERE stage != 'workflow'
         ''')
         summary_row = cursor.fetchone()
         event_count = int(summary_row["event_count"] or 0) if summary_row else 0
@@ -736,6 +846,7 @@ def get_workflow_statistics(limit=200, page=1, page_size=None):
             SUM(total_tokens) AS total_tokens,
             AVG(CASE WHEN cloud_latency_ms > 0 OR total_tokens > 0 THEN cloud_latency_ms ELSE NULL END) AS avg_cloud_latency
         FROM youtube_workflow_events
+        WHERE stage != 'workflow'
         GROUP BY stage, COALESCE(stage_label, stage)
         ORDER BY MAX(started_at) DESC, MAX(id) DESC
         ''')
@@ -857,7 +968,7 @@ def save_youtube_video_analysis(video_id, result):
             raise LookupError("视频线索不存在")
 
         current_draft = _parse_publish_draft(row["publish_draft"] if "publish_draft" in row.keys() else "", result)
-        if current_draft:
+        if current_draft.get("source") == "user_saved":
             cursor.execute('''
             UPDATE youtube_videos
             SET analysis_status = 1,
