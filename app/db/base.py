@@ -2,9 +2,15 @@
 
 import datetime
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.config import BASE_DIR, SQLITE_BUSY_TIMEOUT_MS, SQLITE_ENABLE_WAL
+
+
+_wal_configured_paths = set()
+_wal_configured_paths_lock = threading.Lock()
 
 
 def _db_path():
@@ -22,12 +28,23 @@ def _connect_database(db_path, *, row_factory=False):
     conn.execute(f"PRAGMA busy_timeout = {max(1, SQLITE_BUSY_TIMEOUT_MS)}")
     conn.execute("PRAGMA foreign_keys = ON")
     if SQLITE_ENABLE_WAL:
-        conn.execute("PRAGMA journal_mode = WAL")
+        database_key = str(Path(db_path).resolve())
+        if database_key not in _wal_configured_paths:
+            with _wal_configured_paths_lock:
+                if database_key not in _wal_configured_paths:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    _wal_configured_paths.add(database_key)
         conn.execute("PRAGMA synchronous = NORMAL")
     if row_factory:
         conn.row_factory = sqlite3.Row
     return conn
 
 
+@contextmanager
 def _db_connect(*, row_factory=False):
-    return _connect_database(_db_path(), row_factory=row_factory)
+    conn = _connect_database(_db_path(), row_factory=row_factory)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()

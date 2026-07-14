@@ -27,9 +27,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from flask_cors import CORS
-from flask import Flask, request, jsonify, Response, render_template, send_from_directory
+from flask import Flask, request, jsonify, Response, render_template, send_from_directory, stream_with_context
 from werkzeug.utils import secure_filename
 from app.utils.text_util import clean_display_text, ensure_utf8_stdio
 from app.publishing import (
@@ -46,6 +46,10 @@ from app.config import (
     AGENT_CHAT_MAX_TOKENS,
     AGENT_CHAT_MODEL,
     AGENT_CHAT_TEMPERATURE,
+    AGENT_CONTEXT_COMPACT_AFTER_CHARS,
+    AGENT_CONTEXT_COMPACT_AFTER_MESSAGES,
+    AGENT_CONTEXT_RECENT_MESSAGES,
+    AGENT_CONTEXT_SUMMARY_MAX_CHARS,
     AGENT_ENABLED,
     AGENT_FRAME_END_OFFSET_SECONDS,
     AGENT_FRAME_FIRST_SECOND,
@@ -90,6 +94,7 @@ from app.config import (
     WORKFLOW_MAX_ANALYSIS_JOBS,
     WORKFLOW_MAX_DOWNLOAD_JOBS,
     WORKFLOW_MAX_PROCESSING_JOBS,
+    WORKFLOW_MAX_SEARCH_JOBS,
     WORKFLOW_ERROR_BOOT_INTERRUPTED,
     WORKFLOW_ERROR_DELETE_DOWNLOAD_EXISTS,
     WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,
@@ -104,8 +109,10 @@ from app.config import (
     YTDLP_JS_RUNTIME_PATH,
     YTDLP_REMOTE_COMPONENTS,
 )
+from app.utils.runtime_logger import configure_backend_logger
 
 ensure_utf8_stdio()
+backend_logger = configure_backend_logger(BASE_DIR)
 
 try:
     from myUtils.auth import check_cookie

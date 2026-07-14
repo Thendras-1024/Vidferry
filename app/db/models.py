@@ -88,10 +88,29 @@ def ensure_agent_tables(cursor):
         id TEXT PRIMARY KEY,
         title TEXT,
         context TEXT DEFAULT '{}',
+        summary TEXT DEFAULT '{}',
+        summary_through_id INTEGER DEFAULT 0,
+        message_count INTEGER DEFAULT 0,
+        deleted_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    _add_missing_columns(cursor, "agent_sessions", {
+        "summary": "TEXT DEFAULT '{}'",
+        "summary_through_id": "INTEGER DEFAULT 0",
+        "message_count": "INTEGER DEFAULT 0",
+        "deleted_at": "DATETIME",
+    })
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(deleted_at, updated_at DESC)")
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS agent_session_locks (
+        session_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        expires_at REAL NOT NULL
+    )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_session_locks_expiry ON agent_session_locks(expires_at)")
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS agent_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +122,7 @@ def ensure_agent_tables(cursor):
     )
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id, id)")
+    cursor.execute("UPDATE agent_sessions SET message_count = (SELECT COUNT(*) FROM agent_messages WHERE agent_messages.session_id = agent_sessions.id) WHERE deleted_at IS NULL")
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
@@ -330,6 +350,56 @@ def ensure_youtube_video_table(cursor):
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_translate_status ON youtube_videos(translate_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_analysis_status ON youtube_videos(analysis_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_created ON youtube_videos(created_at, id)')
+    ensure_youtube_search_tables(cursor)
+
+
+def ensure_youtube_search_tables(cursor):
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_search_jobs (
+        id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        requested INTEGER NOT NULL,
+        found INTEGER DEFAULT 0,
+        created_count INTEGER DEFAULT 0,
+        duplicate_count INTEGER DEFAULT 0,
+        skipped_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        status TEXT NOT NULL,
+        message TEXT,
+        source TEXT,
+        started_at DATETIME,
+        finished_at DATETIME,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL
+    )
+    ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_search_job_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        video_id TEXT,
+        title TEXT,
+        decision TEXT NOT NULL,
+        error TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(job_id, ordinal),
+        FOREIGN KEY(job_id) REFERENCES youtube_search_jobs(id) ON DELETE CASCADE
+    )
+    ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_video_deletions (
+        video_id TEXT PRIMARY KEY,
+        deleted_at DATETIME NOT NULL
+    )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_jobs_status ON youtube_search_jobs(status, created_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_job_items_job ON youtube_search_job_items(job_id, ordinal)')
+    cursor.execute('''
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_search_job_items_video
+    ON youtube_search_job_items(job_id, video_id)
+    WHERE video_id IS NOT NULL AND video_id != ''
+    ''')
 
 
 def ensure_youtube_workflow_job_table(cursor):
@@ -373,6 +443,7 @@ def ensure_youtube_workflow_job_table(cursor):
         speed TEXT,
         eta TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        started_at DATETIME,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
@@ -405,9 +476,20 @@ def ensure_youtube_workflow_job_table(cursor):
         "error_reason": "TEXT",
         "error_detail": "TEXT",
         "interrupted_at": "DATETIME",
+        "started_at": "DATETIME",
     })
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_id ON youtube_workflow_jobs(video_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status ON youtube_workflow_jobs(status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status_updated ON youtube_workflow_jobs(status, updated_at, created_at)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_updated ON youtube_workflow_jobs(video_id, updated_at, created_at)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_status_updated ON youtube_workflow_jobs(video_id, status, updated_at DESC, created_at DESC)')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_workflow_locks (
+        video_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        job_id TEXT NOT NULL UNIQUE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (video_id, scope)
+    )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_locks_job_id ON youtube_workflow_locks(job_id)")

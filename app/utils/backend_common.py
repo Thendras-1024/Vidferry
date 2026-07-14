@@ -1,12 +1,14 @@
 """后端通用工具:兼容旧入口并汇总跨模块共享状态。"""
 
 import threading
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 from app.config import (
     WORKFLOW_MAX_ANALYSIS_JOBS,
     WORKFLOW_MAX_DOWNLOAD_JOBS,
     WORKFLOW_MAX_PROCESSING_JOBS,
+    WORKFLOW_MAX_SEARCH_JOBS,
 )
 from app.db.base import _connect_database, _db_path
 from app.utils.file_util import (
@@ -42,13 +44,20 @@ class NoSpeechDetectedError(RuntimeError):
     pass
 
 
+@contextmanager
 def _db_connect(*, row_factory=False):
-    return _connect_database(_db_path(), row_factory=row_factory)
+    conn = _connect_database(_db_path(), row_factory=row_factory)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 _publish_account_locks = {}
 _publish_account_locks_guard = threading.Lock()
 _workflow_executors = {
+    "search": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_SEARCH_JOBS, thread_name_prefix="vidferry-search"),
     "download": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_DOWNLOAD_JOBS, thread_name_prefix="vidferry-download"),
     "processing": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_PROCESSING_JOBS, thread_name_prefix="vidferry-processing"),
     "analysis": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_ANALYSIS_JOBS, thread_name_prefix="vidferry-analysis"),
