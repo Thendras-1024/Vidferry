@@ -47,6 +47,11 @@ async def upload_bilibili_video(request: BilibiliVideoUploadRequest) -> Path:
         raise RuntimeError(
             f"Bilibili account file is missing: {account_file}. Run `sau bilibili login --account {request.account_name}` first."
         )
+    renew_result = run_biliup_command(["-u", str(account_file), "renew"])
+    if renew_result.returncode != 0:
+        raise RuntimeError(
+            f"Bilibili account is missing or expired: {account_file}. Run `sau bilibili login --account {request.account_name}` first."
+        )
 
     arguments = [
         "-u",

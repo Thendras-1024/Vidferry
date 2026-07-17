@@ -117,16 +117,19 @@ async def cookie_auth(account_file):
             page = await context.new_page()
             await page.goto(TENCENT_UPLOAD_URL)
             await page.wait_for_url(TENCENT_UPLOAD_URL, timeout=5000)
+            await page.wait_for_timeout(2000)
 
             login_markers = [
                 page.get_by_text("扫码登录", exact=True).first,
-                page.get_by_text("发表视频", exact=True).first,
-                page.get_by_role("button", name="发表").first,
+                page.locator('[src*="login-for-iframe"]').first,
             ]
-
-            if await login_markers[0].count():
-                tencent_logger.info(_msg("🥹", "cookie 已失效，得重新登录一下"))
-                return False
+            for marker in login_markers:
+                try:
+                    if await marker.count() and await marker.is_visible():
+                        tencent_logger.info(_msg("🥹", "cookie 已失效，得重新登录一下"))
+                        return False
+                except Exception:
+                    continue
 
             tencent_logger.success(_msg("🥳", "cookie 有效"))
             return True

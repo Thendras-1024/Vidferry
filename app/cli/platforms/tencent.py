@@ -25,12 +25,16 @@ async def check_tencent_account(account_name: str) -> bool:
 
 
 async def upload_tencent_video(request: TencentVideoUploadRequest) -> Path:
-    from uploader.tencent_uploader.main import TencentVideo
+    from uploader.tencent_uploader.main import TencentVideo, tencent_setup
 
     account_file = resolve_account_file("tencent", request.account_name)
     if not account_file.exists():
         raise RuntimeError(
             f"Tencent cookie file is missing: {account_file}. Run `sau tencent login --account {request.account_name}` first."
+        )
+    if not await tencent_setup(str(account_file), handle=False):
+        raise RuntimeError(
+            f"Tencent cookie is missing or expired: {account_file}. Run `sau tencent login --account {request.account_name}` first."
         )
 
     app = TencentVideo(

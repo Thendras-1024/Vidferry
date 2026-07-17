@@ -75,6 +75,14 @@ def _build_login_result(
 
 
 async def _is_ks_cookie_invalid(page: Page, timeout: int = 5000) -> bool:
+    if "passport.kuaishou.com" in page.url:
+        return True
+    try:
+        login_form = page.locator("main#login-form").first
+        if await login_form.count() and await login_form.is_visible():
+            return True
+    except Exception:
+        pass
     try:
         await page.wait_for_selector(KUAISHOU_COOKIE_INVALID_SELECTOR, timeout=timeout)
         return True

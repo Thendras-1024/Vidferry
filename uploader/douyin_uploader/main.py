@@ -75,6 +75,24 @@ def _build_login_result(success: bool, status: str, message: str, account_file: 
     }
 
 
+async def _is_douyin_login_page(page: Page) -> bool:
+    markers = [
+        page.get_by_text("手机号登录", exact=True).first,
+        page.get_by_text("扫码登录", exact=True).first,
+        page.get_by_text("二维码失效", exact=True).first,
+        page.get_by_role("img", name="二维码").first,
+        page.locator('input[name="web-login-area-code-input"]').first,
+        page.locator('input[aria-label="国家/地区"]').first,
+    ]
+    for marker in markers:
+        try:
+            if await marker.count() and await marker.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def cookie_auth(account_file):
     use_headless = os.environ.get("DOUYIN_COOKIE_AUTH_HEADLESS", "").lower() in {"1", "true", "yes"}
     launch_args = ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
@@ -87,8 +105,7 @@ async def cookie_auth(account_file):
                 page = await context.new_page()
                 await safe_goto_douyin(page, DOUYIN_UPLOAD_URL)
                 await page.wait_for_timeout(2500)
-                has_login = await page.get_by_text("手机号登录").count() or await page.get_by_text("扫码登录").count()
-                if "content/upload" in page.url and not has_login:
+                if "content/upload" in page.url and not await _is_douyin_login_page(page):
                     return True
             except Exception:
                 pass
@@ -171,24 +188,7 @@ async def _save_douyin_qrcode(page: Page, account_file: str, previous_qrcode_pat
 async def _is_douyin_login_completed(page: Page) -> bool:
     if "creator.douyin.com/creator-micro" not in page.url:
         return False
-
-    login_markers = [
-        page.get_by_text("扫码登录", exact=True).first,
-        page.get_by_text("手机号登录", exact=True).first,
-        page.get_by_text("二维码失效", exact=True).first,
-        page.get_by_role("img", name="二维码").first,
-    ]
-
-    for marker in login_markers:
-        if not await marker.count():
-            continue
-        try:
-            if await marker.is_visible():
-                return False
-        except Exception:
-            continue
-
-    return True
+    return not await _is_douyin_login_page(page)
 
 
 async def _wait_for_douyin_login(page: Page, account_file: str, qrcode_info: dict, qrcode_callback=None, poll_interval: int = 3, max_checks: int = 100) -> dict:
@@ -568,7 +568,6 @@ class DouYinVideo(DouYinBaseUploader):
             'input[type="file"][accept*="video"]',
             'input[accept*="video"]',
             'div[class^="container"] input[type="file"]',
-            'div[class^="container"] input',
         ]
         last_error = None
         for selector in selectors:
@@ -701,9 +700,11 @@ class DouYinVideo(DouYinBaseUploader):
             try:
                 await page.wait_for_url(DOUYIN_UPLOAD_URL, timeout=DOUYIN_GOTO_TIMEOUT_MS)
             except Exception:
-                if await page.get_by_text("手机号登录").count() or await page.get_by_text("扫码登录").count():
+                if await _is_douyin_login_page(page):
                     raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 抖音 Cookie 已失效，请重新连接账号。")
                 raise
+            if await _is_douyin_login_page(page):
+                raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 抖音 Cookie 已失效，请重新连接账号。")
             await human_delay(1, 3)
             await self.set_video_file_for_upload(page)
             await self.wait_for_publish_editor_page(page)
