@@ -11,18 +11,11 @@ import time as _time
 
 from app.core.llm_harness import call_json_contract, validate_guard_result
 from app.core import llm_prompts
+from app.core.errors import AgentGuardError
 
 
 AGENT_ERROR_BLOCKED = "VF-AGENT-BLOCKED"
 AGENT_ERROR_REQUIRES_CONFIRMATION = "VF-AGENT-REQUIRES-CONFIRMATION"
-
-
-class AgentGuardError(RuntimeError):
-    def __init__(self, message, error_code, status_code, result=None):
-        super().__init__(message)
-        self.error_code = error_code
-        self.status_code = status_code
-        self.result = result or {}
 
 
 def _agent_guard_summary(data, file_list=None, targets=None):
@@ -149,6 +142,38 @@ def _publish_material_file(material):
     return path if path and path.is_file() else None
 
 
+def get_source_content_risk(publish_materials):
+    """返回需要发布确认的来源内容风险；仅依赖已保存的转写分析结果。"""
+    for material in publish_materials or []:
+        if not isinstance(material, dict):
+            continue
+        analysis_result = material.get("analysisResult") or {}
+        metadata = material.get("metadata") or {}
+        video_id = str(
+            material.get("source_video_id")
+            or metadata.get("videoId")
+            or metadata.get("sourceVideoId")
+            or ""
+        ).strip()
+        if (not isinstance(analysis_result, dict) or not analysis_result) and video_id:
+            try:
+                analysis_result = (get_youtube_video_analysis(video_id) or {}).get("result") or {}
+            except Exception:
+                analysis_result = {}
+        risk = analysis_result.get("contentRisk") if isinstance(analysis_result, dict) else {}
+        if not isinstance(risk, dict) or not risk.get("requiresPublishConfirmation"):
+            continue
+        return {
+            "requiresPublishConfirmation": True,
+            "categories": list(risk.get("categories") or ["explicit_profanity"]),
+            "excludedHighlightCount": int(risk.get("excludedHighlightCount") or 0),
+            "availableHighlightCount": int(risk.get("availableHighlightCount") or 0),
+            "message": str(risk.get("message") or "检测到来源内容风险，发布前需要人工确认。"),
+            "videoId": video_id,
+        }
+    return {}
+
+
 def _extract_guard_frames(publish_materials):
     if AGENT_REQUIRE_VISION_CHECK and not AGENT_VISION_MODEL:
         raise RuntimeError("AGENT_VISION_MODEL 未配置，无法完成关键帧审核。")
@@ -227,6 +252,8 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
     started_at = _time.time()
     summary = _agent_guard_summary(data, file_list, targets)
     content_hash = agent_content_hash(data, file_list, targets)
+    material = (publish_materials or [{}])[0]
+    material_id = str(material.get("id") or "") if isinstance(material, dict) else ""
     if not AGENT_ENABLED or not AGENT_REQUIRE_PREPUBLISH_CHECK:
         result = {
             "decision": "allow",
@@ -234,9 +261,10 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
             "issues": [],
             "suggestedEdits": {},
             "contentHash": content_hash,
+            "materialId": material_id,
             "disabled": True,
         }
-        run_id = save_agent_run("prepublish_check", session_id=session_id, decision="allow", severity="none", content_hash=content_hash, input_summary=summary, output=result, model=AGENT_CHAT_MODEL, started_at=started_at)
+        run_id = save_agent_run("prepublish_check", session_id=session_id, subject_type="material", subject_id=material_id, decision="allow", severity="none", content_hash=content_hash, input_summary=summary, output=result, model=AGENT_CHAT_MODEL, started_at=started_at)
         result["runId"] = run_id
         return result
 
@@ -262,10 +290,13 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
         "issues": issues,
         "suggestedEdits": suggested,
         "contentHash": content_hash,
+        "materialId": material_id,
     }
     run_id = save_agent_run(
         "prepublish_check",
         session_id=session_id,
+        subject_type="material",
+        subject_id=material_id,
         status="blocked" if decision == "block" else "success",
         decision=decision,
         severity=severity,
@@ -279,8 +310,43 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
     return result
 
 
-def validate_prepublish_guard_or_raise(data, file_list=None, targets=None, publish_materials=None):
-    if not AGENT_ENABLED or not AGENT_REQUIRE_PREPUBLISH_CHECK:
+def agent_guard_run_payload(run, current_content_hash=""):
+    if not run:
+        return None
+    result = dict(run.get("output") or {})
+    result.update({
+        "runId": run.get("id") or "",
+        "materialId": run.get("subjectId") or result.get("materialId") or "",
+        "checkedAt": run.get("createdAt") or "",
+        "inputSummary": run.get("inputSummary") or {},
+        "contentChanged": bool(current_content_hash and run.get("contentHash") != current_content_hash),
+    })
+    return result
+
+
+def validate_prepublish_guard_or_raise(
+    data,
+    file_list=None,
+    targets=None,
+    publish_materials=None,
+    check_agent=True,
+):
+    source_content_risk = get_source_content_risk(publish_materials)
+    override = (data or {}).get("riskOverride") or {}
+    if source_content_risk and not override.get("sourceContentConfirmed"):
+        raise AgentGuardError(
+            "检测到转写中含明确粗口，中文字幕已打码，但原声及英文字幕可能仍含风险；请确认后继续发布。",
+            AGENT_ERROR_REQUIRES_CONFIRMATION,
+            409,
+            {
+                "decision": "warn",
+                "severity": "medium",
+                "issues": [],
+                "contentRisk": source_content_risk,
+                "requiresSourceContentConfirmation": True,
+            },
+        )
+    if not check_agent or not AGENT_ENABLED or not AGENT_REQUIRE_PREPUBLISH_CHECK:
         return {"decision": "allow", "disabled": True}
 
     content_hash = agent_content_hash(data, file_list, targets)
@@ -299,7 +365,6 @@ def validate_prepublish_guard_or_raise(data, file_list=None, targets=None, publi
     if decision == "block":
         raise AgentGuardError("发布前质检已拦截，请修改内容后重新质检。", AGENT_ERROR_BLOCKED, 422, guard_result)
     if decision == "warn":
-        override = (data or {}).get("riskOverride") or {}
         reason = str(override.get("reason") or "").strip()
         if not override.get("confirmed") or not reason:
             raise AgentGuardError("发布前质检发现风险，需要填写人工确认原因。", AGENT_ERROR_REQUIRES_CONFIRMATION, 409, guard_result)

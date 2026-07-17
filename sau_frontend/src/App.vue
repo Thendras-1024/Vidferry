@@ -65,6 +65,15 @@
               <el-icon class="toggle-sidebar" @click="toggleSidebar"><Fold /></el-icon>
             </div>
             <div class="header-right">
+              <el-tooltip content="打开字幕审查与模型诊断" placement="bottom">
+                <el-button
+                  class="audit-open-button"
+                  circle
+                  :icon="DocumentChecked"
+                  aria-label="打开字幕审查与模型诊断"
+                  @click="router.push('/subtitle-audit')"
+                />
+              </el-tooltip>
               <el-tooltip content="打开 Vidferry Agent" placement="bottom">
                 <div class="agent-entry">
                   <el-button
@@ -125,15 +134,15 @@
                     >
                       <div class="message-item-title">
                         <span>{{ message.title }}</span>
-                        <el-tag size="small" :type="message.acknowledged ? 'info' : 'danger'">
-                          {{ message.acknowledged ? '已知晓' : '异常' }}
+                        <el-tag size="small" :type="message.acknowledged ? 'info' : (message.severity === 'danger' ? 'danger' : 'warning')">
+                          {{ message.acknowledged ? '已知晓' : '待处理' }}
                         </el-tag>
                       </div>
                       <div class="message-item-content">{{ message.content }}</div>
                       <div class="message-item-time">{{ formatMessageTime(message.updatedAt) }}</div>
                       <div class="message-item-actions">
                         <el-button
-                          v-if="message.actionUrl"
+                          v-if="message.actionUrl || message.actionRoute || message.actionType"
                           size="small"
                           type="warning"
                           link
@@ -366,11 +375,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis,
-  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete
+  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete, DocumentChecked
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { agentApi } from '@/api/agent'
 import { commonApi } from '@/api/common'
+import { youtubeApi } from '@/api/youtube'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 
@@ -470,6 +480,15 @@ const scrollAgentMessages = async () => {
   await nextTick()
   const container = agentMessagesRef.value
   if (container) container.scrollTop = container.scrollHeight
+}
+
+const refreshGlobalWorkflowMessages = async () => {
+  try {
+    const res = await youtubeApi.listWorkflowJobs({ page: 1, pageSize: 50, status: 'recent' })
+    notificationStore.syncWorkflowActionMessages(res?.data?.items || [])
+  } catch (error) {
+    console.error('全局工作流消息同步失败:', error)
+  }
 }
 
 const mapAgentHistoryMessage = item => ({
@@ -737,14 +756,8 @@ const refreshRuntimeConfigStatus = async () => {
         : ''
       llmConfigWarning.value = `${llm.message || 'LLM 不可用，请检查配置并重启后端。'}${missingText}`
 
-      ElNotification({
-        title: 'LLM 配置不可用',
-        message: llmConfigWarning.value,
-        type: 'error',
-        position: 'top-right',
-        duration: 10000
-      })
     }
+    notificationStore.syncLlmUnavailableMessage(llm)
 
     const agent = res?.data?.agent
     agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.visionModelConfigured
@@ -778,15 +791,26 @@ const formatAgentSessionTime = (timestamp) => {
 }
 
 const handleMessageAction = (message) => {
-  if (!message?.actionUrl) return
-  window.open(message.actionUrl, '_blank', 'noopener,noreferrer')
+  if (!message) return
+  if (message.actionType === 'copy') {
+    navigator.clipboard?.writeText(message.content || '')
+    ElMessage.success('诊断信息已复制')
+  } else if (message.actionRoute) {
+    router.push(message.actionRoute)
+  } else if (message.actionUrl) {
+    window.open(message.actionUrl, '_blank', 'noopener,noreferrer')
+  }
   notificationStore.acknowledgeMessage(message.id)
 }
 
 onMounted(() => {
   refreshRuntimeConfigStatus()
   refreshGlobalAccountMessages()
-  accountCheckTimer = window.setInterval(refreshGlobalAccountMessages, ACCOUNT_CHECK_INTERVAL_MS)
+  refreshGlobalWorkflowMessages()
+  accountCheckTimer = window.setInterval(() => {
+    refreshGlobalAccountMessages()
+    refreshGlobalWorkflowMessages()
+  }, ACCOUNT_CHECK_INTERVAL_MS)
   window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
 })
 
@@ -972,6 +996,22 @@ onBeforeUnmount(() => {
 }
 
 .agent-open-button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  color: $text-regular;
+  background: transparent;
+
+  &:hover,
+  &:focus {
+    color: $primary-color;
+    background-color: $bg-color-page;
+  }
+}
+
+.audit-open-button {
   width: 36px;
   min-width: 36px;
   height: 36px;

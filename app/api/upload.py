@@ -160,6 +160,12 @@ def get_all_files():
             "msg": "success",
             "data": list_material_records(request.args)
         }), 200
+    except ValueError as e:
+        return jsonify({
+            "code": 400,
+            "msg": str(e),
+            "data": None
+        }), 400
     except Exception as e:
         return jsonify({
             "code": 500,

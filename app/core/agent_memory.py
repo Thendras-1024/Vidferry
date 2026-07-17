@@ -648,6 +648,8 @@ def _insert_agent_run(
     run_type,
     *,
     session_id="",
+    subject_type="",
+    subject_id="",
     status="success",
     decision="",
     severity="",
@@ -660,15 +662,17 @@ def _insert_agent_run(
     cursor.execute(
         """
         INSERT INTO agent_runs (
-            id, session_id, run_type, status, decision, severity, content_hash,
+            id, session_id, run_type, subject_type, subject_id, status, decision, severity, content_hash,
             input_summary, output, model, duration_ms, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
             session_id or "",
             run_type,
+            subject_type or "",
+            subject_id or "",
             status,
             decision or "",
             severity or "",
@@ -687,6 +691,8 @@ def save_agent_run(
     run_type,
     *,
     session_id="",
+    subject_type="",
+    subject_id="",
     status="success",
     decision="",
     severity="",
@@ -715,6 +721,8 @@ def save_agent_run(
                 run_id,
                 run_type,
                 session_id=session_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
                 status=status,
                 decision=decision,
                 severity=severity,
@@ -767,6 +775,25 @@ def finalize_agent_turn(
     return {"messageId": message_id, "runId": run_id}
 
 
+def _agent_run_from_row(row):
+    return {
+        "id": row["id"],
+        "sessionId": row["session_id"] or "",
+        "type": row["run_type"],
+        "subjectType": row["subject_type"] or "",
+        "subjectId": row["subject_id"] or "",
+        "status": row["status"],
+        "decision": row["decision"] or "",
+        "severity": row["severity"] or "",
+        "contentHash": row["content_hash"] or "",
+        "inputSummary": _agent_json_loads(row["input_summary"]),
+        "output": _agent_json_loads(row["output"]),
+        "model": row["model"] or "",
+        "durationMs": int(row["duration_ms"] or 0),
+        "createdAt": row["created_at"] or "",
+    }
+
+
 def get_agent_run(run_id):
     run_id = str(run_id or "").strip()
     if not run_id:
@@ -777,20 +804,43 @@ def get_agent_run(run_id):
         row = cursor.fetchone()
         if not row:
             return None
-        return {
-            "id": row["id"],
-            "sessionId": row["session_id"] or "",
-            "type": row["run_type"],
-            "status": row["status"],
-            "decision": row["decision"] or "",
-            "severity": row["severity"] or "",
-            "contentHash": row["content_hash"] or "",
-            "inputSummary": _agent_json_loads(row["input_summary"]),
-            "output": _agent_json_loads(row["output"]),
-            "model": row["model"] or "",
-            "durationMs": int(row["duration_ms"] or 0),
-            "createdAt": row["created_at"] or "",
-        }
+        return _agent_run_from_row(row)
+
+
+def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_path=""):
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        if subject_type and subject_id:
+            cursor.execute(
+                """
+                SELECT * FROM agent_runs
+                WHERE run_type = ? AND subject_type = ? AND subject_id = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (run_type, subject_type, subject_id),
+            )
+            row = cursor.fetchone()
+            if row:
+                return _agent_run_from_row(row)
+
+        legacy_file_path = str(legacy_file_path or "").strip()
+        if not legacy_file_path:
+            return None
+        cursor.execute(
+            """
+            SELECT * FROM agent_runs
+            WHERE run_type = ? AND COALESCE(subject_id, '') = ''
+            ORDER BY created_at DESC, rowid DESC
+            """,
+            (run_type,),
+        )
+        for row in cursor.fetchall():
+            summary = _agent_json_loads(row["input_summary"])
+            file_list = summary.get("fileList") if isinstance(summary, dict) else []
+            if any(str(item or "").strip() == legacy_file_path for item in (file_list or [])):
+                return _agent_run_from_row(row)
+    return None
 
 
 def list_agent_memory(memory_type="", limit=8):

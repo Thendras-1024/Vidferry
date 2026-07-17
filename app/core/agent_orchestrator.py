@@ -11,6 +11,7 @@ from typing import TypedDict
 
 from app.core.llm_harness import call_json_contract, validate_agent_action, validate_agent_reply
 from app.core import llm_prompts
+from app.core.errors import AgentSessionLeaseLostError
 
 
 class _AgentState(TypedDict, total=False):
@@ -24,10 +25,6 @@ class _AgentState(TypedDict, total=False):
     iterations: int
     safety_decision: dict
     answer: str
-
-
-class AgentSessionLeaseLostError(RuntimeError):
-    pass
 
 
 def _agent_llm_available():

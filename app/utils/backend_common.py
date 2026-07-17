@@ -38,10 +38,7 @@ from app.utils.request_util import (
     _split_request_values,
     _sql_placeholders,
 )
-
-
-class NoSpeechDetectedError(RuntimeError):
-    pass
+from app.core.errors import NoSpeechDetectedError, WorkflowConflictError
 
 
 @contextmanager
@@ -84,11 +81,3 @@ def _get_publish_account_lock(platform_type, account_file):
             lock = threading.Lock()
             _publish_account_locks[key] = lock
         return lock
-
-
-class WorkflowConflictError(ValueError):
-    def __init__(self, message, error_code, error_type="WORKFLOW_CONFLICT", data=None):
-        super().__init__(message)
-        self.error_code = error_code
-        self.error_type = error_type
-        self.data = data or {}

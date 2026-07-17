@@ -138,6 +138,40 @@ async def _upload_tencent(args: argparse.Namespace) -> None:
     await app.tencent_upload_video()
 
 
+async def _ensure_account_valid(args: argparse.Namespace) -> None:
+    account_file = str(args.account_file)
+    if args.platform == "douyin":
+        from uploader.douyin_uploader.main import douyin_setup
+
+        is_valid = await douyin_setup(account_file, handle=False)
+    elif args.platform == "xiaohongshu":
+        from uploader.xiaohongshu_uploader.main import xiaohongshu_setup
+
+        is_valid = await xiaohongshu_setup(account_file, handle=False)
+    elif args.platform == "kuaishou":
+        from uploader.ks_uploader.main import ks_setup
+
+        is_valid = await ks_setup(account_file, handle=False)
+    elif args.platform == "tencent":
+        from uploader.tencent_uploader.main import tencent_setup
+
+        is_valid = await tencent_setup(account_file, handle=False)
+    else:
+        from uploader.bilibili_uploader.runtime import run_biliup_command
+
+        is_valid = run_biliup_command(["-u", account_file, "renew"]).returncode == 0
+
+    if not is_valid:
+        platform_name = {
+            "douyin": "抖音",
+            "xiaohongshu": "小红书",
+            "kuaishou": "快手",
+            "tencent": "视频号",
+            "bilibili": "B站",
+        }[args.platform]
+        raise RuntimeError(f"VF-PUBLISH-COOKIE-INVALID: {platform_name} Cookie 已失效，请重新连接账号。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Backend isolated publish runner")
     parser.add_argument("--platform", required=True, choices=["douyin", "xiaohongshu", "kuaishou", "bilibili", "tencent"])
@@ -164,6 +198,8 @@ async def dispatch(args: argparse.Namespace) -> None:
         raise RuntimeError(f"发布视频文件不存在: {args.file}")
     if not _safe_text(args.title):
         raise RuntimeError("发布标题不能为空")
+
+    await _ensure_account_valid(args)
 
     if args.platform == "douyin":
         await _upload_douyin(args)

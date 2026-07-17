@@ -138,6 +138,7 @@ def agent_prepublish_check():
         file_list, publish_materials = _validate_publish_processed_files(data.get("fileList", []))
         _assert_publish_targets_available(publish_materials[0], targets)
         result = run_prepublish_guard(data, file_list, targets, publish_materials, session_id=payload.get("sessionId") or "")
+        result = agent_guard_run_payload(get_agent_run(result.get("runId")), agent_content_hash(data, file_list, targets)) or result
         return jsonify({"code": 200, "msg": "质检完成", "data": result}), 200
     except WorkflowConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
@@ -145,3 +146,27 @@ def agent_prepublish_check():
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as exc:
         return jsonify({"code": 500, "msg": f"发布前质检失败: {str(exc)}", "data": None}), 500
+
+
+@app.route('/agents/prepublish-check/latest', methods=['POST'])
+def latest_agent_prepublish_check():
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = payload.get("publishData") if "publishData" in payload else payload
+        targets = normalize_publish_targets(data)
+        file_list, publish_materials = _validate_publish_processed_files(data.get("fileList", []))
+        material_id = str(publish_materials[0].get("id") or "")
+        run = get_latest_agent_run(
+            "prepublish_check",
+            subject_type="material",
+            subject_id=material_id,
+            legacy_file_path=file_list[0],
+        )
+        result = agent_guard_run_payload(run, agent_content_hash(data, file_list, targets))
+        if result:
+            result["materialId"] = material_id
+        return jsonify({"code": 200, "msg": "success", "data": result}), 200
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        return jsonify({"code": 500, "msg": f"读取发布前质检记录失败: {str(exc)}", "data": None}), 500

@@ -119,6 +119,8 @@ def _agent_compact_video(item):
         "title": item.get("title") or "",
         "channel": item.get("channel") or "",
         "duration": item.get("duration") or "",
+        "groupId": item.get("groupId"),
+        "groupName": item.get("groupName") or "",
         "publishedAt": item.get("publishedAt") or "",
         "downloadStatus": int(item.get("downloadStatus") or 0),
         "translateStatus": int(item.get("translateStatus") or 0),

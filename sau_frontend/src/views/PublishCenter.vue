@@ -40,6 +40,26 @@
       <main class="compose-panel">
         <div v-for="tab in tabs" :key="tab.name" v-show="activeTab === tab.name" class="compose-content">
           <el-alert v-if="tab.publishStatus" :title="tab.publishStatus.message" :type="tab.publishStatus.type" :closable="false" show-icon />
+          <section v-if="tab.lastPublishResults.length > 0" class="publish-receipt" aria-live="polite">
+            <div class="publish-receipt-heading">
+              <div>
+                <span class="panel-kicker">LATEST DELIVERY</span>
+                <h2>本次发布结果</h2>
+              </div>
+              <span>{{ tab.lastPublishTaskId ? `任务 ${tab.lastPublishTaskId.slice(0, 8)}` : '' }}</span>
+            </div>
+            <div class="publish-receipt-list">
+              <div v-for="result in tab.lastPublishResults" :key="result.platformType" class="publish-receipt-item">
+                <div>
+                  <strong>{{ result.platformName }}</strong>
+                  <span>{{ result.accountName || '默认账号' }}</span>
+                </div>
+                <el-tag size="small" :type="publishStatusTagType(result.status)">{{ publishStatusLabel(result.status) }}</el-tag>
+                <span class="publish-receipt-duration">{{ formatPublishDuration(result.durationMs) }}</span>
+                <p>{{ result.message || '发布完成' }}</p>
+              </div>
+            </div>
+          </section>
 
           <section class="form-section">
             <div class="section-heading">
@@ -64,6 +84,9 @@
                     <span>{{ file.subtitleLanguageLabel || '字幕语言未知' }}</span>
                     <span>{{ formatFileSize(file.size) }}</span>
                   </div>
+                  <el-tag v-if="sourceContentRisk(tab)?.requiresPublishConfirmation" size="small" type="warning" effect="light">
+                    内容风险需确认
+                  </el-tag>
                 </div>
                 <el-button type="danger" size="small" text @click="removeFile(tab, index)">删除</el-button>
               </div>
@@ -231,19 +254,38 @@
               <span class="step-index">5</span>
               <div>
                 <h3>发布前质检</h3>
-                <p>Agent 会检查发布文案和视频关键帧，高风险内容会阻断发布。</p>
+                <p>Agent 质检是可选的，用于检查发布文案和视频关键帧。</p>
               </div>
-              <el-button size="small" :loading="tab.agentChecking" @click="runAgentPrepublishCheck(tab)">
-                {{ tab.agentChecking ? '质检中...' : '立即质检' }}
+              <el-button
+                size="small"
+                :loading="tab.agentChecking || tab.agentGuardLoading"
+                :disabled="tab.fileList.length === 0 || tab.agentChecking || tab.agentGuardLoading"
+                @click="runAgentPrepublishCheck(tab)"
+              >
+                {{ tab.agentChecking ? '质检中...' : (tab.agentGuardLoading ? '读取中...' : '立即质检') }}
               </el-button>
             </div>
-            <div class="agent-guard-card" :class="`is-${tab.agentGuardStatus || 'idle'}`">
+            <div v-if="tab.agentGuardStatus !== 'idle'" class="agent-guard-card" :class="`is-${tab.agentGuardStatus}`">
               <div class="agent-guard-header">
-                <el-tag size="small" :type="agentGuardTagType(tab)">
-                  {{ agentGuardLabel(tab) }}
-                </el-tag>
-                <span>{{ agentGuardSummary(tab) }}</span>
+                <div class="agent-guard-summary">
+                  <el-tag size="small" :type="agentGuardTagType(tab)">
+                    {{ agentGuardLabel(tab) }}
+                  </el-tag>
+                  <el-tag v-if="isAgentGuardStale(tab)" size="small" type="warning" effect="plain">配置已变化</el-tag>
+                  <span>{{ agentGuardSummary(tab) }}</span>
+                </div>
+                <span v-if="tab.agentGuardResult?.checkedAt" class="agent-guard-time">
+                  <el-icon><Clock /></el-icon>
+                  质检时间 {{ formatAgentGuardTime(tab.agentGuardResult.checkedAt) }}
+                </span>
               </div>
+              <el-alert
+                v-if="isAgentGuardStale(tab)"
+                title="当前发布文案、话题或平台配置与上次质检时不同，建议重新质检。"
+                type="warning"
+                :closable="false"
+                show-icon
+              />
               <div v-if="agentGuardIssues(tab).length" class="agent-guard-issues">
                 <div v-for="(issue, index) in agentGuardIssues(tab)" :key="index" class="agent-guard-issue">
                   <strong>{{ issue.category || '风险项' }} · {{ issue.severity || 'unknown' }}</strong>
@@ -251,15 +293,6 @@
                   <small>{{ issue.suggestion || '' }}</small>
                 </div>
               </div>
-              <el-input
-                v-if="tab.agentGuardStatus === 'warn'"
-                v-model="tab.agentGuardConfirmReason"
-                type="textarea"
-                :rows="2"
-                maxlength="200"
-                show-word-limit
-                placeholder="如确认继续发布，请填写人工确认原因"
-              />
             </div>
           </section>
 
@@ -371,6 +404,7 @@
         show-icon
       />
       <div class="material-library-tools">
+        <VideoGroupSelect v-model="materialLibraryGroupId" include-all class="publish-group-filter" />
         <el-input
           v-model="materialLibraryKeyword"
           clearable
@@ -412,6 +446,7 @@
                   <span v-if="materialPublishDraft(material).tags.length === 0" class="empty-topic">暂无话题</span>
                 </div>
                 <div class="material-badges">
+                  <el-tag v-if="material.groupName" size="small" type="info" effect="plain">{{ material.groupName }}</el-tag>
                   <el-tag size="small" type="warning" effect="light">{{ material.processType || '处理后视频' }}</el-tag>
                   <el-tag size="small" type="success" effect="plain">{{ material.subtitleLanguageLabel || '字幕语言未知' }}</el-tag>
                   <el-tag size="small" effect="plain">{{ processVersionLabel(material.processVersion) }}</el-tag>
@@ -495,15 +530,17 @@
 </template>
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { Plus, Close, Folder, Refresh } from '@element-plus/icons-vue'
+import { Plus, Close, Folder, Refresh, Clock } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
+import { useNotificationStore } from '@/stores/notification'
 import { agentApi } from '@/api/agent'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { http } from '@/utils/request'
+import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 
 // 当前激活的tab
 const activeTab = ref('tab1')
@@ -516,6 +553,7 @@ const PUBLISH_DRAFT_STORAGE_KEY = 'vidferry:publish-center:draft:v1'
 // 获取应用状态管理
 const appStore = useAppStore()
 const accountStore = useAccountStore()
+const notificationStore = useNotificationStore()
 
 // 上传相关状态
 const materialLibraryVisible = ref(false)
@@ -524,6 +562,7 @@ const selectedMaterial = ref(null)
 const publishableMaterials = ref([])
 const materialLibraryLoading = ref(false)
 const materialLibraryKeyword = ref('')
+const materialLibraryGroupId = ref('')
 const materialLibraryTotal = ref(0)
 const materialLibraryPagination = reactive({ page: 1, pageSize: 10 })
 let materialLibrarySearchTimer = null
@@ -600,11 +639,16 @@ const defaultTabInit = {
   selectedTopics: [], // 话题列表（不带#号）
   contentLocked: false,
   publishTargetStatuses: [],
+  lastPublishResults: [],
+  lastPublishTaskId: '',
   agentChecking: false,
+  agentGuardLoading: false,
+  agentGuardRequestId: 0,
   agentGuardStatus: 'idle',
   agentGuardResult: null,
   agentGuardRunId: '',
   agentGuardConfirmReason: '',
+  sourceContentConfirmed: false,
   scheduleEnabled: false, // 定时发布开关
   videosPerDay: 1, // 每天发布视频数量
   dailyTimes: ['10:00'], // 每天发布时间点列表
@@ -676,11 +720,16 @@ const normalizePublishTab = (tab, index) => {
     selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
     dailyTimes: Array.isArray(tab?.dailyTimes) && tab.dailyTimes.length > 0 ? tab.dailyTimes : ['10:00'],
     publishTargetStatuses: Array.isArray(tab?.publishTargetStatuses) ? tab.publishTargetStatuses : [],
+    lastPublishResults: Array.isArray(tab?.lastPublishResults) ? tab.lastPublishResults : [],
+    lastPublishTaskId: String(tab?.lastPublishTaskId || ''),
     agentChecking: false,
-    agentGuardStatus: tab?.agentGuardStatus || 'idle',
-    agentGuardResult: tab?.agentGuardResult || null,
-    agentGuardRunId: tab?.agentGuardRunId || '',
-    agentGuardConfirmReason: tab?.agentGuardConfirmReason || '',
+    agentGuardLoading: false,
+    agentGuardRequestId: 0,
+    agentGuardStatus: 'idle',
+    sourceContentConfirmed: false,
+    agentGuardResult: null,
+    agentGuardRunId: '',
+    agentGuardConfirmReason: '',
     publishStatus: null,
     publishing: false
   })
@@ -707,10 +756,8 @@ const serializePublishTab = (tab) => ({
   selectedTopics: tab.selectedTopics,
   contentLocked: Boolean(tab.contentLocked),
   publishTargetStatuses: tab.publishTargetStatuses || [],
-  agentGuardStatus: tab.agentGuardStatus || 'idle',
-  agentGuardResult: tab.agentGuardResult || null,
-  agentGuardRunId: tab.agentGuardRunId || '',
-  agentGuardConfirmReason: tab.agentGuardConfirmReason || '',
+  lastPublishResults: tab.lastPublishResults || [],
+  lastPublishTaskId: tab.lastPublishTaskId || '',
   scheduleEnabled: tab.scheduleEnabled,
   videosPerDay: tab.videosPerDay,
   dailyTimes: tab.dailyTimes,
@@ -789,7 +836,18 @@ const removeTab = (tabName) => {
   }
 }
 
+const resetAgentGuard = (tab) => {
+  tab.agentGuardRequestId = Number(tab.agentGuardRequestId || 0) + 1
+  tab.agentChecking = false
+  tab.agentGuardLoading = false
+  tab.agentGuardStatus = 'idle'
+  tab.agentGuardResult = null
+  tab.agentGuardRunId = ''
+  tab.agentGuardConfirmReason = ''
+}
+
 const clearVideoDerivedContent = (tab) => {
+  resetAgentGuard(tab)
   tab.title = ''
   tab.description = ''
   tab.selectedTopics = []
@@ -801,6 +859,7 @@ const clearVideoDerivedContent = (tab) => {
   tab.publishTargetStatuses = []
   tab.contentLocked = false
   tab.publishStatus = null
+  tab.sourceContentConfirmed = false
 }
 
 // 删除已上传文件
@@ -862,6 +921,29 @@ const selectedVideoId = (tab) => {
   return tab.fileList[0]?.videoId || ''
 }
 
+const selectedMaterialId = (tab) => String(tab?.fileList?.[0]?.materialId || '')
+
+const sourceContentRisk = (tab) => tab?.fileList?.[0]?.analysisResult?.contentRisk || null
+
+const ensureSourceContentRiskConfirmation = async (tab) => {
+  const risk = sourceContentRisk(tab)
+  if (!risk?.requiresPublishConfirmation || tab.sourceContentConfirmed) return
+  try {
+    await ElMessageBox.confirm(
+      '检测到转写中含明确粗口，中文字幕已打码，但原声及英文字幕可能仍含风险。是否继续发布？',
+      '发布前内容确认',
+      {
+        confirmButtonText: '继续发布',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    tab.sourceContentConfirmed = true
+  } catch {
+    throw new Error('已取消发布')
+  }
+}
+
 const publishedPlatformTypesForVideo = (videoId) => {
   if (!videoId) return []
   const video = publishedVideos.value.find(item => item.id === videoId)
@@ -873,7 +955,8 @@ const loadPublishableMaterials = async ({ force = false } = {}) => {
     sourceType: 'youtube_processed',
     page: materialLibraryPagination.page,
     pageSize: materialLibraryPagination.pageSize,
-    keyword: materialLibraryKeyword.value.trim()
+    keyword: materialLibraryKeyword.value.trim(),
+    groupId: materialLibraryGroupId.value || undefined
   }
   const cacheKey = `publish:center:materials:${JSON.stringify(params)}`
   if (!force) {
@@ -912,15 +995,23 @@ const loadAccounts = async () => {
 
 const handleMaterialLibrarySearch = () => {
   window.clearTimeout(materialLibrarySearchTimer)
+  selectedMaterial.value = null
   materialLibrarySearchTimer = window.setTimeout(() => {
     materialLibraryPagination.page = 1
     loadPublishableMaterials({ force: true })
   }, 300)
 }
 
+watch(materialLibraryGroupId, () => {
+  selectedMaterial.value = null
+  materialLibraryPagination.page = 1
+  if (materialLibraryVisible.value) loadPublishableMaterials({ force: true })
+})
+
 watch(
   () => materialLibraryPagination.page,
   () => {
+    selectedMaterial.value = null
     if (materialLibraryVisible.value) {
       loadPublishableMaterials()
     }
@@ -980,14 +1071,15 @@ const publishStatusLabel = (status) => {
     pending: '待发布',
     running: '发布中',
     success: '成功',
-    failed: '失败'
+    failed: '失败',
+    timeout: '超时'
   }
   return map[status] || status || '待发布'
 }
 
 const publishStatusTagType = (status) => {
   if (status === 'success') return 'success'
-  if (status === 'failed') return 'danger'
+  if (status === 'failed' || status === 'timeout') return 'danger'
   if (status === 'running') return 'warning'
   return 'info'
 }
@@ -1210,6 +1302,12 @@ const publishedPlatforms = (video) => {
   return tags
 }
 
+const formatPublishDuration = (durationMs) => {
+  const seconds = Math.round(Number(durationMs || 0) / 1000)
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
+}
+
 const askAgentAboutPublishedVideo = (video) => {
   window.dispatchEvent(new CustomEvent('vidferry:ask-agent', {
     detail: {
@@ -1306,10 +1404,45 @@ const buildPublishData = (tab, targets = publishTargets(tab)) => ({
   bilibiliTid: Number(tab.bilibiliTid || defaultBilibiliTid.value),
   productLink: tab.productLink.trim() || '',
   productTitle: tab.productTitle.trim() || '',
-  isDraft: tab.isDraft
+  isDraft: tab.isDraft,
+  riskOverride: {
+    sourceContentConfirmed: Boolean(tab.sourceContentConfirmed)
+  }
 })
 
 const extractAgentErrorData = (error) => error?.response?.data?.data || {}
+
+const normalizeAgentGuardInput = (summary = {}) => ({
+  title: String(summary.title || '').trim(),
+  description: String(summary.description || '').trim(),
+  tags: normalizeAnalysisTags(summary.tags),
+  fileList: (Array.isArray(summary.fileList) ? summary.fileList : []).map(item => String(item || '').trim()),
+  targets: (Array.isArray(summary.targets) ? summary.targets : [])
+    .map(target => ({
+      platformType: Number(target?.platformType || 0),
+      accountId: String(target?.accountId || ''),
+      accountName: String(target?.accountName || ''),
+      tags: normalizeAnalysisTags(target?.tags)
+    }))
+    .sort((left, right) => left.platformType - right.platformType || left.accountId.localeCompare(right.accountId))
+})
+
+const currentAgentGuardInput = (tab) => normalizeAgentGuardInput(buildPublishData(tab, publishTargets(tab)))
+
+const agentGuardInputSignature = (summary) => JSON.stringify(normalizeAgentGuardInput(summary))
+
+const isAgentGuardStale = (tab) => {
+  const previous = tab?.agentGuardResult?.inputSummary
+  if (previous && Object.keys(previous).length > 0) {
+    return agentGuardInputSignature(previous) !== agentGuardInputSignature(currentAgentGuardInput(tab))
+  }
+  return Boolean(tab?.agentGuardResult?.contentChanged)
+}
+
+const formatAgentGuardTime = (value) => {
+  const text = String(value || '').trim().replace('T', ' ')
+  return text ? text.replace(/\..*$/, '').slice(0, 19) : '-'
+}
 
 const agentGuardIssues = (tab) => {
   const issues = tab?.agentGuardResult?.issues
@@ -1338,10 +1471,31 @@ const agentGuardSummary = (tab) => {
   if (tab?.agentGuardStatus === 'warn') return '发现中低风险，填写人工确认原因后可继续。'
   if (tab?.agentGuardStatus === 'block') return '发现高风险或关键帧审核未完成，已阻断发布。'
   if (tab?.agentGuardStatus === 'failed') return result.message || '质检失败，请检查后端配置。'
-  return '发布前会自动执行，也可以先手动质检。'
+  return ''
 }
 
-const applyAgentGuardResult = (tab, guard) => {
+const ensureAgentGuardPublishConfirmation = async (tab) => {
+  if (!['warn', 'block', 'failed'].includes(tab.agentGuardStatus)) return
+  const message = tab.agentGuardStatus === 'failed'
+    ? '本次 Agent 质检未完成。普通发布不受此影响，确认后仍会提交到已选平台。'
+    : '本次 Agent 质检发现风险。普通发布不受此影响，确认后仍会提交到已选平台。'
+  try {
+    await ElMessageBox.confirm(message, '确认继续发布', {
+      confirmButtonText: '仍然发布',
+      cancelButtonText: '返回检查',
+      type: 'warning'
+    })
+  } catch {
+    throw new Error('已取消发布')
+  }
+}
+
+const applyAgentGuardResult = (tab, guard, expectedMaterialId = '') => {
+  const currentMaterialId = selectedMaterialId(tab)
+  const resultMaterialId = String(guard?.materialId || expectedMaterialId || '')
+  if (!currentMaterialId || (expectedMaterialId && currentMaterialId !== String(expectedMaterialId)) || (resultMaterialId && currentMaterialId !== resultMaterialId)) {
+    return false
+  }
   const decision = guard?.decision || 'failed'
   tab.agentGuardResult = guard || {}
   tab.agentGuardRunId = guard?.runId || ''
@@ -1349,61 +1503,72 @@ const applyAgentGuardResult = (tab, guard) => {
   if (decision !== 'warn') {
     tab.agentGuardConfirmReason = ''
   }
+  return true
+}
+
+const loadLatestAgentGuard = async (tab) => {
+  resetAgentGuard(tab)
+  const materialId = selectedMaterialId(tab)
+  if (!materialId) return
+  const requestId = tab.agentGuardRequestId
+  tab.agentGuardLoading = true
+  try {
+    const publishData = buildPublishData(tab, publishTargets(tab))
+    const res = await agentApi.latestPrepublishCheck({ publishData })
+    if (tab.agentGuardRequestId !== requestId || selectedMaterialId(tab) !== materialId) return
+    if (res?.data) applyAgentGuardResult(tab, res.data, materialId)
+  } catch (error) {
+    if (tab.agentGuardRequestId === requestId && selectedMaterialId(tab) === materialId) {
+      console.warn('读取视频最新质检结果失败:', error)
+    }
+  } finally {
+    if (tab.agentGuardRequestId === requestId && selectedMaterialId(tab) === materialId) {
+      tab.agentGuardLoading = false
+    }
+  }
 }
 
 const runAgentPrepublishCheck = async (tab) => {
+  const materialId = selectedMaterialId(tab)
+  if (!materialId) {
+    ElMessage.warning('请先选择需要质检的视频')
+    return null
+  }
   const targets = publishTargets(tab)
   const publishData = buildPublishData(tab, targets)
+  const requestId = Number(tab.agentGuardRequestId || 0) + 1
+  tab.agentGuardRequestId = requestId
   tab.agentChecking = true
   try {
     const res = await agentApi.prepublishCheck({ publishData })
-    applyAgentGuardResult(tab, res?.data || {})
+    if (tab.agentGuardRequestId !== requestId || selectedMaterialId(tab) !== materialId) return null
+    if (!applyAgentGuardResult(tab, res?.data || {}, materialId)) return null
     if (tab.agentGuardStatus === 'allow') ElMessage.success('发布前质检通过')
     if (tab.agentGuardStatus === 'warn') ElMessage.warning('发布前质检发现风险，请确认后再发布')
     if (tab.agentGuardStatus === 'block') ElMessage.error('发布前质检已拦截')
     return tab.agentGuardResult
   } catch (error) {
+    if (tab.agentGuardRequestId !== requestId || selectedMaterialId(tab) !== materialId) return null
     const data = extractAgentErrorData(error)
     const guard = data.guard || null
     if (guard) {
-      applyAgentGuardResult(tab, guard)
+      applyAgentGuardResult(tab, guard, materialId)
     } else {
       tab.agentGuardStatus = 'failed'
-      tab.agentGuardResult = { message: error?.response?.data?.msg || error.message || '质检失败' }
+      tab.agentGuardResult = {
+        materialId,
+        checkedAt: new Date().toISOString(),
+        inputSummary: currentAgentGuardInput(tab),
+        message: error?.response?.data?.msg || error.message || '质检失败'
+      }
     }
     ElMessage.error(tab.agentGuardResult?.message || error?.response?.data?.msg || error.message || '质检失败')
     throw error
   } finally {
-    tab.agentChecking = false
-  }
-}
-
-const ensureAgentGuardReady = async (tab, targets) => {
-  const guard = await runAgentPrepublishCheck(tab)
-  if (guard?.decision === 'block') {
-    throw new Error('发布前质检已拦截，请修改内容后重新质检。')
-  }
-  if (guard?.decision === 'warn' && !String(tab.agentGuardConfirmReason || '').trim()) {
-    try {
-      const { value } = await ElMessageBox.prompt(
-        'Agent 发现中低风险。如确认继续发布，请填写人工确认原因。',
-        '发布前质检确认',
-        {
-          confirmButtonText: '确认继续',
-          cancelButtonText: '返回修改',
-          inputType: 'textarea',
-          inputPlaceholder: '例如：已人工核对画面和文案，确认可发布。'
-        }
-      )
-      tab.agentGuardConfirmReason = String(value || '').trim()
-    } catch {
-      throw new Error('已取消发布')
-    }
-    if (!tab.agentGuardConfirmReason) {
-      throw new Error('请填写人工确认原因')
+    if (tab.agentGuardRequestId === requestId && selectedMaterialId(tab) === materialId) {
+      tab.agentChecking = false
     }
   }
-  return buildPublishData(tab, targets)
 }
 
 // 确认发布
@@ -1460,6 +1625,8 @@ const confirmPublish = async (tab) => {
     status: 'running',
     message: '发布中'
   }))
+  tab.lastPublishResults = []
+  tab.lastPublishTaskId = ''
 
   const updateTargetStatus = (target, patch) => {
     tab.publishTargetStatuses = tab.publishTargetStatuses.map(item => (
@@ -1471,18 +1638,15 @@ const confirmPublish = async (tab) => {
 
   // 一次提交所有平台，后端按平台隔离并发执行，同时返回每个平台结果。
   try {
-    const publishData = await ensureAgentGuardReady(tab, targets)
-    publishData.agentRunId = tab.agentGuardRunId
-    if (tab.agentGuardStatus === 'warn') {
-      publishData.riskOverride = {
-        confirmed: true,
-        reason: tab.agentGuardConfirmReason
-      }
-    }
+    await ensureAgentGuardPublishConfirmation(tab)
+    await ensureSourceContentRiskConfirmation(tab)
+    const publishData = buildPublishData(tab, targets)
     const data = await http.post('/postVideo', publishData, { silentError: true })
     await loadAccounts()
     await loadPublishedVideos()
     const results = Array.isArray(data?.data?.results) ? data.data.results : []
+    tab.lastPublishResults = results
+    tab.lastPublishTaskId = String(data?.data?.publishTaskId || '')
     results.forEach(result => {
       const target = targets.find(item => Number(item.platformType) === Number(result.platformType))
       if (!target) return
@@ -1502,6 +1666,16 @@ const confirmPublish = async (tab) => {
       type: failedCount === resultCount ? 'error' : (failedCount ? 'warning' : 'success')
     }
     if (failedCount) {
+      notificationStore.addDirectPublishFailureMessage({
+        publishTaskId: tab.lastPublishTaskId,
+        tabName: tab.name,
+        title: tab.title,
+        failedPlatforms: tab.publishTargetStatuses
+          .filter(item => item.status === 'failed' || item.status === 'timeout')
+          .map(item => item.platformName),
+        reason: tab.publishStatus.message,
+        createdAt: Date.now()
+      })
       return
     }
     // 清空当前tab的数据
@@ -1511,13 +1685,10 @@ const confirmPublish = async (tab) => {
     tab.description = ''
     tab.selectedTopics = []
     tab.contentLocked = false
-    tab.agentGuardStatus = 'idle'
-    tab.agentGuardResult = null
-    tab.agentGuardRunId = ''
-    tab.agentGuardConfirmReason = ''
+    resetAgentGuard(tab)
+    tab.sourceContentConfirmed = false
     tab.selectedAccounts = []
     tab.platformAccounts = {}
-    tab.publishTargetStatuses = []
     tab.scheduleEnabled = false
   } catch (error) {
     console.error('发布错误:', error)
@@ -1542,6 +1713,14 @@ const confirmPublish = async (tab) => {
       message: `发布失败：${errorMessage}`,
       type: 'error'
     }
+    notificationStore.addDirectPublishFailureMessage({
+      publishTaskId: tab.lastPublishTaskId,
+      tabName: tab.name,
+      title: tab.title,
+      failedPlatforms: targets.map(target => target.platformName),
+      reason: errorMessage,
+      createdAt: Date.now()
+    })
     throw error
   } finally {
     tab.publishing = false
@@ -1557,6 +1736,7 @@ const selectMaterialLibrary = async (tab) => {
   currentUploadTab.value = tab
   selectedMaterial.value = null
   materialLibraryPagination.page = 1
+  materialLibraryGroupId.value = ''
   materialLibraryVisible.value = true
   await loadPublishableMaterials()
 }
@@ -1599,15 +1779,18 @@ const confirmMaterialSelection = () => {
       size: material.filesize * 1024 * 1024, // 转换为字节
       type: 'video/mp4'
     }
-    currentUploadTab.value.fileList = [fileInfo]
+    const targetTab = currentUploadTab.value
+    targetTab.fileList = [fileInfo]
+    targetTab.sourceContentConfirmed = false
 
-    applyPublishDraftToPublishTab(currentUploadTab.value, selectedPublishDrafts)
+    applyPublishDraftToPublishTab(targetTab, selectedPublishDrafts)
     
     // 更新显示列表
-    currentUploadTab.value.displayFileList = [...currentUploadTab.value.fileList.map(item => ({
+    targetTab.displayFileList = [...targetTab.fileList.map(item => ({
       name: item.name,
       url: item.url
     }))]
+    void loadLatestAgentGuard(targetTab)
   }
   
   materialLibraryVisible.value = false
@@ -1699,10 +1882,11 @@ const batchPublish = async () => {
   }
 }
 
-onMounted(() => {
-  loadBilibiliCategories()
-  loadAccounts()
-  loadPublishedVideos()
+onMounted(async () => {
+  await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishedVideos()])
+  tabs.filter(tab => tab.fileList.length > 0).forEach(tab => {
+    void loadLatestAgentGuard(tab)
+  })
 })
 
 onBeforeUnmount(() => {
@@ -1874,6 +2058,35 @@ $ink-strong: #172033;
 .compose-panel { padding: 16px; }
 .compose-content { display: grid; gap: 14px; }
 .form-section { display: grid; gap: 12px; padding: 14px; border: 1px solid $border-lighter; border-radius: 8px; background: #fff; }
+.publish-receipt {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #b9d7c4;
+  border-left: 4px solid #18a058;
+  border-radius: 8px;
+  background: #f7fcf8;
+}
+.publish-receipt-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.publish-receipt-heading h2 { margin: 2px 0 0; color: $ink-strong; font-size: 16px; }
+.publish-receipt-heading > span { color: $text-secondary; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.publish-receipt-list { display: grid; gap: 8px; }
+.publish-receipt-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #d8eadc;
+  border-radius: 6px;
+  background: #fff;
+}
+.publish-receipt-item > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.publish-receipt-item strong { color: $ink-strong; font-size: 13px; }
+.publish-receipt-item span,
+.publish-receipt-item p { color: $text-secondary; font-size: 12px; }
+.publish-receipt-duration { white-space: nowrap; }
+.publish-receipt-item p { grid-column: 1 / -1; margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
 .split-section { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sub-panel { display: grid; gap: 12px; min-width: 0; }
 .section-heading { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
@@ -2064,10 +2277,16 @@ $ink-strong: #172033;
 .agent-guard-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   color: $text-regular;
   font-size: 13px;
 }
+.agent-guard-summary,
+.agent-guard-time { display: flex; align-items: center; gap: 8px; }
+.agent-guard-summary { flex-wrap: wrap; min-width: 0; }
+.agent-guard-time { color: $text-secondary; font-size: 12px; white-space: nowrap; }
 .agent-guard-issues { display: grid; gap: 8px; }
 .agent-guard-issue {
   display: grid;
@@ -2125,6 +2344,10 @@ $ink-strong: #172033;
   gap: 10px;
   margin-bottom: 12px;
 }
+.publish-group-filter {
+  width: 200px;
+  flex: 0 0 200px;
+}
 .material-library-tools .el-input {
   max-width: 420px;
 }
@@ -2175,6 +2398,16 @@ $ink-strong: #172033;
 }
 
 @media (max-width: 760px) {
+  .material-library-tools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .publish-group-filter,
+  .material-library-tools .el-input {
+    width: 100%;
+    max-width: none;
+    flex-basis: auto;
+  }
   .page-hero { align-items: flex-start; flex-direction: column; }
   .panel-heading-row { align-items: flex-start; flex-direction: column; }
   .published-summary,

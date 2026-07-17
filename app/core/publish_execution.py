@@ -8,22 +8,10 @@ def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
     account_info = _check_named_publish_account(3, job["account"])
-    source_path = Path(processed_file)
-    video_filename = source_path.name
-    video_file = Path(BASE_DIR / "videoFile" / video_filename)
-    if not video_file.is_file():
-        shutil.copy2(source_path, video_file)
-    post_video_DouYin(
-        job["title"] or "YouTube 视频",
-        [video_filename],
-        (job["tags"] or [])[:5],
-        [account_info["filePath"]],
-        enableTimer=False,
-        thumbnail_path="",
-        productLink="",
-        productTitle="",
-    )
-    return f"douyin original publish {video_filename} --account {job['account']}"
+    task = _workflow_publish_task(job, processed_file, 3, account_info)
+    command = _workflow_publish_runner_command(task)
+    _run_workflow_publish_command(command, 3, account_info["filePath"])
+    return " ".join(command)
 
 
 def _publish_to_bilibili(job, processed_file):
@@ -331,32 +319,12 @@ def _execute_publish_target(task):
             raise RuntimeError(f"{task['platformName']} 暂未接入发布适配器")
         account_lock = _get_publish_account_lock(platform_type, task["accountFile"])
         with account_lock:
-            if platform_type == 3:
-                file_names = []
-                for file_path in task["absoluteFiles"]:
-                    source_path = Path(file_path)
-                    video_filename = source_path.name
-                    video_file = Path(BASE_DIR / "videoFile" / video_filename)
-                    if not video_file.is_file():
-                        shutil.copy2(source_path, video_file)
-                    file_names.append(video_filename)
-                post_video_DouYin(
-                    task["title"],
-                    file_names,
-                    task["tags"],
-                    [task["accountFile"]],
-                    enableTimer=False,
-                    thumbnail_path=task.get("thumbnailPath") or "",
-                    productLink=task.get("productLink") or "",
-                    productTitle=task.get("productTitle") or "",
-                )
-            else:
-                for index, file_path in enumerate(task["absoluteFiles"]):
-                    command = _publish_runner_command(task, file_path, index)
-                    process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
-                    if process_result.returncode != 0:
-                        output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
-                        raise RuntimeError(output or f"{task['platformName']} 发布失败")
+            for index, file_path in enumerate(task["absoluteFiles"]):
+                command = _publish_runner_command(task, file_path, index)
+                process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
+                if process_result.returncode != 0:
+                    output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
+                    raise RuntimeError(output or f"{task['platformName']} 发布失败")
 
         published_ids = _mark_published_materials(
             task["fileList"],
@@ -480,7 +448,10 @@ def _publish_payload(data):
     file_list, publish_materials = _validate_publish_processed_files(file_list)
     publish_material = publish_materials[0]
     _assert_publish_targets_available(publish_material, targets)
-    agent_guard = validate_prepublish_guard_or_raise(data, file_list, targets, publish_materials)
+    # Agent 质检是可选能力；普通发布只保留来源内容风险确认。
+    agent_guard = validate_prepublish_guard_or_raise(
+        data, file_list, targets, publish_materials, check_agent=False
+    )
     publish_task_id = uuid.uuid4().hex
     tasks = _build_publish_tasks(data, targets, file_list, publish_task_id=publish_task_id)
     for task in tasks:

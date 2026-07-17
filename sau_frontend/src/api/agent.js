@@ -95,6 +95,10 @@ export const agentApi = {
     return request.post('/agents/prepublish-check', data, { silentError: true })
   },
 
+  latestPrepublishCheck(data) {
+    return request.post('/agents/prepublish-check/latest', data, { silentError: true })
+  },
+
   getRun(runId) {
     return request.get(`/agents/runs/${runId}`)
   }
