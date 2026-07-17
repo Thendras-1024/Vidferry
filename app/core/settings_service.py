@@ -1,6 +1,9 @@
 ﻿"""工作流默认设置的读写与归一化(存储在 app_settings 键值表)。"""
 
 
+from app.core.cover_service import DEFAULT_COVER_SIGNATURE, normalize_cover_signature
+
+
 WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
 
 
@@ -14,6 +17,7 @@ def _default_workflow_settings():
         "searchQuery": YOUTUBE_DEFAULT_QUERY,
         "watermarkEnabled": False,
         "watermarkText": "",
+        "coverSignature": DEFAULT_COVER_SIGNATURE,
     }
 
 
@@ -42,11 +46,15 @@ def _normalize_workflow_settings(payload=None):
         settings["translatorLabel"] = translator_label[:20]
 
     search_query = str(payload.get("searchQuery") or "").strip()[:160]
+    if search_query == YOUTUBE_LEGACY_DEFAULT_QUERY:
+        search_query = YOUTUBE_DEFAULT_QUERY
     settings["searchQuery"] = search_query or YOUTUBE_DEFAULT_QUERY
 
     settings["watermarkEnabled"] = bool(payload.get("watermarkEnabled", False))
     watermark_text = str(payload.get("watermarkText") or "").strip()[:16]
     settings["watermarkText"] = watermark_text if len(watermark_text) >= 2 else ""
+
+    settings["coverSignature"] = normalize_cover_signature(payload.get("coverSignature", payload.get("coverBrandName")))
 
     return settings
 

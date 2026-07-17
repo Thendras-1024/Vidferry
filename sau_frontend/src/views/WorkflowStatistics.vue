@@ -1,186 +1,307 @@
 <template>
   <div class="workflow-statistics">
-    <section class="page-hero">
+    <section class="statistics-toolbar">
       <div>
-        <span class="eyebrow">PIPELINE METRICS</span>
-        <h1>处理统计</h1>
-        <p>统计不同大小视频在下载、转写翻译、烧录、发布阶段消耗的时间，并预留云端模型 token 与调用延迟。</p>
+        <span class="section-kicker">PROCESS LEDGER</span>
+        <h1>视频处理与模型用量</h1>
       </div>
-      <el-button type="primary" :loading="loading" @click="fetchStatistics">
-        <el-icon><Refresh /></el-icon>
-        <span>刷新统计</span>
-      </el-button>
+      <div class="toolbar-actions">
+        <el-button-group aria-label="时间范围快捷选择">
+          <el-button :type="rangePreset === 'day' ? 'primary' : 'default'" @click="setRangePreset('day')">近 24 小时</el-button>
+          <el-button :type="rangePreset === 'week' ? 'primary' : 'default'" @click="setRangePreset('week')">近 7 天</el-button>
+          <el-button :type="rangePreset === 'month' ? 'primary' : 'default'" @click="setRangePreset('month')">近 30 天</el-button>
+        </el-button-group>
+        <el-date-picker
+          v-model="dateRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          unlink-panels
+          aria-label="统计时间范围"
+          @change="handleCustomRangeChange"
+        />
+        <el-radio-group v-model="granularity" aria-label="时间聚合粒度" @change="refreshForFilter">
+          <el-radio-button label="auto">自动</el-radio-button>
+          <el-radio-button label="hour">按小时</el-radio-button>
+          <el-radio-button label="day">按天</el-radio-button>
+        </el-radio-group>
+        <el-button type="primary" :loading="loading" @click="fetchStatistics">
+          <el-icon><Refresh /></el-icon>
+          <span>刷新</span>
+        </el-button>
+      </div>
     </section>
 
-    <section class="metric-grid">
-      <div class="metric-card">
-        <span>阶段记录</span>
-        <strong>{{ summary.eventCount }}</strong>
-        <small>已记录的处理阶段</small>
+    <section class="metric-grid" aria-label="统计汇总">
+      <div class="metric-card is-duration">
+        <span>视频任务</span>
+        <strong>{{ summary.jobCount || 0 }}</strong>
+        <small>处理总历时 {{ formatDuration(summary.totalDurationSeconds) }}</small>
       </div>
-      <div class="metric-card">
-        <span>任务数量</span>
-        <strong>{{ summary.jobCount }}</strong>
-        <small>最近工作流任务</small>
+      <div class="metric-card is-input">
+        <span>输入 Token</span>
+        <strong>{{ formatNumber(summary.promptTokens) }}</strong>
+        <small>模型发送内容</small>
       </div>
-      <div class="metric-card">
-        <span>总耗时</span>
-        <strong>{{ formatDuration(summary.totalDurationSeconds) }}</strong>
-        <small>阶段累计耗时</small>
+      <div class="metric-card is-output">
+        <span>输出 Token</span>
+        <strong>{{ formatNumber(summary.completionTokens) }}</strong>
+        <small>模型生成内容</small>
       </div>
-      <div class="metric-card">
-        <span>Token 消耗</span>
+      <div class="metric-card is-total">
+        <span>总 Token</span>
         <strong>{{ formatNumber(summary.totalTokens) }}</strong>
-        <small>输入 {{ formatNumber(summary.promptTokens) }} / 输出 {{ formatNumber(summary.completionTokens) }}</small>
+        <small>{{ models.length }} 个模型</small>
       </div>
-      <div class="metric-card">
-        <span>云端调用</span>
-        <strong>{{ summary.cloudCallCount }}</strong>
-        <small>平均延迟 {{ formatMs(summary.avgCloudLatencyMs) }}</small>
+      <div class="metric-card is-request">
+        <span>模型请求</span>
+        <strong>{{ formatNumber(summary.cloudCallCount) }}</strong>
+        <small>平均 {{ formatMs(summary.avgCloudLatencyMs) }}</small>
       </div>
     </section>
 
-    <el-card class="data-panel" shadow="never">
-      <template #header>
-        <div class="panel-header">
+    <section class="chart-grid">
+      <div class="data-panel trend-panel">
+        <div class="panel-heading">
           <div>
-            <span class="panel-kicker">阶段聚合</span>
-            <h2>各阶段耗时与数据量</h2>
+            <span class="section-kicker">TOKEN FLOW</span>
+            <h2>Token 使用趋势</h2>
           </div>
-          <span class="panel-count">{{ stages.length }} 个阶段</span>
+          <span class="panel-note">{{ granularityLabel }}</span>
         </div>
-      </template>
+        <div ref="trendChartRef" class="chart-canvas" aria-label="Token 使用趋势图" />
+      </div>
 
-      <el-table :data="stages" v-loading="loading" empty-text="暂无阶段统计" style="width: 100%">
-        <el-table-column prop="stageLabel" label="阶段" min-width="150" />
-        <el-table-column prop="count" label="次数" width="90" />
-        <el-table-column label="成功/失败" width="110">
-          <template #default="{ row }">{{ row.success }} / {{ row.failed }}</template>
+      <div class="data-panel model-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="section-kicker">MODEL MIX</span>
+            <h2>模型分布</h2>
+          </div>
+          <span class="panel-note">按总 Token</span>
+        </div>
+        <div class="model-content">
+          <div ref="modelChartRef" class="model-chart" aria-label="模型 Token 分布图" />
+          <div class="model-list">
+            <div v-for="model in models.slice(0, 4)" :key="model.model" class="model-list-row">
+              <span>{{ model.model }}</span>
+              <strong>{{ formatNumber(model.totalTokens) }}</strong>
+            </div>
+            <el-empty v-if="models.length === 0" :image-size="48" description="暂无模型请求" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="data-panel model-table-panel">
+      <div class="panel-heading">
+        <div>
+          <span class="section-kicker">MODEL SUMMARY</span>
+          <h2>各模型消耗</h2>
+        </div>
+      </div>
+      <el-table :data="models" v-loading="loading" empty-text="暂无模型统计" style="width: 100%">
+        <el-table-column prop="model" label="模型" min-width="180" />
+        <el-table-column label="请求次数" width="110" align="right">
+          <template #default="{ row }">{{ formatNumber(row.requestCount) }}</template>
         </el-table-column>
-        <el-table-column label="总耗时" width="120">
-          <template #default="{ row }">{{ formatDuration(row.durationSeconds) }}</template>
+        <el-table-column label="输入 Token" width="130" align="right">
+          <template #default="{ row }">{{ formatNumber(row.promptTokens) }}</template>
         </el-table-column>
-        <el-table-column label="平均耗时" width="120">
-          <template #default="{ row }">{{ formatDuration(row.avgDurationSeconds) }}</template>
+        <el-table-column label="输出 Token" width="130" align="right">
+          <template #default="{ row }">{{ formatNumber(row.completionTokens) }}</template>
         </el-table-column>
-        <el-table-column label="输入大小" width="120">
-          <template #default="{ row }">{{ formatMb(row.inputSizeMb) }}</template>
+        <el-table-column label="总 Token" width="130" align="right">
+          <template #default="{ row }"><strong class="token-total">{{ formatNumber(row.totalTokens) }}</strong></template>
         </el-table-column>
-        <el-table-column label="输出大小" width="120">
-          <template #default="{ row }">{{ formatMb(row.outputSizeMb) }}</template>
-        </el-table-column>
-        <el-table-column label="Token 输入/输出/总计" width="170">
-          <template #default="{ row }">{{ formatTokenUsage(row) }}</template>
-        </el-table-column>
-        <el-table-column label="云端延迟" width="120">
-          <template #default="{ row }">{{ formatMs(row.avgCloudLatencyMs) }}</template>
+        <el-table-column label="平均响应" width="130" align="right">
+          <template #default="{ row }">{{ formatMs(row.avgLatencyMs) }}</template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </section>
 
-    <el-card class="data-panel" shadow="never">
-      <template #header>
-        <div class="panel-header">
-          <div>
-            <span class="panel-kicker">明细记录</span>
-            <h2>视频处理阶段明细</h2>
-          </div>
-          <span class="panel-count">第 {{ eventPagination.page }} 页 · {{ events.length }} / {{ eventTotal }} 条</span>
+    <section class="data-panel task-panel">
+      <div class="panel-heading">
+        <div>
+          <span class="section-kicker">TASK RECORDS</span>
+          <h2>视频处理任务</h2>
         </div>
-      </template>
-
-      <el-table :data="events" v-loading="loading" empty-text="暂无处理明细" style="width: 100%">
-        <el-table-column label="视频/任务" min-width="260" show-overflow-tooltip>
+        <span class="panel-note">{{ taskTotal }} 条</span>
+      </div>
+      <el-table
+        :data="tasks"
+        row-key="jobId"
+        :expand-row-keys="expandedTaskIds"
+        v-loading="loading"
+        empty-text="当前时间范围暂无处理任务"
+        @expand-change="handleTaskExpand"
+      >
+        <el-table-column type="expand" width="48">
           <template #default="{ row }">
-            <div class="job-cell">
-              <strong>{{ row.title || row.videoId || row.jobId }}</strong>
-              <span>{{ row.videoId || '-' }}</span>
+            <div class="task-detail" v-loading="detailLoadingIds.includes(row.jobId)">
+              <template v-if="taskDetails[row.jobId]">
+                <div class="detail-heading">阶段耗时</div>
+                <div class="stage-timeline">
+                  <div v-for="stage in taskDetails[row.jobId].stages" :key="stage.id" class="stage-row">
+                    <span class="stage-marker" :class="`is-${stage.status}`" />
+                    <div class="stage-main">
+                      <strong>{{ stage.stageLabel }}</strong>
+                      <span>{{ stage.message || stage.startedAt }}</span>
+                    </div>
+                    <span>{{ formatDuration(stage.durationSeconds) }}</span>
+                    <span>{{ formatModels(stage.models) }}</span>
+                    <span>{{ formatTokenUsage(stage) }}</span>
+                    <span>{{ formatNumber(stage.requestCount) }} 次请求</span>
+                  </div>
+                </div>
+
+                <div class="detail-heading">模型请求</div>
+                <el-table :data="taskDetails[row.jobId].requests" size="small" empty-text="该任务没有可记录的模型请求">
+                  <el-table-column prop="createdAt" label="调用时间" width="165" />
+                  <el-table-column prop="stageLabel" label="阶段" width="125" />
+                  <el-table-column prop="operation" label="操作" min-width="155" />
+                  <el-table-column prop="model" label="模型" min-width="145" />
+                  <el-table-column label="状态" width="90">
+                    <template #default="{ row: requestRow }">
+                      <el-tag size="small" :type="requestStatusType(requestRow.status)">{{ requestStatusText(requestRow.status) }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="输入 / 输出 / 总计" width="180" align="right">
+                    <template #default="{ row: requestRow }">{{ formatTokenUsage(requestRow) }}</template>
+                  </el-table-column>
+                  <el-table-column label="响应" width="105" align="right">
+                    <template #default="{ row: requestRow }">{{ formatMs(requestRow.latencyMs) }}</template>
+                  </el-table-column>
+                  <el-table-column label="尝试" width="82" align="right">
+                    <template #default="{ row: requestRow }">{{ requestRow.attempt }}</template>
+                  </el-table-column>
+                </el-table>
+              </template>
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="stageLabel" label="阶段" width="140" />
-        <el-table-column label="状态" width="90">
+        <el-table-column label="视频 / 任务" min-width="260" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-tag :type="eventStatusType(row.status)" effect="light">{{ eventStatusText(row.status) }}</el-tag>
+            <div class="task-name">
+              <strong>{{ row.title }}</strong>
+              <span>{{ row.videoId || row.jobId }}</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="耗时" width="110">
+        <el-table-column label="状态" width="96">
+          <template #default="{ row }"><el-tag size="small" :type="taskStatusType(row.status)">{{ taskStatusText(row.status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="开始时间" width="165">
+          <template #default="{ row }">{{ formatDate(row.startedAt) }}</template>
+        </el-table-column>
+        <el-table-column label="总历时" width="110" align="right">
           <template #default="{ row }">{{ formatDuration(row.durationSeconds) }}</template>
         </el-table-column>
-        <el-table-column label="视频大小" width="130">
-          <template #default="{ row }">
-            {{ formatMb(row.inputSizeMb || row.outputSizeMb) }}
-          </template>
+        <el-table-column label="阶段" width="80" align="right">
+          <template #default="{ row }">{{ row.stageCount }}</template>
         </el-table-column>
-        <el-table-column label="处理配置" width="190">
-          <template #default="{ row }">
-            {{ processVersionText(row.processVersion) }} / {{ languageText(row.subtitleLanguage) }} / {{ burnProfileText(row.burnProfile) }}
-          </template>
+        <el-table-column label="模型" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ formatModels(row.models) }}</template>
         </el-table-column>
-        <el-table-column label="Token/延迟" width="210">
-          <template #default="{ row }">
-            {{ formatTokenUsage(row) }} / {{ formatMs(row.cloudLatencyMs) }}
-          </template>
+        <el-table-column label="输入 / 输出 / 总计" width="190" align="right">
+          <template #default="{ row }">{{ formatTokenUsage(row) }}</template>
         </el-table-column>
-        <el-table-column prop="startedAt" label="开始时间" width="165" />
-        <el-table-column prop="message" label="说明" min-width="220" show-overflow-tooltip />
+        <el-table-column label="请求" width="82" align="right">
+          <template #default="{ row }">{{ formatNumber(row.requestCount) }}</template>
+        </el-table-column>
       </el-table>
-      <div class="table-pagination" v-if="eventTotal > eventPagination.pageSize">
+      <div v-if="taskTotal > pagination.pageSize" class="table-pagination">
         <el-pagination
-          v-model:current-page="eventPagination.page"
-          :page-size="eventPagination.pageSize"
-          :total="eventTotal"
+          v-model:current-page="pagination.page"
+          :page-size="pagination.pageSize"
+          :total="taskTotal"
           layout="total, prev, pager, next, jumper"
           background
+          @current-change="fetchStatistics"
         />
       </div>
-    </el-card>
+    </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import * as echarts from 'echarts'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { youtubeApi } from '@/api/youtube'
 
 const loading = ref(false)
-const stats = ref({
-  summary: {},
-  stages: [],
-  events: [],
-  jobs: []
-})
-const eventPagination = reactive({ page: 1, pageSize: 50 })
-const eventTotal = ref(0)
+const rangePreset = ref('week')
+const dateRange = ref(defaultRange(7))
+const granularity = ref('auto')
+const stats = ref({ summary: {}, trend: [], models: [], tasks: [], range: {} })
+const taskTotal = ref(0)
+const pagination = reactive({ page: 1, pageSize: 20 })
+const taskDetails = reactive({})
+const detailLoadingIds = ref([])
+const expandedTaskIds = ref([])
+const trendChartRef = ref(null)
+const modelChartRef = ref(null)
+let trendChart = null
+let modelChart = null
 
 const summary = computed(() => stats.value.summary || {})
-const stages = computed(() => stats.value.stages || [])
-const events = computed(() => stats.value.events || [])
+const trend = computed(() => stats.value.trend || [])
+const models = computed(() => stats.value.models || [])
+const tasks = computed(() => stats.value.tasks || [])
+const granularityLabel = computed(() => stats.value.range?.granularity === 'hour' ? '按小时' : '按天')
 
-const languageMap = {
-  'zh-CN': '中文',
-  en: '英文',
-  ja: '日文',
-  ko: '韩文',
-  es: '西班牙语',
-  fr: '法语',
-  de: '德语',
-  ru: '俄语'
+function defaultRange(days) {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(end.getDate() - days + 1)
+  return [formatDateInput(start), formatDateInput(end)]
 }
 
-const fetchStatistics = async () => {
+function formatDateInput(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function setRangePreset(preset) {
+  rangePreset.value = preset
+  dateRange.value = defaultRange(preset === 'day' ? 1 : preset === 'month' ? 30 : 7)
+  pagination.page = 1
+  fetchStatistics()
+}
+
+function handleCustomRangeChange(value) {
+  rangePreset.value = 'custom'
+  if (Array.isArray(value) && value.length === 2 && value[0] && value[1]) {
+    refreshForFilter()
+  }
+}
+
+function refreshForFilter() {
+  pagination.page = 1
+  fetchStatistics()
+}
+
+async function fetchStatistics() {
   loading.value = true
   try {
-    const res = await youtubeApi.getWorkflowStatistics({
-      limit: 300,
-      page: eventPagination.page,
-      pageSize: eventPagination.pageSize
+    const response = await youtubeApi.getWorkflowStatistics({
+      page: pagination.page,
+      pageSize: pagination.pageSize,
+      dateFrom: dateRange.value?.[0] || '',
+      dateTo: dateRange.value?.[1] || '',
+      granularity: granularity.value,
     })
-    stats.value = res.data || stats.value
-    eventTotal.value = Number(res.data?.eventsTotal || stats.value.events?.length || 0)
-    eventPagination.page = Number(res.data?.eventsPage || eventPagination.page)
-    eventPagination.pageSize = Number(res.data?.eventsPageSize || eventPagination.pageSize)
+    stats.value = response.data || {}
+    taskTotal.value = Number(response.data?.tasksTotal || 0)
+    pagination.page = Number(response.data?.tasksPage || pagination.page)
+    expandedTaskIds.value = []
+    await nextTick()
+    renderCharts()
   } catch (error) {
     ElMessage.error('获取处理统计失败')
   } finally {
@@ -188,248 +309,414 @@ const fetchStatistics = async () => {
   }
 }
 
-watch(
-  () => eventPagination.page,
-  () => {
-    fetchStatistics()
+async function handleTaskExpand(row, expandedRows) {
+  const expanded = expandedRows.some(item => item.jobId === row.jobId)
+  expandedTaskIds.value = expandedRows.map(item => item.jobId)
+  if (!expanded || taskDetails[row.jobId] || detailLoadingIds.value.includes(row.jobId)) return
+  detailLoadingIds.value = [...detailLoadingIds.value, row.jobId]
+  try {
+    const response = await youtubeApi.getWorkflowTaskStatistics(row.jobId)
+    taskDetails[row.jobId] = response.data || { stages: [], requests: [] }
+  } catch (error) {
+    ElMessage.error('获取任务详情失败')
+  } finally {
+    detailLoadingIds.value = detailLoadingIds.value.filter(id => id !== row.jobId)
   }
-)
+}
 
-const formatDuration = (seconds) => {
-  const safeSeconds = Math.max(0, Math.round(Number(seconds) || 0))
-  const hours = Math.floor(safeSeconds / 3600)
-  const minutes = Math.floor((safeSeconds % 3600) / 60)
-  const remain = safeSeconds % 60
-  if (hours > 0) return `${hours}h ${minutes}m`
-  if (minutes > 0) return `${minutes}m ${remain}s`
+function renderCharts() {
+  renderTrendChart()
+  renderModelChart()
+}
+
+function renderTrendChart() {
+  if (!trendChartRef.value) return
+  trendChart ||= echarts.init(trendChartRef.value)
+  const labels = trend.value.map(item => item.bucket)
+  trendChart.setOption({
+    animationDuration: 280,
+    color: ['#2f80ed', '#14b8a6', '#f59e0b', '#7c5cff'],
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { top: 2, data: ['输入 Token', '输出 Token', '总 Token', '请求次数'] },
+    grid: { left: 58, right: 56, top: 44, bottom: 38 },
+    xAxis: { type: 'category', data: labels, axisLabel: { color: '#64748b', rotate: labels.length > 8 ? 30 : 0 }, axisLine: { lineStyle: { color: '#dbe4ee' } } },
+    yAxis: [
+      { type: 'value', axisLabel: { color: '#64748b', formatter: value => formatChartNumber(value) }, splitLine: { lineStyle: { color: '#edf2f7' } } },
+      { type: 'value', axisLabel: { color: '#64748b' }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: '输入 Token', type: 'bar', stack: 'tokens', barMaxWidth: 28, data: trend.value.map(item => item.promptTokens) },
+      { name: '输出 Token', type: 'bar', stack: 'tokens', barMaxWidth: 28, data: trend.value.map(item => item.completionTokens) },
+      { name: '总 Token', type: 'line', smooth: true, symbol: 'circle', symbolSize: 6, data: trend.value.map(item => item.totalTokens) },
+      { name: '请求次数', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', lineStyle: { type: 'dashed' }, data: trend.value.map(item => item.requestCount) },
+    ],
+  }, true)
+}
+
+function renderModelChart() {
+  if (!modelChartRef.value) return
+  modelChart ||= echarts.init(modelChartRef.value)
+  modelChart.setOption({
+    animationDuration: 280,
+    color: ['#2f80ed', '#14b8a6', '#f59e0b', '#7c5cff', '#ef476f', '#64748b'],
+    tooltip: { trigger: 'item', formatter: item => `${item.name}<br/>${formatNumber(item.value)} Token` },
+    series: [{
+      type: 'pie',
+      radius: ['52%', '76%'],
+      center: ['50%', '50%'],
+      label: { show: false },
+      emphasis: { scale: false },
+      data: models.value.map(item => ({ name: item.model, value: item.totalTokens })),
+    }],
+  }, true)
+}
+
+function handleResize() {
+  trendChart?.resize()
+  modelChart?.resize()
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString('zh-CN')
+}
+
+function formatChartNumber(value) {
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return value
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const remain = total % 60
+  if (hours) return `${hours}h ${minutes}m`
+  if (minutes) return `${minutes}m ${remain}s`
   return `${remain}s`
 }
 
-const formatMb = (value) => {
-  const number = Number(value || 0)
-  return number > 0 ? `${number.toFixed(number >= 100 ? 0 : 2)} MB` : '-'
+function formatMs(value) {
+  const milliseconds = Number(value || 0)
+  return milliseconds ? `${milliseconds.toFixed(0)} ms` : '-'
 }
 
-const formatMs = (value) => {
-  const number = Number(value || 0)
-  return number > 0 ? `${number.toFixed(0)} ms` : '-'
-}
-
-const formatNumber = (value) => {
-  const number = Number(value || 0)
-  return number > 0 ? number.toLocaleString('zh-CN') : '0'
-}
-
-const formatTokenUsage = (row) => {
+function formatTokenUsage(row) {
   const prompt = Number(row?.promptTokens || 0)
   const completion = Number(row?.completionTokens || 0)
   const total = Number(row?.totalTokens || 0)
-  if (!prompt && !completion && !total) return '-'
-  return `${formatNumber(prompt)} / ${formatNumber(completion)} / ${formatNumber(total)}`
+  return prompt || completion || total ? `${formatNumber(prompt)} / ${formatNumber(completion)} / ${formatNumber(total)}` : '-'
 }
 
-const languageText = (value) => languageMap[value] || value || '-'
-
-const processVersionText = (value) => {
-  const map = {
-    translation_v1: '处理方案一'
-  }
-  return map[value] || value || '-'
+function formatModels(value) {
+  return Array.isArray(value) && value.length ? value.join('、') : '-'
 }
 
-const burnProfileText = (value) => {
-  const map = {
-    stable: '稳定',
-    fast: '快速'
-  }
-  return map[value] || value || '-'
+function formatDate(value) {
+  return String(value || '').replace('T', ' ').slice(0, 19) || '-'
 }
 
-const eventStatusText = (status) => {
-  const map = {
-    running: '执行中',
-    success: '成功',
-    failed: '失败'
-  }
-  return map[status] || status || '-'
+function taskStatusText(status) {
+  return ({ queued: '排队中', running: '处理中', success: '成功', failed: '失败', waiting_confirmation: '待确认' })[status] || status || '-'
 }
 
-const eventStatusType = (status) => {
-  const map = {
-    running: 'warning',
-    success: 'success',
-    failed: 'danger'
-  }
-  return map[status] || 'info'
+function taskStatusType(status) {
+  return ({ queued: 'info', running: 'warning', success: 'success', failed: 'danger', waiting_confirmation: 'warning' })[status] || 'info'
 }
 
-onMounted(fetchStatistics)
+function requestStatusText(status) {
+  return status === 'success' ? '成功' : status === 'failed' ? '失败' : status || '-'
+}
+
+function requestStatusType(status) {
+  return status === 'success' ? 'success' : status === 'failed' ? 'danger' : 'info'
+}
+
+watch([trend, models], () => nextTick(renderCharts), { deep: true })
+
+onMounted(() => {
+  fetchStatistics()
+  window.addEventListener('resize', handleResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize)
+  trendChart?.dispose()
+  modelChart?.dispose()
+})
 </script>
 
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
-$panel-border: #dce6f2;
-$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
-$accent-blue: #2563eb;
-$accent-teal: #0f9f8f;
-$ink-strong: #172033;
+$ink: #162235;
+$muted: #64748b;
+$line: #dbe4ee;
+$panel: #ffffff;
 
 .workflow-statistics {
   display: grid;
   gap: 16px;
-
-  :deep(.el-card) {
-    border: 1px solid $panel-border;
-    border-radius: 8px;
-    box-shadow: $panel-shadow;
-  }
-
-  :deep(.el-card__header) {
-    padding: 14px 16px;
-    border-bottom: 1px solid $border-lighter;
-  }
-
-  :deep(.el-card__body) {
-    padding: 0;
-  }
-
-  :deep(.el-table th.el-table__cell) {
-    background: #f8fbff;
-    color: #5c6678;
-    font-weight: 600;
-  }
 }
 
-.page-hero {
+.statistics-toolbar,
+.data-panel,
+.metric-card {
+  border: 1px solid $line;
+  border-radius: 8px;
+  background: $panel;
+  box-shadow: 0 8px 20px rgba(26, 51, 79, 0.06);
+}
+
+.statistics-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 18px;
-  border: 1px solid $panel-border;
-  border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)),
-    #fff;
-  box-shadow: $panel-shadow;
+  gap: 20px;
+  padding: 16px 18px;
 
   h1 {
-    margin: 4px 0 8px;
-    color: $ink-strong;
-    font-size: 25px;
+    margin: 3px 0 0;
+    color: $ink;
+    font-size: 22px;
     line-height: 1.25;
-    font-weight: 700;
-  }
-
-  p {
-    max-width: 760px;
-    margin: 0;
-    color: #5b667a;
-    font-size: 14px;
-    line-height: 1.7;
   }
 }
 
-.eyebrow,
-.panel-kicker {
-  color: $accent-blue;
-  font-size: 12px;
+.section-kicker {
+  color: #0f9f8f;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .metric-card {
+  position: relative;
   display: grid;
-  gap: 6px;
-  padding: 14px;
-  border: 1px solid rgba(37, 99, 235, 0.12);
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 8px 18px rgba(28, 55, 90, 0.05);
+  gap: 7px;
+  min-height: 112px;
+  padding: 15px;
+  overflow: hidden;
 
-  span {
-    color: #5b667a;
-    font-size: 13px;
+  &::before {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    content: '';
+    background: #2f80ed;
   }
 
+  &.is-input::before { background: #14b8a6; }
+  &.is-output::before { background: #f59e0b; }
+  &.is-total::before { background: #7c5cff; }
+  &.is-request::before { background: #ef476f; }
+
+  span,
+  small { color: $muted; }
+
+  span { font-size: 13px; }
+
   strong {
-    color: $ink-strong;
+    color: $ink;
     font-size: 24px;
     line-height: 1;
   }
 
-  small {
-    color: $text-secondary;
-    font-size: 12px;
-  }
+  small { font-size: 12px; }
 }
 
-.panel-header {
+.chart-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
+  gap: 16px;
+}
+
+.data-panel {
+  overflow: hidden;
+}
+
+.panel-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-height: 64px;
+  padding: 13px 16px;
+  border-bottom: 1px solid $line;
 
   h2 {
-    margin: 2px 0 0;
-    color: $ink-strong;
-    font-size: 18px;
-    line-height: 1.3;
+    margin: 3px 0 0;
+    color: $ink;
+    font-size: 16px;
+    line-height: 1.35;
   }
 }
 
-.panel-count {
-  color: $text-secondary;
-  font-size: 13px;
+.panel-note {
+  color: $muted;
+  font-size: 12px;
 }
 
-.table-pagination {
-  display: flex;
-  justify-content: flex-end;
-  padding: 12px 16px 14px;
-  border-top: 1px solid $border-lighter;
-}
+.chart-canvas { height: 300px; }
 
-.job-cell {
+.model-content {
   display: grid;
-  gap: 4px;
-  min-width: 0;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(130px, 1fr);
+  align-items: center;
+  min-height: 300px;
+  padding: 4px 12px 8px;
+}
 
-  strong {
-    min-width: 0;
-    color: $ink-strong;
+.model-chart { width: 100%; height: 252px; }
+
+.model-list {
+  display: grid;
+  gap: 2px;
+}
+
+.model-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid #edf2f7;
+  color: $muted;
+  font-size: 12px;
+
+  span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  strong { color: $ink; font-variant-numeric: tabular-nums; }
+}
+
+.token-total { color: #0f9f8f; }
+
+.task-name {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+
+  strong {
+    overflow: hidden;
+    color: $ink;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span { color: $muted; font-size: 12px; }
+}
+
+.task-detail {
+  padding: 10px 18px 18px 66px;
+  background: #fbfdff;
+}
+
+.detail-heading {
+  margin: 12px 0 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stage-timeline {
+  margin-bottom: 18px;
+  border: 1px solid #e6edf5;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.stage-row {
+  display: grid;
+  grid-template-columns: 10px minmax(150px, 1.6fr) 100px minmax(130px, 1fr) 165px 100px;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #edf2f7;
+  color: #475569;
+  font-size: 12px;
+
+  &:last-child { border-bottom: 0; }
+}
+
+.stage-marker {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+
+  &.is-success { background: #16a34a; }
+  &.is-failed { background: #e11d48; }
+  &.is-running { background: #f59e0b; }
+}
+
+.stage-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+
+  strong { color: $ink; }
+
   span {
-    color: $text-secondary;
-    font-size: 12px;
+    overflow: hidden;
+    color: $muted;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
-@media (max-width: 1200px) {
-  .metric-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+.table-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid $line;
+}
+
+:deep(.el-table th.el-table__cell) {
+  background: #f6f9fc;
+  color: #526176;
+  font-weight: 600;
+}
+
+:deep(.el-table .cell) { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1320px) {
+  .statistics-toolbar { align-items: flex-start; flex-direction: column; }
+  .toolbar-actions { justify-content: flex-start; }
+  .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .chart-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
-  .page-hero {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .metric-grid {
-    grid-template-columns: 1fr;
-  }
+  .metric-grid { grid-template-columns: 1fr; }
+  .toolbar-actions { align-items: stretch; flex-direction: column; width: 100%; }
+  .toolbar-actions :deep(.el-date-editor),
+  .toolbar-actions :deep(.el-radio-group),
+  .toolbar-actions :deep(.el-button-group) { width: 100%; }
+  .toolbar-actions :deep(.el-button-group .el-button) { flex: 1; }
+  .model-content { grid-template-columns: 1fr; }
+  .model-chart { height: 190px; }
+  .model-list { padding: 0 10px 14px; }
+  .task-detail { padding: 8px; overflow-x: auto; }
+  .stage-timeline { min-width: 700px; }
 }
 </style>

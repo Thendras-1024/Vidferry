@@ -1,11 +1,34 @@
 ﻿"""处理版本二的剪辑增强:高光片段开头混剪与「Up Next」覆盖层生成。"""
 
 
+import logging
+import threading
+import time
+
 from app.core.llm_harness import LLMContractError, call_json_contract, contains_profanity, validate_chunk_summary, validate_editing_plan
 from app.core import llm_prompts
+from app.core.cover_service import (
+    analyze_cover_layout,
+    build_cover_clip_command,
+    find_cover_image,
+    normalize_cover_title,
+    write_cover_ass,
+)
+
+# 直接取命名 logger，避免依赖运行期注入的 backend_logger（测试环境未注入）。
+_logger = logging.getLogger("vidferry.backend")
 
 
 EDITING_INTRO_MIN_START_SECONDS = 30
+EDITING_COVER_DURATION_SECONDS = 1.0
+
+
+def _editing_cover_title(job, analysis_result):
+    title = normalize_cover_title((job or {}).get("coverTitle"))
+    if title:
+        return title
+    options = (analysis_result or {}).get("cover_title_options") or []
+    return normalize_cover_title(options[0] if options else "")
 
 
 def _select_intro_highlight_segments(analysis_result, max_segments=3):
@@ -126,10 +149,10 @@ def _editing_intro_video_filters(width, height, is_intro_clip=False, overlay_ass
 
 
 def _build_editing_intro_video(job, source_file, processed_file, analysis_result, work_dir):
-    # 处理版本二核心:截取前 3 个高光片段作开头(带 Up Next 覆盖层),与正片重新归一化后拼接
-    segments = _select_intro_highlight_segments(analysis_result, max_segments=3)
-    if not segments:
-        output_file = Path(processed_file)
+    # 处理版本二核心:封面片头、前 3 个高光片段和正片统一规格后拼接。
+    job_id = job.get("id")
+    output_file = Path(processed_file)
+    if not EDITING_ENABLE_COVER_INTRO and not EDITING_ENABLE_HIGHLIGHT_INTRO:
         watermarked = False
         if _watermark_enabled(job):
             _apply_watermark_to_mp4(output_file, job)
@@ -137,12 +160,13 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
         return {
             "path": output_file,
             "segments": [],
+            "cover": None,
             "skipped": True,
-            "reason": "未找到可用于开头混剪的高光片段",
+            "reason": "封面片头与高光拼接均已关闭",
             "watermarked": watermarked,
         }
 
-    job_id = job.get("id")
+    segments = _select_intro_highlight_segments(analysis_result, max_segments=3) if EDITING_ENABLE_HIGHLIGHT_INTRO else []
     ffmpeg = _resolve_ffmpeg_command()
     _, burn_config = _burn_profile_config(job.get("burnProfile"))
     processed_info = _get_video_info(processed_file)
@@ -156,13 +180,16 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
         fps = max_fps
 
     work_dir = _ensure_dir(work_dir)
-    output_file = Path(processed_file)
     clip_files = []
+    cover_result = None
+    cover_error = ""
     normalized_main = work_dir / f"{output_file.stem}_main_normalized.mp4"
     final_tmp = work_dir / f"{output_file.stem}_editing_concat.mp4"
     concat_file = work_dir / f"{output_file.stem}_concat.txt"
 
     overlay_ass_file = work_dir / f"{output_file.stem}_up_next_overlay.ass"
+    cover_ass_file = work_dir / f"{output_file.stem}_cover.ass"
+    cover_clip_file = work_dir / f"{output_file.stem}_cover.mp4"
 
     def encode_clip(input_file, output_clip, start=None, end=None, is_intro_clip=False):
         command = [ffmpeg, "-y"]
@@ -198,13 +225,86 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
         ])
         _run_command(command, cwd=BASE_DIR)
 
-    _update_translate_progress(job_id, 86, "处理版本二：正在截取前三个高光片段", step="editing")
+    cover_duration = EDITING_COVER_DURATION_SECONDS
+    cover_title = _editing_cover_title(job, analysis_result)
+    cover_path = find_cover_image(YOUTUBE_DOWNLOAD_DIR, job.get("videoId"), source_file)
+    if EDITING_ENABLE_COVER_INTRO and cover_title and cover_path:
+        try:
+            _update_translate_progress(job_id, 84, "处理版本二：正在生成封面片头", step="editing")
+            layout = analyze_cover_layout(cover_path, width, height, cover_title)
+            write_cover_ass(
+                cover_ass_file,
+                width,
+                height,
+                cover_duration,
+                cover_title,
+                layout,
+                signature=job.get("coverSignature") or job.get("coverBrandName"),
+            )
+            _run_command(
+                build_cover_clip_command(
+                    ffmpeg,
+                    cover_path,
+                    cover_ass_file,
+                    cover_clip_file,
+                    width,
+                    height,
+                    fps,
+                    cover_duration,
+                    burn_config,
+                    layout,
+                    has_audio=bool(processed_info.get("has_audio")),
+                    color_info=processed_info.get("color"),
+                ),
+                cwd=BASE_DIR,
+            )
+            if not cover_clip_file.is_file() or cover_clip_file.stat().st_size <= 0:
+                raise RuntimeError("FFmpeg 未生成有效封面片头文件")
+            clip_files.append(cover_clip_file)
+            cover_result = {
+                "path": str(cover_path),
+                "title": cover_title,
+                "signature": job.get("coverSignature") or job.get("coverBrandName") or "Vidferry",
+                "durationSeconds": cover_duration,
+                "layout": layout,
+            }
+        except Exception as exc:
+            cover_error = str(exc)[:300]
+            backend_logger.warning(
+                "封面片头生成失败 : job_id = %s | video_id = %s | reason = %s",
+                job_id or "",
+                job.get("videoId") or "",
+                cover_error,
+            )
+
+    if not segments and not clip_files:
+        watermarked = False
+        if _watermark_enabled(job):
+            _apply_watermark_to_mp4(output_file, job)
+            watermarked = True
+        if cover_error:
+            reason = cover_error
+        elif not EDITING_ENABLE_COVER_INTRO:
+            reason = "封面片头已关闭且未找到可用高光片段"
+        else:
+            reason = "未找到本地封面或封面标题"
+        return {
+            "path": output_file,
+            "segments": [],
+            "cover": None,
+            "skipped": True,
+            "reason": reason,
+            "watermarked": watermarked,
+        }
+
+    if segments:
+        _update_translate_progress(job_id, 86, "处理版本二：正在截取前三个高光片段", step="editing")
     for index, segment in enumerate(segments, start=1):
         clip_file = work_dir / f"{output_file.stem}_intro_{index}.mp4"
         encode_clip(processed_file, clip_file, start=segment["start"], end=segment["end"], is_intro_clip=True)
         clip_files.append(clip_file)
 
-    _update_translate_progress(job_id, 91, "处理版本二：正在拼接高光开头与正片", step="editing")
+    _update_translate_progress(job_id, 91, "处理版本二：正在拼接封面、高光与正片", step="editing")
     encode_clip(processed_file, normalized_main)
     concat_lines = [f"file '{_ffmpeg_concat_file_path(path)}'" for path in [*clip_files, normalized_main]]
     concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
@@ -227,8 +327,9 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
     return {
         "path": output_file,
         "segments": segments,
+        "cover": cover_result,
         "skipped": False,
-        "reason": "",
+        "reason": cover_error,
         "watermarked": watermarked,
     }
 
@@ -297,7 +398,7 @@ def _unsafe_transcript_ranges(segments):
     return ranges
 
 
-def _call_editing_contract(messages, contract_id, validator, max_tokens):
+def _call_editing_contract(messages, contract_id, validator, max_tokens, telemetry=None, soft_validator=None):
     return call_json_contract(
         messages=messages,
         contract_id=contract_id,
@@ -309,6 +410,8 @@ def _call_editing_contract(messages, contract_id, validator, max_tokens):
         temperature=0.4,
         max_tokens=max_tokens,
         prompt_version=llm_prompts.EDITING_PROMPT_VERSION,
+        telemetry=telemetry,
+        soft_validator=soft_validator,
     )
 
 
@@ -320,7 +423,7 @@ def _editing_analysis_user_prompt(job, transcript_text, chunk_context=""):
     return llm_prompts.build_editing_analysis_prompt(job, transcript_text, chunk_context)
 
 
-def _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ranges):
+def _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ranges, telemetry=None):
     max_chars = max(4000, LLM_MAX_TRANSCRIPT_CHARS)
     chunks = _split_transcript_lines(transcript_text, max_chars)
     if len(chunks) <= 1:
@@ -332,11 +435,12 @@ def _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ra
         result, usage, generation_meta = _call_editing_contract(
             [
                 {"role": "system", "content": _editing_analysis_system_prompt()},
-                {"role": "user", "content": llm_prompts.build_chunk_summary_prompt(index, len(chunks), chunk)},
+                {"role": "user", "content": llm_prompts.build_chunk_summary_prompt(job, index, len(chunks), chunk)},
             ],
             "editing_chunk_summary",
             lambda value: validate_chunk_summary(value, max_timestamp, blocked_ranges),
             1200,
+            telemetry,
         )
         summaries.append(result)
         usage_total["tokens"] += int(usage.get("tokens") or 0)
@@ -394,33 +498,54 @@ def _strip_topics_from_publish_copy(value):
     return "\n".join(lines).strip()
 
 
-def _generate_editing_plan(job, segments):
+def _generate_editing_plan(job, segments, telemetry=None):
+    """文案生成入口：记录开始 / 完成 / 失败日志，便于在并发线程下定位单次 LLM 调用。"""
+    video_label = str(job.get("title") or job.get("videoId") or "-")
+    thread_label = threading.current_thread().name
+    _logger.info("文案生成开始 : thread = %s | video = %s", thread_label, video_label)
+    started_at = time.time()
+    try:
+        result, usage = _generate_editing_plan_impl(job, segments, telemetry)
+    except Exception:
+        _logger.exception(
+            "文案生成失败 : thread = %s | video = %s | elapsed = %.1fs",
+            thread_label, video_label, time.time() - started_at,
+        )
+        raise
+    _logger.info(
+        "文案生成完成 : thread = %s | video = %s | elapsed = %.1fs | tokens = %d",
+        thread_label, video_label, time.time() - started_at, int(usage.get("totalTokens") or 0),
+    )
+    return result, usage
+
+
+def _generate_editing_plan_impl(job, segments, telemetry=None):
+    research_context = youtube_video_research_context(job.get("videoId"))
+    job = {**job, **research_context}
     transcript_text = _format_transcript_for_model(segments)
     if not transcript_text.strip():
         raise NoSpeechDetectedError("未识别到可用于剪辑分析的字幕文本。")
 
     max_timestamp = _max_transcript_seconds(segments)
     blocked_ranges = _unsafe_transcript_ranges(segments)
-    compact_text, chunk_usage = _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ranges)
+    compact_text, chunk_usage = _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ranges, telemetry)
     chunk_context = ""
     if chunk_usage:
         chunk_context = "下面是长视频分块后的摘要和候选片段，请基于它们汇总最终剪辑方案。"
 
-    minimum_highlights = 6 if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING else 0
-    try:
-        result, usage, generation_meta = _call_editing_contract(
-            [
-                {"role": "system", "content": _editing_analysis_system_prompt()},
-                {"role": "user", "content": _editing_analysis_user_prompt(job, compact_text, chunk_context)},
-            ],
-            "editing_plan",
-            lambda value: validate_editing_plan(value, max_timestamp, blocked_ranges, minimum_highlights),
-            2200,
-        )
-    except LLMContractError as exc:
-        if minimum_highlights and any("可用安全高光不足" in item for item in exc.violations):
-            raise RuntimeError("可用安全高光不足 6 条，请人工检查转写内容或重新生成剪辑方案。") from exc
-        raise
+    result, usage, generation_meta = _call_editing_contract(
+        [
+            {"role": "system", "content": _editing_analysis_system_prompt()},
+            {"role": "user", "content": _editing_analysis_user_prompt(job, compact_text, chunk_context)},
+        ],
+        "editing_plan",
+        lambda value: validate_editing_plan(value, max_timestamp, blocked_ranges),
+        6000,  # editing_plan 输出结构大，需为 reasoning + 完整 JSON 留足空间，2200 会触发截断或空 content
+        telemetry,
+        soft_validator=lambda value, warnings: validate_editing_plan(
+            value, max_timestamp, blocked_ranges, soft_warnings=warnings,
+        ),
+    )
     if chunk_usage:
         base_tokens = int(usage.get("tokens") or 0)
         usage["tokens"] = base_tokens + int(chunk_usage.get("tokens") or 0)
@@ -431,8 +556,26 @@ def _generate_editing_plan(job, segments):
         generation_meta["attemptCount"] += int(chunk_usage.get("attemptCount") or 0)
         generation_meta["validationRetries"] += int(chunk_usage.get("validationRetries") or 0)
 
+    highlight_filter_summary = result.pop("_highlightFilterSummary", {})
+    review_warnings = list(generation_meta.get("softWarnings") or [])
     result["publish_copy"] = _strip_topics_from_publish_copy(result.get("publish_copy"))
     result["highlight_segments"] = _normalize_highlight_segments(result.get("highlight_segments"))
+    has_explicit_profanity = bool(blocked_ranges)
+    result["contentRisk"] = {
+        "requiresPublishConfirmation": has_explicit_profanity,
+        "categories": ["explicit_profanity"] if has_explicit_profanity else [],
+        "excludedHighlightCount": int(highlight_filter_summary.get("blockedByContentRisk") or 0),
+        "availableHighlightCount": len(result["highlight_segments"]),
+        "message": (
+            "检测到转写中含明确粗口，中文字幕已使用 * 替换；原声及英文字幕可能仍含风险，发布前需要人工确认。"
+            if has_explicit_profanity else ""
+        ),
+    }
+    if review_warnings:
+        result["reviewWarnings"] = review_warnings
+        result["contentRisk"]["requiresPublishConfirmation"] = True
+        result["contentRisk"]["categories"].append("generated_copy_review")
+        result["contentRisk"]["message"] = "生成文案存在待审核表达，视频已处理但发布前需要人工确认。"
     result["process_version"] = PROCESS_VERSION_EDITING
     result["model"] = {
         "provider": usage.get("provider") or "openai-compatible",
@@ -442,26 +585,15 @@ def _generate_editing_plan(job, segments):
     return result, usage
 
 
-def _process_editing_plan(job, source_file):
+def _prepare_editing_transcript(job, source_file):
     processed_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR)
     work_dir = _ensure_dir(processed_dir / f"{Path(source_file).stem}_editing_work")
-    job_id = job.get("id")
-    update_youtube_workflow_job(
-        job_id,
-        step="analysis",
-        message="处理版本二：正在准备转写与高光片段分析",
-        progress=12,
-        speed="",
-        eta="",
-    )
-    segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir, progress_base=18, progress_done=46)
-    update_youtube_workflow_job(
-        job_id,
-        step="analysis",
-        message="转写完成，正在生成剪辑方案",
-        progress=58,
-    )
-    result, usage = _generate_editing_plan(job, segments)
+    return _get_or_create_transcript(job, source_file, work_dir, progress_base=18, progress_done=46)
+
+
+def _process_editing_plan(job, source_file, telemetry=None):
+    segments, language, transcript_file = _prepare_editing_transcript(job, source_file)
+    result, usage = _generate_editing_plan(job, segments, telemetry)
     save_youtube_video_analysis(job.get("videoId"), {
         **result,
         "transcriptLanguage": language or "",
@@ -476,6 +608,8 @@ def _analysis_error_payload(exc, job=None):
         "summary": "",
         "china_view_angle": "",
         "title_options": [],
+        "cover_title_options": [],
+        "cover_context": "",
         "publish_copy": "",
         "tags": [],
         "highlight_segments": [],
@@ -490,7 +624,7 @@ def _analysis_error_payload(exc, job=None):
     }
 
 
-def _run_analysis_from_transcript_job(job, source_file):
+def _run_analysis_from_transcript_job(job, source_file, telemetry=None):
     processed_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR)
     work_dir = _ensure_dir(processed_dir / f"{Path(source_file).stem}_analysis_work")
     job_id = job.get("id")
@@ -511,7 +645,7 @@ def _run_analysis_from_transcript_job(job, source_file):
         message="转写文本准备完成，正在调用模型生成标题、文案和标签",
         progress=58,
     )
-    result, usage = _generate_editing_plan(job, segments)
+    result, usage = _generate_editing_plan(job, segments, telemetry)
     result["process_version"] = job.get("processVersion") or PROCESS_VERSION_TRANSLATION
     save_youtube_video_analysis(job.get("videoId"), {
         **result,
@@ -545,9 +679,9 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         if not row:
             return None
         analysis_status = int(row["analysis_status"] or 0)
-        if not force and analysis_status in {1, 2}:
+        if analysis_status == 2 or _active_analysis_job_for_video(cursor, video_id):
             return None
-        if not force and _active_analysis_job_for_video(cursor, video_id):
+        if not force and analysis_status == 1:
             return None
 
     payload = {

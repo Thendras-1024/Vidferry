@@ -4,6 +4,8 @@ import datetime
 import json
 import re
 
+from app.core.cover_service import normalize_cover_context, normalize_cover_title
+
 
 def _parse_upload_date(value):
     if not value:
@@ -136,8 +138,11 @@ def _build_default_publish_draft(analysis_result):
         if str(title or "").strip()
     ]
     selected_title = title_options[0] if title_options else ""
+    cover_title_options = result.get("cover_title_options") if isinstance(result.get("cover_title_options"), list) else []
     return {
         "title": selected_title,
+        "coverTitle": normalize_cover_title(cover_title_options[0] if cover_title_options else ""),
+        "coverContext": normalize_cover_context(result.get("cover_context")),
         "description": str(result.get("publish_copy") or "").strip(),
         "tags": _clean_topic_list(result.get("tags")),
         "source": "llm_default",
@@ -149,8 +154,12 @@ def _parse_publish_draft(raw_value, analysis_result=None):
     draft = _parse_json_object(raw_value)
     if not draft:
         return {}
+    result = analysis_result if isinstance(analysis_result, dict) else {}
+    cover_title_options = result.get("cover_title_options") if isinstance(result.get("cover_title_options"), list) else []
     return {
         "title": str(draft.get("title") or "").strip(),
+        "coverTitle": normalize_cover_title(draft.get("coverTitle") or draft.get("cover_title") or (cover_title_options[0] if cover_title_options else "")),
+        "coverContext": normalize_cover_context(draft.get("coverContext") or draft.get("cover_context") or result.get("cover_context")),
         "description": str(draft.get("description") or "").strip(),
         "tags": _clean_topic_list(draft.get("tags")),
         "source": str(draft.get("source") or "").strip(),

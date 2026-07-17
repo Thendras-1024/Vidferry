@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
+
+from app.config import LLM_EXTRA_BODY
+from app.core.errors import LLMContractError, LLMRequestError
 
 
 CONTRACT_VERSION = "zh-safe-structured-v2"
@@ -28,13 +32,62 @@ _DISALLOWED_TEXT_RE = re.compile(
 _SEVERITIES = {"none", "low", "medium", "high", "critical"}
 
 
-class LLMContractError(RuntimeError):
-    def __init__(self, contract_id, violations, raw_text=""):
-        self.contract_id = contract_id
-        self.violations = [str(item) for item in violations if str(item)] or ["模型输出不符合契约"]
-        self.raw_text = str(raw_text or "")
-        self.detail = "；".join(self.violations[:8])
-        super().__init__(f"模型输出不符合 {contract_id} 契约：{self.detail}")
+# LLMContractError 与 LLMRequestError 定义已集中到 app/core/errors.py，
+# 本模块通过顶部 import re-export，下方分类函数仍直接使用这两个类名。
+
+
+def _classify_http_error(exc, model=""):
+    code = getattr(exc, "code", None)
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        body = ""
+    snippet = " ".join(body.split())[:300]
+    if code in (401, 403):
+        return LLMRequestError("http_auth", f"鉴权失败 HTTP {code}：{snippet}", http_code=code, model=model,
+                               recommendation="检查 LLM_API_KEY 是否有效、是否有该模型权限。")
+    if code == 404:
+        return LLMRequestError("http_not_found", f"模型或接口不存在 HTTP 404：{snippet}", http_code=code, model=model,
+                               recommendation="检查 LLM_MODEL 名称与 LLM_BASE_URL 是否匹配。")
+    if code == 429:
+        return LLMRequestError("http_rate_limit", f"触发限流 HTTP 429：{snippet}", http_code=code, model=model,
+                               recommendation="请求过于频繁或额度不足，稍后重试或提升配额。")
+    if code == 400:
+        return LLMRequestError("http_bad_request", f"请求参数被拒 HTTP 400：{snippet}", http_code=code, model=model,
+                               recommendation="多为模型不支持某参数(如 response_format 或 LLM_EXTRA_BODY 的 enable_thinking)，核对模型兼容性。")
+    if code is not None and 500 <= code < 600:
+        return LLMRequestError("http_server_error", f"模型服务端错误 HTTP {code}：{snippet}", http_code=code, model=model,
+                               recommendation="服务商侧异常，稍后重试。")
+    return LLMRequestError("http_other", f"模型接口调用失败 HTTP {code}：{snippet}", http_code=code, model=model)
+
+
+def _classify_url_error(exc, model=""):
+    reason = getattr(exc, "reason", exc)
+    reason_text = str(reason or "")
+    if isinstance(reason, socket.timeout) or "timed out" in reason_text.lower():
+        return LLMRequestError("network_timeout", f"请求超时：{reason_text[:200]}", model=model,
+                               recommendation="调大 LLM_TIMEOUT，或排查网络/模型响应速度；思考模型可在 LLM_EXTRA_BODY 关闭推理降低延迟。")
+    return LLMRequestError("network_connection", f"网络连接失败：{reason_text[:200]}", model=model,
+                           recommendation="检查网络、代理与 LLM_BASE_URL 是否可达。")
+
+
+# 空 content 按返回的 finish_reason 再细分，便于给出对症建议。
+_EMPTY_CONTENT_REASONS = {
+    "content_filtered": ["模型输出触发内容安全审查，返回为空"],
+    "length_truncated": ["模型输出被 max_tokens 截断导致为空，建议调大 max_tokens 或关闭推理"],
+    "empty_content": ["模型返回空 content，常见于思考模型推理占用全部 token；建议调大 max_tokens 或关闭推理"],
+}
+
+
+def _classify_contract_failure(exc, last_raw, finish_reason=None):
+    """区分契约失败的具体原因：空 content / 被审查拦截 / 被截断 / JSON 损坏 / 字段校验。"""
+    if str(last_raw or "").strip():
+        return "json_parse" if isinstance(exc, ValueError) else "contract_validation"
+    if finish_reason == "content_filter":
+        return "content_filtered"
+    if finish_reason == "length":
+        return "length_truncated"
+    return "empty_content"
 
 
 def _clean_json_text(value):
@@ -71,16 +124,27 @@ def _request_completion(base_url, api_key, timeout, payload):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _completion_with_json_mode(base_url, api_key, timeout, payload):
+def _classify_request_error(exc, model=""):
+    if isinstance(exc, urllib.error.HTTPError):
+        return _classify_http_error(exc, model)
+    return _classify_url_error(exc, model)
+
+
+def _completion_with_json_mode(base_url, api_key, timeout, payload, model=""):
     try:
         return _request_completion(base_url, api_key, timeout, payload)
     except urllib.error.HTTPError as exc:
-        if exc.code != 400 or "response_format" not in payload:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"模型接口调用失败 HTTP {exc.code}: {body[:500]}") from exc
-        fallback_payload = dict(payload)
-        fallback_payload.pop("response_format", None)
-        return _request_completion(base_url, api_key, timeout, fallback_payload)
+        # 仅当疑似模型不支持 json_object 时，去掉 response_format 再试一次。
+        if exc.code == 400 and "response_format" in payload:
+            fallback_payload = dict(payload)
+            fallback_payload.pop("response_format", None)
+            try:
+                return _request_completion(base_url, api_key, timeout, fallback_payload)
+            except (urllib.error.HTTPError, urllib.error.URLError) as fallback_exc:
+                raise _classify_request_error(fallback_exc, model) from exc
+        raise _classify_request_error(exc, model) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise _classify_url_error(exc, model) from exc
 
 
 def _usage(data):
@@ -111,7 +175,16 @@ def _repair_message(raw_text, violations):
     }
 
 
-def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version):
+def _emit_usage_telemetry(telemetry, payload):
+    if not callable(telemetry):
+        return
+    try:
+        telemetry(payload)
+    except Exception:
+        logging.exception("LLM 用量遥测写入失败 contract = %s", payload.get("operation") or "")
+
+
+def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None):
     """调用模型并最多进行一次针对契约错误的完整重写。"""
     if not api_key or not base_url or not model:
         raise RuntimeError("LLM_API_KEY、LLM_BASE_URL 或模型名称未配置。")
@@ -129,19 +202,107 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
             "max_tokens": int(max_tokens),
             "response_format": {"type": "json_object"},
         }
-        data = _completion_with_json_mode(base_url, api_key, timeout, payload)
-        _merge_usage(total_usage, _usage(data))
-        last_raw = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        if LLM_EXTRA_BODY:
+            payload.update(LLM_EXTRA_BODY)
+        attempt_started_at = time.time()
+        try:
+            data = _completion_with_json_mode(base_url, api_key, timeout, payload, model)
+        except Exception as exc:
+            _emit_usage_telemetry(telemetry, {
+                "operation": contract_id,
+                "provider": "openai-compatible",
+                "model": model,
+                "status": "failed",
+                "attempt": attempt,
+                "latencyMs": round((time.time() - attempt_started_at) * 1000, 2),
+                "errorMessage": str(exc),
+                "errorCategory": getattr(exc, "category", None),
+            })
+            raise
+        attempt_usage = _usage(data)
+        _merge_usage(total_usage, attempt_usage)
+        _choice = (data.get("choices") or [{}])[0] or {}
+        _message = _choice.get("message") or {}
+        last_raw = str(_message.get("content") or "")
+        last_finish_reason = _choice.get("finish_reason")
+        if not last_raw.strip():
+            logging.warning(
+                "LLM 返回空 content contract=%s model=%s finish_reason=%s message_keys=%s reasoning_head=%r usage=%s",
+                contract_id,
+                payload.get("model"),
+                last_finish_reason,
+                list(_message.keys()),
+                str(_message.get("reasoning_content") or "")[:300],
+                data.get("usage"),
+            )
+        parsed = None
         try:
             parsed = extract_json_object(last_raw)
             result = validator(parsed)
         except (ValueError, TypeError, LLMContractError) as exc:
+            contract_category = _classify_contract_failure(exc, last_raw, last_finish_reason)
             last_violations = list(getattr(exc, "violations", []) or [str(exc)])
-            logging.warning("LLM 契约校验失败 contract=%s attempt=%s violations=%s", contract_id, attempt, last_violations[:8])
+            if not last_raw.strip():
+                last_violations = _EMPTY_CONTENT_REASONS.get(contract_category, ["模型返回空 content"])
+            if isinstance(exc, LLMContractError) and parsed is not None and attempt == 2 and callable(soft_validator):
+                soft_warnings = []
+                try:
+                    result = soft_validator(parsed, soft_warnings)
+                except (ValueError, TypeError, LLMContractError):
+                    pass
+                else:
+                    _emit_usage_telemetry(telemetry, {
+                        **attempt_usage,
+                        "operation": contract_id,
+                        "provider": "openai-compatible",
+                        "model": model,
+                        "status": "soft_warning",
+                        "attempt": attempt,
+                        "latencyMs": round((time.time() - attempt_started_at) * 1000, 2),
+                        "errorMessage": "；".join(soft_warnings[:8]),
+                        "violations": soft_warnings,
+                        "rawOutput": last_raw,
+                    })
+                    total_usage.update({
+                        "provider": "openai-compatible", "model": model,
+                        "latencyMs": round((time.time() - started_at) * 1000, 2),
+                    })
+                    return result, total_usage, {
+                        "promptVersion": prompt_version, "contractVersion": CONTRACT_VERSION,
+                        "attemptCount": attempt, "validationRetries": attempt - 1,
+                        "softWarnings": soft_warnings,
+                    }
+            _emit_usage_telemetry(telemetry, {
+                **attempt_usage,
+                "operation": contract_id,
+                "provider": "openai-compatible",
+                "model": model,
+                "status": "contract_failed",
+                "attempt": attempt,
+                "latencyMs": round((time.time() - attempt_started_at) * 1000, 2),
+                "errorMessage": "；".join(last_violations[:8]),
+                "errorCategory": contract_category,
+                "violations": last_violations,
+                "rawOutput": last_raw,
+            })
+            logging.warning(
+                "LLM 契约校验失败 contract=%s attempt=%s category=%s violations=%s",
+                contract_id, attempt, contract_category, last_violations[:8],
+            )
             if attempt == 1:
                 current_messages = [*messages, _repair_message(last_raw, last_violations)]
                 continue
-            raise LLMContractError(contract_id, last_violations, last_raw) from exc
+            raise LLMContractError(contract_id, last_violations, last_raw, category=contract_category) from exc
+
+        _emit_usage_telemetry(telemetry, {
+            **attempt_usage,
+            "operation": contract_id,
+            "provider": "openai-compatible",
+            "model": model,
+            "status": "success",
+            "attempt": attempt,
+            "latencyMs": round((time.time() - attempt_started_at) * 1000, 2),
+        })
 
         total_usage.update({
             "provider": "openai-compatible",
@@ -156,7 +317,7 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
         }
         return result, total_usage, metadata
 
-    raise LLMContractError(contract_id, last_violations, last_raw)
+    raise LLMContractError(contract_id, last_violations, last_raw, category="contract_validation")
 
 
 def _fail(violations):
@@ -197,7 +358,7 @@ def _fixed_fields(value, expected, path, violations):
         violations.append(f"{path} 包含未定义字段：{','.join(extra)}")
 
 
-def _chinese_text(value, path, violations, allow_empty=False, forbid_latin=False):
+def _chinese_text(value, path, violations, allow_empty=False, forbid_latin=False, soft_warnings=None):
     if not isinstance(value, str):
         violations.append(f"{path} 必须是字符串")
         return ""
@@ -209,9 +370,11 @@ def _chinese_text(value, path, violations, allow_empty=False, forbid_latin=False
     elif len(_HAN_RE.findall(text)) < 2:
         violations.append(f"{path} 必须使用简体中文")
     elif contains_disallowed_text(text):
-        violations.append(f"{path} 不得包含粗俗、攻击或负面吐槽表达")
+        warning = f"{path} 不得包含粗俗、攻击或负面吐槽表达"
+        (soft_warnings if soft_warnings is not None else violations).append(warning)
     elif _has_invalid_mixed_language(text, forbid_latin=forbid_latin):
-        violations.append(f"{path} 不得包含外文口语或中英文混杂表达")
+        warning = f"{path} 不得包含外文口语或中英文混杂表达"
+        (soft_warnings if soft_warnings is not None else violations).append(warning)
     return text
 
 
@@ -222,7 +385,7 @@ def _number(value, path, violations):
     return float(value)
 
 
-def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_empty=True, forbid_latin=False):
+def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_empty=True, forbid_latin=False, soft_warnings=None):
     if not isinstance(value, list):
         violations.append(f"{path} 必须是数组")
         return []
@@ -233,7 +396,7 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
     result = []
     for index, item in enumerate(value[:max_items]):
         if chinese:
-            text = _chinese_text(item, f"{path}[{index}]", violations, forbid_latin=forbid_latin)
+            text = _chinese_text(item, f"{path}[{index}]", violations, forbid_latin=forbid_latin, soft_warnings=soft_warnings)
         elif isinstance(item, str):
             text = item.strip()
             if not text:
@@ -246,7 +409,38 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
     return result
 
 
-def _highlight_segments(value, max_timestamp, violations, path="highlight_segments", blocked_ranges=(), max_items=8):
+def _cover_title_list(value, violations, soft_warnings=None):
+    titles = _string_list(value, "cover_title_options", violations, max_items=4, allow_empty=False, forbid_latin=True, soft_warnings=soft_warnings)
+    if isinstance(value, list) and not 2 <= len(value) <= 4:
+        violations.append("cover_title_options 必须包含 2-4 项")
+    result = []
+    for index, title in enumerate(titles):
+        lines = [line.strip() for line in title.splitlines() if line.strip()]
+        if len(lines) != 2:
+            violations.append(f"cover_title_options[{index}] 必须严格包含两行")
+            continue
+        if any(len(line) < 2 or len(line) > 12 for line in lines):
+            violations.append(f"cover_title_options[{index}] 每行必须为 2-12 个字符")
+            continue
+        if sum(len(line) for line in lines) > 20:
+            violations.append(f"cover_title_options[{index}] 总长度不得超过 20 个字符")
+            continue
+        if any("#" in line for line in lines):
+            violations.append(f"cover_title_options[{index}] 不得包含 #")
+            continue
+        result.append("\n".join(lines))
+    return result
+
+
+def _highlight_segments(
+    value,
+    max_timestamp,
+    violations,
+    path="highlight_segments",
+    blocked_ranges=(),
+    max_items=8,
+    filter_stats=None,
+):
     if not isinstance(value, list):
         violations.append(f"{path} 必须是数组")
         return []
@@ -270,23 +464,36 @@ def _highlight_segments(value, max_timestamp, violations, path="highlight_segmen
             item_violations.append(f"{item_path} 时长必须为 5-10 秒")
         if max_timestamp and end > max_timestamp + 0.01:
             item_violations.append(f"{item_path}.end 超出转写时长")
-        if any(start < float(block_end) and end > float(block_start) for block_start, block_end in blocked_ranges):
+        overlaps_blocked_range = any(
+            start < float(block_end) and end > float(block_start)
+            for block_start, block_end in blocked_ranges
+        )
+        if overlaps_blocked_range:
             item_violations.append(f"{item_path} 覆盖明确粗口转写片段")
+            if filter_stats is not None:
+                filter_stats["blockedByContentRisk"] = int(filter_stats.get("blockedByContentRisk") or 0) + 1
         if item_violations:
             continue
         output.append({"start": round(start, 2), "end": round(end, 2), "type": kind, "reason": reason, "suggested_caption": caption})
     return sorted(output, key=lambda item: (item["start"], item["end"]))[:max(0, int(max_items or 0))]
 
 
-def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_highlights=0):
+def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_highlights=0, soft_warnings=None):
     violations = []
     if not isinstance(value, dict):
         _fail(["顶层必须是对象"])
     _fixed_fields(value, {
-        "summary", "china_view_angle", "title_options", "publish_copy", "tags",
+        "summary", "china_view_angle", "title_options", "cover_title_options", "publish_copy", "tags",
         "highlight_segments", "risk_notes", "editing_focus",
     }, "剪辑方案", violations)
-    highlights = _highlight_segments(value.get("highlight_segments"), max_timestamp, violations, blocked_ranges=blocked_ranges)
+    highlight_filter_stats = {}
+    highlights = _highlight_segments(
+        value.get("highlight_segments"),
+        max_timestamp,
+        violations,
+        blocked_ranges=blocked_ranges,
+        filter_stats=highlight_filter_stats,
+    )
     if len(highlights) < max(0, int(minimum_highlights or 0)):
         violations.append(f"可用安全高光不足 {int(minimum_highlights)} 条，请人工检查转写内容或重新生成剪辑方案")
     risk_notes = []
@@ -306,15 +513,19 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             risk_notes.append(review_note)
     result = {
         "summary": _chinese_text(value.get("summary"), "summary", violations),
-        "china_view_angle": _chinese_text(value.get("china_view_angle"), "china_view_angle", violations),
-        "title_options": _string_list(value.get("title_options"), "title_options", violations, allow_empty=False),
-        "publish_copy": _chinese_text(value.get("publish_copy"), "publish_copy", violations),
+        "china_view_angle": _chinese_text(value.get("china_view_angle"), "china_view_angle", violations, allow_empty=True),
+        "title_options": _string_list(value.get("title_options"), "title_options", violations, allow_empty=False, soft_warnings=soft_warnings),
+        "cover_title_options": _cover_title_list(value.get("cover_title_options"), violations, soft_warnings=soft_warnings),
+        "publish_copy": _chinese_text(value.get("publish_copy"), "publish_copy", violations, soft_warnings=soft_warnings),
         "tags": [],
         "highlight_segments": highlights,
         "risk_notes": risk_notes,
-        "editing_focus": _chinese_text(value.get("editing_focus"), "editing_focus", violations),
+        "editing_focus": _chinese_text(value.get("editing_focus"), "editing_focus", violations, soft_warnings=soft_warnings),
+        "_highlightFilterSummary": {
+            "blockedByContentRisk": int(highlight_filter_stats.get("blockedByContentRisk") or 0),
+        },
     }
-    raw_tags = _string_list(value.get("tags"), "tags", violations, allow_empty=False, forbid_latin=True)
+    raw_tags = _string_list(value.get("tags"), "tags", violations, allow_empty=False, forbid_latin=True, soft_warnings=soft_warnings)
     result["tags"] = list(dict.fromkeys(tag.lstrip("#").strip() for tag in raw_tags if tag.lstrip("#").strip()))
     _fail(violations)
     return result
@@ -333,6 +544,42 @@ def validate_chunk_summary(value, max_timestamp=0, blocked_ranges=()):
     }
     _fail(violations)
     return result
+
+
+def validate_subtitle_revision(value, expected_indexes):
+    violations = []
+    if not isinstance(value, dict):
+        _fail(["顶层必须是对象"])
+    _fixed_fields(value, {"items"}, "字幕修订结果", violations)
+    items = value.get("items")
+    if not isinstance(items, list):
+        violations.append("items 必须是数组")
+        items = []
+
+    expected = list(expected_indexes or [])
+    actual = []
+    output = []
+    for position, item in enumerate(items):
+        path = f"items[{position}]"
+        if not isinstance(item, dict):
+            violations.append(f"{path} 必须是对象")
+            continue
+        _fixed_fields(item, {"index", "subtitle"}, path, violations)
+        index = item.get("index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            violations.append(f"{path}.index 必须是整数")
+            continue
+        subtitle = item.get("subtitle")
+        if not isinstance(subtitle, str) or not subtitle.strip():
+            violations.append(f"{path}.subtitle 不能为空")
+            continue
+        actual.append(index)
+        output.append({"index": index, "subtitle": subtitle.strip()})
+
+    if actual != expected:
+        violations.append("items 的数量、索引或顺序与输入字幕不一致")
+    _fail(violations)
+    return {"items": output}
 
 
 def _guard_issues(value, violations):

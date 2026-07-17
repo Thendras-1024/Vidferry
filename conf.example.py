@@ -12,6 +12,8 @@ SAU_COMMAND = str(BASE_DIR / ".venv" / "Scripts" / "sau.exe")
 FFMPEG_COMMAND = "ffmpeg"
 YOUTUBE_DOWNLOAD_DIR = BASE_DIR.parent / "video"
 YOUTUBE_PROCESSED_DIR = BASE_DIR / "videos" / "processed"
+EDITING_ENABLE_COVER_INTRO = True  # 是否在处理版本二拼接封面片头
+EDITING_ENABLE_HIGHLIGHT_INTRO = True  # 是否在处理版本二拼接高光片段
 
 # 可选的字幕处理流水线钩子。为空时,若 ffmpeg 可用,工作流会把下载的视频
 # 复制到处理目录作为占位文件。

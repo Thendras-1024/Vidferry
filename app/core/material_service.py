@@ -585,6 +585,13 @@ def _row_to_material_fast(row, source_video=None, analysis=None, workflow_job=No
     item["analysisStatus"] = int(video.get("analysisStatus") or 0)
     item["analysisResult"] = (analysis or {}).get("result") or {}
     item["publishDraft"] = (analysis or {}).get("draft") or {}
+    item["groupId"] = video.get("groupId")
+    item["groupName"] = video.get("groupName") or ""
+    item["groupIsDefault"] = bool(video.get("groupIsDefault"))
+    item["sourceMissing"] = bool(
+        item.get("source_type") in {"youtube_processed", "youtube_download"}
+        and source_video is None
+    )
     return _attach_workflow_job_to_material(item, workflow_job)
 
 
@@ -621,6 +628,19 @@ def _material_where(params):
             storage_key LIKE ? OR source_video_id LIKE ? OR metadata LIKE ?
         )""")
         values.extend([like, like, like, like, like, like])
+
+    group_id = params.get("groupId") or params.get("group_id")
+    if group_id not in (None, ""):
+        try:
+            normalized_group_id = int(group_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("groupId 必须是整数") from exc
+        where.append('''EXISTS (
+            SELECT 1 FROM youtube_videos source_video
+            WHERE source_video.video_id = file_records.source_video_id
+              AND source_video.group_id = ?
+        )''')
+        values.append(normalized_group_id)
 
     return (" WHERE " + " AND ".join(where)) if where else "", values
 
@@ -695,7 +715,10 @@ def list_material_records(params=None):
         analysis_by_id = {}
         if video_ids:
             cursor.execute(f'''
-            SELECT * FROM youtube_videos
+            SELECT youtube_videos.*,
+                   (SELECT name FROM youtube_video_groups WHERE id = youtube_videos.group_id) AS group_name,
+                   COALESCE((SELECT is_default FROM youtube_video_groups WHERE id = youtube_videos.group_id), 0) AS group_is_default
+            FROM youtube_videos
             WHERE video_id IN ({_sql_placeholders(video_ids)})
             ''', video_ids)
             for video_row in cursor.fetchall():
@@ -1028,6 +1051,7 @@ def register_material(
 def _youtube_material_metadata(job, stage, file_path):
     target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
     thumbnail_path = _local_youtube_thumbnail_path(job.get("videoId"), file_path)
+    cover_intro = job.get("coverIntro") if isinstance(job.get("coverIntro"), dict) else {}
     return {
         "stage": stage,
         "videoId": job.get("videoId") or "",
@@ -1042,6 +1066,9 @@ def _youtube_material_metadata(job, stage, file_path):
         "subtitleSize": _normalize_subtitle_size(job.get("subtitleSize")),
         "translatorLabel": _normalize_translator_label(job.get("translatorLabel")),
         "thumbnailPath": thumbnail_path,
+        "coverTitleApplied": cover_intro.get("title") or "",
+        "coverSignatureApplied": cover_intro.get("signature") or "Vidferry",
+        "coverIntro": cover_intro,
         "watermarkEnabled": bool(job.get("watermarkEnabled")),
         "watermarkText": (
             _normalize_watermark_text(job.get("watermarkText")) or DEFAULT_WATERMARK_TEXT
