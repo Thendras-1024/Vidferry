@@ -1,6 +1,7 @@
 """字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 烧录。"""
 
 from app.core.llm_harness import redact_profanity
+from app.core.subtitle_review import review_translated_segments
 
 
 # 词级时间戳仅用于把较长转写段拆为可读的短语，不暴露为用户配置。
@@ -40,6 +41,12 @@ def _watermark_text(job):
 
 def _watermark_burns_with_subtitles(job):
     return _watermark_enabled(job) and _normalize_process_version(job.get("processVersion")) != PROCESS_VERSION_EDITING
+
+
+def _subtitle_stage_log(level, message, *args):
+    logger = globals().get("backend_logger")
+    if logger:
+        getattr(logger, level)(message, *args)
 
 
 def _extract_audio_for_whisper(source_file, work_dir):
@@ -97,10 +104,30 @@ def _get_video_info(media_file):
     if fps <= 0 or fps > 120:
         fps = 30.0
 
-    return {"width": width, "height": height, "duration": duration, "fps": fps}
+    has_audio = bool(re.search(r"Stream #.*?: Audio:", output))
+    color_info = {}
+    video_line_match = re.search(r"Stream #.*?: Video:.*", output)
+    video_line = video_line_match.group(0) if video_line_match else ""
+    color_triplet = re.search(r",\s*([a-z0-9-]+)/([a-z0-9-]+)/([a-z0-9-]+)(?:,|\))", video_line, re.IGNORECASE)
+    if color_triplet:
+        color_info = {
+            "space": color_triplet.group(1),
+            "primaries": color_triplet.group(2),
+            "transfer": color_triplet.group(3),
+        }
+    elif re.search(r",\s*bt709(?:,|\))", video_line, re.IGNORECASE):
+        color_info = {"space": "bt709", "primaries": "bt709", "transfer": "bt709"}
+    return {
+        "width": width,
+        "height": height,
+        "duration": duration,
+        "fps": fps,
+        "has_audio": has_audio,
+        "color": color_info,
+    }
 
 
-def _transcribe_audio(audio_file):
+def _transcribe_audio(audio_file, progress_callback=None):
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -109,45 +136,57 @@ def _transcribe_audio(audio_file):
     model_size = os.environ.get("WHISPER_MODEL_SIZE", "small")
     device = os.environ.get("WHISPER_DEVICE", "cpu")
     compute_type = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    segments, info = model.transcribe(
-        str(audio_file),
-        beam_size=5,
-        vad_filter=True,
-        word_timestamps=True,
-    )
+    if progress_callback:
+        progress_callback(f"正在加载 Whisper {model_size} 模型（{device} / {compute_type}）")
+    try:
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        segments, info = model.transcribe(
+            str(audio_file),
+            beam_size=5,
+            vad_filter=True,
+            word_timestamps=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"ASR_TRANSCRIPTION_FAILED: {exc.__class__.__name__}") from exc
     result = []
-    for segment in segments:
-        text = segment.text.strip()
-        if text:
-            words = []
-            raw_words = list(getattr(segment, "words", None) or [])
-            valid_words = bool(raw_words)
-            for word in raw_words:
-                try:
-                    value = str(getattr(word, "word", "") or "").strip()
-                    start = float(getattr(word, "start", None))
-                    end = float(getattr(word, "end", None))
-                except (TypeError, ValueError):
-                    valid_words = False
-                    break
-                if not value or start < 0 or end <= start:
-                    valid_words = False
-                    break
-                item = {"word": value, "start": start, "end": end}
-                probability = getattr(word, "probability", None)
-                if probability is not None:
+    last_progress_at = 0.0
+    try:
+        for segment in segments:
+            text = segment.text.strip()
+            if text:
+                words = []
+                raw_words = list(getattr(segment, "words", None) or [])
+                valid_words = bool(raw_words)
+                for word in raw_words:
                     try:
-                        item["probability"] = float(probability)
+                        value = str(getattr(word, "word", "") or "").strip()
+                        start = float(getattr(word, "start", None))
+                        end = float(getattr(word, "end", None))
                     except (TypeError, ValueError):
-                        pass
-                words.append(item)
-            result.append({
-                "start": float(segment.start),
-                "end": float(segment.end),
-                "text": text,
-                "words": words if valid_words else [],
-            })
+                        valid_words = False
+                        break
+                    if not value or start < 0 or end <= start:
+                        valid_words = False
+                        break
+                    item = {"word": value, "start": start, "end": end}
+                    probability = getattr(word, "probability", None)
+                    if probability is not None:
+                        try:
+                            item["probability"] = float(probability)
+                        except (TypeError, ValueError):
+                            pass
+                    words.append(item)
+                result.append({
+                    "start": float(segment.start),
+                    "end": float(segment.end),
+                    "text": text,
+                    "words": words if valid_words else [],
+                })
+            if progress_callback and time.time() - last_progress_at >= 15:
+                last_progress_at = time.time()
+                progress_callback(f"正在进行语音识别，已识别 {len(result)} 段字幕")
+    except Exception as exc:
+        raise RuntimeError(f"ASR_TRANSCRIPTION_FAILED: {exc.__class__.__name__}") from exc
     if not result:
         raise NoSpeechDetectedError("未检测到可识别人声，已跳过字幕处理。")
     return result, getattr(info, "language", "")
@@ -194,10 +233,20 @@ def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, prog
         _update_translate_progress(job_id, progress_done, f"已复用转写缓存，识别到 {len(cached['segments'])} 段字幕")
         return cached["segments"], cached["language"], cached["path"]
 
-    _update_translate_progress(job_id, progress_base, "正在提取音频，准备语音识别")
-    audio_file = _extract_audio_for_whisper(source_file, work_dir)
-    _update_translate_progress(job_id, max(progress_base + 10, 20), "正在进行语音识别，长视频可能需要较久")
-    segments, language = _transcribe_audio(audio_file)
+    _update_translate_progress(job_id, progress_base, "正在提取 16 kHz 单声道音频")
+    _subtitle_stage_log("info", "字幕处理阶段开始 : job_id = %s | video_id = %s | stage = audio_extract", job_id or "", video_id or "")
+    try:
+        audio_file = _extract_audio_for_whisper(source_file, work_dir)
+    except Exception as exc:
+        _subtitle_stage_log("exception", "字幕处理阶段失败 : job_id = %s | video_id = %s | stage = audio_extract", job_id or "", video_id or "")
+        raise RuntimeError(f"AUDIO_EXTRACTION_FAILED: {exc.__class__.__name__}") from exc
+    recognition_progress = max(progress_base + 10, 20)
+    _update_translate_progress(job_id, recognition_progress, "音频准备完成，正在加载语音识别模型")
+    _subtitle_stage_log("info", "字幕处理阶段开始 : job_id = %s | video_id = %s | stage = asr", job_id or "", video_id or "")
+    segments, language = _transcribe_audio(
+        audio_file,
+        progress_callback=lambda message: _update_translate_progress(job_id, recognition_progress, message),
+    )
     payload = {
         "schemaVersion": 2,
         "videoId": video_id,
@@ -214,8 +263,19 @@ def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, prog
             transcript_file_path=str(transcript_file),
             transcript_language=language or "",
         )
+    _subtitle_stage_log(
+        "info",
+        "字幕处理阶段完成 : job_id = %s | video_id = %s | stage = asr | segments = %s | language = %s",
+        job_id or "", video_id or "", len(segments), language or "",
+    )
     _update_translate_progress(job_id, progress_done, f"已识别 {len(segments)} 段字幕")
     return segments, language, transcript_file
+
+
+def _strip_chinese_period(text):
+    """翻译后确定性去掉中文句号与全角句点，保证初译无句号；该处理不依赖 LLM 修订。"""
+    text = str(text or "")
+    return text.replace("。", "").replace("．", "")
 
 
 def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job_id=""):
@@ -340,7 +400,10 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
             line = lines[offset] if offset < len(lines) else translated[index].get("text")
             if not str(line or "").strip():
                 raise RuntimeError("字幕翻译失败，请检查网络或翻译服务。")
-            translated[index]["subtitle"] = line or translated[index]["text"]
+            subtitle_text = line or translated[index]["text"]
+            if target_language == "zh-CN":
+                subtitle_text = _strip_chinese_period(subtitle_text)
+            translated[index]["subtitle"] = subtitle_text
         batch.clear()
         batch_indices.clear()
 
@@ -364,6 +427,15 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
     if job_id and total_segments:
         _update_translate_progress(job_id, 45, f"{language_meta['label']}字幕处理完成 {translated_count}/{total_segments} 段")
     return translated
+
+
+def _strip_periods_after_review(segments, target_language):
+    """修订完成后兜底去句号：防止 LLM 违反提示词产出句号，与 LLM 行为解耦；成本可忽略。"""
+    if target_language != "zh-CN":
+        return segments
+    for segment in segments or []:
+        segment["subtitle"] = _strip_chinese_period(segment.get("subtitle"))
+    return segments
 
 
 def _redact_generated_subtitles(segments, target_language):
@@ -791,6 +863,11 @@ def _compatible_video_dimensions(width, height, max_long_side=1920, max_short_si
     return target_width, target_height
 
 
+def _ffmpeg_error_summary(lines):
+    tail = [" ".join(str(line).split()) for line in (lines or []) if str(line).strip()][-2:]
+    return " | ".join(tail)[:240] or "FFmpeg 未返回错误摘要"
+
+
 def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_id="", progress_label="字幕"):
     ffmpeg = _resolve_ffmpeg_command()
     subtitle_filter = f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'"
@@ -825,6 +902,16 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         video_filters.append(f"scale={target_width}:{target_height}:flags=lanczos")
         video_filters.append("setsar=1")
     video_filter = ",".join(video_filters)
+    video_id = job.get("videoId") or ""
+    source_size = f"{int(video_info.get('width') or 0)}x{int(video_info.get('height') or 0)}"
+    target_size = f"{target_width}x{target_height}" if target_dimensions else source_size
+    burn_started_at = time.monotonic()
+    _subtitle_stage_log(
+        "info",
+        "字幕烧录开始 : job_id = %s | video_id = %s | type = %s | duration_seconds = %.1f | source_size = %s | target_size = %s | preset = %s",
+        job_id or "", video_id, progress_label, float(duration or video_info.get("duration") or 0),
+        source_size, target_size, burn_config["preset"],
+    )
 
     command = [
         ffmpeg,
@@ -893,7 +980,14 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
 
     return_code = process.wait()
     stderr_thread.join(timeout=2)
+    elapsed_seconds = time.monotonic() - burn_started_at
     if return_code != 0:
+        error_summary = _ffmpeg_error_summary(stderr_lines)
+        _subtitle_stage_log(
+            "error",
+            "字幕烧录失败 : job_id = %s | video_id = %s | type = %s | return_code = %s | elapsed_seconds = %.1f | error = %s",
+            job_id or "", video_id, progress_label, return_code, elapsed_seconds, error_summary,
+        )
         if tmp_output_file.exists():
             tmp_output_file.unlink()
         if backup_output_file and backup_output_file.exists() and not output_file.exists():
@@ -901,6 +995,11 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         raise RuntimeError("\n".join(stderr_lines[-30:]) or "FFmpeg 烧录失败")
 
     if not tmp_output_file.exists() or tmp_output_file.stat().st_size <= 0:
+        _subtitle_stage_log(
+            "error",
+            "字幕烧录失败 : job_id = %s | video_id = %s | type = %s | return_code = %s | elapsed_seconds = %.1f | error = 临时输出文件无效",
+            job_id or "", video_id, progress_label, return_code, elapsed_seconds,
+        )
         if tmp_output_file.exists():
             tmp_output_file.unlink()
         if backup_output_file and backup_output_file.exists() and not output_file.exists():
@@ -911,9 +1010,19 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
     if backup_output_file and backup_output_file.exists():
         backup_output_file.unlink()
     if not output_file.exists() or output_file.stat().st_size <= 0:
+        _subtitle_stage_log(
+            "error",
+            "字幕烧录失败 : job_id = %s | video_id = %s | type = %s | return_code = %s | elapsed_seconds = %.1f | error = 最终输出文件无效",
+            job_id or "", video_id, progress_label, return_code, elapsed_seconds,
+        )
         if backup_output_file and backup_output_file.exists() and not output_file.exists():
             backup_output_file.replace(output_file)
         raise RuntimeError(f"FFmpeg 已执行，但未生成最终 MP4: {output_file}")
+    _subtitle_stage_log(
+        "info",
+        "字幕烧录完成 : job_id = %s | video_id = %s | type = %s | elapsed_seconds = %.1f | output_size_mb = %.1f",
+        job_id or "", video_id, progress_label, elapsed_seconds, output_file.stat().st_size / 1024 / 1024,
+    )
     return output_file
 
 
@@ -983,7 +1092,7 @@ def _update_translate_progress(job_id, progress, message, step="subtitle"):
     )
 
 
-def _process_subtitles(job, source_file):
+def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
     processed_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR)
     target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
     process_version = _normalize_process_version(job.get("processVersion"))
@@ -1041,7 +1150,34 @@ def _process_subtitles(job, source_file):
         34,
         f"已识别 {len(segments)} 段字幕，已切分为 {len(cues)} 条短语，正在处理为{language_meta['label']}",
     )
-    translated_segments = _translate_segments(segments, target_language, job_id=job_id)
+    try:
+        translated_segments = _translate_segments(segments, target_language, job_id=job_id)
+    except Exception as exc:
+        raise RuntimeError(f"SUBTITLE_TRANSLATION_FAILED: {exc.__class__.__name__}") from exc
+    initial_segments = [dict(segment) for segment in translated_segments]
+    review_metadata = {}
+    translated_segments = review_translated_segments(
+        translated_segments,
+        target_language,
+        job=job,
+        job_id=job_id,
+        progress_callback=lambda completed, total: _update_translate_progress(
+            job_id,
+            45,
+            f"正在修订中文字幕 {completed}/{total} 段",
+        ),
+        telemetry=telemetry,
+        review_metadata=review_metadata,
+    )
+    if review_metadata.get("fallbackCount"):
+        review_metadata["status"] = "partial_fallback"
+    save_subtitle_audit_snapshot(
+        job,
+        initial_segments,
+        [dict(segment) for segment in translated_segments],
+        review_metadata,
+    )
+    translated_segments = _strip_periods_after_review(translated_segments, target_language)
     translated_segments = _redact_generated_subtitles(translated_segments, target_language)
     if target_language == "en":
         rendered_segments = cues
@@ -1059,7 +1195,12 @@ def _process_subtitles(job, source_file):
     duration = video_info.get("duration") or max((segment.get("end") or 0) for segment in segments)
     ass_file = _build_ass_file(job, rendered_segments, work_dir / f"{Path(source_file).stem}.ass", duration, video_info)
     _update_translate_progress(job_id, 50, f"正在使用 FFmpeg 烧录{language_meta['label']}字幕")
-    result = _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=duration, job_id=job_id)
+    if before_burn:
+        before_burn(ass_file)
+    try:
+        result = _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=duration, job_id=job_id)
+    except Exception as exc:
+        raise RuntimeError(f"SUBTITLE_BURN_FAILED: {exc.__class__.__name__}") from exc
     _update_translate_progress(job_id, 98, "视频已生成，正在写入素材库")
     return {"path": result, "skipped": False}
 

@@ -6,6 +6,7 @@ import PublishCenter from '../views/PublishCenter.vue'
 import YoutubeResearch from '../views/YoutubeResearch.vue'
 import WorkflowStatistics from '../views/WorkflowStatistics.vue'
 import About from '../views/About.vue'
+import SubtitleAudit from '../views/SubtitleAudit.vue'
 
 const routes = [
   {
@@ -37,6 +38,11 @@ const routes = [
     path: '/youtube-research',
     name: 'YoutubeResearch',
     component: YoutubeResearch
+  },
+  {
+    path: '/subtitle-audit',
+    name: 'SubtitleAudit',
+    component: SubtitleAudit
   },
   {
     path: '/about',
