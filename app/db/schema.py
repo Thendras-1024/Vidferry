@@ -10,6 +10,8 @@ from app.db.models import (
     ensure_file_record_tables,
     ensure_published_youtube_material_tables,
     ensure_workflow_event_tables,
+    ensure_workflow_llm_usage_tables,
+    ensure_subtitle_audit_tables,
     ensure_youtube_video_table,
     ensure_youtube_workflow_job_table,
 )
@@ -43,6 +45,8 @@ def _init_database_tables(database_key):
         ensure_file_record_tables(cursor)
         ensure_agent_tables(cursor)
         ensure_workflow_event_tables(cursor)
+        ensure_workflow_llm_usage_tables(cursor)
+        ensure_subtitle_audit_tables(cursor)
         ensure_published_youtube_material_tables(cursor)
         conn.commit()
     _initialized_database_paths.add(database_key)
@@ -58,6 +62,9 @@ def init_youtube_video_table():
             return
         with _db_connect() as conn:
             ensure_youtube_video_table(conn.cursor())
+            foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_key_errors:
+                raise RuntimeError(f"数据库外键检查失败，共 {len(foreign_key_errors)} 条")
             conn.commit()
         _initialized_youtube_paths.add(database_key)
 

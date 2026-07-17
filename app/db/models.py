@@ -1,5 +1,8 @@
 """数据库表定义与迁移。"""
 
+import json
+
+from app.config import YOUTUBE_DEFAULT_GROUP_NAME
 from app.publishing import platform_type_from_name
 
 
@@ -73,6 +76,19 @@ def ensure_file_record_tables(cursor):
     cursor.execute("UPDATE file_records SET source_type = 'manual_upload' WHERE source_type IS NULL OR source_type = ''")
     cursor.execute("UPDATE file_records SET status = 'ready' WHERE status IS NULL OR status = ''")
     cursor.execute("UPDATE file_records SET metadata = '{}' WHERE metadata IS NULL OR metadata = ''")
+    cursor.execute("""
+    SELECT id, metadata FROM file_records
+    WHERE (source_video_id IS NULL OR source_video_id = '')
+      AND source_type IN ('youtube_download', 'youtube_processed')
+    """)
+    for row_id, metadata_text in cursor.fetchall():
+        try:
+            metadata = json.loads(metadata_text or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        video_id = str(metadata.get("videoId") or metadata.get("sourceVideoId") or "").strip()
+        if video_id:
+            cursor.execute("UPDATE file_records SET source_video_id = ? WHERE id = ?", (video_id, row_id))
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_file_records_asset_id ON file_records(asset_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_video_id ON file_records(source_video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_source_type ON file_records(source_type)")
@@ -128,6 +144,8 @@ def ensure_agent_tables(cursor):
         id TEXT PRIMARY KEY,
         session_id TEXT,
         run_type TEXT NOT NULL,
+        subject_type TEXT DEFAULT '',
+        subject_id TEXT DEFAULT '',
         status TEXT DEFAULT 'success',
         decision TEXT,
         severity TEXT,
@@ -139,8 +157,13 @@ def ensure_agent_tables(cursor):
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    _add_missing_columns(cursor, "agent_runs", {
+        "subject_type": "TEXT DEFAULT ''",
+        "subject_id": "TEXT DEFAULT ''",
+    })
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_hash ON agent_runs(content_hash, run_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_subject ON agent_runs(run_type, subject_type, subject_id, created_at DESC)")
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS agent_rules (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,6 +243,72 @@ def ensure_workflow_event_tables(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_stage ON youtube_workflow_events(stage)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_started ON youtube_workflow_events(started_at, id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_job_started ON youtube_workflow_events(job_id, started_at DESC, id DESC)")
+
+
+def ensure_workflow_llm_usage_tables(cursor):
+    """保存可归属到视频工作流的单次模型请求。"""
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_workflow_llm_usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_event_id INTEGER,
+        job_id TEXT NOT NULL,
+        video_id TEXT,
+        stage TEXT,
+        operation TEXT,
+        provider TEXT,
+        model TEXT,
+        status TEXT NOT NULL DEFAULT 'success',
+        attempt INTEGER NOT NULL DEFAULT 1,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        latency_ms REAL NOT NULL DEFAULT 0,
+        error_message TEXT,
+        error_category TEXT,
+        violations TEXT,
+        raw_output TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    _add_missing_columns(cursor, "youtube_workflow_llm_usage_events", {
+        "error_category": "TEXT",
+        "violations": "TEXT",
+        "raw_output": "TEXT",
+    })
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_job ON youtube_workflow_llm_usage_events(job_id, created_at DESC, id DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_event ON youtube_workflow_llm_usage_events(workflow_event_id, id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_model_time ON youtube_workflow_llm_usage_events(model, created_at, id)")
+
+
+def ensure_subtitle_audit_tables(cursor):
+    """保存每次字幕处理的初译和 LLM 修订审查快照。"""
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_subtitle_audits (
+        job_id TEXT PRIMARY KEY,
+        video_id TEXT,
+        video_title TEXT,
+        target_language TEXT,
+        initial_segments TEXT NOT NULL DEFAULT '[]',
+        reviewed_segments TEXT NOT NULL DEFAULT '[]',
+        review_status TEXT NOT NULL DEFAULT 'unknown',
+        fallback_segment_count INTEGER NOT NULL DEFAULT 0,
+        review_batches TEXT NOT NULL DEFAULT '[]',
+        saved_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    _add_missing_columns(cursor, "youtube_subtitle_audits", {
+        "video_id": "TEXT",
+        "video_title": "TEXT",
+        "target_language": "TEXT",
+        "initial_segments": "TEXT NOT NULL DEFAULT '[]'",
+        "reviewed_segments": "TEXT NOT NULL DEFAULT '[]'",
+        "review_status": "TEXT NOT NULL DEFAULT 'unknown'",
+        "fallback_segment_count": "INTEGER NOT NULL DEFAULT 0",
+        "review_batches": "TEXT NOT NULL DEFAULT '[]'",
+        "saved_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+    })
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_subtitle_audits_video_saved ON youtube_subtitle_audits(video_id, saved_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_subtitle_audits_saved ON youtube_subtitle_audits(saved_at DESC)")
 
 
 def ensure_published_youtube_material_tables(cursor):
@@ -305,7 +394,33 @@ def ensure_published_youtube_material_tables(cursor):
     ''')
 
 
+def ensure_youtube_video_group_table(cursor):
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS youtube_video_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    cursor.execute('''
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_video_groups_default
+    ON youtube_video_groups(is_default) WHERE is_default = 1
+    ''')
+    cursor.execute("SELECT id FROM youtube_video_groups WHERE is_default = 1 LIMIT 1")
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute(
+            "INSERT INTO youtube_video_groups (name, is_default) VALUES (?, 1)",
+            (YOUTUBE_DEFAULT_GROUP_NAME,),
+        )
+        return cursor.lastrowid
+    return int(row[0])
+
+
 def ensure_youtube_video_table(cursor):
+    default_group_id = ensure_youtube_video_group_table(cursor)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS youtube_videos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -330,8 +445,10 @@ def ensure_youtube_video_table(cursor):
         analysis_result TEXT,
         publish_draft TEXT,
         analysis_updated_at DATETIME,
+        group_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(group_id) REFERENCES youtube_video_groups(id) ON DELETE RESTRICT
     )
     ''')
     _add_missing_columns(cursor, "youtube_videos", {
@@ -344,12 +461,18 @@ def ensure_youtube_video_table(cursor):
         "analysis_result": "TEXT",
         "publish_draft": "TEXT",
         "analysis_updated_at": "DATETIME",
+        "group_id": "INTEGER",
     })
+    cursor.execute(
+        "UPDATE youtube_videos SET group_id = ? WHERE group_id IS NULL OR group_id NOT IN (SELECT id FROM youtube_video_groups)",
+        (default_group_id,),
+    )
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_download_status ON youtube_videos(download_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_publish_status ON youtube_videos(publish_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_translate_status ON youtube_videos(translate_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_analysis_status ON youtube_videos(analysis_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_created ON youtube_videos(created_at, id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_group_created ON youtube_videos(group_id, created_at DESC, id DESC)')
     ensure_youtube_search_tables(cursor)
 
 
@@ -367,12 +490,40 @@ def ensure_youtube_search_tables(cursor):
         status TEXT NOT NULL,
         message TEXT,
         source TEXT,
+        group_id INTEGER,
+        group_name_snapshot TEXT,
+        duration_min_seconds INTEGER,
+        duration_max_seconds INTEGER,
+        duration_filtered_count INTEGER DEFAULT 0,
         started_at DATETIME,
         finished_at DATETIME,
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL
     )
     ''')
+    _add_missing_columns(cursor, "youtube_search_jobs", {
+        "group_id": "INTEGER",
+        "group_name_snapshot": "TEXT",
+        "duration_min_seconds": "INTEGER",
+        "duration_max_seconds": "INTEGER",
+        "duration_filtered_count": "INTEGER DEFAULT 0",
+    })
+    cursor.execute("SELECT id, name FROM youtube_video_groups WHERE is_default = 1 LIMIT 1")
+    default_group = cursor.fetchone()
+    if default_group:
+        cursor.execute(
+            '''
+            UPDATE youtube_search_jobs
+            SET group_id = ?
+            WHERE (group_id IS NULL AND (group_name_snapshot IS NULL OR group_name_snapshot = ''))
+               OR (group_id IS NOT NULL AND group_id NOT IN (SELECT id FROM youtube_video_groups))
+            ''',
+            (default_group[0],),
+        )
+        cursor.execute(
+            "UPDATE youtube_search_jobs SET group_name_snapshot = ? WHERE group_name_snapshot IS NULL OR group_name_snapshot = ''",
+            (default_group[1],),
+        )
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS youtube_search_job_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -394,6 +545,7 @@ def ensure_youtube_search_tables(cursor):
     )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_jobs_status ON youtube_search_jobs(status, created_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_jobs_group_status ON youtube_search_jobs(group_id, status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_job_items_job ON youtube_search_job_items(job_id, ordinal)')
     cursor.execute('''
     CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_search_job_items_video
@@ -429,6 +581,10 @@ def ensure_youtube_workflow_job_table(cursor):
         translator_label TEXT DEFAULT 'Vidferry翻译',
         watermark_enabled INTEGER DEFAULT 0,
         watermark_text TEXT DEFAULT '',
+        cover_title TEXT DEFAULT '',
+        cover_context TEXT DEFAULT '',
+        cover_brand_name TEXT DEFAULT '',
+        cover_brand_platform TEXT DEFAULT '',
         title TEXT,
         description TEXT,
         tags TEXT,
@@ -439,6 +595,9 @@ def ensure_youtube_workflow_job_table(cursor):
         source_file_path TEXT,
         processed_file_path TEXT,
         publish_command TEXT,
+        publish_confirmation_required INTEGER DEFAULT 0,
+        publish_confirmation_status TEXT DEFAULT '',
+        content_risk TEXT DEFAULT '{}',
         progress REAL DEFAULT 0,
         speed TEXT,
         eta TEXT,
@@ -471,12 +630,19 @@ def ensure_youtube_workflow_job_table(cursor):
         "translator_label": "TEXT DEFAULT 'Vidferry翻译'",
         "watermark_enabled": "INTEGER DEFAULT 0",
         "watermark_text": "TEXT DEFAULT ''",
+        "cover_title": "TEXT DEFAULT ''",
+        "cover_context": "TEXT DEFAULT ''",
+        "cover_brand_name": "TEXT DEFAULT ''",
+        "cover_brand_platform": "TEXT DEFAULT ''",
         "error_code": "TEXT",
         "error_type": "TEXT",
         "error_reason": "TEXT",
         "error_detail": "TEXT",
         "interrupted_at": "DATETIME",
         "started_at": "DATETIME",
+        "publish_confirmation_required": "INTEGER DEFAULT 0",
+        "publish_confirmation_status": "TEXT DEFAULT ''",
+        "content_risk": "TEXT DEFAULT '{}'",
     })
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_id ON youtube_workflow_jobs(video_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status ON youtube_workflow_jobs(status)')
