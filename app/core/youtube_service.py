@@ -18,6 +18,9 @@ def _row_to_youtube_video(row):
         "thumbnail": _youtube_thumbnail_url(video_id) or item.get("thumbnail") or "",
         "duration": item.get("duration") or "",
         "query": item.get("query") or "",
+        "groupId": item.get("group_id"),
+        "groupName": item.get("group_name") or "",
+        "groupIsDefault": bool(item.get("group_is_default") or 0),
         "downloadStatus": int(item.get("download_status") or 0),
         "publishStatus": int(item.get("publish_status") or 0),
         "translateStatus": int(item.get("translate_status") or 0),
@@ -36,11 +39,13 @@ def _row_to_youtube_video(row):
     }
 
 
-def save_new_youtube_videos(videos, query):
+def save_new_youtube_videos(videos, query, group_id=None):
     init_youtube_video_table()
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        target_group = _resolve_youtube_group(cursor, group_id)
         normalized_videos = []
         seen_ids = set()
         for video in videos:
@@ -80,9 +85,9 @@ def save_new_youtube_videos(videos, query):
             url = video.get("url")
             cursor.execute('''
             INSERT INTO youtube_videos (
-                video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query
+                video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query, group_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 video_id,
                 video.get("title") or "",
@@ -93,6 +98,7 @@ def save_new_youtube_videos(videos, query):
                 video.get("thumbnail") or "",
                 video.get("duration") or "",
                 query,
+                target_group["id"],
             ))
         conn.commit()
 
@@ -108,10 +114,11 @@ def save_new_youtube_videos(videos, query):
         new_ids = [video.get("id") for video in new_videos]
         placeholders = ",".join("?" for _ in new_ids)
         cursor.execute(f'''
-        SELECT * FROM youtube_videos
+        SELECT youtube_videos.*, ? AS group_name, ? AS group_is_default
+        FROM youtube_videos
         WHERE video_id IN ({placeholders})
         ORDER BY CASE video_id {' '.join(f'WHEN ? THEN {index}' for index, _ in enumerate(new_ids))} END
-        ''', new_ids + new_ids)
+        ''', [target_group["name"], target_group["is_default"], *new_ids, *new_ids])
         return {
             "items": [_row_to_youtube_video(row) for row in cursor.fetchall()],
             "created": len(new_videos),
@@ -121,11 +128,12 @@ def save_new_youtube_videos(videos, query):
         }
 
 
-def _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at=""):
+def _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at="", group_id=None):
     video_id = str(video.get("id") or "").strip()
     url = str(video.get("url") or "").strip()
     if not video_id or not url:
         return {"decision": "skipped", "item": None}
+    target_group = _resolve_youtube_group(cursor, group_id)
 
     if job_created_at:
         cursor.execute(
@@ -137,7 +145,12 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at="")
         if deleted_at and str(deleted_at) >= str(job_created_at):
             return {"decision": "skipped", "item": None}
 
-    cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+    cursor.execute('''
+    SELECT youtube_videos.*, groups.name AS group_name, groups.is_default AS group_is_default
+    FROM youtube_videos
+    LEFT JOIN youtube_video_groups groups ON groups.id = youtube_videos.group_id
+    WHERE youtube_videos.video_id = ?
+    ''', (video_id,))
     existing = cursor.fetchone()
     published_ids, published_urls = _published_youtube_identity_sets(cursor)
     canonical_url = _canonical_youtube_url(url, video_id)
@@ -149,9 +162,9 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at="")
 
     cursor.execute('''
     INSERT INTO youtube_videos (
-        video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query
+        video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query, group_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         video_id,
         video.get("title") or "",
@@ -162,17 +175,24 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at="")
         video.get("thumbnail") or "",
         video.get("duration") or "",
         query,
+        target_group["id"],
     ))
-    cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+    cursor.execute('''
+    SELECT youtube_videos.*, groups.name AS group_name, groups.is_default AS group_is_default
+    FROM youtube_videos
+    LEFT JOIN youtube_video_groups groups ON groups.id = youtube_videos.group_id
+    WHERE youtube_videos.video_id = ?
+    ''', (video_id,))
     return {"decision": "created", "item": _row_to_youtube_video(cursor.fetchone())}
 
 
-def save_one_youtube_video(video, query, job_created_at=""):
+def save_one_youtube_video(video, query, job_created_at="", group_id=None):
     init_youtube_video_table()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
-        return _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at)
+        _resolve_youtube_group(cursor, group_id)
+        return _save_one_youtube_video_with_cursor(cursor, video, query, job_created_at, group_id)
 
 
 def upsert_youtube_videos(videos, query):
@@ -183,7 +203,7 @@ def upsert_youtube_videos(videos, query):
 def _youtube_video_status_clause(status):
     active_job_sql = """video_id IN (
             SELECT video_id FROM youtube_workflow_jobs
-            WHERE status IN ('queued', 'running') AND video_id IS NOT NULL AND video_id != ''
+            WHERE status IN ('queued', 'running', 'waiting_confirmation') AND video_id IS NOT NULL AND video_id != ''
         )"""
     failed_job_sql = _relevant_job_status_exists_sql("failed")
     abnormal_job_sql = _relevant_job_status_exists_sql("abnormal")
@@ -255,7 +275,7 @@ def _active_job_exists_sql():
     return """EXISTS (
         SELECT 1 FROM youtube_workflow_jobs job
         WHERE job.video_id = youtube_videos.video_id
-          AND job.status IN ('queued', 'running')
+          AND job.status IN ('queued', 'running', 'waiting_confirmation')
     )"""
 
 
@@ -302,6 +322,10 @@ def _default_stage_order_sql():
 def _youtube_video_sort_sql(sort):
     if sort == "publishedNewest":
         return _published_newest_order_sql()
+    if sort == "importedNewest":
+        return "created_at DESC, id DESC"
+    if sort == "importedOldest":
+        return "created_at ASC, id ASC"
     if sort == "durationShortest":
         return """
         CASE WHEN duration_to_seconds(duration) IS NULL THEN 1 ELSE 0 END ASC,
@@ -348,12 +372,22 @@ def _youtube_video_where(params):
     keyword = str(params.get("keyword") or "").strip()
     if keyword:
         like = f"%{keyword}%"
-        where.append("(title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?)")
-        values.extend([like, like, like, like])
+        where.append("""(
+            title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?
+            OR (json_valid(publish_draft) AND json_extract(publish_draft, '$.title') LIKE ?)
+        )""")
+        values.extend([like, like, like, like, like])
     status_clause, status_values = _youtube_video_status_clause(str(params.get("status") or "all"))
     if status_clause:
         where.append(status_clause)
         values.extend(status_values)
+    group_id = params.get("groupId") or params.get("group_id")
+    if group_id not in (None, ""):
+        try:
+            values.append(int(group_id))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("groupId 必须是整数") from exc
+        where.append("group_id = ?")
     return (" WHERE " + " AND ".join(where)) if where else "", values, ids
 
 
@@ -407,13 +441,17 @@ def _attach_processed_versions_for_videos(cursor, videos):
     return videos
 
 
-def _youtube_video_summary(cursor, keyword=""):
-    where = ""
+def _youtube_video_summary(cursor, keyword="", group_id=None):
+    where_parts = []
     values = []
     if keyword:
         like = f"%{keyword}%"
-        where = "WHERE title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?"
+        where_parts.append("(title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?)")
         values = [like, like, like, like]
+    if group_id not in (None, ""):
+        where_parts.append("group_id = ?")
+        values.append(int(group_id))
+    where = " WHERE " + " AND ".join(where_parts) if where_parts else ""
     cursor.execute(f'''
     SELECT
         COUNT(*) AS total,
@@ -427,11 +465,17 @@ def _youtube_video_summary(cursor, keyword=""):
     {where}
     ''', values)
     row = cursor.fetchone() or {}
-    cursor.execute('''
+    running_group_clause = ""
+    running_values = []
+    if group_id not in (None, ""):
+        running_group_clause = "AND video_id IN (SELECT video_id FROM youtube_videos WHERE group_id = ?)"
+        running_values.append(int(group_id))
+    cursor.execute(f'''
     SELECT COUNT(DISTINCT video_id) AS running
     FROM youtube_workflow_jobs
-    WHERE status IN ('queued', 'running') AND video_id IS NOT NULL AND video_id != ''
-    ''')
+    WHERE status IN ('queued', 'running', 'waiting_confirmation') AND video_id IS NOT NULL AND video_id != ''
+    {running_group_clause}
+    ''', running_values)
     running_row = cursor.fetchone() or {}
     return {
         "total": int(row["total"] or 0),
@@ -528,7 +572,10 @@ def list_youtube_videos(params=None):
             order_sql = sort_sql
             query_values = values + [page_size, offset]
         cursor.execute('''
-        SELECT * FROM youtube_videos
+        SELECT youtube_videos.*,
+               (SELECT name FROM youtube_video_groups WHERE id = youtube_videos.group_id) AS group_name,
+               COALESCE((SELECT is_default FROM youtube_video_groups WHERE id = youtube_videos.group_id), 0) AS group_is_default
+        FROM youtube_videos
         {where_sql}
         ORDER BY {order_sql}
         LIMIT ? OFFSET ?
@@ -540,7 +587,11 @@ def list_youtube_videos(params=None):
             "total": total,
             "page": page,
             "pageSize": page_size,
-            "summary": _youtube_video_summary(cursor, str(params.get("keyword") or "").strip()),
+            "summary": _youtube_video_summary(
+                cursor,
+                str(params.get("keyword") or "").strip(),
+                params.get("groupId") or params.get("group_id"),
+            ),
         }
 
 
@@ -727,7 +778,7 @@ def _delete_youtube_transcript_cache(video):
 
 
 def _delete_reset_youtube_workflow_history(cursor, video_id, process_version=""):
-    conditions = ["video_id = ?", "status NOT IN ('queued', 'running')"]
+    conditions = ["video_id = ?", "status NOT IN ('queued', 'running', 'waiting_confirmation')"]
     values = [video_id]
     if process_version:
         conditions.append("process_version = ?")

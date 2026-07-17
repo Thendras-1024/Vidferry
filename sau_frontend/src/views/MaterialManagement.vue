@@ -31,6 +31,7 @@
         @clear="handleSearch"
         @input="handleSearch"
       />
+      <VideoGroupSelect v-model="materialGroupId" include-all class="material-group-filter" />
       <div class="action-buttons">
         <el-button type="primary" @click="handleUploadMaterial">上传视频素材</el-button>
         <el-button
@@ -83,6 +84,12 @@
         <el-table-column label="字幕语言" width="120">
           <template #default="{ row }">
             <el-tag type="success" effect="plain">{{ materialSubtitleLanguageLabel(row) || '-' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="内容风险" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.analysisResult?.contentRisk?.requiresPublishConfirmation" type="warning" effect="light">发布需确认</el-tag>
+            <span v-else>-</span>
           </template>
         </el-table-column>
         <el-table-column label="时长" width="100">
@@ -340,6 +347,7 @@ import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'ele
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
 import { useAppStore } from '@/stores/app'
+import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 
 const languageMap = {
   'zh-CN': '中文',
@@ -355,6 +363,7 @@ const languageMap = {
 const appStore = useAppStore()
 
 const searchKeyword = ref('')
+const materialGroupId = ref('')
 const isRefreshing = ref(false)
 const isPageLoading = ref(false)
 const isUploading = ref(false)
@@ -615,7 +624,12 @@ const MaterialIdentity = defineComponent({
               size: 'small',
               title: workflowBadge.value.detail
             }, { default: () => workflowBadge.value.text })
-            : null
+            : null,
+          props.material.sourceMissing
+            ? h(ElTag, { type: 'warning', effect: 'plain', size: 'small' }, { default: () => '来源线索缺失' })
+            : (props.material.groupName
+                ? h(ElTag, { type: 'info', effect: 'plain', size: 'small' }, { default: () => props.material.groupName })
+                : null)
         ]),
         h('div', { class: 'identity-meta' }, [
           h('span', materialChannel(props.material) || '未知博主'),
@@ -637,7 +651,7 @@ watch(fileList, (newList) => {
   customFilename.value = ''
 })
 
-const materialCacheKey = (sourceType, pagination) => `materials:${sourceType}:${searchKeyword.value.trim()}:${pagination.page}:${pagination.pageSize}`
+const materialCacheKey = (sourceType, pagination) => `materials:${sourceType}:${materialGroupId.value || 'all'}:${searchKeyword.value.trim()}:${pagination.page}:${pagination.pageSize}`
 
 const applyMaterialPage = (sourceType, payload = {}) => {
   const list = payload.items || []
@@ -664,6 +678,7 @@ const loadMaterialPage = async (sourceType, pagination, { force = false } = {}) 
     pageSize: pagination.pageSize,
     keyword: searchKeyword.value.trim()
   }
+  if (sourceType !== 'other' && materialGroupId.value) params.groupId = materialGroupId.value
   const cacheKey = materialCacheKey(sourceType, pagination)
   if (!force) {
     const cached = appStore.getListCache(cacheKey)
@@ -750,6 +765,19 @@ watch(
     }
   }
 )
+
+watch(materialGroupId, async () => {
+  materialPageWatchPaused = true
+  processedPagination.page = 1
+  downloadedPagination.page = 1
+  selectedProcessedMaterials.value = []
+  selectedDownloadedMaterials.value = []
+  try {
+    await fetchMaterials({ force: true })
+  } finally {
+    materialPageWatchPaused = false
+  }
+})
 
 watch(
   () => downloadedPagination.page,
@@ -1144,6 +1172,11 @@ $ink-strong: #172033;
   }
 }
 
+.material-group-filter {
+  width: 180px;
+  flex: 0 0 auto;
+}
+
 .action-buttons,
 .table-actions {
   display: flex;
@@ -1428,6 +1461,10 @@ $ink-strong: #172033;
     .el-input {
       max-width: none;
     }
+  }
+
+  .material-group-filter {
+    width: 100%;
   }
 
   .action-buttons {

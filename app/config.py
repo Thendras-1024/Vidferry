@@ -51,6 +51,12 @@ except ImportError:
     YOUTUBE_DOWNLOAD_DIR = Path(BASE_DIR / "videos" / "youtube")
     YOUTUBE_PROCESSED_DIR = Path(BASE_DIR / "videos" / "processed")
 
+try:
+    from conf import EDITING_ENABLE_COVER_INTRO, EDITING_ENABLE_HIGHLIGHT_INTRO
+except ImportError:
+    EDITING_ENABLE_COVER_INTRO = True
+    EDITING_ENABLE_HIGHLIGHT_INTRO = True
+
 YOUTUBE_DOWNLOAD_DIR = Path(os.environ.get("YOUTUBE_DOWNLOAD_DIR", str(YOUTUBE_DOWNLOAD_DIR)))
 YOUTUBE_PROCESSED_DIR = Path(os.environ.get("YOUTUBE_PROCESSED_DIR", str(YOUTUBE_PROCESSED_DIR)))
 YOUTUBE_TRANSCRIPT_DIR = Path(os.environ.get("YOUTUBE_TRANSCRIPT_DIR", str(BASE_DIR / "videos" / "transcripts")))
@@ -67,6 +73,15 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "90") or 90)
 LLM_MAX_TRANSCRIPT_CHARS = int(os.environ.get("LLM_MAX_TRANSCRIPT_CHARS", "28000") or 28000)
+# 透传给模型接口的额外请求体字段(JSON 字符串)，用于关闭思考模型的推理，
+# 例如 Qwen3 系列填 {"enable_thinking": false}；字段名因服务商而异。留空则不追加。
+try:
+    _llm_extra_raw = os.environ.get("LLM_EXTRA_BODY", "").strip()
+    LLM_EXTRA_BODY = json.loads(_llm_extra_raw) if _llm_extra_raw else {}
+    if not isinstance(LLM_EXTRA_BODY, dict):
+        LLM_EXTRA_BODY = {}
+except (TypeError, ValueError):
+    LLM_EXTRA_BODY = {}
 
 
 def _env_bool(name, default=False):
@@ -83,6 +98,14 @@ def _env_int(name, default, minimum=None, maximum=None):
     if maximum is not None:
         value = min(maximum, value)
     return value
+
+
+SUBTITLE_LLM_REVIEW_ENABLED = _env_bool("SUBTITLE_LLM_REVIEW_ENABLED", True)
+SUBTITLE_REVIEW_MODEL = os.environ.get("SUBTITLE_REVIEW_MODEL", "").strip() or LLM_MODEL
+# 修订批次字符上限与并发数：与翻译阶段 TRANSLATION_BATCH_MAX_CHARS 解耦，
+# 独立调小可降低单批 JSON 出错率；并发用于抵消批数增多带来的耗时。
+SUBTITLE_REVIEW_BATCH_MAX_CHARS = _env_int("SUBTITLE_REVIEW_BATCH_MAX_CHARS", 800, minimum=200, maximum=4000)
+SUBTITLE_REVIEW_CONCURRENCY = _env_int("SUBTITLE_REVIEW_CONCURRENCY", 4, minimum=1, maximum=16)
 
 
 def _env_float(name, default, minimum=None, maximum=None):
@@ -298,10 +321,6 @@ WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS = "VF-DELETE-PROCESSED-EXISTS"
 WORKFLOW_ERROR_BOOT_INTERRUPTED = "VF-WF-BOOT-INTERRUPTED"
 WORKFLOW_ERROR_SHUTDOWN = "VF-WF-SHUTDOWN"
 
-YOUTUBE_DEFAULT_QUERY = "foreigner China travel vlog first time in China"
-YOUTUBE_FALLBACK_QUERIES = [
-    "foreigner China travel vlog",
-    "first time in China travel vlog foreigner",
-    "American in China travel vlog",
-    "British in China travel vlog",
-]
+YOUTUBE_DEFAULT_QUERY = "China technology innovation"
+YOUTUBE_LEGACY_DEFAULT_QUERY = "foreigner China travel vlog first time in China"
+YOUTUBE_DEFAULT_GROUP_NAME = "未分类"

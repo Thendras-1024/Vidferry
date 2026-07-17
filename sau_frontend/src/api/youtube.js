@@ -21,6 +21,26 @@ export const youtubeApi = {
     return request.post('/youtube/videos/import', data)
   },
 
+  getVideoGroups() {
+    return request.get('/youtube/video-groups')
+  },
+
+  createVideoGroup(data) {
+    return request.post('/youtube/video-groups', data)
+  },
+
+  renameVideoGroup(groupId, data) {
+    return request.patch(`/youtube/video-groups/${groupId}`, data)
+  },
+
+  deleteVideoGroup(groupId) {
+    return request.delete(`/youtube/video-groups/${groupId}`)
+  },
+
+  moveVideosToGroup(data) {
+    return request.patch('/youtube/videos/group', data)
+  },
+
   updateStatus(videoId, data) {
     return request.patch(`/youtube/videos/${videoId}/status`, data)
   },
@@ -73,8 +93,16 @@ export const youtubeApi = {
     return request.get(`/youtube/workflow/jobs/${jobId}`)
   },
 
+  confirmWorkflowPublish(jobId, confirmed) {
+    return request.post(`/youtube/workflow/jobs/${jobId}/publish-confirmation`, { confirmed })
+  },
+
   getWorkflowStatistics(params = {}) {
     return request.get('/youtube/workflow/statistics', { params })
+  },
+
+  getWorkflowTaskStatistics(jobId) {
+    return request.get(`/youtube/workflow/statistics/tasks/${jobId}`)
   },
 
   getBilibiliCategories() {

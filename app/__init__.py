@@ -26,6 +26,9 @@ def initialize_runtime() -> None:
     recovered_jobs = backend.recover_interrupted_workflow_jobs()
     if recovered_jobs:
         print(f"启动恢复：已标记 {len(recovered_jobs)} 个历史中断任务为异常")
+    recovered_search_jobs = backend.recover_interrupted_youtube_search_jobs()
+    if recovered_search_jobs:
+        print(f"启动恢复：已标记 {len(recovered_search_jobs)} 个历史检索任务为失败")
     reconciled_events = backend.reconcile_finished_workflow_events()
     if reconciled_events:
         print(f"启动修复：已收口 {len(reconciled_events)} 个历史任务的阶段记录")

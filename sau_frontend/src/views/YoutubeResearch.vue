@@ -63,6 +63,9 @@
                 placeholder="https://www.youtube.com/watch?v=..."
               />
             </el-form-item>
+            <el-form-item label="目标分组" class="group-field">
+              <VideoGroupSelect v-model="manualForm.groupId" />
+            </el-form-item>
             <el-button type="success" :loading="importing" @click="importVideo">
               <el-icon><Link /></el-icon>
               <span>导入链接</span>
@@ -79,16 +82,20 @@
             </div>
           </div>
           <div class="entry-control search-control">
-            <el-form-item label="搜索关键词" class="keyword-field">
+            <el-form-item label="英文关键词" required class="keyword-field">
               <el-input
                 v-model="form.query"
                 clearable
-                placeholder="foreigner China travel vlog first time in China"
-                @change="flushWorkflowSettings"
+                :disabled="searchLoading"
+                placeholder="输入英文 YouTube 检索关键词"
+                @change="persistSearchQuery"
               />
             </el-form-item>
-            <el-form-item label="数量" class="limit-field">
-              <el-input-number v-model="form.limit" :min="1" :max="30" controls-position="right" />
+            <el-form-item label="目标分组" class="group-field">
+              <VideoGroupSelect v-model="form.groupId" :disabled="searchLoading" />
+            </el-form-item>
+            <el-form-item label="数量" required class="limit-field">
+              <el-input-number v-model="form.limit" :min="1" :max="30" :disabled="searchLoading" controls-position="right" />
             </el-form-item>
             <el-button type="primary" :loading="searchLoading" @click="handleSearch">
               <el-icon><Search /></el-icon>
@@ -229,7 +236,7 @@
             v-model="workflowForm.tags"
             class="tag-input"
             clearable
-            placeholder="默认话题：中国旅行,外国人在中国"
+            placeholder="可选默认话题，多个话题用逗号分隔"
           />
         </div>
       </div>
@@ -249,6 +256,27 @@
             <h2>候选视频</h2>
           </div>
           <div class="list-tools">
+            <el-input
+              v-model="videoFilter.keyword"
+              class="video-keyword-filter"
+              size="small"
+              clearable
+              :prefix-icon="Search"
+              placeholder="搜索原标题或发布标题"
+              aria-label="搜索原标题或发布标题"
+            />
+            <VideoGroupSelect v-model="videoFilter.groupId" include-all class="group-filter" />
+            <el-button size="small" :icon="Setting" title="管理线索分组" @click="groupManagerVisible = true" />
+            <el-dropdown :disabled="selectedVideos.length === 0" @command="moveSelectedVideos">
+              <el-button size="small" type="primary" plain :disabled="selectedVideos.length === 0">
+                移动到分组 {{ selectedVideos.length || '' }}
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="group in videoGroupStore.groups" :key="group.id" :command="group.id">{{ group.name }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-button
               size="small"
               type="danger"
@@ -272,6 +300,8 @@
             </el-select>
             <el-select v-model="videoFilter.sort" class="sort-select" size="small" aria-label="排序方式">
               <el-option label="默认顺序" value="default" />
+              <el-option label="导入时间最近" value="importedNewest" />
+              <el-option label="导入时间最远" value="importedOldest" />
               <el-option label="发布时间最新" value="publishedNewest" />
               <el-option label="视频时长最短" value="durationShortest" />
               <el-option label="状态完成度" value="stageProgress" />
@@ -288,9 +318,10 @@
         class="research-table"
         style="width: 100%"
         ref="videoTableRef"
+        row-key="id"
         @selection-change="handleVideoSelectionChange"
       >
-        <el-table-column type="selection" width="44" />
+        <el-table-column type="selection" width="44" :reserve-selection="true" />
         <el-table-column label="视频" min-width="420">
           <template #default="{ row }">
             <div class="video-cell">
@@ -310,6 +341,15 @@
                     {{ currentStage(row).label }}
                   </button>
                   <span v-else class="stage-badge" :class="currentStage(row).className">{{ currentStage(row).label }}</span>
+                  <el-tag
+                    v-if="row.analysisResult?.contentRisk?.requiresPublishConfirmation"
+                    size="small"
+                    type="warning"
+                    effect="light"
+                  >
+                    发布需确认
+                  </el-tag>
+                  <el-tag size="small" effect="plain" type="info">{{ row.groupName || '未分类' }}</el-tag>
                   <a :href="row.url" target="_blank" rel="noopener noreferrer" class="video-title">
                     {{ row.title || '未获取到标题' }}
                   </a>
@@ -354,7 +394,6 @@
                 <div v-else-if="analysisHint(row)" class="analysis-hint" :class="analysisHint(row).className">
                   {{ analysisHint(row).label }}
                 </div>
-                <span class="video-url">{{ row.url }}</span>
               </div>
               <div
                 v-if="showInlinePublishDraft(row)"
@@ -374,6 +413,20 @@
                               :value="title"
                             />
                           </el-select>
+                        </div>
+                        <div class="draft-row">
+                          <span>封面标题</span>
+                          <div class="cover-title-fields">
+                            <el-select v-model="publishDraftForm(row).coverTitle" placeholder="选择封面标题">
+                              <el-option
+                                v-for="title in publishDraftForm(row).coverTitleOptions"
+                                :key="title"
+                                :label="coverTitleOptionLabel(title)"
+                                :value="title"
+                              />
+                            </el-select>
+                            <el-input v-model="publishDraftForm(row).coverTitle" type="textarea" :rows="2" maxlength="25" show-word-limit placeholder="两行短标题，用换行分隔" />
+                          </div>
                         </div>
                         <div class="draft-row">
                           <span>话题</span>
@@ -396,6 +449,10 @@
                   <template v-else>
                     <div class="draft-readonly">
                       <div class="draft-content-grid">
+                        <div>
+                          <span class="draft-label">封面</span>
+                          <p class="cover-draft-value">{{ row.analysisDraft.coverTitle || '暂无封面标题' }}</p>
+                        </div>
                         <div>
                           <span class="draft-label">文案</span>
                           <p>{{ row.analysisDraft.publishCopy || '暂无发布文案' }}</p>
@@ -461,7 +518,7 @@
                 @click="createJob(row)"
               >
                 <el-icon><VideoPlay /></el-icon>
-                <span>一键处理</span>
+                <span>一键发布</span>
               </el-button>
               <el-dropdown trigger="click">
                 <el-button size="small" text class="more-button">
@@ -484,6 +541,14 @@
                     >
                       <el-icon><Refresh /></el-icon>
                       <span>{{ resettingId === row.id ? '回退中' : '重新处理' }}</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      v-for="group in videoGroupStore.groups"
+                      :key="`move-${row.id}-${group.id}`"
+                      :disabled="Number(row.groupId) === Number(group.id)"
+                      @click="moveVideoToGroup(row, group.id)"
+                    >
+                      <span>移到：{{ group.name }}</span>
                     </el-dropdown-item>
                     <el-dropdown-item class="danger-item" @click="deleteVideo(row)">
                       <el-icon><Delete /></el-icon>
@@ -528,7 +593,14 @@
         </div>
       </template>
 
-      <el-table :data="jobs" empty-text="暂无匹配任务" class="job-table" style="width: 100%">
+      <el-table
+        ref="jobTableRef"
+        :data="jobs"
+        :row-class-name="focusedJobRowClass"
+        empty-text="暂无匹配任务"
+        class="job-table"
+        style="width: 100%"
+      >
         <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
         <el-table-column prop="account" label="抖音账号" width="110" />
         <el-table-column prop="status" label="状态" width="105">
@@ -652,6 +724,18 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane label="封面片头" name="cover">
+            <div class="settings-section settings-grid cover-settings">
+              <div class="settings-field">
+                <span class="settings-label">封面署名</span>
+                <el-input v-model="workflowForm.coverSignature" maxlength="24" show-word-limit placeholder="Vidferry" />
+              </div>
+              <div class="cover-signature-preview settings-span-full">
+                <span>{{ workflowForm.coverSignature || 'Vidferry' }}</span>
+              </div>
+            </div>
+          </el-tab-pane>
+
           <el-tab-pane label="水印标识" name="watermark">
             <div class="settings-section watermark-settings">
               <div class="watermark-switch-row">
@@ -703,7 +787,7 @@
         </template>
         <template v-else-if="analysisResult">
           <div class="analysis-section">
-            <span class="panel-kicker">内容判断</span>
+            <span class="panel-kicker">内容视角</span>
             <h3>视频总结</h3>
             <p>{{ analysisResult.summary || '暂无总结' }}</p>
             <p v-if="analysisResult.china_view_angle" class="analysis-muted">{{ analysisResult.china_view_angle }}</p>
@@ -726,6 +810,10 @@
                 {{ title }}
               </el-tag>
             </div>
+            <div v-if="(analysisResult.cover_title_options || []).length" class="cover-analysis-preview">
+              <span class="draft-label">封面标题</span>
+              <p v-for="title in analysisResult.cover_title_options" :key="title" class="cover-draft-value">{{ title }}</p>
+            </div>
             <p class="publish-copy">{{ analysisResult.publish_copy || '暂无文案' }}</p>
             <div class="tag-list">
               <el-tag v-for="tag in analysisResult.tags || []" :key="tag" type="success" effect="light">#{{ tag }}</el-tag>
@@ -735,7 +823,7 @@
 
           <div class="analysis-section">
             <span class="panel-kicker">高光片段</span>
-            <h3>震惊点与中外对比</h3>
+            <h3>主题高光与核心看点</h3>
             <div class="highlight-list">
               <div
                 v-for="segment in analysisResult.highlight_segments || []"
@@ -752,9 +840,10 @@
             </div>
           </div>
 
-          <div v-if="(analysisResult.risk_notes || []).length" class="analysis-section">
+          <div v-if="(analysisResult.risk_notes || []).length || analysisResult.contentRisk?.requiresPublishConfirmation" class="analysis-section">
             <span class="panel-kicker">人工确认</span>
             <div class="risk-list">
+              <el-tag v-if="analysisResult.contentRisk?.requiresPublishConfirmation" type="warning" effect="dark">发布前需人工确认</el-tag>
               <el-tag v-for="note in analysisResult.risk_notes" :key="note" type="warning" effect="light">{{ note }}</el-tag>
             </div>
           </div>
@@ -762,7 +851,7 @@
         <el-empty v-else description="暂无发布文案与内容分析" />
       </div>
       <template #footer>
-        <el-button v-if="analysisStatus === 3 && currentAnalysisRow" type="primary" @click="createAnalysisJob(currentAnalysisRow)">重新生成</el-button>
+        <el-button v-if="currentAnalysisRow && [1, 3].includes(analysisStatus)" type="primary" @click="regenerateAnalysis(currentAnalysisRow)">重新生成</el-button>
         <el-button @click="analysisDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -811,6 +900,7 @@
         <el-button @click="jobErrorDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+    <VideoGroupManageDialog v-model="groupManagerVisible" />
   </div>
 </template>
 
@@ -824,6 +914,9 @@ import { accountApi } from '@/api/account'
 import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
+import { useVideoGroupStore } from '@/stores/videoGroup'
+import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
+import VideoGroupManageDialog from '@/components/VideoGroupManageDialog.vue'
 
 const loading = ref(false)
 const searchLoading = ref(false)
@@ -849,6 +942,8 @@ const currentAnalysisRow = ref(null)
 const jobErrorDialogVisible = ref(false)
 const currentErrorJob = ref(null)
 const videoTableRef = ref(null)
+const jobTableRef = ref(null)
+const focusedJobId = ref('')
 const items = ref([])
 const jobs = ref([])
 const videoTotal = ref(0)
@@ -859,6 +954,7 @@ const nowTick = ref(Date.now())
 const editingPublishDraftIds = ref(new Set())
 const editingPublishDraftForms = reactive({})
 const selectedVideos = ref([])
+const groupManagerVisible = ref(false)
 const searchProgress = reactive({
   visible: false,
   jobId: '',
@@ -874,6 +970,7 @@ const searchProgress = reactive({
 const notificationStore = useNotificationStore()
 const appStore = useAppStore()
 const accountStore = useAccountStore()
+const videoGroupStore = useVideoGroupStore()
 let jobsTimer = null
 let searchJobTimer = null
 let clockTimer = null
@@ -899,12 +996,50 @@ const consumeOpenSettingsQuery = async () => {
 }
 
 const form = reactive({
-  query: 'foreigner China travel vlog first time in China',
+  query: '',
+  groupId: '',
   limit: 8
 })
 
+const focusedJobRowClass = ({ row }) => String(row?.id) === focusedJobId.value ? 'job-row-focused' : ''
+
+const showWorkflowJobErrorDetails = (job) => {
+  if (!job || !['failed', 'abnormal'].includes(job.status)) return
+  currentErrorJob.value = job
+  jobErrorDialogVisible.value = true
+}
+
+const consumeFocusJobQuery = async () => {
+  const jobId = String(route.query.focusJob || '')
+  if (!jobId) return
+  const action = String(route.query.focusAction || '')
+  try {
+    const res = await youtubeApi.getWorkflowJob(jobId)
+    const job = res.data
+    if (!job?.id) throw new Error('任务不存在')
+    const index = jobs.value.findIndex(item => String(item.id) === jobId)
+    if (index >= 0) jobs.value[index] = job
+    else jobs.value.unshift(job)
+    focusedJobId.value = jobId
+    await nextTick()
+    jobTableRef.value?.setCurrentRow(job)
+    jobTableRef.value?.$el?.querySelector('.job-row-focused')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (action === 'error') showWorkflowJobErrorDetails(job)
+    if (action === 'confirm') promptPendingPublishConfirmations([job])
+  } catch (error) {
+    ElMessage.warning('对应任务已不存在或无法读取，请刷新任务列表。')
+  } finally {
+    await router.replace({ path: route.path, query: { ...route.query, focusJob: undefined, focusAction: undefined } })
+  }
+}
+
+const persistSearchQuery = () => {
+  if (form.query.trim()) flushWorkflowSettings()
+}
+
 const manualForm = reactive({
-  url: ''
+  url: '',
+  groupId: ''
 })
 
 const workflowForm = reactive({
@@ -919,12 +1054,13 @@ const workflowForm = reactive({
   kuaishouAccount: '',
   publishToTencent: false,
   tencentAccount: '',
-  tags: '中国旅行,外国人在中国',
+  tags: '',
   processVersion: 'translation_v1',
   subtitleLanguage: 'zh-CN',
   burnProfile: 'stable',
   subtitleSize: 'large',
   translatorLabel: 'Vidferry翻译',
+  coverSignature: 'Vidferry',
   watermarkEnabled: false,
   watermarkText: ''
 })
@@ -1025,7 +1161,7 @@ const processVersions = [
   {
     value: 'editing_v1',
     label: '处理版本二：剪辑',
-    description: '保留字幕处理链路，并把外国人震惊点、中外对比等前三个高光片段拼接到视频开头。'
+    description: '保留字幕处理链路，并把主题高光与核心看点中的前三个片段拼接到视频开头。'
   }
 ]
 
@@ -1121,6 +1257,9 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
   if (typeof settings.translatorLabel === 'string' && settings.translatorLabel.trim()) {
     next.translatorLabel = settings.translatorLabel.trim().slice(0, 20)
   }
+  if (typeof settings.coverSignature === 'string' || typeof settings.coverBrandName === 'string') {
+    next.coverSignature = String(settings.coverSignature ?? settings.coverBrandName).trim().slice(0, 24) || 'Vidferry'
+  }
   if (typeof settings.searchQuery === 'string' && settings.searchQuery.trim()) {
     next.searchQuery = settings.searchQuery.trim().slice(0, 160)
   }
@@ -1159,6 +1298,7 @@ const currentWorkflowSettingsPayload = () => ({
   burnProfile: workflowForm.burnProfile,
   subtitleSize: workflowForm.subtitleSize,
   translatorLabel: workflowForm.translatorLabel,
+  coverSignature: workflowForm.coverSignature,
   searchQuery: form.query,
   watermarkEnabled: workflowForm.watermarkEnabled,
   watermarkText: workflowForm.watermarkText
@@ -1167,7 +1307,9 @@ const currentWorkflowSettingsPayload = () => ({
 const applyStoredWorkflowSettings = (settings) => {
   const { searchQuery, ...workflowSettings } = normalizeStoredWorkflowSettings(settings)
   Object.assign(workflowForm, workflowSettings)
-  if (searchQuery) form.query = searchQuery
+  if (searchQuery) {
+    form.query = searchQuery
+  }
 }
 
 const normalizeWatermarkText = () => {
@@ -1256,6 +1398,7 @@ watch(
     burnProfile: workflowForm.burnProfile,
     subtitleSize: workflowForm.subtitleSize,
     translatorLabel: workflowForm.translatorLabel,
+    coverSignature: workflowForm.coverSignature,
     watermarkEnabled: workflowForm.watermarkEnabled,
     watermarkText: workflowForm.watermarkText
   }),
@@ -1264,6 +1407,15 @@ watch(
 )
 
 watch(() => form.query, saveWorkflowSettings)
+watch(
+  () => videoGroupStore.groups.map(group => group.id),
+  (groupIds) => {
+    const hasGroup = value => groupIds.some(id => Number(id) === Number(value))
+    if (form.groupId && !hasGroup(form.groupId)) form.groupId = videoGroupStore.defaultGroupId || ''
+    if (manualForm.groupId && !hasGroup(manualForm.groupId)) manualForm.groupId = videoGroupStore.defaultGroupId || ''
+    if (videoFilter.groupId && !hasGroup(videoFilter.groupId)) videoFilter.groupId = ''
+  }
+)
 
 const hasCurrentProcessVersion = (item) => {
   return Array.isArray(item.processedVersions) && item.processedVersions.some(version => version.processVersion === workflowForm.processVersion)
@@ -1279,7 +1431,9 @@ const processedVersionBadges = (item) => {
 
 const videoFilter = reactive({
   status: 'all',
-  sort: 'default'
+  sort: 'default',
+  groupId: '',
+  keyword: ''
 })
 
 const videoPagination = reactive({
@@ -1300,7 +1454,7 @@ const isDownloaded = (item) => Number(item.downloadStatus) === 1
 const isTranslated = (item) => Number(item.translateStatus) === 1
 const isTranslationSkipped = (item) => Number(item.translateStatus) === 2
 const isPublished = (item) => item.publishStatus === 1
-const isRunningJob = (job) => job.status === 'queued' || job.status === 'running'
+const isRunningJob = (job) => ['queued', 'running', 'waiting_confirmation'].includes(job.status)
 
 const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
 const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
@@ -1330,16 +1484,14 @@ const jobStepText = (step) => {
     subtitle: '处理',
     analysis: '分析',
     publish: '发布',
+    publish_confirmation: '发布确认',
     done: '收尾'
   }
   return map[step] || step || '-'
 }
 
 const showJobErrorDetails = (item) => {
-  const job = stageErrorJob(item)
-  if (!job) return
-  currentErrorJob.value = job
-  jobErrorDialogVisible.value = true
+  showWorkflowJobErrorDetails(stageErrorJob(item))
 }
 
 const hasDownloadedVideo = (item) => {
@@ -1418,6 +1570,8 @@ const buildAnalysisDraft = (draft = {}, result = {}) => {
   const draftTitleOptions = Array.isArray(draft.title_options) ? draft.title_options.filter(Boolean) : []
   const selectedTitle = draft.title || draft.selectedTitle || draftTitleOptions[0] || llmTitleOptions[0] || ''
   const titleOptions = Array.from(new Set([selectedTitle, ...draftTitleOptions, ...llmTitleOptions].filter(Boolean)))
+  const coverTitleOptions = Array.isArray(result.cover_title_options) ? result.cover_title_options.filter(Boolean) : []
+  const coverTitle = draft.coverTitle || draft.cover_title || coverTitleOptions[0] || ''
   const draftTags = cleanTopicList(draft.tags)
   const resultTags = cleanTopicList(result.tags)
   const selectedTags = draftTags.length ? draftTags : resultTags
@@ -1425,6 +1579,9 @@ const buildAnalysisDraft = (draft = {}, result = {}) => {
   return {
     titleOptions,
     selectedTitle,
+    coverTitleOptions: Array.from(new Set([coverTitle, ...coverTitleOptions].filter(Boolean))),
+    coverTitle,
+    coverContext: draft.coverContext || draft.cover_context || result.cover_context || '',
     publishCopy: draft.description || draft.publish_copy || result.publish_copy || '',
     tags: selectedTags,
     tagOptions,
@@ -1448,7 +1605,7 @@ const videoThumbnail = (item) => {
 }
 
 const showInlinePublishDraft = (item) => {
-  return Number(item.translateStatus) === 1 && Number(item.publishStatus) !== 1 && Number(item.analysisStatus) === 1 && item.analysisDraft
+  return Number(item.publishStatus) !== 1 && Number(item.analysisStatus) === 1 && item.analysisDraft
 }
 
 const isPublishDraftEditing = (item) => editingPublishDraftIds.value.has(item.id)
@@ -1456,6 +1613,9 @@ const isPublishDraftEditing = (item) => editingPublishDraftIds.value.has(item.id
 const cloneAnalysisDraft = (draft = {}) => ({
   titleOptions: [...(draft.titleOptions || [])],
   selectedTitle: draft.selectedTitle || '',
+  coverTitleOptions: [...(draft.coverTitleOptions || [])],
+  coverTitle: draft.coverTitle || '',
+  coverContext: draft.coverContext || '',
   publishCopy: draft.publishCopy || '',
   tags: [...(draft.tags || [])],
   tagOptions: [...(draft.tagOptions || [])],
@@ -1542,9 +1702,11 @@ const rowWorkflowSteps = (item) => {
 }
 
 watch(
-  () => [videoFilter.status, videoFilter.sort],
+  () => [videoFilter.status, videoFilter.sort, videoFilter.groupId, videoFilter.keyword],
   () => {
     videoPagination.page = 1
+    videoTableRef.value?.clearSelection?.()
+    selectedVideos.value = []
     loadVideos(false, { force: true })
   }
 )
@@ -1632,6 +1794,8 @@ const applySearchJobProgress = (job = {}) => {
   lastResult.value = job
 }
 
+const coverTitleOptionLabel = (title) => String(title || '').replace(/\r?\n/g, ' / ')
+
 const stopSearchJobPolling = () => {
   if (searchJobTimer) {
     window.clearTimeout(searchJobTimer)
@@ -1647,7 +1811,10 @@ const scheduleSearchJobPoll = (jobId, delay = SEARCH_JOB_POLL_MS) => {
 const finishSearchJobPolling = (job) => {
   stopSearchJobPolling()
   searchLoading.value = false
+  videoGroupStore.invalidateRelatedCaches()
+  void videoGroupStore.load({ force: true })
   if (job.status === 'failed') {
+    notificationStore.addSearchFailureMessage(job)
     ElMessage.error(job.message || '关键词查询失败')
     return
   }
@@ -1701,6 +1868,11 @@ const pollSearchJob = async (jobId) => {
 
 const handleSearch = async () => {
   if (searchLoading.value) return
+  const query = form.query.trim()
+  if (!query) {
+    ElMessage.warning('请输入英文关键词')
+    return
+  }
   searchLoading.value = true
   stopSearchJobPolling()
   searchProgress.visible = true
@@ -1715,8 +1887,9 @@ const handleSearch = async () => {
   searchProgress.message = '正在提交查询任务'
   try {
     const res = await youtubeApi.createSearchJob({
-      query: form.query,
-      limit: form.limit
+      query,
+      limit: form.limit,
+      groupId: form.groupId || undefined
     })
     applySearchJobProgress(res.data || {})
     searchProgress.message = res.data?.message || '查询任务已提交'
@@ -1736,6 +1909,22 @@ const handleVideoSelectionChange = (rows) => {
   selectedVideos.value = rows
 }
 
+const moveRowsToGroup = async (rows, groupId) => {
+  const videoIds = rows.map(row => row.id).filter(Boolean)
+  if (!videoIds.length) return
+  const result = await videoGroupStore.moveVideos(videoIds, groupId)
+  videoTableRef.value?.clearSelection?.()
+  selectedVideos.value = []
+  await loadVideos(false, { force: true })
+  if (items.value.length === 0 && videoPagination.page > 1) {
+    videoPagination.page -= 1
+  }
+  ElMessage.success(`已移动 ${result.movedCount || 0} 条线索`)
+}
+
+const moveSelectedVideos = (groupId) => moveRowsToGroup(selectedVideos.value, groupId)
+const moveVideoToGroup = (row, groupId) => moveRowsToGroup([row], groupId)
+
 const importVideo = async () => {
   const url = manualForm.url.trim()
   if (!url) {
@@ -1744,9 +1933,11 @@ const importVideo = async () => {
   }
   importing.value = true
   try {
-    const res = await youtubeApi.importVideo({ url })
+    const res = await youtubeApi.importVideo({ url, groupId: manualForm.groupId || undefined })
     lastResult.value = res.data
     manualForm.url = ''
+    videoGroupStore.invalidateRelatedCaches()
+    await videoGroupStore.load({ force: true })
     await loadVideos(false, { force: true })
     showImportResultMessage(res.data, '导入完成')
   } finally {
@@ -1784,11 +1975,13 @@ const applyVideoPage = (payload = {}) => {
 }
 
 const loadVideos = async (showLoading = true, options = {}) => {
-  const params = {
+    const params = {
     page: videoPagination.page,
     pageSize: videoPagination.pageSize,
     status: videoFilter.status,
-    sort: videoFilter.sort
+    sort: videoFilter.sort,
+    groupId: videoFilter.groupId || undefined,
+    keyword: videoFilter.keyword.trim() || undefined
   }
   const cacheKey = videoCacheKey(params)
   if (!options.force && !options.ids) {
@@ -1842,32 +2035,27 @@ const loadJobs = async ({ silent = false, recentOnly = false } = {}) => {
     const nextJobs = res.data?.items || []
     const previousStatuses = new Map(jobs.value.map(job => [job.id, job.status]))
     const changedVideoIds = []
-    const shouldNotifyFailures = jobs.value.length > 0
 
     nextJobs.forEach(job => {
-      notificationStore.addPublishUploadPausedMessage(job)
       const previousStatus = previousStatuses.get(job.id)
-      if (previousStatus && ['queued', 'running'].includes(previousStatus) && !['queued', 'running'].includes(job.status)) {
+      if (previousStatus && isRunningJob({ status: previousStatus }) && !isRunningJob(job)) {
         changedVideoIds.push(job.videoId)
       }
-      if (job.status === 'running' && ['subtitle', 'analysis', 'editing', 'publish'].includes(String(job.step || ''))) {
+      if (isRunningJob(job) && ['subtitle', 'analysis', 'editing', 'publish', 'publish_confirmation'].includes(String(job.step || ''))) {
         changedVideoIds.push(job.videoId)
       }
     })
 
-    if (shouldNotifyFailures) {
-      nextJobs.forEach(job => {
-        if (job.status === 'failed' && previousStatuses.get(job.id) !== 'failed') {
-          const handledAsUploadPaused = notificationStore.addPublishUploadPausedMessage(job)
-          if (!handledAsUploadPaused) {
-            notificationStore.addWorkflowFailureMessage(job)
-          }
-        }
-        if (job.status === 'abnormal' && previousStatuses.get(job.id) !== 'abnormal') {
-          notificationStore.addWorkflowAbnormalMessage(job)
-        }
-      })
-    }
+    nextJobs.forEach(job => {
+      const previousStatus = previousStatuses.get(job.id)
+      const popup = Boolean(previousStatus && previousStatus !== job.status)
+      if (job.status === 'failed') {
+        const handledAsUploadPaused = notificationStore.addPublishUploadPausedMessage(job, { popup })
+        if (!handledAsUploadPaused) notificationStore.addWorkflowFailureMessage(job, { popup })
+      }
+      if (job.status === 'abnormal') notificationStore.addWorkflowAbnormalMessage(job, { popup })
+    })
+    notificationStore.syncPublishConfirmationMessages(nextJobs)
 
     if (recentOnly) {
       const nextMap = new Map(nextJobs.map(job => [job.id, job]))
@@ -1878,6 +2066,7 @@ const loadJobs = async ({ silent = false, recentOnly = false } = {}) => {
       jobs.value = nextJobs
       jobTotal.value = Number(res.data?.total || nextJobs.length)
     }
+    promptPendingPublishConfirmations(nextJobs)
     return uniqueValues(changedVideoIds)
   } finally {
     jobsRequesting = false
@@ -1885,10 +2074,61 @@ const loadJobs = async ({ silent = false, recentOnly = false } = {}) => {
   }
 }
 
+const publishConfirmationDialogIds = new Set()
+
+const resolveWorkflowPublishConfirmation = async (job, confirmed) => {
+  const response = await youtubeApi.confirmWorkflowPublish(job.id, confirmed)
+  if (confirmed) {
+    ElMessage.success('已确认内容风险，任务将继续发布')
+  } else {
+    ElMessage.info('已取消发布，处理后视频已保留到素材库')
+  }
+  const changedVideoIds = await loadJobs({ silent: true, recentOnly: true })
+  refreshVideosByIds([...changedVideoIds, job.videoId])
+  return response
+}
+
+const promptPendingPublishConfirmations = (workflowJobs = []) => {
+  workflowJobs
+    .filter(job => job.status === 'waiting_confirmation' && job.publishConfirmationRequired)
+    .forEach(job => {
+      if (publishConfirmationDialogIds.has(job.id)) return
+      publishConfirmationDialogIds.add(job.id)
+      void (async () => {
+        try {
+          await ElMessageBox.confirm(
+            '检测到转写中含明确粗口，中文字幕已打码，但原声及英文字幕可能仍含风险。是否继续发布？',
+            '发布前内容确认',
+            {
+              confirmButtonText: '继续发布',
+              cancelButtonText: '暂不发布',
+              type: 'warning',
+              closeOnClickModal: false,
+              closeOnPressEscape: false
+            }
+          )
+          await resolveWorkflowPublishConfirmation(job, true)
+        } catch (action) {
+          if (action === 'cancel' || action === 'close') {
+            try {
+              await resolveWorkflowPublishConfirmation(job, false)
+            } catch (error) {
+              ElMessage.error(error?.response?.data?.msg || error.message || '取消发布失败')
+            }
+          } else if (action) {
+            ElMessage.error(action?.response?.data?.msg || action.message || '处理发布确认失败')
+          }
+        } finally {
+          publishConfirmationDialogIds.delete(job.id)
+        }
+      })()
+    })
+}
+
 const startJobsPolling = () => {
   if (jobsTimer) return
   const poll = async () => {
-    const hasRunning = jobs.value.some(job => job.status === 'queued' || job.status === 'running') || Number(videoSummary.value?.running || 0) > 0
+    const hasRunning = jobs.value.some(isRunningJob) || Number(videoSummary.value?.running || 0) > 0
     try {
       if (hasRunning) {
         const changedVideoIds = await loadJobs({ silent: true, recentOnly: true })
@@ -1903,7 +2143,7 @@ const startJobsPolling = () => {
   jobsTimer = window.setTimeout(poll, JOBS_POLL_ACTIVE_MS)
 }
 
-const hasActiveWorkflowJobs = () => jobs.value.some(job => job.status === 'queued' || job.status === 'running')
+const hasActiveWorkflowJobs = () => jobs.value.some(isRunningJob)
 
 const handleBeforeUnload = (event) => {
   if (!hasActiveWorkflowJobs()) return
@@ -1988,7 +2228,7 @@ const validateWorkflowPublishAccounts = async () => {
 
   if (enabledPlatforms.length === 0) {
     await ElMessageBox.alert(
-      '一键处理会从当前线索状态继续执行下载、处理和发布流程。请先在任务默认配置中至少开启一个发布平台并填写账号。',
+      '一键发布会从当前线索状态继续执行下载、处理和发布流程。请先在任务默认配置中至少开启一个发布平台并填写账号。',
       '请选择发布账号',
       {
         confirmButtonText: '去设置',
@@ -2002,7 +2242,7 @@ const validateWorkflowPublishAccounts = async () => {
     const accountName = String(workflowForm[item.accountKey] || '').trim()
     if (!accountName) {
       await ElMessageBox.alert(
-        `已开启发${item.label}，但还没有选择正常的${item.label}账号。请先在下拉框选择账号后再一键处理。`,
+        `已开启发${item.label}，但还没有选择正常的${item.label}账号。请先在下拉框选择账号后再一键发布。`,
         `缺少${item.label}账号`,
         {
           confirmButtonText: '去设置',
@@ -2059,11 +2299,13 @@ const createJob = async (row) => {
       burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize,
       translatorLabel: workflowForm.translatorLabel,
+      coverTitle: row.analysisDraft?.coverTitle || '',
+      coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
       watermarkText: workflowForm.watermarkText
     })
     jobs.value.unshift(res.data)
-    ElMessage.success('工作流任务已创建')
+    ElMessage.success('一键发布任务已创建')
     startJobsPolling()
     refreshVideosByIds([row.id])
   } finally {
@@ -2261,7 +2503,7 @@ const handleAnalysisAction = async (row) => {
   await createAnalysisJob(row)
 }
 
-const createAnalysisJob = async (row) => {
+const createAnalysisJob = async (row, force = false) => {
   if (row.downloadStatus !== 1) {
     ElMessage.warning('请先下载视频，再生成发布文案')
     return
@@ -2281,8 +2523,11 @@ const createAnalysisJob = async (row) => {
       burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize,
       translatorLabel: workflowForm.translatorLabel,
+      coverTitle: row.analysisDraft?.coverTitle || '',
+      coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
-      watermarkText: workflowForm.watermarkText
+      watermarkText: workflowForm.watermarkText,
+      force
     })
     jobs.value.unshift(res.data)
     items.value = items.value.map(item => item.id === row.id ? { ...item, analysisStatus: 2, hasAnalysis: false, analysisDraft: null } : item)
@@ -2291,6 +2536,20 @@ const createAnalysisJob = async (row) => {
     refreshVideosByIds([row.id])
   } finally {
     analyzingId.value = ''
+  }
+}
+
+const regenerateAnalysis = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      '重新生成会更新内容分析和建议，已手工保存的发布稿将继续保留。',
+      '重新生成发布文案',
+      { type: 'warning', confirmButtonText: '重新生成', cancelButtonText: '取消' }
+    )
+    analysisDialogVisible.value = false
+    await createAnalysisJob(row, true)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
   }
 }
 
@@ -2334,6 +2593,8 @@ const saveInlineAnalysis = async (row) => {
       : form.titleOptions.filter(Boolean)
     const payload = {
       title: form.selectedTitle || nextTitleOptions[0] || '',
+      coverTitle: form.coverTitle || '',
+      coverContext: form.coverContext || '',
       description: form.publishCopy || '',
       tags: form.tags.filter(Boolean)
     }
@@ -2369,6 +2630,8 @@ const processVideo = async (row) => {
       burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize,
       translatorLabel: workflowForm.translatorLabel,
+      coverTitle: row.analysisDraft?.coverTitle || '',
+      coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
       watermarkText: workflowForm.watermarkText
     }
@@ -2399,6 +2662,7 @@ const jobStatusText = (status) => {
   const map = {
     queued: '排队中',
     running: '执行中',
+    waiting_confirmation: '等待发布确认',
     success: '成功',
     failed: '失败',
     abnormal: '异常'
@@ -2410,6 +2674,7 @@ const jobStatusType = (status) => {
   const map = {
     queued: 'info',
     running: 'warning',
+    waiting_confirmation: 'warning',
     success: 'success',
     failed: 'danger',
     abnormal: 'danger'
@@ -2472,24 +2737,30 @@ const copyText = async (text) => {
 
 onMounted(async () => {
   loadingWorkflowSettings = true
-  await Promise.all([loadBilibiliCategories(), loadAccounts()])
+  await Promise.all([loadBilibiliCategories(), loadAccounts(), videoGroupStore.load()])
+  form.groupId = videoGroupStore.defaultGroupId || ''
+  manualForm.groupId = videoGroupStore.defaultGroupId || ''
   await loadWorkflowSettings()
   syncWorkflowAccountSelections()
   await nextTick()
   loadingWorkflowSettings = false
   workflowSettingsLoaded = true
-  loadVideos()
-  loadJobs()
+  await Promise.all([loadVideos(), loadJobs()])
   startJobsPolling()
   startClock()
   window.__VIDFERRY_OPEN_PROCESS_SETTINGS__ = openSettingsFromLayout
-  consumeOpenSettingsQuery()
+  await consumeOpenSettingsQuery()
+  await consumeFocusJobQuery()
   consumeAgentStatusQuery()
   window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
 watch(() => route.query.openSettings, () => {
   consumeOpenSettingsQuery()
+})
+
+watch(() => route.query.focusJob, () => {
+  consumeFocusJobQuery()
 })
 
 watch(() => route.query.status, () => {
@@ -2828,8 +3099,20 @@ $ink-strong: #172033;
   gap: 10px;
 }
 
+.import-panel .entry-control {
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 190px) auto;
+}
+
 .search-control {
-  grid-template-columns: minmax(220px, 1fr) 110px auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) 110px auto;
+}
+
+.keyword-field {
+  grid-column: auto;
+}
+
+.group-filter {
+  width: 150px;
 }
 
 .search-progress-panel {
@@ -2867,6 +3150,7 @@ $ink-strong: #172033;
     width: 100%;
   }
 }
+
 
 .workflow-config {
   display: flex;
@@ -3356,6 +3640,11 @@ $ink-strong: #172033;
   margin-bottom: 4px;
 }
 
+:deep(.job-row-focused > td.el-table__cell) {
+  background: #fff7df !important;
+  box-shadow: inset 3px 0 0 #d8a10d;
+}
+
 .settings-panel {
   min-height: 356px;
 }
@@ -3424,6 +3713,44 @@ $ink-strong: #172033;
 
 .settings-span-full {
   grid-column: 1 / -1;
+}
+
+.cover-title-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cover-draft-value {
+  white-space: pre-line;
+}
+
+.cover-settings {
+  max-width: 680px;
+  margin: 2px auto 0;
+}
+
+.cover-signature-preview {
+  min-height: 72px;
+  padding: 22px;
+  border-left: 3px solid #d8a10d;
+  background: #f7f8fa;
+  color: #182735;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.cover-analysis-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.cover-analysis-preview p {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid #d8a10d;
+  background: #f7f8fa;
 }
 
 .watermark-settings {
@@ -3852,8 +4179,17 @@ $ink-strong: #172033;
   }
 
   .entry-control,
+  .import-panel .entry-control,
   .search-control {
     grid-template-columns: 1fr;
+  }
+
+  .keyword-field {
+    grid-column: auto;
+  }
+
+  .group-filter {
+    width: 100%;
   }
 
   .workflow-config {
