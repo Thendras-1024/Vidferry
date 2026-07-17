@@ -4,40 +4,19 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 
 当前版本仍处于本地开发和个人工作流验证阶段，不建议直接作为生产 SaaS 使用。平台登录、发布和 YouTube 下载能力都依赖本机环境以及第三方平台规则，可能需要持续维护。
 
-## 🚀 快速部署（推荐：让 AI 帮你装）
-
-如果你不想手动逐步部署，可以把电脑上的 AI Agent（如 Claude Code、Cursor 等）叫来帮忙：先确认下面的前置条件，再把下方 Prompt 整段复制给它即可。
-
-### 部署前置条件
-
-这些需要你**自行准备**，Agent 无法替你完成：
-
-- ✅ **开启 VPN / 代理**：下载 YouTube 视频、从 GitHub 拉取 biliup 运行时等需要外网。（内容分析用的 DashScope 是国内服务，不需要 VPN）
-- ✅ **已安装 Google Chrome**：扫码登录和各平台发布依赖它
-- ✅ **终端可用以下命令**：`conda`、`python`（3.10–3.12）、`node`/`npm`（Node.js ≥18）、`git`、`ffmpeg -version`
-- ✅ **准备好 LLM API**：推荐阿里云 DashScope（通义千问），国内可直连，拿到 API Key 待用
-- ✅ **各平台账号**：抖音、B站、快手、小红书等，首次使用时需扫码登录
-
-> 详细版本要求和命令检查见下方「系统要求」。
-
-### 一键部署 Prompt
-
-把下面整段复制，发给你的 AI Agent，它会在你的电脑上完成部署：
+## 🚀 快速部署 Prompt
 
 ```
 你是 Vidferry 项目的部署助手。请在我的电脑上完成该项目的完整本地部署。
 
 执行步骤：
 1. 若尚未克隆：git clone https://github.com/Thendras-1024/Vidferry.git 并进入目录
-2. 仔细阅读仓库内的 README.md，尤其是「快速部署」和「关键配置说明」两节，严格按其步骤执行
-3. 流程概要：创建 Conda 环境(vidferry) → 装后端依赖(pip install -r requirements.txt && pip install -e .) → 装 patchright chromium → 配置 conf.py 与 .env → 装前端依赖(cd sau_frontend && npm install) → 启动后端(python run.py) → 启动前端(npm run dev)
+2. 仔细阅读仓库根目录的 QUICK_DEPLOYMENT.md，严格按照其中的环境检查、缺失工具安装和部署流程执行；需要配置项说明时，再阅读 CONFIGURATION.md
+3. 首先检查 conda、python、node/npm、git、ffmpeg 和 Google Chrome 是否已安装且版本可用；缺失时按 QUICK_DEPLOYMENT.md 协助我安装，安装后重新验证
 4. 目标：浏览器能打开 http://127.0.0.1:5173 且首页正常加载
 5. 每完成一步向我简短汇报；遇到报错先自行排查并重试
-6. 需要我提供的信息（LLM 的 API Key/Base URL/模型名、各平台账号扫码登录）请停下来问我，不要编造
-
-注意：YouTube 下载需我已开 VPN；conf.py 里 Chrome、ffmpeg 路径按我本机实际情况填写。
+6. 只有在需要我开启 VPN/代理、提供 LLM 的 API Key/Base URL/模型名，或进行各平台账号扫码登录时才停下来问我，不要编造
 ```
-
 ## 界面预览
 
 <p align="center">
@@ -122,194 +101,25 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 - B站发布：biliup
 - 内容分析：OpenAI-compatible Chat Completions API
 
-## 系统要求
-
-推荐环境：
-
-- Windows 10/11
-- Python `>=3.10,<3.13`
-- Node.js `>=18`
-- Git
-- Google Chrome
-- FFmpeg
-- Conda，推荐用于后端 Python 环境
-
-必须能在终端执行：
-
-```powershell
-conda --version
-python --version
-node --version
-npm --version
-git --version
-ffmpeg -version
-```
-
-如果 `ffmpeg -version` 不可用，需要先安装 FFmpeg 并加入 PATH，或在 `conf.py` 中配置 `FFMPEG_COMMAND`。
-
-## 快速部署
-
-以下命令以 Windows PowerShell 为例。
-
-### 1. 克隆项目
-
-```powershell
-git clone https://github.com/Thendras-1024/Vidferry.git
-cd Vidferry
-```
-
-
-### 2. 创建后端虚拟环境
-
-推荐使用 Conda 创建名为 `vidferry` 的后端环境：
-
-```powershell
-conda create -n vidferry python=3.12 -y
-conda activate vidferry
-python -m pip install -U pip
-pip install -r requirements.txt
-pip install -e .
-```
-
-说明：
-
-- 后端运行、CLI、视频下载/处理、平台自动化发布都需要在 `vidferry` 环境中执行。
-- `pip install -r requirements.txt` 用于安装当前开发环境快照中的依赖。
-- `pip install -e .` 用于把项目本身以开发模式安装，并注册 `sau` 命令。
-- 当前 `requirements.txt` 推荐环境是 Windows + Conda + Python 3.12；它不是严格跨平台锁文件，可能包含历史依赖，也包含 `pywinpty` 等 Windows 相关依赖。
-- Linux/macOS 安装失败时，优先改用 `pip install -e ".[web]"`，或按平台调整不兼容依赖。
-
-可选：如果只想按项目声明的 Web 最小依赖安装，可以使用：
-
-```powershell
-pip install -e ".[web]"
-```
-
-可选：如果仍想使用 uv，也可以执行：
-
-```powershell
-python -m pip install uv
-uv sync --extra web
-```
-
-### 3. 安装浏览器自动化依赖
-
-项目使用 `patchright` 驱动浏览器。国内网络可使用镜像：
-
-```powershell
-conda activate vidferry
-$env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
-patchright install chromium
-```
-
-如果你已经安装了本机 Chrome，也建议在 `conf.py` 中配置 `LOCAL_CHROME_PATH`，扫码登录和发布流程通常更稳定。
-
-### 4. 配置后端文件
-
-复制配置文件：
-
-```powershell
-Copy-Item conf.example.py conf.py
-Copy-Item .env.example .env
-```
-
-建议至少检查 `conf.py`：
-
-```python
-LOCAL_CHROME_PATH = "C:/Program Files/Google/Chrome/Application/chrome.exe"
-LOCAL_CHROME_HEADLESS = False
-FFMPEG_COMMAND = "ffmpeg"
-YOUTUBE_DOWNLOAD_DIR = BASE_DIR.parent / "video"
-YOUTUBE_PROCESSED_DIR = BASE_DIR / "videos" / "processed"
-```
-
-`.env` 推荐配置：
-
-```env
-YOUTUBE_DOWNLOAD_DIR=./videos/youtube
-YOUTUBE_PROCESSED_DIR=./videos/processed
-YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
-
-# 可选：YouTube 需要 JS challenge 时使用
-# YTDLP_JS_RUNTIME=node
-# YTDLP_JS_RUNTIME_PATH=C:/Program Files/nodejs/node.exe
-# YTDLP_REMOTE_COMPONENTS=ejs:github
-
-# 可选：内容分析和发布文案生成
-# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# LLM_API_KEY=sk-your-key
-# LLM_MODEL=qwen-plus
-# LLM_TIMEOUT=90
-# LLM_MAX_TRANSCRIPT_CHARS=28000
-
-# 可选：Agent 文本模型和视觉审核模型。发布前审核默认启用；
-# 未配置 AGENT_VISION_MODEL 时，发布会被阻止，直到完成视觉审核配置。
-# AGENT_CHAT_MODEL=qwen3.6-27b
-# AGENT_VISION_MODEL=your-vision-model
-
-# 可选：Whisper 转写模型下载和缓存
-# HF_HOME=./models/huggingface
-# HF_ENDPOINT=https://hf-mirror.com
-WHISPER_MODEL_SIZE=small
-WHISPER_DEVICE=cpu
-WHISPER_COMPUTE_TYPE=int8
-```
-
-说明：
-
-- `.env` 用于本地路径、LLM 和 yt-dlp 运行参数。
-- `conf.py` 用于本机 Chrome、FFmpeg、默认下载目录等本地配置。
-- 两者都属于本地配置，不要提交到 Git。
-- 各参数的具体含义见下方「关键配置说明」。
-
-### 5. 安装前端依赖
-
-前端不需要激活 `vidferry` Conda 环境，只需要本机 Node.js/npm 可用：
-
-```powershell
-cd sau_frontend
-npm install
-cd ..
-```
-
-### 6. 启动后端
-
-在项目根目录打开第一个终端：
-
-```powershell
-conda activate vidferry
-python run.py
-```
-
-默认后端地址：
+## 目录说明
 
 ```text
-http://127.0.0.1:5409
+app/                 后端 API、核心业务、数据库、任务和工具模块
+sau_backend.py       兼容入口，负责加载模块化后端
+run.py               后端正式启动入口
+sau_frontend/        Vue 3 + Vite 前端
+uploader/            各平台上传适配器
+myUtils/             账号、登录和历史工具函数
+utils/               通用工具
+logs/                后端关键流程与各平台上传日志，排查任务失败时优先查看
+videos/              下载、转写、处理输出目录
+  youtube/            YouTube 原视频及同视频 ID 的本地封面文件，供素材管理页离线预览
+videoFile/           素材库文件目录
+db/                  本地 SQLite 数据库
+cookiesFile/         平台账号 Cookie 文件
+docs/                安装、CLI 和历史设计文档
 ```
 
-如果要修改监听地址或端口，在 `.env` 中配置：
-
-```env
-VIDFERRY_HOST=0.0.0.0
-VIDFERRY_PORT=5409
-```
-
-### 7. 启动前端
-
-打开第二个终端。这个终端不需要激活 Conda 环境：
-
-```powershell
-cd sau_frontend
-npm run dev
-```
-
-默认前端地址：
-
-```text
-http://127.0.0.1:5173
-```
-
-Vite 已配置代理：前端请求 `/api` 会转发到 `http://127.0.0.1:5409`。
 
 ## 首次使用流程
 
@@ -413,82 +223,6 @@ sau tencent upload-video --account your_account --file D:/videos/output.mp4 --ti
 
 `upload-video` 可额外使用 `--thumbnail` 指定封面、`--draft` 保存草稿、`--schedule "2026-07-13 20:00:00"` 定时发布，以及 `--headless` 在无头模式运行。平台页面和登录规则可能变化，发布前请先执行 `check` 确认 Cookie 有效。
 
-## 目录说明
-
-```text
-app/                 后端 API、核心业务、数据库、任务和工具模块
-sau_backend.py       兼容入口，负责加载模块化后端
-run.py               后端正式启动入口
-sau_frontend/        Vue 3 + Vite 前端
-uploader/            各平台上传适配器
-myUtils/             账号、登录和历史工具函数
-utils/               通用工具
-logs/                后端关键流程与各平台上传日志，排查任务失败时优先查看
-videos/              下载、转写、处理输出目录
-  youtube/            YouTube 原视频及同视频 ID 的本地封面文件，供素材管理页离线预览
-videoFile/           素材库文件目录
-db/                  本地 SQLite 数据库
-cookiesFile/         平台账号 Cookie 文件
-docs/                安装、CLI 和历史设计文档
-```
-
-## 关键配置说明
-
-### FFmpeg
-
-默认使用 PATH 中的 `ffmpeg`：
-
-```python
-FFMPEG_COMMAND = "ffmpeg"
-```
-
-如果 FFmpeg 没有加入 PATH，可以写绝对路径：
-
-```python
-FFMPEG_COMMAND = "D:/tools/ffmpeg/bin/ffmpeg.exe"
-```
-
-### Chrome
-
-建议配置本机 Chrome：
-
-```python
-LOCAL_CHROME_PATH = "C:/Program Files/Google/Chrome/Application/chrome.exe"
-LOCAL_CHROME_HEADLESS = False
-```
-
-`LOCAL_CHROME_HEADLESS = False` 会显示浏览器窗口，适合扫码登录和排查发布流程。
-
-### LLM
-
-内容分析使用 OpenAI-compatible API。DashScope 示例：
-
-```env
-LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_API_KEY=sk-your-dashscope-key
-LLM_MODEL=qwen-plus
-LLM_TIMEOUT=90
-LLM_MAX_TRANSCRIPT_CHARS=28000
-```
-
-不配置 LLM 时，下载、字幕处理和视频素材管理仍可使用，但内容总结和发布文案生成不可用或会失败。
-
-### YouTube 下载
-
-yt-dlp 会随 Python 依赖安装。某些 YouTube 页面可能需要 JS runtime：
-
-```env
-YTDLP_JS_RUNTIME=node
-YTDLP_JS_RUNTIME_PATH=C:/Program Files/nodejs/node.exe
-```
-
-或使用 Deno：
-
-```env
-YTDLP_JS_RUNTIME=deno
-YTDLP_JS_RUNTIME_PATH=C:/Users/you/.deno/bin/deno.exe
-```
-
 ## 第三方依赖下载与安装说明
 
 ### biliup
@@ -499,7 +233,7 @@ B站登录、检查和上传能力基于 `biliup`。用户通常不需要手动�
 - 如果本地没有可用的 `biliup`，程序会从 GitHub Release 下载适配当前系统的版本。
 - 如果自动下载失败，通常是网络无法访问 GitHub Release，可检查代理/VPN，或参考 [docs/install.md](docs/install.md) 中的 Bilibili 运行时说明。
 
-> `yt-dlp` 与 `FFmpeg` 随 Python 依赖安装或属本机工具，其配置与排错统一见「关键配置说明」和「常见问题」，此处不再重复。
+> `yt-dlp` 与 `FFmpeg` 随 Python 依赖安装或属本机工具，其配置与排错统一见 [CONFIGURATION.md](CONFIGURATION.md) 和「常见问题」，此处不再重复。
 
 ### faster-whisper / CTranslate2
 
