@@ -6,9 +6,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.config import (
     WORKFLOW_MAX_ANALYSIS_JOBS,
+    WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS,
     WORKFLOW_MAX_DOWNLOAD_JOBS,
+    WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS,
     WORKFLOW_MAX_PROCESSING_JOBS,
+    WORKFLOW_MAX_PROCESSING_QUEUED_JOBS,
     WORKFLOW_MAX_SEARCH_JOBS,
+    WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
 )
 from app.db.base import _connect_database, _db_path
 from app.utils.file_util import (
@@ -53,24 +57,42 @@ def _db_connect(*, row_factory=False):
 
 _publish_account_locks = {}
 _publish_account_locks_guard = threading.Lock()
+_workflow_executor_limits = {
+    "search": (WORKFLOW_MAX_SEARCH_JOBS, WORKFLOW_MAX_SEARCH_QUEUED_JOBS),
+    "download": (WORKFLOW_MAX_DOWNLOAD_JOBS, WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS),
+    "processing": (WORKFLOW_MAX_PROCESSING_JOBS, WORKFLOW_MAX_PROCESSING_QUEUED_JOBS),
+    "analysis": (WORKFLOW_MAX_ANALYSIS_JOBS, WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS),
+}
 _workflow_executors = {
-    "search": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_SEARCH_JOBS, thread_name_prefix="vidferry-search"),
-    "download": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_DOWNLOAD_JOBS, thread_name_prefix="vidferry-download"),
-    "processing": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_PROCESSING_JOBS, thread_name_prefix="vidferry-processing"),
-    "analysis": ThreadPoolExecutor(max_workers=WORKFLOW_MAX_ANALYSIS_JOBS, thread_name_prefix="vidferry-analysis"),
+    resource: ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"vidferry-{resource}")
+    for resource, (workers, _queued) in _workflow_executor_limits.items()
+}
+_workflow_submit_slots = {
+    resource: threading.BoundedSemaphore(workers + queued)
+    for resource, (workers, queued) in _workflow_executor_limits.items()
 }
 
 
-def _run_background_task(target, args):
+def _run_background_task(resource, target, args):
     try:
         target(*args)
     except Exception as exc:
         print(f"后台任务未捕获异常: {getattr(target, '__name__', target)} {exc}", flush=True)
+    finally:
+        _workflow_submit_slots[resource].release()
 
 
 def _submit_background_task(resource, target, *args):
-    executor = _workflow_executors.get(resource) or _workflow_executors["processing"]
-    return executor.submit(_run_background_task, target, args)
+    resource = resource if resource in _workflow_executors else "processing"
+    slots = _workflow_submit_slots[resource]
+    if not slots.acquire(blocking=False):
+        workers, queued = _workflow_executor_limits[resource]
+        raise RuntimeError(f"{resource} 任务已满（运行 {workers}，排队 {queued}），请稍后重试")
+    try:
+        return _workflow_executors[resource].submit(_run_background_task, resource, target, args)
+    except Exception:
+        slots.release()
+        raise
 
 
 def _get_publish_account_lock(platform_type, account_file):

@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 
 from app.utils.text_util import ensure_utf8_stdio
-from conf import BASE_DIR
+from conf import BASE_DIR, INTERNAL_CONFIG
 
 
 ensure_utf8_stdio()
@@ -36,6 +36,14 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
+
+def _internal_default(name, fallback):
+    return INTERNAL_CONFIG.get(name, fallback)
+
+
+def _env_text(name, default=""):
+    return str(os.environ.get(name, _internal_default(name, default)) or "").strip()
+
 try:
     from conf import (
         FFMPEG_COMMAND,
@@ -60,23 +68,23 @@ except ImportError:
 YOUTUBE_DOWNLOAD_DIR = Path(os.environ.get("YOUTUBE_DOWNLOAD_DIR", str(YOUTUBE_DOWNLOAD_DIR)))
 YOUTUBE_PROCESSED_DIR = Path(os.environ.get("YOUTUBE_PROCESSED_DIR", str(YOUTUBE_PROCESSED_DIR)))
 YOUTUBE_TRANSCRIPT_DIR = Path(os.environ.get("YOUTUBE_TRANSCRIPT_DIR", str(BASE_DIR / "videos" / "transcripts")))
-YTDLP_JS_RUNTIME = os.environ.get("YTDLP_JS_RUNTIME", "").strip()
-YTDLP_JS_RUNTIME_PATH = os.environ.get("YTDLP_JS_RUNTIME_PATH", "").strip()
+YTDLP_JS_RUNTIME = _env_text("YTDLP_JS_RUNTIME")
+YTDLP_JS_RUNTIME_PATH = _env_text("YTDLP_JS_RUNTIME_PATH")
 YTDLP_REMOTE_COMPONENTS = [
     item.strip()
-    for item in os.environ.get("YTDLP_REMOTE_COMPONENTS", "").split(",")
+    for item in _env_text("YTDLP_REMOTE_COMPONENTS").split(",")
     if item.strip()
 ]
 
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "90") or 90)
-LLM_MAX_TRANSCRIPT_CHARS = int(os.environ.get("LLM_MAX_TRANSCRIPT_CHARS", "28000") or 28000)
+LLM_TIMEOUT = int(_env_text("LLM_TIMEOUT", 90) or 90)
+LLM_MAX_TRANSCRIPT_CHARS = int(_env_text("LLM_MAX_TRANSCRIPT_CHARS", 28000) or 28000)
 # 透传给模型接口的额外请求体字段(JSON 字符串)，用于关闭思考模型的推理，
 # 例如 Qwen3 系列填 {"enable_thinking": false}；字段名因服务商而异。留空则不追加。
 try:
-    _llm_extra_raw = os.environ.get("LLM_EXTRA_BODY", "").strip()
+    _llm_extra_raw = _env_text("LLM_EXTRA_BODY")
     LLM_EXTRA_BODY = json.loads(_llm_extra_raw) if _llm_extra_raw else {}
     if not isinstance(LLM_EXTRA_BODY, dict):
         LLM_EXTRA_BODY = {}
@@ -85,12 +93,13 @@ except (TypeError, ValueError):
 
 
 def _env_bool(name, default=False):
-    return os.environ.get(name, "1" if default else "0").strip().lower() not in {"0", "false", "no", "off"}
+    return _env_text(name, "1" if default else "0").lower() not in {"0", "false", "no", "off"}
 
 
 def _env_int(name, default, minimum=None, maximum=None):
     try:
-        value = int(os.environ.get(name, str(default)) or default)
+        default = _internal_default(name, default)
+        value = int(_env_text(name, default) or default)
     except (TypeError, ValueError):
         value = default
     if minimum is not None:
@@ -106,11 +115,16 @@ SUBTITLE_REVIEW_MODEL = os.environ.get("SUBTITLE_REVIEW_MODEL", "").strip() or L
 # 独立调小可降低单批 JSON 出错率；并发用于抵消批数增多带来的耗时。
 SUBTITLE_REVIEW_BATCH_MAX_CHARS = _env_int("SUBTITLE_REVIEW_BATCH_MAX_CHARS", 800, minimum=200, maximum=4000)
 SUBTITLE_REVIEW_CONCURRENCY = _env_int("SUBTITLE_REVIEW_CONCURRENCY", 4, minimum=1, maximum=16)
+SUBTITLE_REVIEW_MAX_TOKENS = _env_int("SUBTITLE_REVIEW_MAX_TOKENS", 4000, minimum=512, maximum=8000)
+VIDEO_ENCODER = os.environ.get("VIDEO_ENCODER", "libx264").strip().lower() or "libx264"
+VIDEO_NVENC_PRESET = os.environ.get("VIDEO_NVENC_PRESET", "p5").strip().lower() or "p5"
+VIDEO_NVENC_CQ = _env_int("VIDEO_NVENC_CQ", 23, minimum=0, maximum=51)
 
 
 def _env_float(name, default, minimum=None, maximum=None):
     try:
-        value = float(os.environ.get(name, str(default)) or default)
+        default = _internal_default(name, default)
+        value = float(_env_text(name, default) or default)
     except (TypeError, ValueError):
         value = default
     if minimum is not None:
@@ -120,8 +134,13 @@ def _env_float(name, default, minimum=None, maximum=None):
     return value
 
 
+TRANSLATION_BATCH_MAX_CHARS = _env_int("TRANSLATION_BATCH_MAX_CHARS", 1200)
+TRANSLATION_REQUEST_TIMEOUT = _env_float("TRANSLATION_REQUEST_TIMEOUT", 10)
+TRANSLATION_FALLBACK_LINE_LIMIT = _env_int("TRANSLATION_FALLBACK_LINE_LIMIT", 5)
+
+
 def _env_csv(name, default):
-    raw = os.environ.get(name, default)
+    raw = _env_text(name, default)
     return [item.strip() for item in str(raw or "").split(",") if item.strip()]
 
 
@@ -154,12 +173,12 @@ def _env_float_list(name, default, minimum=None, maximum=None):
     return values
 
 
-AGENT_ENABLED = os.environ.get("AGENT_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
-AGENT_CHAT_MODEL = os.environ.get("AGENT_CHAT_MODEL", LLM_MODEL).strip() or LLM_MODEL
-AGENT_VISION_MODEL = os.environ.get("AGENT_VISION_MODEL", "").strip()
-AGENT_REQUIRE_PREPUBLISH_CHECK = os.environ.get("AGENT_REQUIRE_PREPUBLISH_CHECK", "true").strip().lower() not in {"0", "false", "no"}
-AGENT_BLOCK_LEVEL = os.environ.get("AGENT_BLOCK_LEVEL", "high").strip().lower() or "high"
-AGENT_MAX_TOOL_ROWS = max(1, min(int(os.environ.get("AGENT_MAX_TOOL_ROWS", "20") or 20), 50))
+AGENT_ENABLED = _env_bool("AGENT_ENABLED", True)
+AGENT_CHAT_MODEL = _env_text("AGENT_CHAT_MODEL", LLM_MODEL) or LLM_MODEL
+AGENT_VISION_MODEL = _env_text("AGENT_VISION_MODEL")
+AGENT_REQUIRE_PREPUBLISH_CHECK = _env_bool("AGENT_REQUIRE_PREPUBLISH_CHECK", True)
+AGENT_BLOCK_LEVEL = _env_text("AGENT_BLOCK_LEVEL", "high").lower() or "high"
+AGENT_MAX_TOOL_ROWS = max(1, min(_env_int("AGENT_MAX_TOOL_ROWS", 20), 50))
 AGENT_MAX_TOOL_CALLS = _env_int("AGENT_MAX_TOOL_CALLS", 5, 1, 12)
 AGENT_REACT_MAX_STEPS = _env_int("AGENT_REACT_MAX_STEPS", 6, 1, 20)
 AGENT_CHAT_TEMPERATURE = _env_float("AGENT_CHAT_TEMPERATURE", 0.2, 0, 2)
@@ -179,18 +198,22 @@ AGENT_FRAME_END_OFFSET_SECONDS = _env_float("AGENT_FRAME_END_OFFSET_SECONDS", 2,
 AGENT_FRAME_SAMPLE_RATIOS = _env_float_list("AGENT_FRAME_SAMPLE_RATIOS", "0.25,0.5,0.75", 0, 1) or [0.25, 0.5, 0.75]
 AGENT_HIGH_RISK_KEYWORDS = _env_keyword_map(
     "AGENT_HIGH_RISK_KEYWORDS",
-    "色情:色情低俗,裸露:色情低俗,自杀:自伤自杀,杀人:暴力犯罪,诈骗:诈骗导流,赌博:违法违规,毒品:违法违规,台独:政治敏感,港独:政治敏感,恐怖:恐怖极端",
+    "",
 )
 AGENT_MEDIUM_RISK_KEYWORDS = _env_keyword_map(
     "AGENT_MEDIUM_RISK_KEYWORDS",
-    "减肥:医疗健康宣称,治疗:医疗健康宣称,赚钱:营销/收益承诺,稳赚:金融风险,搬运:低质搬运风险",
+    "",
 )
-SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "5000") or 5000)
-SQLITE_ENABLE_WAL = os.environ.get("SQLITE_ENABLE_WAL", "1").strip().lower() not in {"0", "false", "no"}
-WORKFLOW_MAX_DOWNLOAD_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_DOWNLOAD_JOBS", "2") or 2))
-WORKFLOW_MAX_PROCESSING_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_PROCESSING_JOBS", "1") or 1))
-WORKFLOW_MAX_ANALYSIS_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_ANALYSIS_JOBS", "2") or 2))
-WORKFLOW_MAX_SEARCH_JOBS = max(1, int(os.environ.get("WORKFLOW_MAX_SEARCH_JOBS", "2") or 2))
+SQLITE_BUSY_TIMEOUT_MS = _env_int("SQLITE_BUSY_TIMEOUT_MS", 5000)
+SQLITE_ENABLE_WAL = _env_bool("SQLITE_ENABLE_WAL", True)
+WORKFLOW_MAX_DOWNLOAD_JOBS = max(1, _env_int("WORKFLOW_MAX_DOWNLOAD_JOBS", 2))
+WORKFLOW_MAX_PROCESSING_JOBS = max(1, _env_int("WORKFLOW_MAX_PROCESSING_JOBS", 1))
+WORKFLOW_MAX_ANALYSIS_JOBS = max(1, _env_int("WORKFLOW_MAX_ANALYSIS_JOBS", 2))
+WORKFLOW_MAX_SEARCH_JOBS = max(1, _env_int("WORKFLOW_MAX_SEARCH_JOBS", 2))
+WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS = _env_int("WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS", 4, 0, 64)
+WORKFLOW_MAX_PROCESSING_QUEUED_JOBS = _env_int("WORKFLOW_MAX_PROCESSING_QUEUED_JOBS", 2, 0, 64)
+WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS = _env_int("WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS", 4, 0, 64)
+WORKFLOW_MAX_SEARCH_QUEUED_JOBS = _env_int("WORKFLOW_MAX_SEARCH_QUEUED_JOBS", 4, 0, 64)
 _LLM_CONFIG_STATUS_CACHE = None
 
 
