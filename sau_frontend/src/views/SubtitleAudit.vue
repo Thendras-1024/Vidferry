@@ -50,17 +50,17 @@
       <template v-else-if="detail">
         <div class="detail-meta">
           <div><strong>{{ detail.title }}</strong><span>{{ detail.videoId }} · {{ detail.jobId }}</span></div>
-          <el-tag :type="reviewType(detail.reviewStatus)">{{ reviewLabel(detail.reviewStatus) }}</el-tag>
+          <el-tag :type="reviewType(detail)">{{ reviewLabel(detail.reviewStatus) }}</el-tag>
         </div>
-        <el-alert v-if="detail.reviewStatus !== 'success'" :type="detail.reviewBatches?.some(item => item.status === 'fallback') ? 'error' : 'info'" :closable="false" show-icon :title="reviewNote(detail)" />
+        <el-alert v-if="reviewNote(detail)" :type="reviewType(detail)" :closable="false" show-icon :title="reviewNote(detail)" />
         <el-tabs v-model="activeTab">
           <el-tab-pane label="字幕对照" name="subtitles">
-            <section v-for="batch in reviewBatches" :key="batch.key" class="review-batch" :class="{ 'is-fallback': batch.status === 'fallback' }">
+            <section v-for="batch in reviewBatches" :key="batch.key" class="review-batch" :class="{ 'is-fallback': batchState(batch) === 'fallback', 'is-retried': batchState(batch) === 'retried' }">
               <div class="batch-heading">
                 <div><strong>第 {{ batch.number }} 批</strong><span>{{ batch.range }} · {{ batch.items.length }} 段</span></div>
-                <el-tag size="small" :type="batch.status === 'fallback' ? 'danger' : 'success'">{{ batch.status === 'fallback' ? '已回退初译' : '修订完成' }}</el-tag>
+                <el-tag size="small" :type="batchTagType(batch)">{{ batchLabel(batch) }}</el-tag>
               </div>
-              <el-alert v-if="batch.status === 'fallback'" type="error" :closable="false" :title="batch.reason || '该批修订失败，已回退 Google 初译。'" />
+              <el-alert v-if="batchState(batch) !== 'success'" :type="batchState(batch) === 'fallback' ? 'error' : 'warning'" :closable="false" :title="batchReason(batch)" />
               <div class="batch-columns"><span>英文原文 / Google 初译</span><span>LLM 修订结果</span></div>
               <div v-for="item in batch.items" :key="item.key" class="batch-segment">
                 <time>{{ formatRange(item.initial) }}</time>
@@ -100,6 +100,15 @@ const handleSelectionChange = rows => { selectedRows.value = rows }
 const openDetail = async (row, column) => { if (column?.type === 'selection') return; drawerVisible.value = true; detail.value = null; activeTab.value = 'subtitles'; detailLoading.value = true; try { const res = await subtitleAuditApi.detail(row.jobId); detail.value = res?.data || null } catch (error) { ElMessage.error(error?.message || '读取审查详情失败') } finally { detailLoading.value = false } }
 const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 const formatRange = item => `${Number(item?.start || 0).toFixed(1)}s - ${Number(item?.end || 0).toFixed(1)}s`
+const failedAttempts = batch => (batch?.attempts || []).filter(item => ['contract_failed', 'failed'].includes(item?.status))
+const batchState = batch => batch?.status === 'fallback' ? 'fallback' : failedAttempts(batch).length ? 'retried' : 'success'
+const batchTagType = batch => ({ fallback: 'danger', retried: 'warning', success: 'success' }[batchState(batch)])
+const batchLabel = batch => ({ fallback: '修订失败，已回退初译', retried: '首次失败，重试成功', success: '修订完成' }[batchState(batch)])
+const batchReason = batch => {
+  const reasons = failedAttempts(batch).map(item => `第 ${item.attempt || '—'} 次：${item.reason || item.category || '未返回原因'}`)
+  if (reasons.length) return reasons.join('；')
+  return batch?.reason || '该批修订失败，已回退 Google 初译。'
+}
 const reviewBatches = computed(() => {
   const initial = detail.value?.initialSegments || []; const reviewed = detail.value?.reviewedSegments || []
   const batches = detail.value?.reviewBatches || []
@@ -114,11 +123,19 @@ const formatJson = value => { try { return JSON.stringify(JSON.parse(value), nul
 const jobLabel = value => ({ success: '成功', failed: '失败', processing: '处理中', waiting_confirmation: '待确认' }[value] || value || '—')
 const jobType = value => ({ success: 'success', failed: 'danger', processing: 'warning', waiting_confirmation: 'warning' }[value] || 'info')
 const reviewLabel = value => ({ success: 'LLM 修订成功', partial_fallback: '部分回退初译', disabled: 'LLM 已关闭', unavailable: 'LLM 不可用', empty: '无字幕段落' }[value] || '审查状态未知')
-const reviewType = value => value === 'success' ? 'success' : value === 'partial_fallback' ? 'warning' : 'info'
+const reviewType = value => {
+  const batches = value?.reviewBatches || []
+  if (batches.some(item => batchState(item) === 'fallback')) return 'error'
+  if (batches.some(item => batchState(item) === 'retried')) return 'warning'
+  return value?.reviewStatus === 'success' ? 'success' : value?.reviewStatus === 'partial_fallback' ? 'warning' : 'info'
+}
 const reviewNote = value => {
   const failed = (value.reviewBatches || []).filter(item => item.status === 'fallback')
-  if (failed.length) return `有 ${failed.length} 批修订失败，已回退 Google 初译。失败原因：${failed.map(item => item.reason || '未返回原因').join('；')}`
-  return value.reviewStatus === 'partial_fallback' ? '有 1 批修订失败，已回退 Google 初译。失败原因：历史任务未保存批次失败原因。' : '本批次未完成 LLM 修订，右侧内容为 Google 初译或原始输出。'
+  if (failed.length) return `有 ${failed.length} 批修订失败，已回退 Google 初译。失败原因：${failed.map(batchReason).join('；')}`
+  const retried = (value.reviewBatches || []).filter(item => batchState(item) === 'retried')
+  if (retried.length) return `有 ${retried.length} 批首次失败后重试成功。失败原因：${retried.map(batchReason).join('；')}`
+  if (value.reviewStatus === 'partial_fallback') return '有 1 批修订失败，已回退 Google 初译。失败原因：历史任务未保存批次失败原因。'
+  return value.reviewStatus === 'success' ? '' : '本批次未完成 LLM 修订，右侧内容为 Google 初译或原始输出。'
 }
 const escapeMarkdown = value => String(value || '—').replace(/([\\`*_{}\[\]<>])/g, '\\$1')
 const truncate = (value, limit = 6000) => { const text = String(value || ''); return text.length > limit ? `${text.slice(0, limit)}\n\n[内容已截断，仅保留前 ${limit} 个字符]` : text }
@@ -161,7 +178,7 @@ onMounted(loadList)
 .audit-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:4px 0 18px; } .kicker { color:#0f9f8f; font-size:11px; font-weight:700; } h1 { margin:4px 0 6px; font-size:22px; } .audit-heading p,.muted,.detail-meta span { color:$text-secondary; font-size:12px; } .audit-filters { display:flex; gap:10px; margin-bottom:14px; } .audit-filters .el-input { max-width:380px; } .audit-filters .el-select { width:150px; }
 .audit-table-wrap { overflow:hidden; border:1px solid $border-light; border-radius:8px; background:#fff; } .title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .muted { display:block; margin-top:5px; } .pager { display:flex; justify-content:flex-end; padding:12px 16px; border-top:1px solid $border-lighter; }
 .detail-loading { display:flex; align-items:center; gap:8px; color:$text-secondary; } .detail-meta { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; } .detail-meta div { display:grid; gap:4px; min-width:0; } .detail-meta strong,.detail-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.review-batch { margin-bottom:12px; border:1px solid $border-light; border-radius:8px; overflow:hidden; } .review-batch.is-fallback { border-color:#f2b8b5; background:#fffafa; } .batch-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; background:#f5f8fc; } .is-fallback .batch-heading { background:#fff1f0; } .batch-heading div { display:flex; align-items:baseline; gap:8px; min-width:0; } .batch-heading span { color:$text-secondary; font-size:12px; } .review-batch :deep(.el-alert) { margin:10px 12px 0; } .batch-columns,.batch-segment { display:grid; grid-template-columns:125px minmax(0, 1fr) minmax(0, 1fr); gap:16px; } .batch-columns { padding:10px 12px; color:$text-secondary; font-size:12px; } .batch-columns span:first-child { grid-column:2; } .batch-segment { padding:12px; border-top:1px solid $border-lighter; line-height:1.65; font-size:13px; } .batch-segment time { color:$text-secondary; font-variant-numeric:tabular-nums; } .batch-segment p { margin:0 0 7px; white-space:pre-wrap; } .batch-segment .source { color:$text-regular; }
+.review-batch { margin-bottom:12px; border:1px solid $border-light; border-radius:8px; overflow:hidden; } .review-batch.is-retried { border-color:#f0b429; background:#fffdf4; } .review-batch.is-fallback { border-color:#f2b8b5; background:#fffafa; } .batch-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; background:#f5f8fc; } .is-retried .batch-heading { background:#fff7d6; } .is-fallback .batch-heading { background:#fff1f0; } .batch-heading div { display:flex; align-items:baseline; gap:8px; min-width:0; } .batch-heading span { color:$text-secondary; font-size:12px; } .review-batch :deep(.el-alert) { margin:10px 12px 0; } .batch-columns,.batch-segment { display:grid; grid-template-columns:125px minmax(0, 1fr) minmax(0, 1fr); gap:16px; } .batch-columns { padding:10px 12px; color:$text-secondary; font-size:12px; } .batch-columns span:first-child { grid-column:2; } .batch-segment { padding:12px; border-top:1px solid $border-lighter; line-height:1.65; font-size:13px; } .batch-segment time { color:$text-secondary; font-variant-numeric:tabular-nums; } .batch-segment p { margin:0 0 7px; white-space:pre-wrap; } .batch-segment .source { color:$text-regular; }
 .diagnostic { padding:14px 0; border-bottom:1px solid $border-lighter; } .diagnostic-meta { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; } .diagnostic-meta span,.diagnostic-stats { color:$text-secondary; font-size:12px; } .violations { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; } pre { max-height:360px; overflow:auto; margin:10px 0 0; padding:12px; border-radius:6px; background:#101828; color:#d0d5dd; font-size:12px; line-height:1.55; white-space:pre-wrap; }
 @media (max-width: 760px) { .audit-heading,.audit-filters { align-items:stretch; flex-direction:column; } .audit-filters .el-input,.audit-filters .el-select { max-width:none; width:100%; } .batch-columns { display:none; } .batch-segment { grid-template-columns:1fr; gap:8px; } }
 </style>

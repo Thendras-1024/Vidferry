@@ -16,6 +16,7 @@ from app.config import (
     SUBTITLE_LLM_REVIEW_ENABLED,
     SUBTITLE_REVIEW_BATCH_MAX_CHARS,
     SUBTITLE_REVIEW_CONCURRENCY,
+    SUBTITLE_REVIEW_MAX_TOKENS,
     SUBTITLE_REVIEW_MODEL,
 )
 from app.core import llm_prompts
@@ -66,6 +67,21 @@ def _review_single_batch(batch_number, total_batches, indexes, reviewed, context
     expected_indexes = list(indexes)
     payload = _build_review_payload(reviewed, indexes, context)
     batch_started_at = time.time()
+    attempts = []
+
+    def record_attempt(event):
+        if callable(telemetry):
+            telemetry(event)
+        attempts.append({
+            "attempt": int(event.get("attempt") or len(attempts) + 1),
+            "status": str(event.get("status") or "unknown"),
+            "category": str(event.get("errorCategory") or event.get("error_category") or ""),
+            "reason": " ".join(str(event.get("errorMessage") or "").split())[:300],
+            "promptTokens": int(event.get("promptTokens") or event.get("prompt_tokens") or 0),
+            "completionTokens": int(event.get("completionTokens") or event.get("completion_tokens") or 0),
+            "totalTokens": int(event.get("totalTokens") or event.get("total_tokens") or event.get("tokens") or 0),
+            "latencyMs": round(float(event.get("latencyMs") or event.get("latency_ms") or 0), 2),
+        })
     _log(
         job_id,
         f"开始修订批次 {batch_number}/{total_batches}: segments={len(indexes)}, "
@@ -81,9 +97,9 @@ def _review_single_batch(batch_number, total_batches, indexes, reviewed, context
             base_url=LLM_BASE_URL,
             timeout=LLM_TIMEOUT,
             temperature=0.1,
-            max_tokens=4000,  # reasoning 模型思考计入 token，2400 在长批次偶发空 content
+            max_tokens=SUBTITLE_REVIEW_MAX_TOKENS,
             prompt_version=llm_prompts.SUBTITLE_REVIEW_PROMPT_VERSION,
-            telemetry=telemetry,
+            telemetry=record_attempt,
         )
         changed = 0
         for item in result.get("items") or []:
@@ -106,6 +122,7 @@ def _review_single_batch(batch_number, total_batches, indexes, reviewed, context
             "fallbackCount": 0,
             "tokens": tokens,
             "reason": "",
+            "attempts": attempts,
         }
     except Exception as exc:
         for index in indexes:
@@ -142,6 +159,7 @@ def _review_single_batch(batch_number, total_batches, indexes, reviewed, context
             "fallbackCount": len(indexes),
             "tokens": 0,
             "reason": f"{exc.__class__.__name__}: {detail}",
+            "attempts": attempts,
         }
 
 
