@@ -44,6 +44,16 @@ def _workflow_error_fields(exc):
     return classify_workflow_exception(exc)
 
 
+def _log_workflow_failure(stage, job_id, exc):
+    error_fields = _workflow_error_fields(exc)
+    detail = " ".join(str(exc).split())[:500]
+    backend_logger.error(
+        "%s失败 job_id=%s error_code=%s error_type=%s exception=%s: %s",
+        stage, job_id, error_fields["error_code"], error_fields["error_type"], exc.__class__.__name__, detail,
+    )
+    return error_fields
+
+
 def _editing_result_message(editing_result):
     result = editing_result or {}
     parts = []
@@ -236,8 +246,7 @@ def run_youtube_download_job(job_id):
         )
         backend_logger.info("下载任务完成 job_id=%s video_id=%s material_id=%s", job_id, job.get("videoId", ""), material.get("id", ""))
     except Exception as exc:
-        backend_logger.exception("下载任务失败 job_id=%s", job_id)
-        error_fields = _workflow_error_fields(exc)
+        error_fields = _log_workflow_failure("下载任务", job_id, exc)
         finish_workflow_event(event_id, "failed", error_fields["error_reason"])
         finish_open_workflow_events(job_id, "failed", error_fields["error_reason"])
         update_youtube_workflow_job(
@@ -340,8 +349,7 @@ def run_youtube_translate_job(job_id):
         )
         backend_logger.info("字幕处理任务完成 job_id=%s video_id=%s material_id=%s", job_id, job.get("videoId", ""), material.get("id", ""))
     except Exception as exc:
-        backend_logger.exception("字幕处理任务失败 job_id=%s", job_id)
-        error_fields = _workflow_error_fields(exc)
+        error_fields = _log_workflow_failure("字幕处理任务", job_id, exc)
         finish_workflow_event(editing_event_id or analysis_event_id or burn_event_id or event_id or transcript_event_id, "failed", error_fields["error_reason"])
         finish_open_workflow_events(job_id, "failed", error_fields["error_reason"])
         update_youtube_workflow_job(
@@ -411,8 +419,7 @@ def run_youtube_analysis_job(job_id, source_file_override=""):
         )
         backend_logger.info("剪辑方案任务完成 job_id=%s video_id=%s", job_id, job.get("videoId", ""))
     except Exception as exc:
-        backend_logger.exception("剪辑方案任务失败 job_id=%s", job_id)
-        error_fields = _workflow_error_fields(exc)
+        error_fields = _log_workflow_failure("剪辑方案任务", job_id, exc)
         finish_workflow_event(event_id, "failed", error_fields["error_reason"])
         finish_open_workflow_events(job_id, "failed", error_fields["error_reason"])
         try:
@@ -717,8 +724,7 @@ def run_youtube_workflow(job_id):
         )
         backend_logger.info("完整工作流完成 job_id=%s video_id=%s", job_id, job.get("videoId", ""))
     except Exception as exc:
-        backend_logger.exception("完整工作流失败 job_id=%s", job_id)
-        error_fields = _workflow_error_fields(exc)
+        error_fields = _log_workflow_failure("完整工作流", job_id, exc)
         finish_workflow_event(editing_event_id or analysis_event_id or burn_event_id or subtitle_event_id or transcript_event_id or download_event_id or workflow_event_id, "failed", error_fields["error_reason"])
         if workflow_event_id:
             finish_workflow_event(workflow_event_id, "failed", error_fields["error_reason"])

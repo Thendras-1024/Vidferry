@@ -242,63 +242,7 @@ def _stats_fetch_task_bundle(job_rows):
     return [_stats_build_task(job, events_by_job.get(job.get("id"), []), usage_by_job.get(job.get("id"), [])) for job in job_rows]
 
 
-def _stats_stage_summary(tasks):
-    grouped = {}
-    for task in tasks:
-        for stage in task["stages"]:
-            key = (stage["stage"], stage["stageLabel"])
-            item = grouped.setdefault(key, {
-                "stage": stage["stage"], "stageLabel": stage["stageLabel"], "count": 0, "success": 0, "failed": 0,
-                "durationSeconds": 0.0, "promptTokens": 0, "completionTokens": 0, "totalTokens": 0,
-                "requestCount": 0, "latencyTotalMs": 0.0,
-            })
-            item["count"] += 1
-            item["success"] += int(stage["status"] == "success")
-            item["failed"] += int(stage["status"] == "failed")
-            item["durationSeconds"] += stage["durationSeconds"]
-            for field in ("promptTokens", "completionTokens", "totalTokens", "requestCount"):
-                item[field] += stage[field]
-            item["latencyTotalMs"] += stage["avgLatencyMs"] * stage["requestCount"]
-    values = []
-    for item in grouped.values():
-        item["durationSeconds"] = round(item["durationSeconds"], 2)
-        item["avgDurationSeconds"] = round(item["durationSeconds"] / item["count"], 2) if item["count"] else 0
-        item["avgCloudLatencyMs"] = round(item["latencyTotalMs"] / item["requestCount"], 2) if item["requestCount"] else 0
-        item.pop("latencyTotalMs", None)
-        values.append(item)
-    return sorted(values, key=lambda item: item["durationSeconds"], reverse=True)
-
-
-def _stats_model_and_trend(tasks, start, granularity):
-    models = {}
-    trend = {}
-    for task in tasks:
-        for stage in task["stages"]:
-            for entry in stage.get("_usageEntries") or []:
-                entry_time = _stats_parse_datetime(entry["createdAt"]) or _stats_parse_datetime(stage["startedAt"]) or start
-                bucket = entry_time.strftime("%m-%d %H:00") if granularity == "hour" else entry_time.strftime("%m-%d")
-                trend_item = trend.setdefault(bucket, {"bucket": bucket, "promptTokens": 0, "completionTokens": 0, "totalTokens": 0, "requestCount": 0})
-                for field in ("promptTokens", "completionTokens", "totalTokens", "requestCount"):
-                    trend_item[field] += entry[field]
-                model = entry["model"]
-                model_item = models.setdefault(model, {"model": model, "promptTokens": 0, "completionTokens": 0, "totalTokens": 0, "requestCount": 0, "latencyTotalMs": 0.0})
-                for field in ("promptTokens", "completionTokens", "totalTokens", "requestCount"):
-                    model_item[field] += entry[field]
-                model_item["latencyTotalMs"] += entry["latencyMs"]
-    model_rows = []
-    for item in models.values():
-        item["avgLatencyMs"] = round(item.pop("latencyTotalMs") / item["requestCount"], 2) if item["requestCount"] else 0
-        model_rows.append(item)
-    return sorted(trend.values(), key=lambda item: item["bucket"]), sorted(model_rows, key=lambda item: item["totalTokens"], reverse=True)
-
-
-def _stats_strip_internal(tasks):
-    for task in tasks:
-        for stage in task.get("stages") or []:
-            stage.pop("_usageEntries", None)
-
-
-def _stats_task_rows(start, end, page, page_size=None):
+def _stats_task_page(start, end, page, page_size):
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -306,11 +250,107 @@ def _stats_task_rows(start, end, page, page_size=None):
         params = (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
         cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_workflow_jobs WHERE {where}", params)
         total = int(cursor.fetchone()["total"] or 0)
-        page_size = total if page_size is None else page_size
         cursor.execute(f'''SELECT * FROM youtube_workflow_jobs WHERE {where}
             ORDER BY COALESCE(NULLIF(started_at, ''), created_at) DESC, id DESC LIMIT ? OFFSET ?''', (*params, page_size, (page - 1) * page_size))
         rows = [dict(item) for item in cursor.fetchall()]
     return _stats_fetch_task_bundle(rows), total
+
+
+def _stats_aggregates(start, end, granularity):
+    where = "COALESCE(NULLIF(j.started_at, ''), j.created_at) >= ? AND COALESCE(NULLIF(j.started_at, ''), j.created_at) < ?"
+    params = (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
+    bucket = "%m-%d %H:00" if granularity == "hour" else "%m-%d"
+    usage_cte = '''WITH all_usage AS (
+            SELECT job_id, created_at, model, prompt_tokens, completion_tokens, total_tokens, latency_ms
+            FROM youtube_workflow_llm_usage_events
+            UNION ALL
+            SELECT e.job_id, e.started_at, e.cloud_model, e.prompt_tokens, e.completion_tokens,
+                e.total_tokens, e.cloud_latency_ms
+            FROM youtube_workflow_events e
+            WHERE (e.total_tokens > 0 OR e.cloud_latency_ms > 0)
+              AND NOT EXISTS (
+                  SELECT 1 FROM youtube_workflow_llm_usage_events u
+                  WHERE u.workflow_event_id = e.id
+              )
+        )'''
+    with _db_connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(f'''WITH scoped_jobs AS (
+                SELECT id FROM youtube_workflow_jobs j WHERE {where}
+            ), task_durations AS (
+                SELECT j.id, COALESCE(
+                    MAX(CASE WHEN e.stage = 'workflow' THEN e.duration_seconds END),
+                    MAX(julianday(e.ended_at)) - MIN(julianday(e.started_at)),
+                    0
+                ) AS duration_seconds
+                FROM scoped_jobs j
+                LEFT JOIN youtube_workflow_events e ON e.job_id = j.id
+                GROUP BY j.id
+            )
+            SELECT COUNT(*) AS job_count, COALESCE(SUM(MAX(0, duration_seconds)), 0) AS duration_seconds
+            FROM task_durations''', params)
+        jobs = cursor.fetchone()
+        cursor.execute(f'''SELECT COUNT(*) AS event_count
+            FROM youtube_workflow_events e JOIN youtube_workflow_jobs j ON j.id = e.job_id
+            WHERE {where} AND e.stage != 'workflow' ''', params)
+        event_count = int(cursor.fetchone()["event_count"] or 0)
+        cursor.execute(f'''{usage_cte}
+            SELECT COALESCE(SUM(u.prompt_tokens), 0) AS prompt_tokens,
+            COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens, COALESCE(SUM(u.total_tokens), 0) AS total_tokens,
+            COUNT(*) AS request_count, COALESCE(SUM(u.latency_ms), 0) AS latency_total
+            FROM all_usage u JOIN youtube_workflow_jobs j ON j.id = u.job_id WHERE {where}''', params)
+        usage = cursor.fetchone()
+        cursor.execute(f'''WITH usage_by_event AS (
+                SELECT workflow_event_id, SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens, SUM(total_tokens) AS total_tokens,
+                    COUNT(*) AS request_count, SUM(latency_ms) AS latency_total
+                FROM youtube_workflow_llm_usage_events
+                WHERE workflow_event_id IS NOT NULL
+                GROUP BY workflow_event_id
+            )
+            SELECT e.stage, COALESCE(e.stage_label, e.stage) AS stage_label, COUNT(*) AS count,
+            SUM(e.status = 'success') AS success, SUM(e.status = 'failed') AS failed,
+            COALESCE(SUM(e.duration_seconds), 0) AS duration_seconds,
+            COALESCE(SUM(COALESCE(u.prompt_tokens, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN e.prompt_tokens ELSE 0 END)), 0) AS prompt_tokens,
+            COALESCE(SUM(COALESCE(u.completion_tokens, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN e.completion_tokens ELSE 0 END)), 0) AS completion_tokens,
+            COALESCE(SUM(COALESCE(u.total_tokens, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN e.total_tokens ELSE 0 END)), 0) AS total_tokens,
+            COALESCE(SUM(COALESCE(u.request_count, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN 1 ELSE 0 END)), 0) AS request_count,
+            COALESCE(SUM(COALESCE(u.latency_total, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN e.cloud_latency_ms ELSE 0 END)), 0) AS latency_total
+            FROM youtube_workflow_events e JOIN youtube_workflow_jobs j ON j.id = e.job_id
+            LEFT JOIN usage_by_event u ON u.workflow_event_id = e.id
+            WHERE {where} AND e.stage != 'workflow' GROUP BY e.stage, COALESCE(e.stage_label, e.stage)
+            ORDER BY duration_seconds DESC''', params)
+        stages = [{"stage": row["stage"] or "", "stageLabel": clean_display_text(row["stage_label"] or row["stage"] or ""),
+                   "count": int(row["count"] or 0), "success": int(row["success"] or 0), "failed": int(row["failed"] or 0),
+                   "durationSeconds": round(_usage_float(row["duration_seconds"]), 2),
+                   "avgDurationSeconds": round(_usage_float(row["duration_seconds"]) / int(row["count"] or 1), 2),
+                   "promptTokens": _usage_int(row["prompt_tokens"]), "completionTokens": _usage_int(row["completion_tokens"]),
+                   "totalTokens": _usage_int(row["total_tokens"]), "requestCount": _usage_int(row["request_count"]),
+                   "avgCloudLatencyMs": round(_usage_float(row["latency_total"]) / _usage_int(row["request_count"]), 2) if _usage_int(row["request_count"]) else 0} for row in cursor.fetchall()]
+        cursor.execute(f'''{usage_cte}
+            SELECT strftime(?, u.created_at) AS bucket, COALESCE(SUM(u.prompt_tokens), 0) AS prompt_tokens,
+            COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens, COALESCE(SUM(u.total_tokens), 0) AS total_tokens, COUNT(*) AS request_count
+            FROM all_usage u JOIN youtube_workflow_jobs j ON j.id = u.job_id
+            WHERE {where} GROUP BY bucket ORDER BY bucket''', (bucket, *params))
+        trend = [{"bucket": row["bucket"], "promptTokens": int(row["prompt_tokens"] or 0), "completionTokens": int(row["completion_tokens"] or 0), "totalTokens": int(row["total_tokens"] or 0), "requestCount": int(row["request_count"] or 0)} for row in cursor.fetchall()]
+        cursor.execute(f'''{usage_cte}
+            SELECT COALESCE(NULLIF(u.model, ''), '未记录模型') AS model, COALESCE(SUM(u.prompt_tokens), 0) AS prompt_tokens,
+            COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens, COALESCE(SUM(u.total_tokens), 0) AS total_tokens,
+            COUNT(*) AS request_count, COALESCE(SUM(u.latency_ms), 0) AS latency_total
+            FROM all_usage u JOIN youtube_workflow_jobs j ON j.id = u.job_id
+            WHERE {where} GROUP BY model ORDER BY total_tokens DESC''', params)
+        models = [{"model": row["model"], "promptTokens": int(row["prompt_tokens"] or 0), "completionTokens": int(row["completion_tokens"] or 0),
+                   "totalTokens": int(row["total_tokens"] or 0), "requestCount": int(row["request_count"] or 0),
+                   "avgLatencyMs": round(_usage_float(row["latency_total"]) / int(row["request_count"] or 1), 2)} for row in cursor.fetchall()]
+    request_count = int(usage["request_count"] or 0)
+    return {
+        "summary": {"eventCount": event_count, "jobCount": int(jobs["job_count"] or 0), "totalDurationSeconds": round(_usage_float(jobs["duration_seconds"]), 2),
+                    "promptTokens": int(usage["prompt_tokens"] or 0), "completionTokens": int(usage["completion_tokens"] or 0), "totalTokens": int(usage["total_tokens"] or 0),
+                    "cloudCallCount": request_count, "avgDurationSeconds": round(_usage_float(jobs["duration_seconds"]) / int(jobs["job_count"] or 1), 2) if jobs["job_count"] else 0,
+                    "avgCloudLatencyMs": round(_usage_float(usage["latency_total"]) / request_count, 2) if request_count else 0},
+        "stages": stages, "trend": trend, "models": models,
+    }
 
 
 def get_workflow_task_statistics(job_id):
@@ -335,7 +375,6 @@ def get_workflow_task_statistics(job_id):
         "totalTokens": _usage_int(item["total_tokens"]), "latencyMs": _usage_float(item["latency_ms"]),
         "errorMessage": clean_display_text(item["error_message"] or ""), "createdAt": item["created_at"] or "",
     } for item in rows]
-    _stats_strip_internal([task])
     return task
 
 
@@ -344,19 +383,11 @@ def get_workflow_statistics(limit=200, page=1, page_size=None, date_from=None, d
     page_size = _parse_positive_int(page_size or limit, limit, 1, 100)
     page = _parse_positive_int(page, 1, 1, 100000)
     start, end, resolved_granularity = _stats_range(date_from, date_to, granularity)
-    all_tasks, task_total = _stats_task_rows(start, end, 1)
-    offset = (page - 1) * page_size
-    tasks = all_tasks[offset:offset + page_size]
-    stages = _stats_stage_summary(all_tasks)
-    trend, models = _stats_model_and_trend(all_tasks, start, resolved_granularity)
-    summary = {"eventCount": sum(item["stageCount"] for item in all_tasks), "jobCount": task_total, "totalDurationSeconds": round(sum(item["durationSeconds"] for item in all_tasks), 2), "promptTokens": sum(item["promptTokens"] for item in all_tasks), "completionTokens": sum(item["completionTokens"] for item in all_tasks), "totalTokens": sum(item["totalTokens"] for item in all_tasks), "cloudCallCount": sum(item["requestCount"] for item in all_tasks)}
-    summary["avgDurationSeconds"] = round(summary["totalDurationSeconds"] / len(all_tasks), 2) if all_tasks else 0
-    latency_total = sum(item["avgLatencyMs"] * item["requestCount"] for item in all_tasks)
-    summary["avgCloudLatencyMs"] = round(latency_total / summary["cloudCallCount"], 2) if summary["cloudCallCount"] else 0
-    _stats_strip_internal(all_tasks)
+    tasks, task_total = _stats_task_page(start, end, page, page_size)
+    aggregates = _stats_aggregates(start, end, resolved_granularity)
     legacy_events = list_workflow_events(limit, page=page, page_size=page_size)
     return {
-        "summary": summary, "stages": stages, "trend": trend, "models": models,
+        **aggregates,
         "tasks": tasks, "tasksTotal": task_total, "tasksPage": page, "tasksPageSize": page_size,
         "range": {"dateFrom": start.isoformat(timespec="seconds"), "dateTo": end.isoformat(timespec="seconds"), "granularity": resolved_granularity},
         "events": legacy_events["items"], "eventsTotal": legacy_events["total"], "eventsPage": legacy_events["page"], "eventsPageSize": legacy_events["pageSize"],

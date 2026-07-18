@@ -1,3 +1,20 @@
+def _submit_workflow_job(resource, target, job, failure_message):
+    try:
+        _submit_background_task(resource, target, job["id"])
+    except Exception as exc:
+        update_youtube_workflow_job(
+            job["id"],
+            status="failed",
+            step="abnormal",
+            message=failure_message,
+            error_code="VF-WORKFLOW-SUBMIT-FAILED",
+            error_type="BACKGROUND_SUBMIT_FAILED",
+            error_reason=failure_message,
+            error_detail=str(exc),
+        )
+        raise
+
+
 @app.route('/youtube/search', methods=['GET'])
 def youtube_search():
     query = (
@@ -335,20 +352,7 @@ def confirm_youtube_workflow_publish(job_id):
             return _json_response(400, "confirmed 必须是 true 或 false", None, 400)
         job = resolve_youtube_workflow_publish_confirmation(job_id, confirmed)
         if confirmed:
-            try:
-                _submit_background_task("processing", run_youtube_workflow, job["id"])
-            except Exception as submit_error:
-                update_youtube_workflow_job(
-                    job["id"],
-                    status="failed",
-                    step="publish",
-                    message="发布确认后的后台任务提交失败",
-                    error_code="VF-WORKFLOW-SUBMIT-FAILED",
-                    error_type="BACKGROUND_SUBMIT_FAILED",
-                    error_reason="发布确认后无法提交后台任务",
-                    error_detail=str(submit_error),
-                )
-                raise
+            _submit_workflow_job("processing", run_youtube_workflow, job, "发布确认后的后台任务提交失败")
             return _json_response(data=job, status=202)
         return _json_response(data=job)
     except LookupError as e:
@@ -419,7 +423,7 @@ def create_youtube_workflow():
         if payload.get("publishToTencent") and payload.get("tencentAccount"):
             _check_named_publish_account(2, payload.get("tencentAccount"))
         job = create_youtube_workflow_job(payload)
-        _submit_background_task("processing", run_youtube_workflow, job["id"])
+        _submit_workflow_job("processing", run_youtube_workflow, job, "完整工作流提交失败")
         backend_logger.info(
             "完整工作流已提交 job_id=%s video_id=%s process_version=%s",
             job["id"],
@@ -456,7 +460,7 @@ def create_youtube_download():
             "tags": payload.get("tags") or [],
             "schedule": "",
         })
-        _submit_background_task("download", run_youtube_download_job, job["id"])
+        _submit_workflow_job("download", run_youtube_download_job, job, "下载任务提交失败")
         backend_logger.info("下载任务已提交 job_id=%s video_id=%s", job["id"], job.get("videoId", ""))
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
@@ -488,7 +492,7 @@ def create_youtube_translate():
             "tags": payload.get("tags") or [],
             "schedule": "",
         })
-        _submit_background_task("processing", run_youtube_translate_job, job["id"])
+        _submit_workflow_job("processing", run_youtube_translate_job, job, "字幕处理任务提交失败")
         backend_logger.info(
             "字幕处理任务已提交 job_id=%s video_id=%s process_version=%s",
             job["id"],
