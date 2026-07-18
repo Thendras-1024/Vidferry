@@ -102,6 +102,20 @@
               <span>开始查询</span>
             </el-button>
           </div>
+          <div class="keyword-presets" aria-label="关键词预设">
+            <span class="keyword-presets-label">常用预设</span>
+            <el-button
+              v-for="preset in keywordPresets"
+              :key="preset.query"
+              size="small"
+              :type="form.query === preset.query ? 'primary' : 'default'"
+              plain
+              :disabled="searchLoading"
+              @click="applyKeywordPreset(preset.query)"
+            >
+              {{ preset.label }}
+            </el-button>
+          </div>
           <div v-if="searchProgress.visible" class="search-progress-panel">
             <div class="search-progress-text">
               <span>{{ searchProgress.message }}</span>
@@ -1001,6 +1015,15 @@ const form = reactive({
   limit: 8
 })
 
+const keywordPresets = [
+  { label: '中国旅行见闻', query: 'foreigner China travel vlog first time in China' },
+  { label: '中国科技创新', query: 'China technology innovation' },
+  { label: '自然风光纪录片', query: 'beautiful nature documentary 4K' },
+  { label: '传统美食制作', query: 'traditional Chinese food cooking' },
+  { label: '日常手作教程', query: 'satisfying DIY crafts tutorial' },
+  { label: '动物科普趣闻', query: 'cute animals educational documentary' }
+]
+
 const focusedJobRowClass = ({ row }) => String(row?.id) === focusedJobId.value ? 'job-row-focused' : ''
 
 const showWorkflowJobErrorDetails = (job) => {
@@ -1035,6 +1058,11 @@ const consumeFocusJobQuery = async () => {
 
 const persistSearchQuery = () => {
   if (form.query.trim()) flushWorkflowSettings()
+}
+
+const applyKeywordPreset = (query) => {
+  form.query = query
+  persistSearchQuery()
 }
 
 const manualForm = reactive({
@@ -3109,6 +3137,23 @@ $ink-strong: #172033;
 
 .keyword-field {
   grid-column: auto;
+}
+
+.keyword-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+
+  .el-button {
+    margin: 0;
+  }
+}
+
+.keyword-presets-label {
+  color: $text-secondary;
+  font-size: 12px;
 }
 
 .group-filter {
