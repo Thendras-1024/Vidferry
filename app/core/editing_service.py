@@ -207,9 +207,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
             "-vf", ",".join(video_filters),
             "-fps_mode", "cfr",
             "-r", f"{fps:.3f}".rstrip("0").rstrip("."),
-            "-c:v", "libx264",
-            "-preset", burn_config["preset"],
-            "-crf", burn_config["crf"],
+            *video_encode_args(burn_config),
             "-maxrate", burn_config["maxrate"],
             "-bufsize", burn_config["bufsize"],
             "-pix_fmt", "yuv420p",
@@ -504,14 +502,7 @@ def _generate_editing_plan(job, segments, telemetry=None):
     thread_label = threading.current_thread().name
     _logger.info("文案生成开始 : thread = %s | video = %s", thread_label, video_label)
     started_at = time.time()
-    try:
-        result, usage = _generate_editing_plan_impl(job, segments, telemetry)
-    except Exception:
-        _logger.exception(
-            "文案生成失败 : thread = %s | video = %s | elapsed = %.1fs",
-            thread_label, video_label, time.time() - started_at,
-        )
-        raise
+    result, usage = _generate_editing_plan_impl(job, segments, telemetry)
     _logger.info(
         "文案生成完成 : thread = %s | video = %s | elapsed = %.1fs | tokens = %d",
         thread_label, video_label, time.time() - started_at, int(usage.get("totalTokens") or 0),
@@ -699,6 +690,22 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
     except WorkflowConflictError:
         return None
     update_youtube_video_analysis_status(video_id, 2)
-
-    _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
+    try:
+        _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
+    except Exception as exc:
+        message = "分析任务提交失败"
+        update_youtube_workflow_job(
+            job["id"],
+            status="failed",
+            step="abnormal",
+            message=message,
+            error_code="VF-WORKFLOW-SUBMIT-FAILED",
+            error_type="BACKGROUND_SUBMIT_FAILED",
+            error_reason=message,
+            error_detail=str(exc),
+        )
+        update_youtube_video_analysis_status(video_id, 3, {
+            "error": {"code": "VF-WORKFLOW-SUBMIT-FAILED", "message": message},
+        })
+        raise
     return job

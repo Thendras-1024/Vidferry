@@ -32,6 +32,7 @@ from flask_cors import CORS
 from flask import Flask, request, jsonify, Response, render_template, send_from_directory, stream_with_context
 from werkzeug.utils import secure_filename
 from app.utils.text_util import clean_display_text, ensure_utf8_stdio
+from app.utils.ffmpeg_util import _resolve_ffmpeg_command, video_encode_args
 from app.publishing import (
     BILIBILI_DEFAULT_TID,
     bilibili_categories,
@@ -95,10 +96,17 @@ from app.config import (
     SUBTITLE_LANGUAGES,
     SUBTITLE_REVIEW_MODEL,
     SUBTITLE_SIZE_PRESETS,
+    TRANSLATION_BATCH_MAX_CHARS,
+    TRANSLATION_FALLBACK_LINE_LIMIT,
+    TRANSLATION_REQUEST_TIMEOUT,
     WORKFLOW_MAX_ANALYSIS_JOBS,
+    WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS,
     WORKFLOW_MAX_DOWNLOAD_JOBS,
+    WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS,
     WORKFLOW_MAX_PROCESSING_JOBS,
+    WORKFLOW_MAX_PROCESSING_QUEUED_JOBS,
     WORKFLOW_MAX_SEARCH_JOBS,
+    WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
     WORKFLOW_ERROR_BOOT_INTERRUPTED,
     WORKFLOW_ERROR_DELETE_DOWNLOAD_EXISTS,
     WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,

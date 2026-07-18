@@ -298,9 +298,9 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
     total_segments = len(translated)
     translated_count = 0
     batch_number = 0
-    max_chars = int(os.environ.get("TRANSLATION_BATCH_MAX_CHARS", "1200") or 1200)
-    request_timeout = float(os.environ.get("TRANSLATION_REQUEST_TIMEOUT", "10") or 10)
-    fallback_line_limit = int(os.environ.get("TRANSLATION_FALLBACK_LINE_LIMIT", "5") or 5)
+    max_chars = TRANSLATION_BATCH_MAX_CHARS
+    request_timeout = TRANSLATION_REQUEST_TIMEOUT
+    fallback_line_limit = TRANSLATION_FALLBACK_LINE_LIMIT
 
     def log(message):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -921,9 +921,7 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         "-vf", video_filter,
         "-fps_mode", "cfr",
         "-r", f"{output_fps:.3f}".rstrip("0").rstrip("."),
-        "-c:v", "libx264",
-        "-preset", burn_config["preset"],
-        "-crf", burn_config["crf"],
+        *video_encode_args(burn_config),
         "-maxrate", burn_config["maxrate"],
         "-bufsize", burn_config["bufsize"],
         "-pix_fmt", "yuv420p",

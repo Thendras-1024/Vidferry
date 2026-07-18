@@ -293,7 +293,7 @@ def build_cover_clip_command(ffmpeg, cover_path, ass_file, output_file, width, h
     command.extend([
         "-vf", ",".join(filters),
         "-fps_mode", "cfr", "-r", fps_text,
-        "-c:v", "libx264", "-preset", burn_config["preset"], "-crf", burn_config["crf"],
+        *video_encode_args(burn_config),
         "-maxrate", burn_config["maxrate"], "-bufsize", burn_config["bufsize"],
         "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1",
     ])
