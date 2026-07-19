@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 
-EDITING_PROMPT_VERSION = "editing-plan-zh-v6"
+EDITING_PROMPT_VERSION = "editing-plan-zh-v7"
 GUARD_PROMPT_VERSION = "prepublish-guard-zh-v2"
 AGENT_PROMPT_VERSION = "read-only-agent-zh-v2"
 SUBTITLE_REVIEW_PROMPT_VERSION = "subtitle-review-zh-v2"
@@ -24,6 +24,14 @@ _TEXT_GUARD_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的�
 _VISION_GUARD_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的发布前视觉安全质检员，负责根据关键帧识别画面风险并输出中文处置建议。"
 _AGENT_ACTION_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的只读运营 Agent，负责在权限边界内查询项目状态、解释流程和提供操作建议。"
 _AGENT_REPLY_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的只读项目管家，负责把已验证的查询结果整理成准确、简洁的中文答复。"
+_HOOK_COPY_RULE = (
+    "标题、正文、封面标题和话题必须面向国内短视频观众，以全片最有反差、情绪、讨论价值或作者真实感受的一个核心看点为中心，"
+    "禁止按时间顺序罗列视频里做过的事情。标题优先使用结论加悬念或反差的结构，可有分寸地使用没想到、最意外的是、原来、难怪、直呼、刷新认知、这才是等表达；"
+    "看呆、震撼、不敢相信、直言等人物强反应只在转写明确支持时使用，严禁虚构人物反应、数字、经历或绝对化结论。"
+    "publish_copy 只写 2-4 句：先抛核心看点，再给出作者真实感受或关键证据，最后形成能让国内观众共鸣的总结；不得写成流水账。"
+    "cover_title_options 与正文共享同一核心看点，用反差或悬念加结论的两行节奏吸引注意，不得另起话题。"
+    "tags 围绕核心情绪、具体地点或主题和观众关心的问题生成，排除视频分享、日常记录等泛化话题。"
+)
 
 
 def editing_analysis_system_prompt():
@@ -31,6 +39,7 @@ def editing_analysis_system_prompt():
         _EDITING_ROLE
         + _UNTRUSTED_INPUT_RULE
         + _DISPLAY_RULE
+        + _HOOK_COPY_RULE
         + "type 是内部枚举，可保留英文；链接和不可替代的外文专有名词可保留英文。"
         + "必须根据标题、检索词、分组和转写识别实际主题。涉及中国发展的内容可关注科技机制、制造规模、"
         + "基础设施、效率、真实使用体验及有明确证据的反应；不得强套外国人、旅行、中外对比或震惊情绪。"
@@ -41,8 +50,8 @@ def editing_analysis_system_prompt():
         + "publish_copy 只写正文，不能包含 #话题；tags 单独保存裸中文话题词，不带 #。"
         + "先在内部确定发布标题与正文的内容主张，再从这个主张压缩出封面标题；封面标题必须一眼概述正文核心，"
         + "包含具体主题与有证据的看点，不能另起话题、编造细节或只堆泛化情绪词。"
-        + "title_options 与 cover_title_options 都不得包含平台违禁、粗俗、攻击、贬损或诱导点击表达；"
-        + "“看懵、意外”等反应词只在转写明确支持时使用，不能使用虚构震惊、最强、全网必看等夸张引流语。"
+        + "title_options 与 cover_title_options 都不得包含平台违禁、粗俗、攻击、贬损或无证据的夸张引流表达；"
+        + "不得使用虚构震惊、最强、全网必看等绝对化引流语。"
         + "cover_title_options 是专用于封面烧制的两行短标题，每项必须且只能包含一个换行；每行 2-12 个汉字，总长度不超过 20 个汉字。"
         + _JSON_RULE
         + "\n示例一：转写明确介绍工厂自动化流程时，可选择展示机制与效率的片段；只有原内容明确表达惊讶时，才描述人物反应。\n"
@@ -64,14 +73,15 @@ def build_editing_analysis_prompt(job, transcript_text, chunk_context=""):
         _EDITING_ROLE
         + _UNTRUSTED_INPUT_RULE
         + _DISPLAY_RULE
+        + _HOOK_COPY_RULE
         + "当前职责：生成完整剪辑方案。输出 JSON 必须且只能包含：summary、china_view_angle、title_options、cover_title_options、"
         "publish_copy、tags、highlight_segments、risk_notes、editing_focus。highlight_segments 每项只能包含 start、end、type、"
         "reason、suggested_caption。title_options、cover_title_options、tags、risk_notes 为字符串数组。"
         "tags 最多 8 个，且只能是不带 # 的简体中文话题词，不得中英文混杂或使用外文口语。"
         "先在内部生成发布标题与正文的共同内容核心，再生成封面标题；cover_title_options 必须是对应正文内容的两行概述，"
-        "用具体主题加有证据的看点抓住注意力，不得另造话题、夸张引流或虚构人物反应。"
+        "用具体主题加有证据的看点抓住注意力，不得另造话题、虚构人物反应或无证据的夸张。"
         "例如，转写明确记录初到北京时对生活细节感到意外，可写“初到北京第一天\\n这些细节看懵老外”；"
-        "若没有明确反应证据，应改为客观但有看点的概述。"
+        "若没有明确反应证据，应改为有反差和看点的总结式概述。"
         "cover_title_options 生成 4 个候选，每项严格两行、每行 2-12 个汉字、总长度不超过 20 个汉字；"
         "title_options 与 cover_title_options 均不得包含平台违禁、粗俗、攻击、贬损或诱导点击表达。\n"
         "highlight_segments 最多生成 8 个，按实际内容返回，信息不足时允许为空；仅基于转写选择，不得编造。"
