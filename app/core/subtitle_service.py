@@ -1216,7 +1216,8 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
         result = _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=duration, job_id=job_id)
     except Exception as exc:
         raise RuntimeError(f"SUBTITLE_BURN_FAILED: {exc.__class__.__name__}") from exc
-    _update_translate_progress(job_id, 98, "视频已生成，正在写入素材库")
+    message = "字幕烧制完成，正在等待高光审核" if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING else "视频已生成，正在写入素材库"
+    _update_translate_progress(job_id, 98, message)
     return {"path": result, "skipped": False}
 
 

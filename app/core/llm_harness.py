@@ -341,13 +341,11 @@ def redact_profanity(value, replacement="*"):
     return _PROFANITY_RE.sub(str(replacement or "*"), str(value or ""))
 
 
-def _has_invalid_mixed_language(text, forbid_latin=False):
+def _has_invalid_mixed_language(text):
     for match in _LATIN_RUN_RE.finditer(text):
         run = match.group(0)
         words = [item for item in re.split(r"[ '\-]+", run) if item]
-        if forbid_latin:
-            return True
-        if len(words) > 2 or any(not (word.isupper() or word[:1].isupper()) for word in words):
+        if len(words) > 2:
             return True
     return False
 
@@ -362,7 +360,7 @@ def _fixed_fields(value, expected, path, violations):
         violations.append(f"{path} 包含未定义字段：{','.join(extra)}")
 
 
-def _chinese_text(value, path, violations, allow_empty=False, forbid_latin=False, soft_warnings=None):
+def _chinese_text(value, path, violations, allow_empty=False, soft_warnings=None):
     if not isinstance(value, str):
         violations.append(f"{path} 必须是字符串")
         return ""
@@ -376,7 +374,7 @@ def _chinese_text(value, path, violations, allow_empty=False, forbid_latin=False
     elif contains_disallowed_text(text):
         warning = f"{path} 不得包含粗俗、攻击或负面吐槽表达"
         (soft_warnings if soft_warnings is not None else violations).append(warning)
-    elif _has_invalid_mixed_language(text, forbid_latin=forbid_latin):
+    elif _has_invalid_mixed_language(text):
         warning = f"{path} 不得包含外文口语或中英文混杂表达"
         (soft_warnings if soft_warnings is not None else violations).append(warning)
     return text
@@ -389,7 +387,7 @@ def _number(value, path, violations):
     return float(value)
 
 
-def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_empty=True, forbid_latin=False, soft_warnings=None):
+def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_empty=True, soft_warnings=None):
     if not isinstance(value, list):
         violations.append(f"{path} 必须是数组")
         return []
@@ -400,7 +398,7 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
     result = []
     for index, item in enumerate(value[:max_items]):
         if chinese:
-            text = _chinese_text(item, f"{path}[{index}]", violations, forbid_latin=forbid_latin, soft_warnings=soft_warnings)
+            text = _chinese_text(item, f"{path}[{index}]", violations, soft_warnings=soft_warnings)
         elif isinstance(item, str):
             text = item.strip()
             if not text:
@@ -414,7 +412,7 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
 
 
 def _cover_title_list(value, violations, soft_warnings=None):
-    titles = _string_list(value, "cover_title_options", violations, max_items=4, allow_empty=False, forbid_latin=True, soft_warnings=soft_warnings)
+    titles = _string_list(value, "cover_title_options", violations, max_items=4, allow_empty=False, soft_warnings=soft_warnings)
     if isinstance(value, list) and not 2 <= len(value) <= 4:
         violations.append("cover_title_options 必须包含 2-4 项")
     result = []
@@ -464,8 +462,8 @@ def _highlight_segments(
         caption = _chinese_text(item.get("suggested_caption"), f"{item_path}.suggested_caption", item_violations)
         if start < 30:
             item_violations.append(f"{item_path}.start 不得早于 30 秒")
-        if end - start < 5 or end - start > 10:
-            item_violations.append(f"{item_path} 时长必须为 5-10 秒")
+        if end - start < 6 or end - start > 12:
+            item_violations.append(f"{item_path} 时长必须为 6-12 秒")
         if max_timestamp and end > max_timestamp + 0.01:
             item_violations.append(f"{item_path}.end 超出转写时长")
         overlaps_blocked_range = any(
@@ -478,8 +476,10 @@ def _highlight_segments(
                 filter_stats["blockedByContentRisk"] = int(filter_stats.get("blockedByContentRisk") or 0) + 1
         if item_violations:
             continue
+        if any(start < existing["end"] and end > existing["start"] for existing in output):
+            continue
         output.append({"start": round(start, 2), "end": round(end, 2), "type": kind, "reason": reason, "suggested_caption": caption})
-    return sorted(output, key=lambda item: (item["start"], item["end"]))[:max(0, int(max_items or 0))]
+    return output[:max(0, int(max_items or 0))]
 
 
 def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_highlights=0, soft_warnings=None):
@@ -529,7 +529,7 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             "blockedByContentRisk": int(highlight_filter_stats.get("blockedByContentRisk") or 0),
         },
     }
-    raw_tags = _string_list(value.get("tags"), "tags", violations, allow_empty=False, forbid_latin=True, soft_warnings=soft_warnings)
+    raw_tags = _string_list(value.get("tags"), "tags", violations, allow_empty=False, soft_warnings=soft_warnings)
     result["tags"] = list(dict.fromkeys(tag.lstrip("#").strip() for tag in raw_tags if tag.lstrip("#").strip()))
     _fail(violations)
     return result
@@ -635,7 +635,7 @@ def validate_guard_result(value, with_suggested_edits=True):
             "description": _chinese_text(suggested.get("description", ""), "suggestedEdits.description", violations, allow_empty=True),
             "tags": [
                 item.lstrip("#").strip()
-                for item in _string_list(suggested.get("tags", []), "suggestedEdits.tags", violations, allow_empty=True, forbid_latin=True)
+                for item in _string_list(suggested.get("tags", []), "suggestedEdits.tags", violations, allow_empty=True)
                 if item.lstrip("#").strip()
             ],
         }

@@ -40,11 +40,17 @@ def normalize_cover_signature(value):
 
 
 def find_cover_image(download_dir, video_id="", source_file=""):
+    project_root = Path(__file__).resolve().parents[2]
+
+    def resolve_path(value):
+        path = Path(value)
+        return path if path.is_absolute() else project_root / path
+
     candidates = []
     if source_file:
-        candidates.append(Path(source_file))
+        candidates.append(resolve_path(source_file))
     if video_id:
-        candidates.append(Path(download_dir) / str(video_id))
+        candidates.append(resolve_path(download_dir) / str(video_id))
     for candidate in candidates:
         for extension in COVER_EXTENSIONS:
             path = candidate.with_suffix(extension)

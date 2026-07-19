@@ -7,6 +7,14 @@ from app.core.cover_service import DEFAULT_COVER_SIGNATURE, normalize_cover_sign
 WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
 
 
+def _normalize_highlight_count(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 3
+    return count if count in {1, 2, 3} else 3
+
+
 def _default_workflow_settings():
     return {
         "processVersion": PROCESS_VERSION_TRANSLATION,
@@ -18,6 +26,7 @@ def _default_workflow_settings():
         "watermarkEnabled": False,
         "watermarkText": "",
         "coverSignature": DEFAULT_COVER_SIGNATURE,
+        "highlightCount": 3,
     }
 
 
@@ -55,6 +64,7 @@ def _normalize_workflow_settings(payload=None):
     settings["watermarkText"] = watermark_text if len(watermark_text) >= 2 else ""
 
     settings["coverSignature"] = normalize_cover_signature(payload.get("coverSignature", payload.get("coverBrandName")))
+    settings["highlightCount"] = _normalize_highlight_count(payload.get("highlightCount", settings["highlightCount"]))
 
     return settings
 

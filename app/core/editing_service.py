@@ -40,7 +40,9 @@ def _select_intro_highlight_segments(analysis_result, max_segments=3):
             end = max(start + 1, float(segment.get("end") or 0))
         except (TypeError, ValueError):
             continue
-        if start < EDITING_INTRO_MIN_START_SECONDS or end - start < 2:
+        if start < EDITING_INTRO_MIN_START_SECONDS or not 6 <= end - start <= 12:
+            continue
+        if any(start < item["end"] and end > item["start"] for item in selected):
             continue
         selected.append({
             **segment,
@@ -149,10 +151,13 @@ def _editing_intro_video_filters(width, height, is_intro_clip=False, overlay_ass
 
 
 def _build_editing_intro_video(job, source_file, processed_file, analysis_result, work_dir):
-    # 处理版本二核心:封面片头、前 3 个高光片段和正片统一规格后拼接。
+    # 处理版本二核心:封面片头、设置数量的高光片段和正片统一规格后拼接。
     job_id = job.get("id")
     output_file = Path(processed_file)
-    if not EDITING_ENABLE_COVER_INTRO and not EDITING_ENABLE_HIGHLIGHT_INTRO:
+    highlight_intro_enabled = bool((analysis_result or {}).get(
+        "_highlightIntroEnabled", job.get("_highlightIntroEnabled", EDITING_ENABLE_HIGHLIGHT_INTRO),
+    ))
+    if not EDITING_ENABLE_COVER_INTRO and not highlight_intro_enabled:
         return {
             "path": output_file,
             "segments": [],
@@ -162,7 +167,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
             "watermarked": _watermark_enabled(job),
         }
 
-    segments = _select_intro_highlight_segments(analysis_result, max_segments=3) if EDITING_ENABLE_HIGHLIGHT_INTRO else []
+    segments = _select_intro_highlight_segments(analysis_result, max_segments=job.get("highlightCount") or 3) if highlight_intro_enabled else []
     ffmpeg = _resolve_ffmpeg_command()
     _, burn_config = _burn_profile_config(job.get("burnProfile"))
     processed_info = _get_video_info(processed_file)
@@ -289,7 +294,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
         }
 
     if segments:
-        _update_translate_progress(job_id, 86, "处理版本二：正在截取前三个高光片段", step="editing")
+        _update_translate_progress(job_id, 86, f"处理版本二：正在截取 {len(segments)} 个高光片段", step="editing")
     for index, segment in enumerate(segments, start=1):
         clip_file = work_dir / f"{output_file.stem}_intro_{index}.mp4"
         encode_clip(processed_file, clip_file, start=segment["start"], end=segment["end"], is_intro_clip=True)
@@ -458,18 +463,18 @@ def _normalize_highlight_segments(segments):
         if start < EDITING_INTRO_MIN_START_SECONDS:
             continue
         if end <= start:
-            end = start + 5
+            end = start + 6
         duration = end - start
-        if duration < 5:
-            end = start + 5
-        elif duration > 10:
-            end = start + 10
+        if duration < 6:
+            end = start + 6
+        elif duration > 12:
+            end = start + 12
         normalized.append({
             **segment,
             "start": round(start, 2),
             "end": round(end, 2),
         })
-    return sorted(normalized, key=lambda item: (item.get("start") or 0, item.get("end") or 0))
+    return normalized
 
 
 def _strip_topics_from_publish_copy(value):

@@ -2,6 +2,8 @@
 
 
 from app.core.error_catalog import classify_workflow_exception
+from app.core.highlight_review_service import refine_highlight_segments
+from app.config import EDITING_ENABLE_HIGHLIGHT_INTRO
 
 
 def _get_youtube_video_record(video_id):
@@ -79,13 +81,35 @@ def _editing_plan_usage(usage):
     }
 
 
-def _run_editing_plan_analysis(job, segments, language, transcript_file, event_id):
+def _run_editing_plan_analysis(job, source_file, segments, language, transcript_file, event_id):
     try:
         result, usage = _generate_editing_plan(
             job,
             segments,
             build_workflow_llm_telemetry(job, event_id, "analysis"),
         )
+        result["_highlightIntroEnabled"] = bool(EDITING_ENABLE_HIGHLIGHT_INTRO)
+        if EDITING_ENABLE_HIGHLIGHT_INTRO:
+            def report_vision_progress(index, total, remaining_seconds):
+                update_youtube_workflow_job(
+                    job["id"],
+                    step="analysis",
+                    message=f"正在审核高光候选 {index}/{total}",
+                    progress=88,
+                )
+
+            highlights, vision_review = refine_highlight_segments(
+                job,
+                source_file,
+                segments,
+                result.get("highlight_segments") or [],
+                _max_transcript_seconds(segments),
+                progress_callback=report_vision_progress,
+                telemetry=build_workflow_llm_telemetry(job, event_id, "analysis"),
+            )
+            result["highlight_segments"] = highlights
+        else:
+            vision_review = {"status": "disabled", "reason": "高光拼接开关已关闭"}
         save_youtube_video_analysis(job.get("videoId"), {
             **result,
             "transcriptLanguage": language or "",
@@ -99,9 +123,24 @@ def _run_editing_plan_analysis(job, segments, language, transcript_file, event_i
             cloud_usage=_editing_plan_usage(usage),
             metadata={
                 "highlightCount": len(result.get("highlight_segments") or []),
+                "highlightVisionReview": vision_review,
                 "generationMeta": result.get("generationMeta") or {},
             },
         )
+        if vision_review.get("timedOut"):
+            update_youtube_workflow_job(
+                job["id"],
+                step="analysis",
+                message="高光审核超时，已降级为文本候选",
+                progress=90,
+            )
+        elif vision_review.get("status") == "degraded":
+            update_youtube_workflow_job(
+                job["id"],
+                step="analysis",
+                message="高光审核不可用，已降级为文本候选",
+                progress=90,
+            )
         return result
     except Exception as exc:
         finish_workflow_event(event_id, "failed", _workflow_error_fields(exc)["error_reason"])
@@ -119,6 +158,7 @@ def _start_parallel_editing_plan(job, source_file):
         speed="",
         eta="",
     )
+    job = {**job, "_highlightIntroEnabled": bool(EDITING_ENABLE_HIGHLIGHT_INTRO)}
     transcript_event_id = start_workflow_event(job, "transcript", "开始英文语音转写", input_file_path=source_file)
     try:
         segments, language, transcript_file = _prepare_editing_transcript(job, source_file)
@@ -136,6 +176,7 @@ def _start_parallel_editing_plan(job, source_file):
         "analysis",
         _run_editing_plan_analysis,
         job,
+        source_file,
         segments,
         language,
         transcript_file,

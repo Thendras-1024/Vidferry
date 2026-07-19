@@ -688,6 +688,14 @@
               <div class="setting-status settings-span-full">
                 当前字幕输出：{{ currentSubtitleLanguage.label }}
               </div>
+              <div v-if="workflowForm.processVersion === 'editing_v1'" class="settings-field">
+                <span class="settings-label">高光片段条数</span>
+                <el-select v-model="workflowForm.highlightCount" class="process-version-select">
+                  <el-option :value="1" label="1 条" />
+                  <el-option :value="2" label="2 条" />
+                  <el-option :value="3" label="3 条" />
+                </el-select>
+              </div>
             </div>
           </el-tab-pane>
 
@@ -1105,7 +1113,8 @@ const workflowForm = reactive({
   translatorLabel: 'Vidferry翻译',
   coverSignature: 'Vidferry',
   watermarkEnabled: false,
-  watermarkText: ''
+  watermarkText: '',
+  highlightCount: 3
 })
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
@@ -1204,7 +1213,7 @@ const processVersions = [
   {
     value: 'editing_v1',
     label: '处理版本二：剪辑',
-    description: '保留字幕处理链路，并把主题高光与核心看点中的前三个片段拼接到视频开头。'
+    description: '保留字幕处理链路，并按设置条数将主题高光与核心看点拼接到视频开头。'
   }
 ]
 
@@ -1313,6 +1322,10 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
     const watermarkText = settings.watermarkText.trim().slice(0, 16)
     next.watermarkText = watermarkText.length >= 2 ? watermarkText : ''
   }
+  const highlightCount = Number(settings.highlightCount)
+  if ([1, 2, 3].includes(highlightCount)) {
+    next.highlightCount = highlightCount
+  }
   return next
 }
 
@@ -1344,7 +1357,8 @@ const currentWorkflowSettingsPayload = () => ({
   coverSignature: workflowForm.coverSignature,
   searchQuery: form.query,
   watermarkEnabled: workflowForm.watermarkEnabled,
-  watermarkText: workflowForm.watermarkText
+  watermarkText: workflowForm.watermarkText,
+  highlightCount: workflowForm.highlightCount
 })
 
 const applyStoredWorkflowSettings = (settings) => {
@@ -1443,7 +1457,8 @@ watch(
     translatorLabel: workflowForm.translatorLabel,
     coverSignature: workflowForm.coverSignature,
     watermarkEnabled: workflowForm.watermarkEnabled,
-    watermarkText: workflowForm.watermarkText
+    watermarkText: workflowForm.watermarkText,
+    highlightCount: workflowForm.highlightCount
   }),
   saveWorkflowSettings,
   { deep: true }
@@ -2588,6 +2603,7 @@ const createAnalysisJob = async (row, force = false) => {
       coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
       watermarkText: workflowForm.watermarkText,
+      highlightCount: workflowForm.highlightCount,
       force
     })
     jobs.value.unshift(res.data)
@@ -2694,7 +2710,8 @@ const processVideo = async (row) => {
       coverTitle: row.analysisDraft?.coverTitle || '',
       coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
-      watermarkText: workflowForm.watermarkText
+      watermarkText: workflowForm.watermarkText,
+      highlightCount: workflowForm.highlightCount
     }
     const res = await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)

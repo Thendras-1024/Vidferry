@@ -57,6 +57,7 @@ def _row_to_workflow_job(row):
         "translatorLabel": _normalize_translator_label(item.get("translator_label")),
         "watermarkEnabled": bool(item.get("watermark_enabled") or 0),
         "watermarkText": _normalize_watermark_text(item.get("watermark_text")),
+        "highlightCount": _normalize_highlight_count(item.get("highlight_count")),
         "coverTitle": normalize_cover_title(item.get("cover_title")),
         "coverSignature": normalize_cover_signature(item.get("cover_brand_name")),
         "title": item.get("title") or "",
@@ -151,6 +152,14 @@ def _normalize_watermark_text(value):
     return text if len(text) >= 2 else ""
 
 
+def _normalize_highlight_count(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 3
+    return count if count in {1, 2, 3} else 3
+
+
 def _workflow_watermark_settings(payload):
     saved_settings = get_workflow_settings()
     watermark_enabled = bool(
@@ -173,6 +182,12 @@ def _workflow_cover_settings(payload):
     )
 
 
+def _workflow_highlight_count(payload):
+    saved_settings = get_workflow_settings()
+    value = payload.get("highlightCount") if "highlightCount" in payload else saved_settings.get("highlightCount")
+    return _normalize_highlight_count(value)
+
+
 def _normalize_process_version(value):
     process_version = str(value or PROCESS_VERSION_TRANSLATION).strip()
     return process_version if process_version in PROCESS_VERSIONS else PROCESS_VERSION_TRANSLATION
@@ -186,6 +201,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     subtitle_size = _normalize_subtitle_size(payload.get("subtitleSize"))
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
     watermark_enabled, watermark_text = _workflow_watermark_settings(payload)
+    highlight_count = _workflow_highlight_count(payload)
     cover_title, cover_signature = _workflow_cover_settings(payload)
     process_version = _normalize_process_version(payload.get("processVersion"))
     tags = payload.get("tags") or []
@@ -230,11 +246,11 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count,
             cover_title, cover_context, cover_brand_name, cover_brand_platform,
             title, description, tags, schedule, status, step, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             job_id,
             video_id,
@@ -260,6 +276,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             translator_label,
             int(watermark_enabled),
             watermark_text,
+            highlight_count,
             cover_title,
             "",
             cover_signature,
