@@ -76,24 +76,27 @@ YTDLP_REMOTE_COMPONENTS = [
     if item.strip()
 ]
 
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
+def _env_with_legacy(name, legacy_name, default=""):
+    return _env_text(name) or _env_text(legacy_name, default)
+
+
+# New names take precedence. Legacy names keep existing deployments working during migration.
+TEXT_LLM_API_KEY = _env_with_legacy("TEXT_LLM_API_KEY", "LLM_API_KEY")
+TEXT_LLM_BASE_URL = _env_with_legacy("TEXT_LLM_BASE_URL", "LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+TEXT_LLM_MODEL = _env_text("TEXT_LLM_MODEL") or _env_text("LLM_MODEL") or _env_text("AGENT_CHAT_MODEL", "gpt-4o-mini")
+MULTIMODAL_LLM_API_KEY = _env_with_legacy("MULTIMODAL_LLM_API_KEY", "LLM_API_KEY")
+MULTIMODAL_LLM_BASE_URL = _env_with_legacy("MULTIMODAL_LLM_BASE_URL", "LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+MULTIMODAL_LLM_MODEL = _env_with_legacy("MULTIMODAL_LLM_MODEL", "AGENT_VISION_MODEL")
 LLM_TIMEOUT = int(_env_text("LLM_TIMEOUT", 90) or 90)
 LLM_MAX_TRANSCRIPT_CHARS = int(_env_text("LLM_MAX_TRANSCRIPT_CHARS", 28000) or 28000)
-# 透传给模型接口的额外请求体字段(JSON 字符串)，用于关闭思考模型的推理，
-# 例如 Qwen3 系列填 {"enable_thinking": false}；字段名因服务商而异。留空则不追加。
-try:
-    _llm_extra_raw = _env_text("LLM_EXTRA_BODY")
-    LLM_EXTRA_BODY = json.loads(_llm_extra_raw) if _llm_extra_raw else {}
-    if not isinstance(LLM_EXTRA_BODY, dict):
-        LLM_EXTRA_BODY = {}
-except (TypeError, ValueError):
-    LLM_EXTRA_BODY = {}
-
 
 def _env_bool(name, default=False):
-    return _env_text(name, "1" if default else "0").lower() not in {"0", "false", "no", "off"}
+    value = _env_text(name, "1" if default else "0").lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _env_int(name, default, minimum=None, maximum=None):
@@ -110,7 +113,6 @@ def _env_int(name, default, minimum=None, maximum=None):
 
 
 SUBTITLE_LLM_REVIEW_ENABLED = _env_bool("SUBTITLE_LLM_REVIEW_ENABLED", True)
-SUBTITLE_REVIEW_MODEL = os.environ.get("SUBTITLE_REVIEW_MODEL", "").strip() or LLM_MODEL
 # 修订批次字符上限与并发数：与翻译阶段 TRANSLATION_BATCH_MAX_CHARS 解耦，
 # 独立调小可降低单批 JSON 出错率；并发用于抵消批数增多带来的耗时。
 SUBTITLE_REVIEW_BATCH_MAX_CHARS = _env_int("SUBTITLE_REVIEW_BATCH_MAX_CHARS", 800, minimum=200, maximum=4000)
@@ -174,8 +176,6 @@ def _env_float_list(name, default, minimum=None, maximum=None):
 
 
 AGENT_ENABLED = _env_bool("AGENT_ENABLED", True)
-AGENT_CHAT_MODEL = _env_text("AGENT_CHAT_MODEL", LLM_MODEL) or LLM_MODEL
-AGENT_VISION_MODEL = _env_text("AGENT_VISION_MODEL")
 AGENT_REQUIRE_PREPUBLISH_CHECK = _env_bool("AGENT_REQUIRE_PREPUBLISH_CHECK", True)
 AGENT_BLOCK_LEVEL = _env_text("AGENT_BLOCK_LEVEL", "high").lower() or "high"
 AGENT_MAX_TOOL_ROWS = max(1, min(_env_int("AGENT_MAX_TOOL_ROWS", 20), 50))
@@ -236,54 +236,74 @@ def _format_llm_probe_error(exc):
     return str(exc)[:200]
 
 
+def _get_model_config_status(api_key, base_url, model, *, multimodal=False):
+    prefix = "MULTIMODAL_LLM" if multimodal else "TEXT_LLM"
+    label = "多模态模型" if multimodal else "文本模型"
+    missing = []
+    if not api_key:
+        missing.append(f"{prefix}_API_KEY")
+    if not base_url:
+        missing.append(f"{prefix}_BASE_URL")
+    if not model:
+        missing.append(f"{prefix}_MODEL")
+    if missing:
+        return _build_llm_config_status(
+            False,
+            missing,
+            f"{label}不可用：缺少 {', '.join(missing)}。请在 .env 或环境变量中配置后重启后端。",
+        )
+
+    is_longcat = "longcat.chat" in base_url.lower()
+    if multimodal:
+        content = [{"type": "text", "text": "回复 OK"}]
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAATSURBVDhPYxgFo2AUjAIwYGAAAAQQAAGnRHxjAAAAAElFTkSuQmCC"},
+        })
+    else:
+        content = "回复 OK" if is_longcat else [{"type": "text", "text": "回复 OK"}]
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0,
+        "max_tokens": 2,
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=min(LLM_TIMEOUT, 10)) as response:
+            json.loads(response.read().decode("utf-8"))
+        return _build_llm_config_status(True, [], "")
+    except Exception as exc:
+        reason = _format_llm_probe_error(exc)
+        return _build_llm_config_status(
+            False,
+            [],
+            f"{label}配置存在但模型接口不可用：{reason}。请检查 {prefix}_BASE_URL、{prefix}_MODEL、{prefix}_API_KEY 后重启后端。",
+        )
+
+
 def get_llm_config_status():
     global _LLM_CONFIG_STATUS_CACHE
     if _LLM_CONFIG_STATUS_CACHE is not None:
         return _LLM_CONFIG_STATUS_CACHE
 
-    missing = []
-    if not LLM_API_KEY:
-        missing.append("LLM_API_KEY")
-    if not LLM_BASE_URL:
-        missing.append("LLM_BASE_URL")
-    if not LLM_MODEL:
-        missing.append("LLM_MODEL")
-
-    if missing:
-        _LLM_CONFIG_STATUS_CACHE = _build_llm_config_status(
-            False,
-            missing,
-            f"LLM 不可用：缺少 {', '.join(missing)}。请在 .env 或环境变量中配置后重启后端。",
-        )
-        return _LLM_CONFIG_STATUS_CACHE
-
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [{"role": "user", "content": "回复 OK"}],
-        "temperature": 0,
-        "max_tokens": 2,
-    }
-    req = urllib.request.Request(
-        f"{LLM_BASE_URL}/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {LLM_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    text_status = _get_model_config_status(
+        TEXT_LLM_API_KEY, TEXT_LLM_BASE_URL, TEXT_LLM_MODEL,
     )
-
-    try:
-        with urllib.request.urlopen(req, timeout=min(LLM_TIMEOUT, 10)) as response:
-            json.loads(response.read().decode("utf-8"))
-        _LLM_CONFIG_STATUS_CACHE = _build_llm_config_status(True, [], "")
-    except Exception as exc:
-        reason = _format_llm_probe_error(exc)
-        _LLM_CONFIG_STATUS_CACHE = _build_llm_config_status(
-            False,
-            [],
-            f"LLM 配置存在但模型接口不可用：{reason}。请检查 LLM_BASE_URL、LLM_MODEL、LLM_API_KEY 后重启后端。",
-        )
+    multimodal_status = _get_model_config_status(
+        MULTIMODAL_LLM_API_KEY, MULTIMODAL_LLM_BASE_URL, MULTIMODAL_LLM_MODEL,
+        multimodal=True,
+    )
+    _LLM_CONFIG_STATUS_CACHE = {
+        "text": text_status,
+        "multimodal": multimodal_status,
+        "ready": text_status["ready"] and multimodal_status["ready"],
+    }
     return _LLM_CONFIG_STATUS_CACHE
 CORS_ORIGINS = [
     item.strip()

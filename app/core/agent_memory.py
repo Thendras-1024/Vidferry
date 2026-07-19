@@ -468,9 +468,9 @@ def _normalize_session_summary(value):
 
 def _llm_session_summary(previous, messages, session_id=""):
     call_contract = globals().get("call_json_contract")
-    model = globals().get("AGENT_CHAT_MODEL")
-    api_key = globals().get("LLM_API_KEY")
-    base_url = globals().get("LLM_BASE_URL")
+    model = globals().get("TEXT_LLM_MODEL")
+    api_key = globals().get("TEXT_LLM_API_KEY")
+    base_url = globals().get("TEXT_LLM_BASE_URL")
     if not callable(call_contract) or not model or not api_key or not base_url:
         return None
     transcript = "\n".join(

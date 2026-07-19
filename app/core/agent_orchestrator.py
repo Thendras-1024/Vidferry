@@ -28,7 +28,7 @@ class _AgentState(TypedDict, total=False):
 
 
 def _agent_llm_available():
-    return bool(LLM_API_KEY and LLM_BASE_URL and AGENT_CHAT_MODEL)
+    return bool(TEXT_LLM_API_KEY and TEXT_LLM_BASE_URL and TEXT_LLM_MODEL)
 
 
 def _call_agent_contract(messages, contract_id, validator, max_tokens=None, session_id=""):
@@ -39,9 +39,9 @@ def _call_agent_contract(messages, contract_id, validator, max_tokens=None, sess
         messages=messages,
         contract_id=contract_id,
         validator=validator,
-        model=AGENT_CHAT_MODEL,
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
+        model=TEXT_LLM_MODEL,
+        api_key=TEXT_LLM_API_KEY,
+        base_url=TEXT_LLM_BASE_URL,
         timeout=LLM_TIMEOUT,
         temperature=AGENT_CHAT_TEMPERATURE,
         max_tokens=int(max_tokens or AGENT_CHAT_MAX_TOKENS),
@@ -107,7 +107,7 @@ def _finalize_agent_chat_turn(session_id, answer, message_context, *, input_summ
             message_context,
             input_summary=input_summary,
             output=output,
-            model=AGENT_CHAT_MODEL,
+            model=TEXT_LLM_MODEL,
             started_at=started_at,
         )
     save_agent_message(session_id, "assistant", answer, message_context)
@@ -116,7 +116,7 @@ def _finalize_agent_chat_turn(session_id, answer, message_context, *, input_summ
         session_id=session_id,
         input_summary=input_summary,
         output=output,
-        model=AGENT_CHAT_MODEL,
+        model=TEXT_LLM_MODEL,
         started_at=started_at,
     )}
 

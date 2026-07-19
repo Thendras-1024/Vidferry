@@ -70,7 +70,7 @@ def _editing_result_message(editing_result):
 def _editing_plan_usage(usage):
     return {
         "provider": usage.get("provider") or "openai-compatible",
-        "model": usage.get("model") or LLM_MODEL,
+        "model": usage.get("model") or TEXT_LLM_MODEL,
         "tokens": int(usage.get("tokens") or 0),
         "totalTokens": int(usage.get("totalTokens") or usage.get("tokens") or 0),
         "promptTokens": int(usage.get("promptTokens") or 0),
@@ -396,7 +396,7 @@ def run_youtube_analysis_job(job_id, source_file_override=""):
             "发布文案与内容总结已生成",
             cloud_usage={
                 "provider": usage.get("provider") or "openai-compatible",
-                "model": usage.get("model") or LLM_MODEL,
+                "model": usage.get("model") or TEXT_LLM_MODEL,
                 "tokens": int(usage.get("tokens") or 0),
                 "totalTokens": int(usage.get("totalTokens") or usage.get("tokens") or 0),
                 "promptTokens": int(usage.get("promptTokens") or 0),

@@ -9,15 +9,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.config import (
-    LLM_API_KEY,
-    LLM_BASE_URL,
-    LLM_MODEL,
     LLM_TIMEOUT,
     SUBTITLE_LLM_REVIEW_ENABLED,
     SUBTITLE_REVIEW_BATCH_MAX_CHARS,
     SUBTITLE_REVIEW_CONCURRENCY,
     SUBTITLE_REVIEW_MAX_TOKENS,
-    SUBTITLE_REVIEW_MODEL,
+    TEXT_LLM_API_KEY,
+    TEXT_LLM_BASE_URL,
+    TEXT_LLM_MODEL,
 )
 from app.core import llm_prompts
 from app.core.llm_harness import call_json_contract, validate_subtitle_revision
@@ -92,9 +91,9 @@ def _review_single_batch(batch_number, total_batches, indexes, reviewed, context
             messages=llm_prompts.subtitle_review_messages(payload),
             contract_id="subtitle_revision",
             validator=lambda value: validate_subtitle_revision(value, expected_indexes),
-            model=SUBTITLE_REVIEW_MODEL or LLM_MODEL,
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
+            model=TEXT_LLM_MODEL,
+            api_key=TEXT_LLM_API_KEY,
+            base_url=TEXT_LLM_BASE_URL,
             timeout=LLM_TIMEOUT,
             temperature=0.1,
             max_tokens=SUBTITLE_REVIEW_MAX_TOKENS,
@@ -171,7 +170,7 @@ def review_translated_segments(segments, target_language, job=None, job_id="", p
             metadata.update({
                 "status": status, "fallbackCount": int(fallback or 0), "batchCount": int(batches or 0),
                 "changedCount": int(changed or 0), "totalTokens": int(tokens or 0),
-                "model": SUBTITLE_REVIEW_MODEL or LLM_MODEL or "",
+                "model": TEXT_LLM_MODEL or "",
                 "batches": list(batch_details or []),
             })
     if target_language != "zh-CN":
@@ -192,7 +191,7 @@ def review_translated_segments(segments, target_language, job=None, job_id="", p
         _log(job_id, "没有可修订的字幕")
         mark("empty")
         return reviewed
-    if not SUBTITLE_REVIEW_MODEL or not LLM_API_KEY or not LLM_BASE_URL:
+    if not TEXT_LLM_MODEL or not TEXT_LLM_API_KEY or not TEXT_LLM_BASE_URL:
         _log(job_id, "LLM 配置不完整，使用 Google 初译")
         mark("unavailable")
         return normalize_all()
@@ -224,7 +223,7 @@ def review_translated_segments(segments, target_language, job=None, job_id="", p
     batch_details = []
     _log(
         job_id,
-        f"开始 LLM 修订: model={SUBTITLE_REVIEW_MODEL or LLM_MODEL}, segments={total_segments}, "
+        f"开始 LLM 修订: model={TEXT_LLM_MODEL}, segments={total_segments}, "
         f"batches={total_batches}, concurrency={concurrency}, batch_max_chars={max_chars}",
     )
 

@@ -153,17 +153,13 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
     job_id = job.get("id")
     output_file = Path(processed_file)
     if not EDITING_ENABLE_COVER_INTRO and not EDITING_ENABLE_HIGHLIGHT_INTRO:
-        watermarked = False
-        if _watermark_enabled(job):
-            _apply_watermark_to_mp4(output_file, job)
-            watermarked = True
         return {
             "path": output_file,
             "segments": [],
             "cover": None,
             "skipped": True,
             "reason": "封面片头与高光拼接均已关闭",
-            "watermarked": watermarked,
+            "watermarked": _watermark_enabled(job),
         }
 
     segments = _select_intro_highlight_segments(analysis_result, max_segments=3) if EDITING_ENABLE_HIGHLIGHT_INTRO else []
@@ -238,6 +234,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
                 cover_title,
                 layout,
                 signature=job.get("coverSignature") or job.get("coverBrandName"),
+                watermark_text=_watermark_text(job) if _watermark_enabled(job) else "",
             )
             _run_command(
                 build_cover_clip_command(
@@ -276,10 +273,6 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
             )
 
     if not segments and not clip_files:
-        watermarked = False
-        if _watermark_enabled(job):
-            _apply_watermark_to_mp4(output_file, job)
-            watermarked = True
         if cover_error:
             reason = cover_error
         elif not EDITING_ENABLE_COVER_INTRO:
@@ -292,7 +285,7 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
             "cover": None,
             "skipped": True,
             "reason": reason,
-            "watermarked": watermarked,
+            "watermarked": _watermark_enabled(job),
         }
 
     if segments:
@@ -317,18 +310,13 @@ def _build_editing_intro_video(job, source_file, processed_file, analysis_result
         str(final_tmp),
     ], cwd=BASE_DIR)
     _replace_output_file(final_tmp, output_file)
-    watermarked = False
-    if _watermark_enabled(job):
-        _update_translate_progress(job_id, 95, "处理版本二：正在烧录水印", step="editing")
-        _apply_watermark_to_mp4(output_file, job)
-        watermarked = True
     return {
         "path": output_file,
         "segments": segments,
         "cover": cover_result,
         "skipped": False,
         "reason": cover_error,
-        "watermarked": watermarked,
+        "watermarked": _watermark_enabled(job),
     }
 
 
@@ -401,9 +389,9 @@ def _call_editing_contract(messages, contract_id, validator, max_tokens, telemet
         messages=messages,
         contract_id=contract_id,
         validator=validator,
-        model=LLM_MODEL,
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
+        model=TEXT_LLM_MODEL,
+        api_key=TEXT_LLM_API_KEY,
+        base_url=TEXT_LLM_BASE_URL,
         timeout=LLM_TIMEOUT,
         temperature=0.4,
         max_tokens=max_tokens,
@@ -570,7 +558,7 @@ def _generate_editing_plan_impl(job, segments, telemetry=None):
     result["process_version"] = PROCESS_VERSION_EDITING
     result["model"] = {
         "provider": usage.get("provider") or "openai-compatible",
-        "name": usage.get("model") or LLM_MODEL,
+        "name": usage.get("model") or TEXT_LLM_MODEL,
     }
     result["generationMeta"] = generation_meta
     return result, usage

@@ -10,7 +10,6 @@ import time
 import urllib.error
 import urllib.request
 
-from app.config import LLM_EXTRA_BODY
 from app.core.errors import LLMContractError, LLMRequestError
 
 
@@ -45,16 +44,16 @@ def _classify_http_error(exc, model=""):
     snippet = " ".join(body.split())[:300]
     if code in (401, 403):
         return LLMRequestError("http_auth", f"鉴权失败 HTTP {code}：{snippet}", http_code=code, model=model,
-                               recommendation="检查 LLM_API_KEY 是否有效、是否有该模型权限。")
+                               recommendation="检查所选模型的 API Key 是否有效、是否有该模型权限。")
     if code == 404:
         return LLMRequestError("http_not_found", f"模型或接口不存在 HTTP 404：{snippet}", http_code=code, model=model,
-                               recommendation="检查 LLM_MODEL 名称与 LLM_BASE_URL 是否匹配。")
+                               recommendation="检查所选模型名称与 Base URL 是否匹配。")
     if code == 429:
         return LLMRequestError("http_rate_limit", f"触发限流 HTTP 429：{snippet}", http_code=code, model=model,
                                recommendation="请求过于频繁或额度不足，稍后重试或提升配额。")
     if code == 400:
         return LLMRequestError("http_bad_request", f"请求参数被拒 HTTP 400：{snippet}", http_code=code, model=model,
-                               recommendation="多为模型不支持某参数(如 response_format 或 LLM_EXTRA_BODY 的 enable_thinking)，核对模型兼容性。")
+                               recommendation="多为模型不支持某参数（如 response_format），请核对模型兼容性。")
     if code is not None and 500 <= code < 600:
         return LLMRequestError("http_server_error", f"模型服务端错误 HTTP {code}：{snippet}", http_code=code, model=model,
                                recommendation="服务商侧异常，稍后重试。")
@@ -66,9 +65,9 @@ def _classify_url_error(exc, model=""):
     reason_text = str(reason or "")
     if isinstance(reason, socket.timeout) or "timed out" in reason_text.lower():
         return LLMRequestError("network_timeout", f"请求超时：{reason_text[:200]}", model=model,
-                               recommendation="调大 LLM_TIMEOUT，或排查网络/模型响应速度；思考模型可在 LLM_EXTRA_BODY 关闭推理降低延迟。")
+                           recommendation="调大 LLM_TIMEOUT，或排查网络和模型响应速度。")
     return LLMRequestError("network_connection", f"网络连接失败：{reason_text[:200]}", model=model,
-                           recommendation="检查网络、代理与 LLM_BASE_URL 是否可达。")
+                           recommendation="检查网络、代理与所选模型 Base URL 是否可达。")
 
 
 # 空 content 按返回的 finish_reason 再细分，便于给出对症建议。
@@ -92,8 +91,6 @@ def _classify_contract_failure(exc, last_raw, finish_reason=None):
 
 def _clean_json_text(value):
     text = str(value or "").strip().lstrip("\ufeff")
-    text = text.replace("\u201c", '"').replace("\u201d", '"')
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
     return re.sub(r",\s*([}\]])", r"\1", _CONTROL_RE.sub("", text))
 
 
@@ -147,6 +144,15 @@ def _completion_with_json_mode(base_url, api_key, timeout, payload, model=""):
         raise _classify_url_error(exc, model) from exc
 
 
+def _structured_request_options(base_url):
+    """Return provider-specific options for documented OpenAI-compatible APIs."""
+    host = str(base_url or "").lower()
+    if "longcat.chat" in host:
+        # LongCat documents `thinking`; it does not document response_format/json_object.
+        return {"thinking": {"type": "disabled"}}
+    return {"response_format": {"type": "json_object"}}
+
+
 def _usage(data):
     usage = (data or {}).get("usage") or {}
     total = int(usage.get("total_tokens") or 0)
@@ -187,7 +193,7 @@ def _emit_usage_telemetry(telemetry, payload):
 def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None):
     """调用模型并最多进行一次针对契约错误的完整重写。"""
     if not api_key or not base_url or not model:
-        raise RuntimeError("LLM_API_KEY、LLM_BASE_URL 或模型名称未配置。")
+        raise RuntimeError("模型 API Key、Base URL 或模型名称未配置。")
 
     started_at = time.time()
     total_usage = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0}
@@ -200,10 +206,8 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
             "messages": current_messages,
             "temperature": temperature,
             "max_tokens": int(max_tokens),
-            "response_format": {"type": "json_object"},
         }
-        if LLM_EXTRA_BODY:
-            payload.update(LLM_EXTRA_BODY)
+        payload.update(_structured_request_options(base_url))
         attempt_started_at = time.time()
         try:
             data = _completion_with_json_mode(base_url, api_key, timeout, payload, model)

@@ -8,6 +8,11 @@ from app.core.errors import LLM_CATEGORY_ERROR_INFO
 _WORKFLOW_ERROR_CONFIG = (
     (lambda exc, _text: exc.__class__.__name__ == "LLMContractError", "VF-LLM-CONTRACT-INVALID", "LLM_CONTRACT_ERROR", "模型输出未满足中文与结构化约束，系统已尝试修正但仍未通过。"),
     (lambda _exc, text: "AUDIO_EXTRACTION_FAILED:" in text, "VF-AUDIO-EXTRACTION-FAILED", "AUDIO_EXTRACTION_FAILED", "音频提取失败；请检查源视频音轨和 FFmpeg 配置。"),
+    (lambda _exc, text: "RUNTIME_CONFIG_FAILED:WHISPER:" in text, "VF-ASR-RUNTIME-CONFIG", "ASR_RUNTIME_CONFIG", "Whisper 运行环境不可用；请按右上角消息中的配置指引修复后重试。"),
+    (lambda _exc, text: "RUNTIME_CONFIG_FAILED:VIDEO_ENCODER:" in text, "VF-VIDEO-ENCODER-CONFIG", "VIDEO_ENCODER_CONFIG", "视频编码器不可用；请检查 FFmpeg/NVENC 配置后重试。"),
+    (lambda _exc, text: "ASR_TRANSCRIPTION_FAILED:WHISPER_MODEL_DOWNLOAD_FAILED" in text, "VF-ASR-MODEL-DOWNLOAD-FAILED", "ASR_MODEL_DOWNLOAD_FAILED", "Whisper 模型下载失败；请检查网络或 HF_ENDPOINT/HF_HOME 配置，也可在消息中复制预下载命令后重试。"),
+    (lambda _exc, text: "ASR_TRANSCRIPTION_FAILED:CUDA_CUBLAS_12_MISSING" in text, "VF-ASR-CUDA-CUBLAS-MISSING", "ASR_CUDA_CUBLAS_MISSING", "Whisper GPU 转写无法加载 CUDA 12 cuBLAS（cublas64_12.dll）；请执行 GPU 环境安装，或改用 CPU 模式。"),
+    (lambda _exc, text: "ASR_TRANSCRIPTION_FAILED:CUDA_CUDNN_MISSING" in text, "VF-ASR-CUDA-CUDNN-MISSING", "ASR_CUDA_CUDNN_MISSING", "Whisper GPU 转写无法加载 cuDNN；请执行 GPU 环境安装，或改用 CPU 模式。"),
     (lambda _exc, text: "ASR_TRANSCRIPTION_FAILED:" in text, "VF-ASR-TRANSCRIPTION-FAILED", "ASR_TRANSCRIPTION_FAILED", "语音识别失败；请检查 Whisper 模型、CPU / GPU 资源和源音频。"),
     (lambda _exc, text: "SUBTITLE_TRANSLATION_FAILED:" in text, "VF-SUBTITLE-TRANSLATION-FAILED", "SUBTITLE_TRANSLATION_FAILED", "字幕翻译失败；请检查网络和翻译服务后重试。"),
     (lambda _exc, text: "SUBTITLE_BURN_FAILED:" in text, "VF-SUBTITLE-BURN-FAILED", "SUBTITLE_BURN_FAILED", "字幕烧录失败；请检查 FFmpeg、磁盘空间和输出文件占用情况。"),

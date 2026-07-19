@@ -9,7 +9,7 @@ import re as _re
 _AGENT_SECRET_PATTERNS = [
     _re.compile(r"sk-[A-Za-z0-9_\-]{12,}"),
     _re.compile(r"(?i)(api[_-]?key|token|cookie|secret|authorization)\s*[:=]\s*[^\s,;]+"),
-    _re.compile(r"(?i)(LLM_API_KEY|OPENAI_API_KEY|AGENT_[A-Z0-9_]*KEY)\s*[:=]\s*[^\s,;]+"),
+    _re.compile(r"(?i)((?:TEXT|MULTIMODAL)_LLM_API_KEY|OPENAI_API_KEY|AGENT_[A-Z0-9_]*KEY)\s*[:=]\s*[^\s,;]+"),
 ]
 
 _AGENT_ABSOLUTE_PATH_PATTERN = _re.compile(r"(?i)\b[A-Z]:\\[^\s\"'，。；;]+")

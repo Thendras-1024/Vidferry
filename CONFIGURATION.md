@@ -29,17 +29,22 @@ LOCAL_CHROME_HEADLESS = False
 
 ## LLM
 
-内容分析使用 OpenAI-compatible API。DashScope 示例：
+内容分析和关键帧审核使用两套独立的 OpenAI-compatible API 配置。DashScope 示例：
 
 ```env
-LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_API_KEY=sk-your-dashscope-key
-LLM_MODEL=qwen-plus
+TEXT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+TEXT_LLM_API_KEY=sk-your-dashscope-key
+TEXT_LLM_MODEL=qwen-plus
+MULTIMODAL_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MULTIMODAL_LLM_API_KEY=sk-your-dashscope-key
+MULTIMODAL_LLM_MODEL=qwen-vl-max
 LLM_TIMEOUT=90
 LLM_MAX_TRANSCRIPT_CHARS=28000
 ```
 
-不配置 LLM 时，下载、字幕处理和视频素材管理仍可使用，但内容总结和发布文案生成不可用或会失败。
+文本模型未配置时，下载、字幕处理和视频素材管理仍可使用，但内容总结和发布文案生成不可用或会失败。多模态模型未配置且发布前关键帧审核启用时，发布会被阻止。
+
+新变量优先于旧变量。为便于升级，旧的 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`、`AGENT_CHAT_MODEL` 与 `AGENT_VISION_MODEL` 仍会作为迁移回退读取；请在下一次配置维护时改为以上新变量。
 
 ## YouTube 下载
 

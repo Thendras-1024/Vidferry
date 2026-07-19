@@ -53,17 +53,17 @@ class LLMRequestError(RuntimeError):
 # LLM 异常 category → (对外错误码, 错误类型, 面向用户的中文建议)。
 # 与 LLM 异常类放在一起，方便新增 category 时同步维护错误码与文案。
 LLM_CATEGORY_ERROR_INFO = {
-    "empty_content": ("VF-LLM-EMPTY-RESPONSE", "LLM_EMPTY_RESPONSE", "模型返回为空，常见于思考模型推理占用全部 token；建议调大 max_tokens 或在 LLM_EXTRA_BODY 中关闭推理。"),
+    "empty_content": ("VF-LLM-EMPTY-RESPONSE", "LLM_EMPTY_RESPONSE", "模型返回为空，常见于思考模型推理占用全部 token；建议调大 max_tokens 或更换模型设置。"),
     "length_truncated": ("VF-LLM-EMPTY-RESPONSE", "LLM_EMPTY_RESPONSE", "模型输出被 max_tokens 截断；建议调大 max_tokens 或关闭推理减少 token 占用。"),
     "content_filtered": ("VF-LLM-CONTENT-FILTERED", "LLM_CONTENT_FILTERED", "模型输出触发内容安全审查，请调整输入内容或更换模型。"),
     "json_parse": ("VF-LLM-JSON-INVALID", "LLM_JSON_INVALID", "模型返回的 JSON 无法解析(可能被截断或格式错误)；建议调大 max_tokens 或重试。"),
     "contract_validation": ("VF-LLM-CONTRACT-INVALID", "LLM_CONTRACT_ERROR", "模型输出未满足中文与结构化约束，系统已尝试修正但仍未通过。"),
     "network_timeout": ("VF-LLM-TIMEOUT", "LLM_TIMEOUT", "模型请求超时；可调大 LLM_TIMEOUT，或关闭推理降低延迟。"),
-    "network_connection": ("VF-LLM-UNREACHABLE", "LLM_UNREACHABLE", "无法连接模型服务；请检查网络、代理与 LLM_BASE_URL 是否可达。"),
-    "http_auth": ("VF-LLM-AUTH", "LLM_AUTH_ERROR", "模型鉴权失败；请检查 LLM_API_KEY 是否有效及是否有该模型权限。"),
-    "http_not_found": ("VF-LLM-MODEL-NOT-FOUND", "LLM_MODEL_NOT_FOUND", "模型或接口不存在；请检查 LLM_MODEL 与 LLM_BASE_URL 是否匹配。"),
+    "network_connection": ("VF-LLM-UNREACHABLE", "LLM_UNREACHABLE", "无法连接模型服务；请检查网络、代理与所选模型 Base URL 是否可达。"),
+    "http_auth": ("VF-LLM-AUTH", "LLM_AUTH_ERROR", "模型鉴权失败；请检查所选模型的 API Key 是否有效及是否有该模型权限。"),
+    "http_not_found": ("VF-LLM-MODEL-NOT-FOUND", "LLM_MODEL_NOT_FOUND", "模型或接口不存在；请检查所选模型名称与 Base URL 是否匹配。"),
     "http_rate_limit": ("VF-LLM-RATE-LIMIT", "LLM_RATE_LIMIT", "触发模型限流或额度不足；请稍后重试或提升配额。"),
-    "http_bad_request": ("VF-LLM-BAD-REQUEST", "LLM_BAD_REQUEST", "请求参数被模型拒绝；多为模型不支持 response_format 或 LLM_EXTRA_BODY 参数，请核对兼容性。"),
+    "http_bad_request": ("VF-LLM-BAD-REQUEST", "LLM_BAD_REQUEST", "请求参数被模型拒绝；多为模型不支持 response_format，请核对兼容性。"),
     "http_server_error": ("VF-LLM-PROVIDER-ERROR", "LLM_PROVIDER_ERROR", "模型服务商侧异常；请稍后重试。"),
     "http_other": ("VF-LLM-HTTP-ERROR", "LLM_HTTP_ERROR", "模型接口返回异常 HTTP 状态；请查看后端日志中的 http 状态码与响应。"),
 }

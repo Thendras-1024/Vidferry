@@ -87,14 +87,14 @@ def _keyword_issues(text):
     return issues
 
 
-def _call_guard_llm(messages, model, contract_id, validator, max_tokens=900):
+def _call_guard_llm(messages, model, api_key, base_url, contract_id, validator, max_tokens=900):
     return call_json_contract(
         messages=messages,
         contract_id=contract_id,
         validator=validator,
         model=model,
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
+        api_key=api_key,
+        base_url=base_url,
         timeout=LLM_TIMEOUT,
         temperature=AGENT_GUARD_TEMPERATURE,
         max_tokens=int(max_tokens or AGENT_GUARD_MAX_TOKENS),
@@ -113,7 +113,9 @@ def _text_guard_result(summary):
         try:
             result, _, _ = _call_guard_llm(
                 llm_prompts.prepublish_text_guard_messages(summary),
-                AGENT_CHAT_MODEL,
+                TEXT_LLM_MODEL,
+                TEXT_LLM_API_KEY,
+                TEXT_LLM_BASE_URL,
                 "prepublish_text_guard",
                 lambda value: validate_guard_result(value, with_suggested_edits=True),
             )
@@ -175,9 +177,9 @@ def get_source_content_risk(publish_materials):
 
 
 def _extract_guard_frames(publish_materials):
-    if AGENT_REQUIRE_VISION_CHECK and not AGENT_VISION_MODEL:
-        raise RuntimeError("AGENT_VISION_MODEL 未配置，无法完成关键帧审核。")
-    if not AGENT_VISION_MODEL:
+    if AGENT_REQUIRE_VISION_CHECK and not MULTIMODAL_LLM_MODEL:
+        raise RuntimeError("MULTIMODAL_LLM_MODEL 未配置，无法完成关键帧审核。")
+    if not MULTIMODAL_LLM_MODEL:
         return []
     material = (publish_materials or [{}])[0]
     video_path = _publish_material_file(material)
@@ -240,7 +242,9 @@ def _vision_guard_result(summary, publish_materials):
             {"role": "system", "content": llm_prompts.prepublish_vision_system_prompt()},
             {"role": "user", "content": content},
         ],
-        AGENT_VISION_MODEL,
+        MULTIMODAL_LLM_MODEL,
+        MULTIMODAL_LLM_API_KEY,
+        MULTIMODAL_LLM_BASE_URL,
         "prepublish_vision_guard",
         lambda value: validate_guard_result(value, with_suggested_edits=False),
         max_tokens=AGENT_GUARD_MAX_TOKENS,
@@ -264,7 +268,7 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
             "materialId": material_id,
             "disabled": True,
         }
-        run_id = save_agent_run("prepublish_check", session_id=session_id, subject_type="material", subject_id=material_id, decision="allow", severity="none", content_hash=content_hash, input_summary=summary, output=result, model=AGENT_CHAT_MODEL, started_at=started_at)
+        run_id = save_agent_run("prepublish_check", session_id=session_id, subject_type="material", subject_id=material_id, decision="allow", severity="none", content_hash=content_hash, input_summary=summary, output=result, model=TEXT_LLM_MODEL, started_at=started_at)
         result["runId"] = run_id
         return result
 
@@ -278,7 +282,7 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
                 "severity": "high" if AGENT_VISION_FAIL_CLOSED else "medium",
                 "evidence": "关键帧审核未完成",
                 "reason": str(exc)[:300],
-                "suggestion": "配置 AGENT_VISION_MODEL 并确保视频可抽帧后重新质检。",
+                "suggestion": "配置 MULTIMODAL_LLM_MODEL 并确保视频可抽帧后重新质检。",
                 "blocking": AGENT_VISION_FAIL_CLOSED,
             })
 
@@ -303,7 +307,7 @@ def run_prepublish_guard(data, file_list=None, targets=None, publish_materials=N
         content_hash=content_hash,
         input_summary=summary,
         output=result,
-        model=f"{AGENT_CHAT_MODEL}/{AGENT_VISION_MODEL}",
+        model=f"{TEXT_LLM_MODEL}/{MULTIMODAL_LLM_MODEL}",
         started_at=started_at,
     )
     result["runId"] = run_id

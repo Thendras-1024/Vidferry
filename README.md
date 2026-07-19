@@ -188,14 +188,18 @@ LLM 原始结果只读保存。用户最终发布使用的标题、文案、话�
 
 ### Agent 发布前审核
 
-发布前审核默认启用。系统会检查发布文案，并从视频抽取关键帧交由视觉模型复核；高风险结论或审核失败会阻止提交发布。除 `LLM_BASE_URL`、`LLM_API_KEY` 外，还需要在 `.env` 配置与当前云服务兼容的视觉模型：
+发布前审核默认启用。系统会检查发布文案，并从视频抽取关键帧交由多模态模型复核；高风险结论或审核失败会阻止提交发布。请在 `.env` 分别配置文本模型和支持 `image_url` 输入的多模态模型：
 
 ```env
-AGENT_CHAT_MODEL=qwen3.6-27b
-AGENT_VISION_MODEL=your-vision-model
+TEXT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+TEXT_LLM_API_KEY=sk-your-key
+TEXT_LLM_MODEL=qwen-plus
+MULTIMODAL_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MULTIMODAL_LLM_API_KEY=sk-your-key
+MULTIMODAL_LLM_MODEL=qwen-vl-max
 ```
 
-`AGENT_CHAT_MODEL` 留空时使用 `LLM_MODEL`。`AGENT_VISION_MODEL` 为空时，默认策略会阻止发布，避免绕过关键帧审核；内部的抽帧数量、风险阈值和模型参数由程序统一维护，不需要写入 `.env`。
+文本模型用于内容分析、字幕修订、文案生成和 Agent；多模态模型用于关键帧审核。多模态模型未配置时，默认策略会阻止发布，避免绕过关键帧审核；内部的抽帧数量、风险阈值和模型参数由程序统一维护，不需要写入 `.env`。
 
 ### 7. 发布中心发布
 
@@ -258,7 +262,7 @@ WHISPER_COMPUTE_TYPE=int8
 | `medium` | 更准，但 CPU 会明显变慢 | 约 1.5 GB |
 | `large-v3` | 质量更高，资源占用大 | 约 3.1 GB |
 
-`large-v3` 首次下载及缓存建议预留至少 5 GB 磁盘空间。CPU 模式建议使用至少 16 GB 内存，但处理速度会明显低于 `small`；如使用 NVIDIA CUDA，建议至少 8 GB 显存，并将 `WHISPER_DEVICE` 改为 `cuda`、`WHISPER_COMPUTE_TYPE` 改为 `float16` 或 `int8_float16`。资源不足时保持默认 `small`。修改 `.env` 后需要重启后端；已有转写缓存会被复用，不会因为切换模型自动重新转写。
+`large-v3` 首次下载及缓存建议预留至少 5 GB 磁盘空间。CPU 模式建议使用至少 16 GB 内存，但处理速度会明显低于 `small`；如使用 NVIDIA CUDA，建议至少 8 GB 显存，并将 `WHISPER_DEVICE` 改为 `cuda`、`WHISPER_COMPUTE_TYPE` 改为 `float16` 或 `int8_float16`。Windows 上还需要先执行 `conda env update -n vidferry -f environment.gpu-win.yml`，以在当前 Conda 环境安装 CUDA 12 的 cuBLAS/cuDNN 运行库。缺少这些运行库时，GPU 转写会被阻止，并在右上角消息中给出修复指引；可改为 `WHISPER_DEVICE=cpu` 后重启。资源不足时保持默认 `small`。修改 `.env` 后需要重启后端；已有转写缓存会被复用，不会因为切换模型自动重新转写。
 
 国内网络如果无法直接访问 Hugging Face，可以使用 HF-Mirror 预下载模型。以当前默认 `small` 为例：
 
