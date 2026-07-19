@@ -389,8 +389,10 @@ const router = useRouter()
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
+const WORKFLOW_MESSAGE_CHECK_INTERVAL_MS = 10 * 1000
 const AGENT_MESSAGE_PAGE_SIZE = 12
 let accountCheckTimer = null
+let workflowMessageTimer = null
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
 const agentDrawerVisible = ref(false)
@@ -747,21 +749,20 @@ const refreshRuntimeConfigStatus = async () => {
   try {
     const res = await commonApi.getRuntimeConfigStatus()
     const llm = res?.data?.llm
-    if (!llm || llm.ready) {
+    const textStatus = llm?.text
+    if (!textStatus || textStatus.ready) {
       llmConfigWarning.value = ''
     }
-    if (llm && !llm.ready) {
-      const missingText = Array.isArray(llm.missing) && llm.missing.length
-        ? ` 缺失：${llm.missing.join('、')}`
-        : ''
-      llmConfigWarning.value = `${llm.message || 'LLM 不可用，请检查配置并重启后端。'}${missingText}`
-
+    if (textStatus && !textStatus.ready) {
+      llmConfigWarning.value = textStatus.message || '文本模型不可用，请检查配置并重启后端。'
     }
     notificationStore.syncLlmUnavailableMessage(llm)
+    const runtime = res?.data?.runtime || {}
+    notificationStore.syncRuntimeConfigMessages(runtime)
 
     const agent = res?.data?.agent
-    agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.visionModelConfigured
-      ? 'Agent 发布前质检已启用，但 AGENT_VISION_MODEL 未配置；发布会被关键帧审核阻断。'
+    agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.multimodalModelConfigured
+      ? 'Agent 发布前质检已启用，但多模态模型未配置；发布会被关键帧审核阻断。'
       : ''
   } catch (error) {
     console.error('运行时配置状态检查失败:', error)
@@ -793,8 +794,8 @@ const formatAgentSessionTime = (timestamp) => {
 const handleMessageAction = (message) => {
   if (!message) return
   if (message.actionType === 'copy') {
-    navigator.clipboard?.writeText(message.content || '')
-    ElMessage.success('诊断信息已复制')
+    navigator.clipboard?.writeText(message.actionValue || message.content || '')
+    ElMessage.success(message.actionValue ? '环境更新命令已复制' : '诊断信息已复制')
   } else if (message.actionRoute) {
     router.push(message.actionRoute)
   } else if (message.actionUrl) {
@@ -809,8 +810,8 @@ onMounted(() => {
   refreshGlobalWorkflowMessages()
   accountCheckTimer = window.setInterval(() => {
     refreshGlobalAccountMessages()
-    refreshGlobalWorkflowMessages()
   }, ACCOUNT_CHECK_INTERVAL_MS)
+  workflowMessageTimer = window.setInterval(refreshGlobalWorkflowMessages, WORKFLOW_MESSAGE_CHECK_INTERVAL_MS)
   window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
 })
 
@@ -818,6 +819,10 @@ onBeforeUnmount(() => {
   if (accountCheckTimer) {
     window.clearInterval(accountCheckTimer)
     accountCheckTimer = null
+  }
+  if (workflowMessageTimer) {
+    window.clearInterval(workflowMessageTimer)
+    workflowMessageTimer = null
   }
   window.removeEventListener('vidferry:ask-agent', handleAskAgentEvent)
 })

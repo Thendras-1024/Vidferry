@@ -522,7 +522,7 @@
                 @click="processVideo(row)"
               >
                 <el-icon><VideoCamera /></el-icon>
-                <span>{{ hasCurrentProcessVersion(row) ? '替换处理' : '处理' }}</span>
+                <span>{{ hasCurrentProcessVersion(row) ? '重新处理' : '处理' }}</span>
               </el-button>
               <el-button
                 size="small"
@@ -556,13 +556,9 @@
                       <el-icon><Refresh /></el-icon>
                       <span>{{ resettingId === row.id ? '回退中' : '重新处理' }}</span>
                     </el-dropdown-item>
-                    <el-dropdown-item
-                      v-for="group in videoGroupStore.groups"
-                      :key="`move-${row.id}-${group.id}`"
-                      :disabled="Number(row.groupId) === Number(group.id)"
-                      @click="moveVideoToGroup(row, group.id)"
-                    >
-                      <span>移到：{{ group.name }}</span>
+                    <el-dropdown-item @click="openMoveVideoDialog(row)">
+                      <el-icon><Folder /></el-icon>
+                      <span>移动到分组</span>
                     </el-dropdown-item>
                     <el-dropdown-item class="danger-item" @click="deleteVideo(row)">
                       <el-icon><Delete /></el-icon>
@@ -914,6 +910,21 @@
         <el-button @click="jobErrorDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="moveVideoDialogVisible" title="移动到分组" width="400px" destroy-on-close>
+      <el-select v-model="moveTargetGroupId" placeholder="选择目标分组" style="width: 100%">
+        <el-option
+          v-for="group in videoGroupStore.groups"
+          :key="group.id"
+          :label="group.name"
+          :value="group.id"
+          :disabled="Number(movingVideo?.groupId) === Number(group.id)"
+        />
+      </el-select>
+      <template #footer>
+        <el-button @click="moveVideoDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="movingVideoGroup" @click="confirmMoveVideo">移动</el-button>
+      </template>
+    </el-dialog>
     <VideoGroupManageDialog v-model="groupManagerVisible" />
   </div>
 </template>
@@ -922,7 +933,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Download, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { useAppStore } from '@/stores/app'
@@ -969,6 +980,10 @@ const editingPublishDraftIds = ref(new Set())
 const editingPublishDraftForms = reactive({})
 const selectedVideos = ref([])
 const groupManagerVisible = ref(false)
+const moveVideoDialogVisible = ref(false)
+const movingVideo = ref(null)
+const moveTargetGroupId = ref('')
+const movingVideoGroup = ref(false)
 const searchProgress = reactive({
   visible: false,
   jobId: '',
@@ -1952,6 +1967,24 @@ const moveRowsToGroup = async (rows, groupId) => {
 
 const moveSelectedVideos = (groupId) => moveRowsToGroup(selectedVideos.value, groupId)
 const moveVideoToGroup = (row, groupId) => moveRowsToGroup([row], groupId)
+const openMoveVideoDialog = (row) => {
+  movingVideo.value = row
+  moveTargetGroupId.value = ''
+  moveVideoDialogVisible.value = true
+}
+const confirmMoveVideo = async () => {
+  if (!moveTargetGroupId.value) {
+    ElMessage.warning('请选择目标分组')
+    return
+  }
+  movingVideoGroup.value = true
+  try {
+    await moveVideoToGroup(movingVideo.value, moveTargetGroupId.value)
+    moveVideoDialogVisible.value = false
+  } finally {
+    movingVideoGroup.value = false
+  }
+}
 
 const importVideo = async () => {
   const url = manualForm.url.trim()

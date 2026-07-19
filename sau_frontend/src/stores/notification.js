@@ -41,6 +41,7 @@ const getPublishConfirmationMessageKey = (job) => `publish-confirmation:${job.id
 const getSearchFailureMessageKey = (job) => `search-failed:${job.jobId || job.id}`
 const getDirectPublishFailureMessageKey = (payload) => `direct-publish-failed:${payload.publishTaskId || payload.tabName || payload.createdAt}`
 const LLM_UNAVAILABLE_MESSAGE_KEY = 'llm-unavailable'
+const RUNTIME_CONFIG_MESSAGE_PREFIX = 'runtime-config:'
 
 const platformResolveUrls = {
   抖音: 'https://creator.douyin.com/creator-micro/content/upload',
@@ -223,16 +224,40 @@ const buildDirectPublishFailureMessage = (payload, acknowledged = false) => {
 
 const buildLlmUnavailableMessage = (llm, acknowledged = false) => {
   const now = Date.now()
-  const missingText = Array.isArray(llm?.missing) && llm.missing.length ? ` 缺失：${llm.missing.join('、')}` : ''
+  const unavailable = [llm?.text].filter(status => status && !status.ready)
+  const content = unavailable.map(status => {
+    const missing = Array.isArray(status.missing) && status.missing.length ? ` 缺失：${status.missing.join('、')}` : ''
+    return `${status.message || '模型不可用，请检查配置并重启后端。'}${missing}`
+  }).join('；') || 'AI 模型不可用，请检查配置并重启后端。'
   return {
     id: LLM_UNAVAILABLE_MESSAGE_KEY,
     key: LLM_UNAVAILABLE_MESSAGE_KEY,
     type: 'llm-unavailable',
-    title: 'AI 功能不可用',
-    content: `${llm?.message || 'LLM 不可用，请检查配置并重启后端。'}${missingText}`,
+    title: '文本 AI 功能不可用',
+    content,
     actionType: 'copy',
     actionLabel: '复制诊断',
     severity: 'danger',
+    createdAt: now,
+    updatedAt: now,
+    acknowledged,
+    acknowledgedAt: null
+  }
+}
+
+const buildRuntimeConfigMessage = (name, status, acknowledged = false) => {
+  const now = Date.now()
+  const key = `${RUNTIME_CONFIG_MESSAGE_PREFIX}${name}`
+  return {
+    id: key,
+    key,
+    type: 'runtime-config',
+    title: '运行环境配置需要处理',
+    content: status.message || `${name} 配置不可用，请检查 .env 后重启后端。`,
+    actionType: status.actionValue ? 'copy' : '',
+    actionValue: status.actionValue || '',
+    actionLabel: status.actionValue ? '复制修复命令' : '',
+    severity: status.level === 'error' ? 'danger' : 'warning',
     createdAt: now,
     updatedAt: now,
     acknowledged,
@@ -411,11 +436,21 @@ export const useNotificationStore = defineStore('notification', () => {
   }
 
   const syncLlmUnavailableMessage = (llm) => {
-    if (!llm || llm.ready) {
+    if (!llm?.text || llm.text.ready) {
       removeMessagesByKeys([LLM_UNAVAILABLE_MESSAGE_KEY])
       return
     }
     addActionMessage(buildLlmUnavailableMessage(llm, acknowledgedKeys.value.includes(LLM_UNAVAILABLE_MESSAGE_KEY)), { duration: 10000 })
+  }
+
+  const syncRuntimeConfigMessages = (runtime = {}) => {
+    const statuses = Object.entries(runtime).filter(([, status]) => status && (!status.ready || status.level === 'warning'))
+    const active = new Set(statuses.map(([name]) => `${RUNTIME_CONFIG_MESSAGE_PREFIX}${name}`))
+    removeMessagesByKeys(Object.keys(issueStates.value).filter(key => key.startsWith(RUNTIME_CONFIG_MESSAGE_PREFIX) && !active.has(key)))
+    statuses.forEach(([name, status]) => {
+      const key = `${RUNTIME_CONFIG_MESSAGE_PREFIX}${name}`
+      addActionMessage(buildRuntimeConfigMessage(name, status, acknowledgedKeys.value.includes(key)), { duration: 2000 })
+    })
   }
 
   const addSearchFailureMessage = (job) => {
@@ -470,6 +505,7 @@ export const useNotificationStore = defineStore('notification', () => {
     syncPublishConfirmationMessages,
     syncWorkflowActionMessages,
     syncLlmUnavailableMessage,
+    syncRuntimeConfigMessages,
     addSearchFailureMessage,
     addDirectPublishFailureMessage,
     acknowledgeMessage,
