@@ -151,7 +151,13 @@
                     </div>
                     <span>{{ formatDuration(stage.durationSeconds) }}</span>
                     <span>{{ formatModels(stage.models) }}</span>
-                    <span>{{ formatTokenUsage(stage) }}</span>
+                    <div class="stage-token-usage">
+                      <span v-for="usage in stage.modelUsage" :key="usage.model">
+                        <strong>{{ usage.model }}</strong>
+                        {{ formatTokenUsage(usage) }}
+                      </span>
+                      <span v-if="!stage.modelUsage?.length">{{ formatTokenUsage(stage) }}</span>
+                    </div>
                     <span>{{ formatNumber(stage.requestCount) }} 次请求</span>
                   </div>
                 </div>
@@ -162,9 +168,14 @@
                   <el-table-column prop="stageLabel" label="阶段" width="125" />
                   <el-table-column prop="operation" label="操作" min-width="155" />
                   <el-table-column prop="model" label="模型" min-width="145" />
-                  <el-table-column label="状态" width="90">
+                  <el-table-column label="状态 / 原因" min-width="240">
                     <template #default="{ row: requestRow }">
-                      <el-tag size="small" :type="requestStatusType(requestRow.status)">{{ requestStatusText(requestRow.status) }}</el-tag>
+                      <div class="request-status">
+                        <el-tag size="small" :type="requestStatusType(requestRow.status)">{{ requestStatusText(requestRow.status) }}</el-tag>
+                        <el-tooltip v-if="requestFailureReason(requestRow)" :content="requestFailureReason(requestRow)" placement="top" :show-after="250">
+                          <span class="request-status-reason">{{ requestFailureReason(requestRow) }}</span>
+                        </el-tooltip>
+                      </div>
                     </template>
                   </el-table-column>
                   <el-table-column label="输入 / 输出 / 总计" width="180" align="right">
@@ -425,11 +436,15 @@ function taskStatusType(status) {
 }
 
 function requestStatusText(status) {
-  return status === 'success' ? '成功' : status === 'failed' ? '失败' : status || '-'
+  return ({ success: '成功', failed: '失败', contract_failed: '契约校验失败', soft_warning: '校验警告' })[status] || status || '-'
 }
 
 function requestStatusType(status) {
-  return status === 'success' ? 'success' : status === 'failed' ? 'danger' : 'info'
+  return ({ success: 'success', failed: 'danger', contract_failed: 'warning', soft_warning: 'warning' })[status] || 'info'
+}
+
+function requestFailureReason(row) {
+  return String(row?.errorMessage || '').trim()
 }
 
 watch([trend, models], () => nextTick(renderCharts), { deep: true })
@@ -646,7 +661,7 @@ $panel: #ffffff;
 
 .stage-row {
   display: grid;
-  grid-template-columns: 10px minmax(150px, 1.6fr) 100px minmax(130px, 1fr) 165px 100px;
+  grid-template-columns: 10px minmax(150px, 1.6fr) 100px minmax(130px, 1fr) minmax(250px, 1.3fr) 100px;
   align-items: center;
   gap: 10px;
   min-height: 52px;
@@ -682,6 +697,35 @@ $panel: #ffffff;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+.stage-token-usage {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong { color: $ink; font-weight: 600; }
+}
+
+.request-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.request-status-reason {
+  overflow: hidden;
+  color: #b45309;
+  cursor: help;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .table-pagination {
