@@ -48,14 +48,24 @@
     <el-drawer v-model="drawerVisible" title="字幕审查详情" direction="rtl" size="min(920px, 92vw)" append-to-body>
       <template v-if="detailLoading"><div class="detail-loading"><el-icon class="is-loading"><Loading /></el-icon>正在读取完整字幕</div></template>
       <template v-else-if="detail">
+        <span ref="detailTop" class="detail-top-anchor" />
         <div class="detail-meta">
           <div><strong>{{ detail.title }}</strong><span>{{ detail.videoId }} · {{ detail.jobId }}</span></div>
           <el-tag :type="reviewType(detail)">{{ reviewLabel(detail.reviewStatus) }}</el-tag>
         </div>
         <el-alert v-if="reviewNote(detail)" :type="reviewType(detail)" :closable="false" show-icon :title="reviewNote(detail)" />
+        <div v-if="retriedBatches.length || fallbackBatches.length" class="issue-jump">
+          <el-tooltip content="回到详情顶部" placement="bottom">
+            <el-button class="issue-jump-top" size="small" circle plain :icon="Top" aria-label="回到详情顶部" @click="scrollToDetailTop" />
+          </el-tooltip>
+          <span class="issue-jump-label">问题定位</span>
+          <span class="issue-jump-divider" aria-hidden="true" />
+          <el-button v-if="retriedBatches.length" size="small" type="warning" plain :icon="WarningFilled" @click="jumpToBatch('retried')">首次失败后重试成功 {{ retriedBatches.length }}</el-button>
+          <el-button v-if="fallbackBatches.length" size="small" type="danger" plain :icon="CircleCloseFilled" @click="jumpToBatch('fallback')">回退初译 {{ fallbackBatches.length }}</el-button>
+        </div>
         <el-tabs v-model="activeTab">
           <el-tab-pane label="字幕对照" name="subtitles">
-            <section v-for="batch in reviewBatches" :key="batch.key" class="review-batch" :class="{ 'is-fallback': batchState(batch) === 'fallback', 'is-retried': batchState(batch) === 'retried' }">
+            <section v-for="batch in reviewBatches" :id="`review-batch-${batch.key}`" :key="batch.key" class="review-batch" :class="{ 'is-fallback': batchState(batch) === 'fallback', 'is-retried': batchState(batch) === 'retried' }">
               <div class="batch-heading">
                 <div><strong>第 {{ batch.number }} 批</strong><span>{{ batch.range }} · {{ batch.items.length }} 段</span></div>
                 <el-tag size="small" :type="batchTagType(batch)">{{ batchLabel(batch) }}</el-tag>
@@ -85,14 +95,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Download, Loading, Refresh, Search } from '@element-plus/icons-vue'
+import { CircleCloseFilled, Delete, Download, Loading, Refresh, Search, Top, WarningFilled } from '@element-plus/icons-vue'
 import { subtitleAuditApi } from '@/api/subtitleAudit'
 
 const loading = ref(false); const detailLoading = ref(false); const items = ref([]); const total = ref(0)
 const page = ref(1); const pageSize = 20; const filters = ref({ keyword: '', status: '' })
-const drawerVisible = ref(false); const detail = ref(null); const activeTab = ref('subtitles')
+const drawerVisible = ref(false); const detail = ref(null); const detailTop = ref(null); const activeTab = ref('subtitles')
 const auditTable = ref(null); const selectedRows = ref([]); const exporting = ref(false); const deleting = ref(false)
 const loadList = async () => { loading.value = true; try { const res = await subtitleAuditApi.list({ ...filters.value, page: page.value, pageSize }); const data = res?.data || {}; items.value = data.items || []; total.value = data.total || 0; selectedRows.value = []; auditTable.value?.clearSelection() } catch (error) { ElMessage.error(error?.message || '读取审查记录失败') } finally { loading.value = false } }
 const search = () => { page.value = 1; loadList() }
@@ -119,6 +129,18 @@ const reviewBatches = computed(() => {
     return { ...batch, indexes, items, key: `${batch.number}-${batchIndex}`, range: items.length ? `${formatRange(items[0].initial).split(' - ')[0]} - ${formatRange(items[items.length - 1].initial).split(' - ')[1]}` : '时间未知' }
   })
 })
+const retriedBatches = computed(() => reviewBatches.value.filter(batch => batchState(batch) === 'retried'))
+const fallbackBatches = computed(() => reviewBatches.value.filter(batch => batchState(batch) === 'fallback'))
+const jumpPositions = { retried: 0, fallback: 0 }
+const scrollToDetailTop = () => detailTop.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+const jumpToBatch = async state => {
+  const batches = state === 'retried' ? retriedBatches.value : fallbackBatches.value
+  if (!batches.length) return
+  activeTab.value = 'subtitles'; await nextTick()
+  const index = jumpPositions[state] % batches.length; jumpPositions[state] += 1
+  const batch = batches[index]; document.getElementById(`review-batch-${batch.key}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  ElMessage.info(`已定位第 ${batch.number} 批（${index + 1}/${batches.length}）`)
+}
 const formatJson = value => { try { return JSON.stringify(JSON.parse(value), null, 2) } catch (_) { return value || '—' } }
 const jobLabel = value => ({ success: '成功', failed: '失败', processing: '处理中', waiting_confirmation: '待确认' }[value] || value || '—')
 const jobType = value => ({ success: 'success', failed: 'danger', processing: 'warning', waiting_confirmation: 'warning' }[value] || 'info')
@@ -177,7 +199,8 @@ onMounted(loadList)
 .subtitle-audit { max-width: 1440px; margin: 0 auto; }
 .audit-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:4px 0 18px; } .kicker { color:#0f9f8f; font-size:11px; font-weight:700; } h1 { margin:4px 0 6px; font-size:22px; } .audit-heading p,.muted,.detail-meta span { color:$text-secondary; font-size:12px; } .audit-filters { display:flex; gap:10px; margin-bottom:14px; } .audit-filters .el-input { max-width:380px; } .audit-filters .el-select { width:150px; }
 .audit-table-wrap { overflow:hidden; border:1px solid $border-light; border-radius:8px; background:#fff; } .title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .muted { display:block; margin-top:5px; } .pager { display:flex; justify-content:flex-end; padding:12px 16px; border-top:1px solid $border-lighter; }
-.detail-loading { display:flex; align-items:center; gap:8px; color:$text-secondary; } .detail-meta { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; } .detail-meta div { display:grid; gap:4px; min-width:0; } .detail-meta strong,.detail-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.detail-loading { display:flex; align-items:center; gap:8px; color:$text-secondary; } .detail-top-anchor { display:block; height:0; } .detail-meta { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; } .detail-meta div { display:grid; gap:4px; min-width:0; } .detail-meta strong,.detail-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.issue-jump { position:sticky; top:0; z-index:2; display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:12px 0 4px; padding:8px 10px; border:1px solid #dfe7ef; border-radius:6px; box-shadow:0 5px 14px rgba(15, 23, 42, .08); background:rgba(255, 255, 255, .97); color:$text-secondary; font-size:12px; } .issue-jump-top { color:#475569; } .issue-jump-label { color:$text-regular; font-weight:700; } .issue-jump-divider { width:1px; height:20px; margin:0 2px; background:#dfe7ef; }
 .review-batch { margin-bottom:12px; border:1px solid $border-light; border-radius:8px; overflow:hidden; } .review-batch.is-retried { border-color:#f0b429; background:#fffdf4; } .review-batch.is-fallback { border-color:#f2b8b5; background:#fffafa; } .batch-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; background:#f5f8fc; } .is-retried .batch-heading { background:#fff7d6; } .is-fallback .batch-heading { background:#fff1f0; } .batch-heading div { display:flex; align-items:baseline; gap:8px; min-width:0; } .batch-heading span { color:$text-secondary; font-size:12px; } .review-batch :deep(.el-alert) { margin:10px 12px 0; } .batch-columns,.batch-segment { display:grid; grid-template-columns:125px minmax(0, 1fr) minmax(0, 1fr); gap:16px; } .batch-columns { padding:10px 12px; color:$text-secondary; font-size:12px; } .batch-columns span:first-child { grid-column:2; } .batch-segment { padding:12px; border-top:1px solid $border-lighter; line-height:1.65; font-size:13px; } .batch-segment time { color:$text-secondary; font-variant-numeric:tabular-nums; } .batch-segment p { margin:0 0 7px; white-space:pre-wrap; } .batch-segment .source { color:$text-regular; }
 .diagnostic { padding:14px 0; border-bottom:1px solid $border-lighter; } .diagnostic-meta { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; } .diagnostic-meta span,.diagnostic-stats { color:$text-secondary; font-size:12px; } .violations { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; } pre { max-height:360px; overflow:auto; margin:10px 0 0; padding:12px; border-radius:6px; background:#101828; color:#d0d5dd; font-size:12px; line-height:1.55; white-space:pre-wrap; }
 @media (max-width: 760px) { .audit-heading,.audit-filters { align-items:stretch; flex-direction:column; } .audit-filters .el-input,.audit-filters .el-select { max-width:none; width:100%; } .batch-columns { display:none; } .batch-segment { grid-template-columns:1fr; gap:8px; } }
