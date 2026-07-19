@@ -20,6 +20,8 @@ def _resolve_ffmpeg_command():
 
 
 def video_encode_args(burn_config):
+    from app.core.runtime_config import ensure_video_encoder_ready
+    ensure_video_encoder_ready()
     if VIDEO_ENCODER == "h264_nvenc":
         return [
             "-c:v", "h264_nvenc", "-preset", VIDEO_NVENC_PRESET,

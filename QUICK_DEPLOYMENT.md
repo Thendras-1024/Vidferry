@@ -80,6 +80,16 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+### NVIDIA GPU Whisper（可选）
+
+默认的 `cpu / int8` 配置不需要 CUDA。需要使用 `WHISPER_DEVICE=cuda` 时，在完成上述环境安装后执行：
+
+```powershell
+conda env update -n vidferry -f environment.gpu-win.yml
+```
+
+该环境文件会把 CUDA 12 的 cuBLAS、cuDNN 运行库安装到 `vidferry` 环境，避免依赖系统 PATH。缺少 GPU 运行库时，字幕任务会被阻断，并在右上角消息中给出修复指引；也可将 `WHISPER_DEVICE` 改为 `cpu` 后重启后端。
+
 后端运行、CLI、视频下载/处理和平台自动化发布都需要在 `vidferry` 环境中执行。`pip install -e .` 会以开发模式安装项目并注册 `sau` 命令。
 
 Linux/macOS 上如 `requirements.txt` 存在平台兼容性问题，可优先使用：
@@ -139,15 +149,15 @@ YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
 # YTDLP_REMOTE_COMPONENTS=ejs:github
 
 # 可选：内容分析和发布文案生成（由用户提供真实值）
-# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# LLM_API_KEY=sk-your-key
-# LLM_MODEL=qwen-plus
+# TEXT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# TEXT_LLM_API_KEY=sk-your-key
+# TEXT_LLM_MODEL=qwen-plus
+# MULTIMODAL_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# MULTIMODAL_LLM_API_KEY=sk-your-key
+# MULTIMODAL_LLM_MODEL=qwen-vl-max
 # LLM_TIMEOUT=90
 # LLM_MAX_TRANSCRIPT_CHARS=28000
 
-# 可选：Agent 文本模型和视觉审核模型
-# AGENT_CHAT_MODEL=qwen3.6-27b
-# AGENT_VISION_MODEL=your-vision-model
 
 # 可选：Whisper 转写模型下载和缓存
 # HF_HOME=./models/huggingface

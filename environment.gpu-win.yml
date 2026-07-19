@@ -1,0 +1,9 @@
+name: vidferry
+channels:
+  - nvidia
+  - conda-forge
+dependencies:
+  # CUDA 12 runtime libraries required by CTranslate2/faster-whisper on Windows.
+  - cuda-cudart=12
+  - libcublas=12
+  - cudnn=9

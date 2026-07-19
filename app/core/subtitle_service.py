@@ -40,7 +40,7 @@ def _watermark_text(job):
 
 
 def _watermark_burns_with_subtitles(job):
-    return _watermark_enabled(job) and _normalize_process_version(job.get("processVersion")) != PROCESS_VERSION_EDITING
+    return _watermark_enabled(job)
 
 
 def _subtitle_stage_log(level, message, *args):
@@ -127,6 +127,29 @@ def _get_video_info(media_file):
     }
 
 
+def _asr_failure_kind(exc):
+    text = str(exc or "").lower()
+    if "huggingface" in text or "hfhub" in text or "localentrynotfound" in text:
+        return "WHISPER_MODEL_DOWNLOAD_FAILED"
+    if "cublas64_12.dll" in text:
+        return "CUDA_CUBLAS_12_MISSING"
+    if "cudnn" in text and ("not found" in text or "cannot be loaded" in text):
+        return "CUDA_CUDNN_MISSING"
+    return exc.__class__.__name__
+
+
+def _whisper_transcribe(model_size, device, compute_type, audio_file):
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    return model.transcribe(
+        str(audio_file),
+        beam_size=5,
+        vad_filter=True,
+        word_timestamps=True,
+    )
+
+
 def _transcribe_audio(audio_file, progress_callback=None):
     try:
         from faster_whisper import WhisperModel
@@ -138,16 +161,12 @@ def _transcribe_audio(audio_file, progress_callback=None):
     compute_type = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
     if progress_callback:
         progress_callback(f"正在加载 Whisper {model_size} 模型（{device} / {compute_type}）")
+    from app.core.runtime_config import ensure_whisper_runtime_ready
+    ensure_whisper_runtime_ready()
     try:
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        segments, info = model.transcribe(
-            str(audio_file),
-            beam_size=5,
-            vad_filter=True,
-            word_timestamps=True,
-        )
+        segments, info = _whisper_transcribe(model_size, device, compute_type, audio_file)
     except Exception as exc:
-        raise RuntimeError(f"ASR_TRANSCRIPTION_FAILED: {exc.__class__.__name__}") from exc
+        raise RuntimeError(f"ASR_TRANSCRIPTION_FAILED:{_asr_failure_kind(exc)}") from exc
     result = []
     last_progress_at = 0.0
     try:
@@ -186,7 +205,7 @@ def _transcribe_audio(audio_file, progress_callback=None):
                 last_progress_at = time.time()
                 progress_callback(f"正在进行语音识别，已识别 {len(result)} 段字幕")
     except Exception as exc:
-        raise RuntimeError(f"ASR_TRANSCRIPTION_FAILED: {exc.__class__.__name__}") from exc
+        raise RuntimeError(f"ASR_TRANSCRIPTION_FAILED:{_asr_failure_kind(exc)}") from exc
     if not result:
         raise NoSpeechDetectedError("未检测到可识别人声，已跳过字幕处理。")
     return result, getattr(info, "language", "")
@@ -780,7 +799,7 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     english_floor = 40 if is_vertical else 34
     info_floor = 36 if is_vertical else 30
     english_font_size = int(max(english_floor, min(82, int(short_side * 0.052))) * font_scale)
-    info_font_size = int(max(info_floor, min(72, int(short_side * 0.060))) * min(font_scale, 1.14))
+    info_font_size = int(max(info_floor, min(46, int(short_side * 0.042))))
     horizontal_margin = layout["horizontalMargin"]
     subtitle_margin_v = max(92 if is_vertical else 78, int(height * (0.092 if is_vertical else 0.086)))
     english_margin_v = max(34, int(subtitle_margin_v - english_font_size * 1.38))
@@ -826,7 +845,7 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
                 text = _escape_ass_text(subtitle_text)
                 if text:
                     dialogue_lines.append(f"Dialogue: 1,{start},{end},Subtitle,,0,0,0,,{text}")
-    if _watermark_enabled(job) and (not include_subtitles or _watermark_burns_with_subtitles(job)):
+    if _watermark_enabled(job):
         dialogue_lines.append(
             f"Dialogue: 2,{_format_ass_timestamp(0)},{_format_ass_timestamp(max(0.1, audio_duration or 0.1))},Watermark,,0,0,0,,{_escape_ass_text(_watermark_text(job))}"
         )
@@ -1125,7 +1144,6 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
                 previous_output_file.replace(output_file)
             raise
         if _watermark_burns_with_subtitles(job):
-            _update_translate_progress(job_id, 92, "自定义字幕处理完成，正在烧录水印")
             _apply_watermark_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, "自定义字幕处理完成，正在保存结果")
         return {"path": output_file, "skipped": False}
@@ -1138,7 +1156,6 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
     except NoSpeechDetectedError as exc:
         _replace_file_with_backup(source_file, output_file)
         if _watermark_burns_with_subtitles(job):
-            _update_translate_progress(job_id, 92, "未检测到人声，正在烧录水印")
             _apply_watermark_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, str(exc))
         return {"path": output_file, "skipped": True}

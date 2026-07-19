@@ -3,7 +3,6 @@
 from app.config import (
     AGENT_BLOCK_LEVEL,
     AGENT_CHAT_MAX_TOKENS,
-    AGENT_CHAT_MODEL,
     AGENT_CHAT_TEMPERATURE,
     AGENT_ENABLED,
     AGENT_FRAME_MAX_COUNT,
@@ -16,16 +15,20 @@ from app.config import (
     AGENT_REQUIRE_PREPUBLISH_CHECK,
     AGENT_REQUIRE_VISION_CHECK,
     AGENT_VISION_FAIL_CLOSED,
-    AGENT_VISION_MODEL,
+    MULTIMODAL_LLM_API_KEY,
+    MULTIMODAL_LLM_BASE_URL,
+    MULTIMODAL_LLM_MODEL,
+    TEXT_LLM_MODEL,
     get_llm_config_status,
 )
+from app.core.runtime_config import get_runtime_config_status
 
 
 def _agent_status_payload():
     return {
         "enabled": AGENT_ENABLED,
-        "chatModel": AGENT_CHAT_MODEL,
-        "visionModelConfigured": bool(AGENT_VISION_MODEL),
+        "textModel": TEXT_LLM_MODEL,
+        "multimodalModelConfigured": bool(MULTIMODAL_LLM_API_KEY and MULTIMODAL_LLM_BASE_URL and MULTIMODAL_LLM_MODEL),
         "requirePrepublishCheck": AGENT_REQUIRE_PREPUBLISH_CHECK,
         "blockLevel": AGENT_BLOCK_LEVEL,
         "maxToolRows": AGENT_MAX_TOOL_ROWS,
@@ -48,6 +51,7 @@ def runtime_config_status():
         "code": 200,
         "data": {
             "llm": get_llm_config_status(),
+            "runtime": get_runtime_config_status(),
             "agent": _agent_status_payload(),
         },
     })

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.utils.ffmpeg_util import video_encode_args
+
 
 COVER_EXTENSIONS = (".webp", ".jpg", ".jpeg", ".png")
 DEFAULT_COVER_SIGNATURE = "Vidferry"
@@ -211,7 +213,7 @@ def _cover_text_width(text, font_size):
     return int(units * float(font_size) * 0.78)
 
 
-def write_cover_ass(ass_file, width, height, duration, cover_title, layout, signature=DEFAULT_COVER_SIGNATURE):
+def write_cover_ass(ass_file, width, height, duration, cover_title, layout, signature=DEFAULT_COVER_SIGNATURE, watermark_text=""):
     ass_file = Path(ass_file)
     lines = normalize_cover_title(cover_title).splitlines()
     if not lines:
@@ -239,6 +241,10 @@ def write_cover_ass(ass_file, width, height, duration, cover_title, layout, sign
     signature_half_width = _cover_text_width(signature, info_size) // 2
     signature_x = max(signature_half_width + 24, min(width - signature_half_width - 24, title_right))
     signature_y = max(info_size + 24, first_y - int(font_size * 0.30))
+    watermark_text = _ass_text(watermark_text)
+    watermark_size = max(20, min(54, int(min(width, height) * 0.032)))
+    watermark_margin = max(20, int(width * 0.042))
+    watermark_margin_v = max(40, int(height * 0.070))
 
     content = [
         "[Script Info]",
@@ -253,6 +259,7 @@ def write_cover_ass(ass_file, width, height, duration, cover_title, layout, sign
         f"Style: CoverPrimary,Microsoft YaHei,{font_size},{primary},&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{outline},2.6,5,0,0,0,1",
         f"Style: CoverSecondary,Microsoft YaHei,{font_size},{secondary},&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{outline},2.6,5,0,0,0,1",
         f"Style: CoverSignature,Microsoft YaHei,{info_size},&H00F5F5F5,&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,1.5,1.4,4,0,0,0,1",
+        f"Style: Watermark,Microsoft YaHei,{watermark_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,0,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -261,6 +268,8 @@ def write_cover_ass(ass_file, width, height, duration, cover_title, layout, sign
     if lines[1]:
         content.append(f"Dialogue: 2,0:00:00.00,{end},CoverSecondary,,0,0,0,,{{\\an{ass_alignment}\\pos({x},{second_y})}}{_ass_text(lines[1])}")
     content.append(f"Dialogue: 3,0:00:00.00,{end},CoverSignature,,0,0,0,,{{\\an2\\pos({signature_x},{signature_y})}}{_ass_text(signature)}")
+    if watermark_text:
+        content.append(f"Dialogue: 4,0:00:00.00,{end},Watermark,,0,0,0,,{watermark_text}")
     ass_file.write_text("\n".join(content), encoding="utf-8")
     return ass_file
 

@@ -11,7 +11,8 @@ requires-python = ">=3.10,<3.13"
 dependencies = [
   "loguru==0.7.3",
   "deep-translator>=1.11.4",
-  "faster-whisper>=1.1.1",
+  "faster-whisper==1.2.1",
+  "ctranslate2==4.8.1",
   "imageio-ffmpeg>=0.5.1",
   "opencv-python>=4.13.0.92",
   "patchright==1.58.2",
