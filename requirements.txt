@@ -35,6 +35,9 @@ playwright>=1.53.0
 langgraph==1.2.8
 langgraph-checkpoint-sqlite==3.1.0
 
+# Feishu long-connection robot
+lark-oapi==1.7.1
+
 # QR code and platform helper libraries
 qrcode==8.2
 segno>=1.6.6

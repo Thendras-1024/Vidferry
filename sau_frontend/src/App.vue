@@ -726,6 +726,10 @@ const handleAgentInputKeydown = (event) => {
 }
 
 const confirmAgentAction = async (action) => {
+  if (action?.type === 'ask' && action.message) {
+    await sendAgentMessage(action.message, { selectedAgentAction: action.label || '' })
+    return
+  }
   if (action?.type !== 'navigate' || !['/youtube-research', '/account-management'].includes(action.path)) return
   try {
     await ElMessageBox.confirm(`将打开“${action.label}”。`, '确认查看', { confirmButtonText: '打开', cancelButtonText: '取消', type: 'info' })

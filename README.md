@@ -107,6 +107,7 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 app/                 后端 API、核心业务、数据库、任务和工具模块
 sau_backend.py       兼容入口，负责加载模块化后端
 run.py               后端正式启动入口
+run_feishu_robot.py  飞书机器人启动入口
 sau_frontend/        Vue 3 + Vite 前端
 uploader/            各平台上传适配器
 myUtils/             账号、登录和历史工具函数
@@ -200,6 +201,34 @@ MULTIMODAL_LLM_MODEL=qwen-vl-max
 ```
 
 文本模型用于内容分析、字幕修订、文案生成和 Agent；多模态模型用于关键帧审核。多模态模型未配置时，默认策略会阻止发布，避免绕过关键帧审核；内部的抽帧数量、风险阈值和模型参数由程序统一维护，不需要写入 `.env`。
+
+### 飞书远程 Agent
+
+项目可通过飞书自建应用机器人远程调用现有 Vidferry Agent。本机通过飞书长连接接收消息，不需要开放公网 HTTP 端口。
+
+前提：在飞书开放平台创建并发布自建应用，启用机器人能力，订阅 `im.message.receive_v1` 事件并选择长连接接收方式。安装项目依赖时会一并安装 `lark-oapi==1.7.1`。
+
+在本机 `.env` 中配置应用凭据，真实 Secret 不得提交：
+
+```env
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_ALLOWED_OPEN_IDS=ou_xxx
+```
+
+现有本地配置使用 `appID` 和 `App_Secret` 时，机器人启动脚本也会识别；新配置推荐使用上述 `FEISHU_*` 名称。
+
+首次取得自己的 Open ID 时，可以临时将 `FEISHU_ALLOWED_OPEN_IDS` 留空并启动机器人。所有消息仍会被拒绝，终端会仅记录发送者 Open ID；将该 `ou_xxx` 填入白名单并重启后，消息才会进入 Agent。
+通过下方启动脚本运行时，机器人日志会同时写入 `logs/feishu_robot.log`。
+
+```powershell
+conda activate vidferry
+python run_feishu_robot.py
+```
+
+机器人只处理白名单用户的单聊文本。每个用户对应独立的 Agent 会话；机器人先确认收到，再在后台调用 Agent，并以飞书卡片回传最终回答和结构化工具摘要，不发送原始 JSON。项目目录中的 PNG、JPEG、WebP、GIF 工具结果可以作为飞书图片发送，视频文件永不上传或发送。下载、处理、配置修改和发布等写操作尚未接入机器人。
+
+机器人只通过上述独立脚本启动，不会随 `python run.py` 自动运行。每个飞书应用同一时刻只应启动一个机器人进程。
 
 ### 7. 发布中心发布
 
@@ -395,6 +424,7 @@ sau_frontend/node_modules/
 - LLM API Key 不要写入前端代码或提交记录。
 - 发布、删除、下载接口都应只在可信本地环境使用。
 - 当前版本没有多用户权限系统，不建议暴露到公网。
+- 飞书 App Secret 只保存在本机 `.env`；机器人只允许 `FEISHU_ALLOWED_OPEN_IDS` 中的用户调用 Agent。
 
 ## 项目状态
 
@@ -413,6 +443,10 @@ Vidferry 基于并参考了以下开源项目和工具：
 - deep-translator
 - patchright / Playwright
 - biliup
+
+### 飞书项目管家
+
+飞书机器人支持“现在有什么要处理”“为什么失败”“账号是否正常”“下一步怎么做”等只读项目管家查询，不会主动发送提醒。完整配置和验收见 [项目管家说明](docs/PROJECT_BUTLER.md)。
 
 ## License
 
