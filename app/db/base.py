@@ -1,66 +1,111 @@
-"""数据库连接与通用 SQL 辅助函数。"""
+"""PostgreSQL connections shared by the application runtime."""
 
-import datetime
-import sqlite3
 import threading
 from contextlib import contextmanager
-from pathlib import Path
 
-from app.config import BASE_DIR, SQLITE_BUSY_TIMEOUT_MS, SQLITE_ENABLE_WAL
+from app.config import (
+    DATABASE_POOL_MAX_SIZE,
+    DATABASE_POOL_MIN_SIZE,
+    DATABASE_POOL_TIMEOUT_SECONDS,
+    DATABASE_URL,
+)
+from app.db.postgres_compat import HybridRow, normalize_postgres_params, normalize_postgres_sql
 
 try:
     import psycopg
-except ImportError:  # PostgreSQL 是可选运行时依赖。
+    from psycopg.rows import tuple_row
+    from psycopg_pool import ConnectionPool
+except ImportError:
     psycopg = None
+    ConnectionPool = None
 
 
-DATABASE_INTEGRITY_ERRORS = (sqlite3.IntegrityError,) + ((psycopg.IntegrityError,) if psycopg else ())
+DATABASE_INTEGRITY_ERRORS = (psycopg.IntegrityError,) if psycopg else ()
+_database_pool = None
+_database_pool_lock = threading.Lock()
 
 
 def close_database_pool():
-    """关闭 PostgreSQL 连接池的兼容入口。
-
-    当前 SQLite 默认路径按请求创建连接，无需额外释放资源。
-    """
-    return None
-
-
-_wal_configured_paths = set()
-_wal_configured_paths_lock = threading.Lock()
+    global _database_pool
+    with _database_pool_lock:
+        if _database_pool is not None:
+            _database_pool.close()
+            _database_pool = None
 
 
-def _db_path():
-    return Path(BASE_DIR / "db" / "database.db")
+def _postgres_pool():
+    global _database_pool
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL must be configured for PostgreSQL")
+    if not psycopg or not ConnectionPool:
+        raise RuntimeError("psycopg is not installed")
+    with _database_pool_lock:
+        if _database_pool is None:
+            _database_pool = ConnectionPool(
+                conninfo=DATABASE_URL,
+                min_size=DATABASE_POOL_MIN_SIZE,
+                max_size=DATABASE_POOL_MAX_SIZE,
+                timeout=DATABASE_POOL_TIMEOUT_SECONDS,
+                kwargs={"row_factory": tuple_row},
+            )
+        return _database_pool
 
 
-def _local_timestamp():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+class _PostgresCursor:
+    def __init__(self, cursor, row_factory):
+        self._cursor = cursor
+        self._row_factory = row_factory
+
+    def execute(self, sql, params=None):
+        self._cursor.execute(normalize_postgres_sql(sql), normalize_postgres_params(sql, params or ()))
+        return self
+
+    def executemany(self, sql, params_seq):
+        self._cursor.executemany(normalize_postgres_sql(sql), params_seq)
+        return self
+
+    def _row(self, value):
+        if value is None or not self._row_factory:
+            return value
+        return HybridRow([item.name for item in self._cursor.description], value)
+
+    def fetchone(self):
+        return self._row(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._row(value) for value in self._cursor.fetchall()]
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
 
 
-def _connect_database(db_path, *, row_factory=False):
-    Path(BASE_DIR / "db").mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=max(1, SQLITE_BUSY_TIMEOUT_MS) / 1000)
-    conn.create_function("current_timestamp", 0, _local_timestamp)
-    conn.execute(f"PRAGMA busy_timeout = {max(1, SQLITE_BUSY_TIMEOUT_MS)}")
-    conn.execute("PRAGMA foreign_keys = ON")
-    if SQLITE_ENABLE_WAL:
-        database_key = str(Path(db_path).resolve())
-        if database_key not in _wal_configured_paths:
-            with _wal_configured_paths_lock:
-                if database_key not in _wal_configured_paths:
-                    conn.execute("PRAGMA journal_mode = WAL")
-                    _wal_configured_paths.add(database_key)
-        conn.execute("PRAGMA synchronous = NORMAL")
-    if row_factory:
-        conn.row_factory = sqlite3.Row
-    return conn
+class _PostgresConnection:
+    def __init__(self, connection, row_factory):
+        self._connection = connection
+        self.row_factory = row_factory
+
+    def cursor(self):
+        return _PostgresCursor(self._connection.cursor(), self.row_factory)
+
+    def execute(self, sql, params=None):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
 
 
 @contextmanager
 def _db_connect(*, row_factory=False):
-    conn = _connect_database(_db_path(), row_factory=row_factory)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    with _postgres_pool().connection() as raw_connection:
+        try:
+            yield _PostgresConnection(raw_connection, row_factory)
+            raw_connection.commit()
+        except Exception:
+            raw_connection.rollback()
+            raise

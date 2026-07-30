@@ -3,7 +3,6 @@
 
 import asyncio
 import base64
-import sqlite3
 
 from playwright.async_api import async_playwright
 
@@ -12,6 +11,7 @@ from utils.base_social_media import set_init_script
 import uuid
 from pathlib import Path
 from conf import BASE_DIR, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
+from app.db.base import _db_connect
 
 # 统一获取浏览器启动配置（防风控+引入本地浏览器）
 def get_browser_options():
@@ -57,7 +57,7 @@ async def send_qr_from_locator(locator, status_queue):
     return data_url
 
 def save_login_account(platform_type, cookie_file, user_name, status_queue, account_id=None):
-    with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+    with _db_connect() as conn:
         cursor = conn.cursor()
         old_cookie_file = None
 

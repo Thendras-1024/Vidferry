@@ -70,10 +70,10 @@ def create_youtube_video_group(name):
             cursor = conn.cursor()
             cursor.execute("BEGIN IMMEDIATE")
             cursor.execute(
-                "INSERT INTO youtube_video_groups (name, is_default) VALUES (?, 0)",
+                "INSERT INTO youtube_video_groups (name, is_default) VALUES (?, 0) RETURNING id",
                 (normalized_name,),
             )
-            group_id = cursor.lastrowid
+            group_id = cursor.fetchone()[0]
             cursor.execute("SELECT *, 0 AS video_count FROM youtube_video_groups WHERE id = ?", (group_id,))
             return _row_to_youtube_video_group(cursor.fetchone())
     except DATABASE_INTEGRITY_ERRORS as exc:

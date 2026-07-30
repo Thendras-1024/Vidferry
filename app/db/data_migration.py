@@ -81,6 +81,11 @@ def _schema_statements(conn):
     return {name: normalize_postgres_sql(sql) for name, sql in rows}
 
 
+def _index_statements(conn):
+    rows = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL").fetchall()
+    return [normalize_postgres_sql(sql) for (sql,) in rows]
+
+
 def migrate_sqlite_to_postgres(sqlite_path, database_url):
     """将已备份的 SQLite 文件复制到空 PostgreSQL 数据库，不修改源文件。"""
     import psycopg
@@ -89,12 +94,20 @@ def migrate_sqlite_to_postgres(sqlite_path, database_url):
     report = {"source": str(source), "tables": {}, "sourceSha256": _file_digest(source)}
     with sqlite3.connect(source) as sqlite_conn, psycopg.connect(database_url) as pg_conn:
         with pg_conn.cursor() as cursor:
-            for table, ddl in _schema_statements(sqlite_conn).items():
-                if table not in LOCK_TABLES:
-                    cursor.execute(ddl)
-            pg_conn.commit()
-            for table in TABLE_ORDER:
-                if table in LOCK_TABLES or table not in _schema_statements(sqlite_conn):
+            existing = cursor.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+            ).fetchall()
+            if existing:
+                raise RuntimeError("PostgreSQL target database must be empty before migration")
+            schemas = _schema_statements(sqlite_conn)
+            for ddl in schemas.values():
+                cursor.execute(ddl)
+            for statement in _index_statements(sqlite_conn):
+                cursor.execute(statement)
+            ordered_tables = [table for table in TABLE_ORDER if table in schemas and table not in LOCK_TABLES]
+            ordered_tables.extend(sorted(set(schemas) - set(ordered_tables) - LOCK_TABLES))
+            for table in ordered_tables:
+                if table not in schemas:
                     continue
                 rows = sqlite_conn.execute(f'SELECT * FROM "{table}"').fetchall()
                 if rows:
@@ -102,5 +115,11 @@ def migrate_sqlite_to_postgres(sqlite_path, database_url):
                     placeholders = ", ".join(["%s"] * len(columns))
                     cursor.executemany(f'INSERT INTO "{table}" ({", ".join(columns)}) VALUES ({placeholders})', rows)
                 report["tables"][table] = {"rows": len(rows), "sha256": _rows_hash(rows)}
+                columns = list(sqlite_conn.execute(f'PRAGMA table_info("{table}")'))
+                id_column = next((item for item in columns if item[1] == "id"), None)
+                if id_column and "INT" in str(id_column[2]).upper():
+                    cursor.execute(
+                        f"SELECT setval(pg_get_serial_sequence('public.{table}', 'id'), COALESCE((SELECT MAX(id) FROM \"{table}\"), 1), true)"
+                    )
             pg_conn.commit()
     return report

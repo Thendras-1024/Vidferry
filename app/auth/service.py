@@ -110,13 +110,13 @@ def create_user(username, display_name, password, role="user", *, created_by=Non
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO auth_users
-                   (username, display_name, password_hash, role, status, must_change_password,
+                    (username, display_name, password_hash, role, status, must_change_password,
                     password_changed_at, created_by, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?) RETURNING id""",
                 (username, display_name, password_hash, role, int(bool(must_change_password)),
                  now, created_by, now, now),
             )
-            user_id = cursor.lastrowid
+            user_id = cursor.fetchone()[0]
             row = cursor.execute("SELECT * FROM auth_users WHERE id = ?", (user_id,)).fetchone()
     except DATABASE_INTEGRITY_ERRORS as exc:
         raise AuthError("用户名已存在", 409, "USERNAME_EXISTS") from exc

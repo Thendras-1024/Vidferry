@@ -13,6 +13,8 @@ node --version
 npm --version
 git --version
 ffmpeg -version
+docker --version
+docker compose version
 
 $chromePaths = @(
   "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -55,6 +57,9 @@ winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-a
 
 # Google Chrome
 winget install --id Google.Chrome -e --accept-package-agreements --accept-source-agreements
+
+# Docker Desktop (PostgreSQL local runtime)
+winget install --id Docker.DockerDesktop -e --accept-package-agreements --accept-source-agreements
 ```
 
 安装完成后，重新打开 PowerShell，必要时执行 `conda init powershell` 并再次打开终端，然后重复本节的检查命令。若 `winget` 不可用或某个包安装失败，向用户说明缺少的工具和失败原因，并打开其官方安装渠道协助完成安装；安装后仍须验证版本和命令可用性。
@@ -168,6 +173,27 @@ WHISPER_COMPUTE_TYPE=int8
 ```
 
 仅在需要配置 Chrome、FFmpeg、LLM 或 yt-dlp JS runtime 时，读取仓库根目录的 [CONFIGURATION.md](CONFIGURATION.md)。
+
+## 4.0 初始化 PostgreSQL
+
+PostgreSQL is the only runtime database. For a new `.env`, generate local credentials, start the bundled database service, and wait for it to become ready:
+
+```powershell
+if (-not (Select-String -Path .env -Pattern '^POSTGRES_PASSWORD=\S' -Quiet)) {
+  $postgresPassword = conda run -n vidferry python -c "import secrets; print(secrets.token_urlsafe(32))"
+  Add-Content .env "POSTGRES_PASSWORD=$postgresPassword"
+}
+if (-not (Select-String -Path .env -Pattern '^POSTGRES_DB=\S' -Quiet)) { Add-Content .env 'POSTGRES_DB=vidferry' }
+if (-not (Select-String -Path .env -Pattern '^POSTGRES_USER=\S' -Quiet)) { Add-Content .env 'POSTGRES_USER=vidferry' }
+if (-not (Select-String -Path .env -Pattern '^DATABASE_URL=\S' -Quiet)) {
+  $postgresPassword = (Select-String -Path .env -Pattern '^POSTGRES_PASSWORD=(.+)$').Matches[0].Groups[1].Value
+  Add-Content .env "DATABASE_URL=postgresql://vidferry:$postgresPassword@127.0.0.1:5432/vidferry"
+}
+docker compose --env-file .env -f docker-compose.postgres.yml up -d
+docker compose --env-file .env -f docker-compose.postgres.yml exec -T postgres pg_isready -U vidferry -d vidferry
+```
+
+When Docker is installed but its daemon is not running, ask the user to start Docker Desktop before retrying. Do not print, commit, or upload generated credentials.
 
 ## 4.1 初始化认证
 

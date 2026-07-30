@@ -931,7 +931,7 @@ def _archive_published_material(
         source_published_at, publish_title, metadata, published_at,
         publish_task_id, status, message, duration_ms, account_name, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
     ''', (
         video_id,
         source_url,
@@ -958,7 +958,7 @@ def _archive_published_material(
         account_name or "",
         published_at,
     ))
-    return cursor.lastrowid
+    return cursor.fetchone()[0]
 
 
 def _list_processed_versions_for_video(cursor, video_id):
@@ -1037,6 +1037,7 @@ def register_material(
             storage_backend, source_type, source_video_id, status, duration, duration_seconds, metadata
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
         ''', (
             asset_id,
             source_path.name,
@@ -1053,7 +1054,8 @@ def register_material(
             json.dumps(metadata_payload, ensure_ascii=False),
         ))
         conn.commit()
-        cursor.execute("SELECT * FROM file_records WHERE id = ?", (cursor.lastrowid,))
+        file_record_id = cursor.fetchone()[0]
+        cursor.execute("SELECT * FROM file_records WHERE id = ?", (file_record_id,))
         return _row_to_material(cursor.fetchone())
 
 

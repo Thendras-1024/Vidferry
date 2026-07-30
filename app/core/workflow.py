@@ -1,6 +1,8 @@
 ﻿"""YouTube 工作流任务的创建、状态更新、阶段事件记录与统计。"""
 
 
+import datetime
+
 from app.core.cover_service import (
     normalize_cover_context,
     normalize_cover_signature,
@@ -372,8 +374,10 @@ def list_youtube_workflow_jobs(limit=50, params=None):
         if str(params.get("status") or "") == "recent":
             where.append("""(
                 status IN ('queued', 'running', 'waiting_confirmation')
-                OR datetime(COALESCE(updated_at, created_at)) >= datetime('now', '-10 minutes')
+                OR COALESCE(updated_at, created_at) >= ?
             )""")
+        if str(params.get("status") or "") == "recent":
+            values.append((datetime.datetime.now() - datetime.timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"))
         video_ids = _split_request_values(params.get("videoIds") or params.get("ids"))
         if video_ids:
             where.append(f"video_id IN ({_sql_placeholders(video_ids)})")
@@ -774,7 +778,7 @@ def start_workflow_event(job, stage, message="", input_file_path="", metadata=No
             job_id, video_id, stage, stage_label, status, message,
             input_file_path, input_size_mb, started_at, metadata
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         ''', (
             job.get("id") or "",
             job.get("videoId") or "",
@@ -787,8 +791,9 @@ def start_workflow_event(job, stage, message="", input_file_path="", metadata=No
             now,
             json.dumps(metadata or {}, ensure_ascii=False),
         ))
+        event_id = cursor.fetchone()[0]
         conn.commit()
-        return cursor.lastrowid
+        return event_id
 
 
 def finish_workflow_event(event_id, status="success", message="", output_file_path="", cloud_usage=None, metadata=None):

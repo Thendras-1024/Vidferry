@@ -433,9 +433,10 @@ def create_account():
             cursor.execute('''
                 INSERT INTO user_info (type, filePath, userName, status)
                 VALUES (?, ?, ?, ?)
+                RETURNING id
             ''', (platform_type, file_path, user_name, status))
+            account_id = cursor.fetchone()[0]
             conn.commit()
-            account_id = cursor.lastrowid
 
         return jsonify({
             "code": 200,

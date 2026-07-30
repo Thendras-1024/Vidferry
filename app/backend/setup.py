@@ -13,7 +13,6 @@ import re
 import signal
 import shlex
 import shutil
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -86,8 +85,6 @@ from app.config import (
     PROCESS_VERSION_TRANSLATION,
     PROCESS_VERSIONS,
     SAU_COMMAND,
-    SQLITE_BUSY_TIMEOUT_MS,
-    SQLITE_ENABLE_WAL,
     SUBTITLE_COMMAND_TEMPLATE,
     SUBTITLE_LLM_REVIEW_ENABLED,
     SUBTITLE_LANGUAGES,

@@ -400,7 +400,7 @@ def _youtube_video_where(params):
         like = f"%{keyword}%"
         where.append("""(
             title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?
-            OR (json_valid(publish_draft) AND json_extract(publish_draft, '$.title') LIKE ?)
+            OR publish_draft LIKE ?
         )""")
         values.extend([like, like, like, like, like])
     status_clause, status_values = _youtube_video_status_clause(str(params.get("status") or "all"))

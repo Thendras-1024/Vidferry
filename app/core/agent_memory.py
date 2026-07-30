@@ -211,6 +211,7 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
         WHERE EXISTS (
             SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)
         )
+        RETURNING id
         """,
         (
             session_id,
@@ -225,7 +226,7 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
     )
     if cursor.rowcount != 1:
         raise ValueError("Agent 会话不存在或已删除。")
-    message_id = cursor.lastrowid
+    message_id = cursor.fetchone()[0]
     cursor.execute(
         """
         UPDATE agent_sessions
@@ -845,7 +846,7 @@ def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_p
                 """
                 SELECT * FROM agent_runs
                 WHERE run_type = ? AND subject_type = ? AND subject_id = ?
-                ORDER BY created_at DESC, rowid DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
                 (run_type, subject_type, subject_id),
@@ -861,7 +862,7 @@ def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_p
             """
             SELECT * FROM agent_runs
             WHERE run_type = ? AND COALESCE(subject_id, '') = ''
-            ORDER BY created_at DESC, rowid DESC
+            ORDER BY created_at DESC, id DESC
             """,
             (run_type,),
         )

@@ -1,7 +1,6 @@
 """后端通用工具:兼容旧入口并汇总跨模块共享状态。"""
 
 import threading
-from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 from app.config import (
@@ -16,8 +15,7 @@ from app.config import (
 )
 from app.db.base import (
     DATABASE_INTEGRITY_ERRORS,
-    _connect_database,
-    _db_path,
+    _db_connect,
     close_database_pool,
 )
 from app.utils.file_util import (
@@ -50,16 +48,6 @@ from app.utils.request_util import (
     _sql_placeholders,
 )
 from app.core.errors import NoSpeechDetectedError, WorkflowConflictError
-
-
-@contextmanager
-def _db_connect(*, row_factory=False):
-    conn = _connect_database(_db_path(), row_factory=row_factory)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
 
 
 _publish_account_locks = {}

@@ -92,7 +92,7 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 
 ## 技术栈
 
-- 后端：Python 3.10-3.12、Flask、SQLite
+- 后端：Python 3.10-3.12、Flask、PostgreSQL
 - 前端：Vue 3、Vite、Element Plus、Pinia
 - 下载：yt-dlp
 - 转写：faster-whisper / CTranslate2
@@ -116,7 +116,7 @@ logs/                后端关键流程与各平台上传日志，排查任务�
 videos/              下载、转写、处理输出目录
   youtube/            YouTube 原视频及同视频 ID 的本地封面文件，供素材管理页离线预览
 videoFile/           素材库文件目录
-db/                  本地 SQLite 数据库
+docker-compose.postgres.yml  PostgreSQL 本地服务定义
 cookiesFile/         平台账号 Cookie 文件
 docs/                安装、CLI 和历史设计文档
 ```
@@ -129,7 +129,7 @@ docs/                安装、CLI 和历史设计文档
 安装依赖并配置 `.env` 后，使用交互式命令创建首个管理员：
 
 ```powershell
-python -m app.auth.cli create-admin --username admin --display-name "管理员"
+conda run -n vidferry python -m app.auth.cli create-admin --username admin --display-name "管理员"
 ```
 
 密码不会出现在命令行参数或日志中。生产部署前请继续阅读 [认证与部署说明](docs/authentication.md)。
@@ -442,7 +442,7 @@ sau_frontend/node_modules/
 
 - 当前定位：本地优先、单机工作流、开发验证。
 - 当前重点：稳定视频采集、下载、字幕处理、内容分析、视频素材管理和发布准备链路。
-- 数据库迁移：PostgreSQL 迁移工具已提供，但当前数据尚未切换；未配置 `DATABASE_URL` 时仍使用 SQLite，执行步骤见 [PostgreSQL 迁移方案](docs/postgresql-migration.md)。
+- 数据库：PostgreSQL 是唯一运行数据库；首次部署按 [QUICK_DEPLOYMENT.md](QUICK_DEPLOYMENT.md) 启动本地数据库服务。
 - 后续方向：更完整的剪辑版本二、封面帧、云端 OSS、多用户权限、任务队列和更严格的平台发布状态管理。
 
 ## 致谢
