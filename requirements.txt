@@ -14,6 +14,8 @@
 # Web backend
 Flask[async]==3.1.1
 flask-cors==6.0.0
+argon2-cffi==25.1.0
+psycopg[binary,pool]>=3.2,<4
 
 # Core HTTP/logging/config
 requests==2.32.3
@@ -33,7 +35,9 @@ playwright>=1.53.0
 
 # Agent orchestration
 langgraph==1.2.8
-langgraph-checkpoint-sqlite==3.1.0
+
+# Feishu long-connection robot
+lark-oapi==1.7.1
 
 # QR code and platform helper libraries
 qrcode==8.2

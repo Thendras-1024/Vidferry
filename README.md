@@ -107,6 +107,7 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 app/                 后端 API、核心业务、数据库、任务和工具模块
 sau_backend.py       兼容入口，负责加载模块化后端
 run.py               后端正式启动入口
+run_feishu_robot.py  飞书机器人启动入口
 sau_frontend/        Vue 3 + Vite 前端
 uploader/            各平台上传适配器
 myUtils/             账号、登录和历史工具函数
@@ -123,7 +124,17 @@ docs/                安装、CLI 和历史设计文档
 
 ## 首次使用流程
 
-### 1. 打开 Web 控制台
+### 1. 创建首个管理员
+
+安装依赖并配置 `.env` 后，使用交互式命令创建首个管理员：
+
+```powershell
+python -m app.auth.cli create-admin --username admin --display-name "管理员"
+```
+
+密码不会出现在命令行参数或日志中。生产部署前请继续阅读 [认证与部署说明](docs/authentication.md)。
+
+### 2. 打开 Web 控制台
 
 访问：
 
@@ -131,7 +142,7 @@ docs/                安装、CLI 和历史设计文档
 http://127.0.0.1:5173
 ```
 
-### 2. 配置账号
+### 3. 配置账号
 
 进入“账号管理”，添加需要发布的平台账号。
 
@@ -159,7 +170,7 @@ cookiesFile/
 
 在线索列表中点击下载。下载完成后，原视频会进入“视频素材管理”的下载原视频区域。
 
-如果 YouTube 提示需要 JS runtime，可安装 Node.js 或 Deno，并在 `.env` 中配置 `YTDLP_JS_RUNTIME`。
+首次部署请安装 Node.js 20+。`.env.example` 已默认配置 yt-dlp 的官方 `ejs:github` 组件，用于处理 YouTube JS challenge；Node.js 未加入 `PATH` 时，再填写 `YTDLP_JS_RUNTIME_PATH`。
 
 ### 5. 处理视频
 
@@ -194,12 +205,42 @@ LLM 原始结果只读保存。用户最终发布使用的标题、文案、话�
 TEXT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 TEXT_LLM_API_KEY=sk-your-key
 TEXT_LLM_MODEL=qwen-plus
+TEXT_LLM_PROVIDER=dashscope
 MULTIMODAL_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 MULTIMODAL_LLM_API_KEY=sk-your-key
 MULTIMODAL_LLM_MODEL=qwen-vl-max
+MULTIMODAL_LLM_PROVIDER=dashscope
 ```
 
-文本模型用于内容分析、字幕修订、文案生成和 Agent；多模态模型用于关键帧审核。多模态模型未配置时，默认策略会阻止发布，避免绕过关键帧审核；内部的抽帧数量、风险阈值和模型参数由程序统一维护，不需要写入 `.env`。
+文本模型用于内容分析、字幕修订、文案生成和 Agent；多模态模型用于关键帧审核。`*_LLM_PROVIDER` 支持 `zhipu`、`kimi`、`deepseek`、`volcengine_ark`、`dashscope`、`longcat`、`openai_compatible`。四类官方服务使用其 Chat Completions 兼容 Base URL；模型不支持关闭推理或图片输入时，系统会在消息中心持久化提示并按功能策略降级或阻断。多模态模型未配置时，默认策略会阻止发布，避免绕过关键帧审核；内部的抽帧数量、风险阈值和模型参数由程序统一维护，不需要写入 `.env`。
+
+### 飞书远程 Agent
+
+项目可通过飞书自建应用机器人远程调用现有 Vidferry Agent。本机通过飞书长连接接收消息，不需要开放公网 HTTP 端口。
+
+前提：在飞书开放平台创建并发布自建应用，启用机器人能力，订阅 `im.message.receive_v1` 事件并选择长连接接收方式。安装项目依赖时会一并安装 `lark-oapi==1.7.1`。
+
+在本机 `.env` 中配置应用凭据，真实 Secret 不得提交：
+
+```env
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_ALLOWED_OPEN_IDS=ou_xxx
+```
+
+现有本地配置使用 `appID` 和 `App_Secret` 时，机器人启动脚本也会识别；新配置推荐使用上述 `FEISHU_*` 名称。
+
+首次取得自己的 Open ID 时，可以临时将 `FEISHU_ALLOWED_OPEN_IDS` 留空并启动机器人。所有消息仍会被拒绝，终端会仅记录发送者 Open ID；将该 `ou_xxx` 填入白名单并重启后，消息才会进入 Agent。
+通过下方启动脚本运行时，机器人日志会同时写入 `logs/feishu_robot.log`。
+
+```powershell
+conda activate vidferry
+python run_feishu_robot.py
+```
+
+机器人只处理白名单用户的单聊文本。每个用户对应独立的 Agent 会话；机器人先确认收到，再在后台调用 Agent，并以飞书卡片回传最终回答和结构化工具摘要，不发送原始 JSON。项目目录中的 PNG、JPEG、WebP、GIF 工具结果可以作为飞书图片发送，视频文件永不上传或发送。下载、处理、配置修改和发布等写操作尚未接入机器人。
+
+机器人只通过上述独立脚本启动，不会随 `python run.py` 自动运行。每个飞书应用同一时刻只应启动一个机器人进程。
 
 ### 7. 发布中心发布
 
@@ -336,7 +377,7 @@ ffmpeg -version
 
 - 网络无法访问 YouTube。
 - yt-dlp 版本过旧。
-- YouTube 页面需要 JS runtime。
+- YouTube 页面需要 JS runtime 或 EJS 组件首次下载。
 - 视频本身不可下载或受地区、年龄、版权限制。
 
 可尝试：
@@ -346,7 +387,7 @@ conda activate vidferry
 python -m pip install -U yt-dlp
 ```
 
-并配置 Node.js 或 Deno。
+确认已安装 Node.js 20+，并在 `.env` 中保留 `YTDLP_REMOTE_COMPONENTS=ejs:github`；首次下载需要能访问 GitHub 以获取 EJS 组件。
 
 ### Whisper 很慢
 
@@ -395,11 +436,13 @@ sau_frontend/node_modules/
 - LLM API Key 不要写入前端代码或提交记录。
 - 发布、删除、下载接口都应只在可信本地环境使用。
 - 当前版本没有多用户权限系统，不建议暴露到公网。
+- 飞书 App Secret 只保存在本机 `.env`；机器人只允许 `FEISHU_ALLOWED_OPEN_IDS` 中的用户调用 Agent。
 
 ## 项目状态
 
 - 当前定位：本地优先、单机工作流、开发验证。
 - 当前重点：稳定视频采集、下载、字幕处理、内容分析、视频素材管理和发布准备链路。
+- 数据库迁移：PostgreSQL 迁移工具已提供，但当前数据尚未切换；未配置 `DATABASE_URL` 时仍使用 SQLite，执行步骤见 [PostgreSQL 迁移方案](docs/postgresql-migration.md)。
 - 后续方向：更完整的剪辑版本二、封面帧、云端 OSS、多用户权限、任务队列和更严格的平台发布状态管理。
 
 ## 致谢
@@ -413,6 +456,10 @@ Vidferry 基于并参考了以下开源项目和工具：
 - deep-translator
 - patchright / Playwright
 - biliup
+
+### 飞书项目管家
+
+飞书机器人支持“现在有什么要处理”“为什么失败”“账号是否正常”“下一步怎么做”等只读项目管家查询，不会主动发送提醒。完整配置和验收见 [项目管家说明](docs/PROJECT_BUTLER.md)。
 
 ## License
 

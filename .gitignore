@@ -186,6 +186,8 @@ db/*.db
 db/*.db-journal
 db/*.db-wal
 db/*.db-shm
+db/backups/
+db/postgresql-migration-report.json
 *.sqlite
 *.sqlite3
 *.sqlite-journal
@@ -225,5 +227,10 @@ models/
 qrcode.png
 # Added by code-review-graph
 .code-review-graph/
-docs
-tests
+docs/*
+!docs/postgresql-migration.md
+!docs/authentication.md
+tests/*
+!tests/test_postgres_compat.py
+!tests/conftest.py
+!tests/test_authentication.py

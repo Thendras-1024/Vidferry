@@ -48,12 +48,15 @@ LLM_MAX_TRANSCRIPT_CHARS=28000
 
 ## YouTube 下载
 
-yt-dlp 会随 Python 依赖安装。某些 YouTube 页面可能需要 JS runtime：
+yt-dlp 会随 Python 依赖安装。首次部署请安装 Node.js 20+；项目默认启用 yt-dlp 官方 `ejs:github` 组件来处理 YouTube JS challenge，首次遇到需要挑战的视频时会自动下载该组件。
 
 ```env
 YTDLP_JS_RUNTIME=node
 YTDLP_JS_RUNTIME_PATH=C:/Program Files/nodejs/node.exe
+YTDLP_REMOTE_COMPONENTS=ejs:github
 ```
+
+如果 Node.js 已加入 `PATH`，可省略 `YTDLP_JS_RUNTIME_PATH`。运行环境无法访问 GitHub 时，EJS 组件无法首次下载，需要先恢复到 GitHub 的网络访问后再下载视频。
 
 或使用 Deno：
 
