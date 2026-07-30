@@ -1,4 +1,4 @@
-import { http } from '@/utils/request'
+import { http, streamSse } from '@/utils/request'
 
 // 账号管理相关API
 export const accountApi = {
@@ -29,5 +29,9 @@ export const accountApi = {
   // 删除账号
   deleteAccount(id) {
     return http.delete('/deleteAccount', { id })
+  },
+
+  loginStream(params, onMessage, signal) {
+    return streamSse(`/login?${new URLSearchParams(params).toString()}`, onMessage, signal)
   }
 }

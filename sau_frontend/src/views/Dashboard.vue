@@ -150,7 +150,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -233,9 +233,9 @@ const navigateTo = (path) => {
 const platformTypeLabel = (type) => {
   return {
     1: '小红书',
-    2: '快手',
+    2: '视频号',
     3: '抖音',
-    4: '视频号',
+    4: '快手',
     5: 'B站'
   }[Number(type)] || '未知平台'
 }
@@ -291,7 +291,7 @@ const deletePublishRecord = async (task, target) => {
       throw new Error(res.msg || '删除失败')
     }
     ElMessage.success(res.msg || '已删除本地发布记录')
-    await fetchDashboardData()
+    appStore.invalidatePublishRecords(res.data?.videoId)
   } catch (error) {
     if (error === 'cancel' || error === 'close') return
     ElMessage.error(error.message || '删除发布记录失败')
@@ -325,6 +325,8 @@ const fetchDashboardData = async () => {
 }
 
 onMounted(fetchDashboardData)
+
+watch(() => appStore.publishRecordsRevision, fetchDashboardData)
 </script>
 
 <style lang="scss" scoped>

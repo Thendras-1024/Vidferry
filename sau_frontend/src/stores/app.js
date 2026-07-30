@@ -16,6 +16,8 @@ export const useAppStore = defineStore('app', () => {
   const publishedMaterials = ref([])
   const publishTasks = ref([])
   const listCache = ref({})
+  const publishRecordsRevision = ref(0)
+  const lastChangedPublishedVideoId = ref('')
   
   // 设置账号管理页面已访问
   const setAccountManagementVisited = () => {
@@ -90,6 +92,12 @@ export const useAppStore = defineStore('app', () => {
       Object.entries(listCache.value).filter(([key]) => !key.startsWith(prefix))
     )
   }
+
+  const invalidatePublishRecords = (videoId = '') => {
+    lastChangedPublishedVideoId.value = String(videoId || '')
+    publishRecordsRevision.value += 1
+    clearListCache()
+  }
   
   // 设置账号管理页面刷新状态
   const setAccountRefreshing = (status) => {
@@ -103,6 +111,8 @@ export const useAppStore = defineStore('app', () => {
     materials,
     publishedMaterials,
     publishTasks,
+    publishRecordsRevision,
+    lastChangedPublishedVideoId,
     listCache,
     setAccountManagementVisited,
     setMaterialManagementVisited,
@@ -116,6 +126,7 @@ export const useAppStore = defineStore('app', () => {
     getListCache,
     setListCache,
     clearListCache,
+    invalidatePublishRecords,
     setAccountRefreshing
   }
 })

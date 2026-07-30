@@ -19,6 +19,14 @@
         <el-option label="LLM 已关闭" value="disabled" />
         <el-option label="LLM 不可用" value="unavailable" />
       </el-select>
+      <el-select v-model="filters.sort" placeholder="排序方式" @change="search">
+        <el-option label="最近保存" value="saved_desc" />
+        <el-option label="最早保存" value="saved_asc" />
+        <el-option label="最近开始任务" value="job_started_desc" />
+        <el-option label="最早开始任务" value="job_started_asc" />
+        <el-option label="回退段数最多" value="fallback_desc" />
+        <el-option label="审查状态" value="review_status_asc" />
+      </el-select>
       <el-button type="primary" @click="search">查询</el-button>
       <el-button :icon="Download" :disabled="!selectedRows.length || exporting" :loading="exporting" @click="exportSelected">导出 {{ selectedRows.length || '' }}</el-button>
       <el-button :icon="Delete" type="danger" plain :disabled="!selectedRows.length || deleting" :loading="deleting" @click="deleteSelected">删除 {{ selectedRows.length || '' }}</el-button>
@@ -101,7 +109,7 @@ import { CircleCloseFilled, Delete, Download, Loading, Refresh, Search, Top, War
 import { subtitleAuditApi } from '@/api/subtitleAudit'
 
 const loading = ref(false); const detailLoading = ref(false); const items = ref([]); const total = ref(0)
-const page = ref(1); const pageSize = 20; const filters = ref({ keyword: '', status: '' })
+const page = ref(1); const pageSize = 20; const filters = ref({ keyword: '', status: '', sort: 'saved_desc' })
 const drawerVisible = ref(false); const detail = ref(null); const detailTop = ref(null); const activeTab = ref('subtitles')
 const auditTable = ref(null); const selectedRows = ref([]); const exporting = ref(false); const deleting = ref(false)
 const loadList = async () => { loading.value = true; try { const res = await subtitleAuditApi.list({ ...filters.value, page: page.value, pageSize }); const data = res?.data || {}; items.value = data.items || []; total.value = data.total || 0; selectedRows.value = []; auditTable.value?.clearSelection() } catch (error) { ElMessage.error(error?.message || '读取审查记录失败') } finally { loading.value = false } }

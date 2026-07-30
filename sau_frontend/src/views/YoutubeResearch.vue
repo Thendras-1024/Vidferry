@@ -401,6 +401,20 @@
                     {{ version.label }}
                   </el-tag>
                 </div>
+                <div v-if="row.publishedPlatforms?.length" class="processed-version-row published-platform-row">
+                  <span>已发布</span>
+                  <el-tag
+                    v-for="platform in row.publishedPlatforms"
+                    :key="platform.recordId || platform.type"
+                    size="small"
+                    type="success"
+                    effect="plain"
+                    :closable="Boolean(platform.recordId)"
+                    @close="deletePublishedPlatform(row, platform)"
+                  >
+                    {{ platform.name }}
+                  </el-tag>
+                </div>
                 <div v-if="activeJobForVideo(row)" class="inline-job">
                   <el-progress :percentage="displayProgress(activeJobForVideo(row))" :stroke-width="6" />
                   <span>{{ activeJobForVideo(row).message || jobStatusText(activeJobForVideo(row).status) }}</span>
@@ -519,11 +533,18 @@
                 type="warning"
                 :disabled="row.downloadStatus !== 1"
                 :loading="translatingId === row.id"
-                @click="processVideo(row)"
+                @click="needsEditingIntroUpdate(row) ? updateEditingIntro(row) : processVideo(row)"
               >
                 <el-icon><VideoCamera /></el-icon>
-                <span>{{ hasCurrentProcessVersion(row) ? '重新处理' : '处理' }}</span>
+                <span>{{ needsEditingIntroUpdate(row) ? '更新片头高光' : (hasCurrentProcessVersion(row) ? '重新处理' : '处理') }}</span>
               </el-button>
+              <el-tag
+                v-if="row.downloadStatus === 1 && editingIntroStatusText(row.editingIntroStatus)"
+                size="small"
+                :type="editingIntroTagType(row.editingIntroStatus)"
+                effect="plain"
+                style="margin-left: 4px"
+              >{{ editingIntroStatusText(row.editingIntroStatus) }}</el-tag>
               <el-button
                 size="small"
                 type="success"
@@ -686,7 +707,7 @@
                 <span>{{ currentProcessVersion.description }}</span>
               </div>
               <div class="setting-status settings-span-full">
-                当前字幕输出：{{ currentSubtitleLanguage.label }}
+                当前字幕输出：{{ workflowForm.translationEnabled ? currentSubtitleLanguage.label : '不生成字幕' }}
               </div>
               <div v-if="workflowForm.processVersion === 'editing_v1'" class="settings-field">
                 <span class="settings-label">高光片段条数</span>
@@ -715,7 +736,7 @@
               </div>
               <div class="settings-field settings-span-full">
                 <span class="settings-label">翻译署名</span>
-                <el-input v-model="workflowForm.translatorLabel" maxlength="20" show-word-limit placeholder="例如：AI 中文字幕" />
+                <el-input v-model="workflowForm.translatorLabel" :disabled="!workflowForm.translationEnabled" maxlength="20" show-word-limit placeholder="例如：AI 中文字幕" />
               </div>
               <div class="version-note settings-span-full">
                 <div class="version-note-title">
@@ -738,6 +759,32 @@
                   </el-popover>
                 </div>
                 <span>{{ currentSubtitleSize.description }}</span>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="翻译与拼接" name="assembly">
+            <div class="settings-section watermark-settings">
+              <div class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">进行字幕处理与翻译</span>
+                  <span class="setting-hint">关闭后不生成或烧制字幕；版本二仍会为高光和封面执行语音转写</span>
+                </div>
+                <el-switch v-model="workflowForm.translationEnabled" />
+              </div>
+              <div class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">拼接高光片段</span>
+                  <span class="setting-hint">仅处理版本二生效，在正片前加入高光片段</span>
+                </div>
+                <el-switch v-model="workflowForm.highlightIntroEnabled" />
+              </div>
+              <div class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">拼接封面图片</span>
+                  <span class="setting-hint">仅处理版本二生效，在正片前加入封面片头</span>
+                </div>
+                <el-switch v-model="workflowForm.coverIntroEnabled" />
               </div>
             </div>
           </el-tab-pane>
@@ -844,14 +891,24 @@
             <h3>主题高光与核心看点</h3>
             <div class="highlight-list">
               <div
-                v-for="segment in analysisResult.highlight_segments || []"
-                :key="`${segment.start}-${segment.end}-${segment.suggested_caption}`"
+                v-for="segment in highlightCandidates"
+                :key="segment.candidateId || `${segment.start}-${segment.end}-${segment.suggested_caption}`"
                 class="highlight-item"
+                :class="{ 'is-selected': highlightSelection(segment).selected }"
               >
                 <div class="highlight-time">{{ formatSegmentRange(segment) }}</div>
                 <div class="highlight-body">
-                  <strong>{{ segment.suggested_caption || '建议字幕条待补充' }}</strong>
+                  <div class="highlight-heading">
+                    <strong>{{ segment.suggested_caption || '建议字幕条待补充' }}</strong>
+                    <div v-if="highlightSelection(segment).selected" class="highlight-markers">
+                      <el-tag size="small" type="success" effect="light">已选拼接</el-tag>
+                      <el-tag v-if="highlightSelection(segment).adjusted" size="small" type="warning" effect="light">已修订</el-tag>
+                    </div>
+                  </div>
                   <p>{{ segment.reason || '暂无理由' }}</p>
+                  <span v-if="highlightSelection(segment).adjusted" class="highlight-adjustment">
+                    视觉审核已调整为 {{ formatSegmentRange(highlightSelection(segment).segment) }}
+                  </span>
                   <span>{{ segment.type || 'highlight' }}</span>
                 </div>
               </div>
@@ -933,6 +990,17 @@
         <el-button type="primary" :loading="movingVideoGroup" @click="confirmMoveVideo">移动</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="resetDialogVisible" title="重新处理视频" width="min(520px, calc(100vw - 32px))">
+      <div class="reset-processing-dialog">
+        <p>删除「{{ resetTarget?.title || resetTarget?.url }}」的{{ processVersionLabel(workflowForm.processVersion) }}成品，下载原视频和其他处理版本会保留。</p>
+        <el-checkbox v-model="refreshTranscriptOnReset">强制重新转写</el-checkbox>
+        <span>默认复用现有转写缓存；只有识别内容有误时才需要重新转写。</span>
+      </div>
+      <template #footer>
+        <el-button @click="resetDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="resettingId === resetTarget?.id" @click="confirmResetProcessing">删除成品并准备重做</el-button>
+      </template>
+    </el-dialog>
     <VideoGroupManageDialog v-model="groupManagerVisible" />
   </div>
 </template>
@@ -944,6 +1012,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
+import { materialApi } from '@/api/material'
 import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
@@ -963,6 +1032,9 @@ const savingAnalysisId = ref('')
 const deletingId = ref('')
 const batchDeleting = ref(false)
 const resettingId = ref('')
+const resetDialogVisible = ref(false)
+const resetTarget = ref(null)
+const refreshTranscriptOnReset = ref(false)
 const settingsDialogVisible = ref(false)
 const settingsTab = ref('processing')
 const route = useRoute()
@@ -1110,11 +1182,14 @@ const workflowForm = reactive({
   subtitleLanguage: 'zh-CN',
   burnProfile: 'stable',
   subtitleSize: 'large',
-  translatorLabel: 'Vidferry翻译',
+  translatorLabel: 'Vidferry',
   coverSignature: 'Vidferry',
   watermarkEnabled: false,
   watermarkText: '',
-  highlightCount: 3
+  highlightCount: 3,
+  translationEnabled: true,
+  highlightIntroEnabled: true,
+  coverIntroEnabled: true
 })
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
@@ -1254,6 +1329,20 @@ const burnProfiles = [
       { name: 'genpts', value: '开启', description: '仍保留时间戳重建，保证基础稳定性。' },
       { name: 'audio', value: 'AAC', description: '仍统一输出 AAC，保证平台和本地播放器兼容性。' }
     ]
+  },
+  {
+    value: '2k',
+    label: '2K 高清',
+    description: '适合原视频本身达到 2K 的场景；保留 H.264/AAC 兼容格式，处理时间和文件体积会增加。',
+    params: [
+      { name: 'preset', value: 'fast', description: '维持 H.264 快速编码，在画质与处理时间间取得平衡。' },
+      { name: 'crf', value: '21', description: '比 1080p 档位保留更多画面细节，文件体积相应增加。' },
+      { name: 'fps', value: '最高 30', description: '仍限制为 30fps，避免高帧率增加播放器压力。' },
+      { name: '分辨率', value: '最高 1440p', description: '横屏最高 2560x1440，竖屏最高 1440x2560；低于 2K 的原视频不会被放大。' },
+      { name: '码率峰值', value: '12000k', description: '为 2K 保留更高峰值码率，同时控制移动端播放压力。' },
+      { name: 'H.264', value: 'High 5.0', description: '使用 2K 所需的 H.264 级别，兼容较新的播放器和主流平台。' },
+      { name: 'audio', value: 'AAC', description: '统一输出 AAC，保证平台和本地播放器兼容性。' }
+    ]
   }
 ]
 
@@ -1326,6 +1415,9 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
   if ([1, 2, 3].includes(highlightCount)) {
     next.highlightCount = highlightCount
   }
+  for (const key of ['translationEnabled', 'highlightIntroEnabled', 'coverIntroEnabled']) {
+    if (typeof settings[key] === 'boolean') next[key] = settings[key]
+  }
   return next
 }
 
@@ -1358,7 +1450,10 @@ const currentWorkflowSettingsPayload = () => ({
   searchQuery: form.query,
   watermarkEnabled: workflowForm.watermarkEnabled,
   watermarkText: workflowForm.watermarkText,
-  highlightCount: workflowForm.highlightCount
+  highlightCount: workflowForm.highlightCount,
+  translationEnabled: workflowForm.translationEnabled,
+  highlightIntroEnabled: workflowForm.highlightIntroEnabled,
+  coverIntroEnabled: workflowForm.coverIntroEnabled
 })
 
 const applyStoredWorkflowSettings = (settings) => {
@@ -1458,7 +1553,10 @@ watch(
     coverSignature: workflowForm.coverSignature,
     watermarkEnabled: workflowForm.watermarkEnabled,
     watermarkText: workflowForm.watermarkText,
-    highlightCount: workflowForm.highlightCount
+    highlightCount: workflowForm.highlightCount,
+    translationEnabled: workflowForm.translationEnabled,
+    highlightIntroEnabled: workflowForm.highlightIntroEnabled,
+    coverIntroEnabled: workflowForm.coverIntroEnabled
   }),
   saveWorkflowSettings,
   { deep: true }
@@ -1560,6 +1658,29 @@ const hasProcessedVideo = (item) => {
   return [1, 2].includes(Number(item.translateStatus)) || Boolean(item.processedFilePath)
 }
 
+const EDITING_INTRO_PENDING_STATUSES = ['stale', 'submit_failed', 'render_failed', 'concat_failed']
+
+const needsEditingIntroUpdate = (item) => workflowForm.processVersion === 'editing_v1'
+  && hasCurrentProcessVersion(item)
+  && EDITING_INTRO_PENDING_STATUSES.includes(item.editingIntroStatus)
+
+// 片头状态文案：仅对"待补/失败"状态返回文案，其余返回空串（不展示徽标）。
+const editingIntroStatusText = (status) => {
+  switch (status) {
+    case 'stale':
+      return '片头待更新'
+    case 'submit_failed':
+    case 'render_failed':
+      return '片头待补'
+    case 'concat_failed':
+      return '拼接失败,可重试'
+    default:
+      return ''
+  }
+}
+
+const editingIntroTagType = (status) => (status === 'concat_failed' ? 'danger' : 'warning')
+
 const deleteBlockReason = (item) => {
   if (activeJobForVideo(item)) return '该视频存在运行中任务，请等待任务结束后再删除线索。'
   if (isPublished(item)) return ''
@@ -1658,12 +1779,13 @@ const normalizeVideoItem = (item) => {
 }
 
 const videoThumbnail = (item) => {
+  if (item?.localThumbnailPath) return materialApi.getMaterialPreviewUrl(item.localThumbnailPath)
   const videoId = String(item?.id || '').trim()
   return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : item?.thumbnail || ''
 }
 
 const showInlinePublishDraft = (item) => {
-  return Number(item.publishStatus) !== 1 && Number(item.analysisStatus) === 1 && item.analysisDraft
+  return Number(item.analysisStatus) === 1 && item.analysisDraft
 }
 
 const isPublishDraftEditing = (item) => editingPublishDraftIds.value.has(item.id)
@@ -2299,13 +2421,18 @@ const confirmReplacingCurrentVersion = async (row) => {
   }
 }
 
-const validateWorkflowPublishAccounts = async () => {
-  const enabledPlatforms = workflowPublishPlatforms.filter(item => Boolean(workflowForm[item.enabledKey]))
+const pendingWorkflowPublishPlatforms = (row) => {
+  const publishedTypes = new Set((row.publishedPlatforms || []).map(platform => Number(platform.type)))
+  return workflowPublishPlatforms.filter(item => Boolean(workflowForm[item.enabledKey]) && !publishedTypes.has({ douyin: 3, bilibili: 5, xiaohongshu: 1, kuaishou: 4, tencent: 2 }[item.key]))
+}
+
+const validateWorkflowPublishAccounts = async (row) => {
+  const enabledPlatforms = pendingWorkflowPublishPlatforms(row)
 
   if (enabledPlatforms.length === 0) {
     await ElMessageBox.alert(
-      '一键发布会从当前线索状态继续执行下载、处理和发布流程。请先在任务默认配置中至少开启一个发布平台并填写账号。',
-      '请选择发布账号',
+      '当前选择的平台都已有发布记录。请先在视频线索的已发布标签或发布中心删除对应本地记录，再重新发布。',
+      '没有可发布的平台',
       {
         confirmButtonText: '去设置',
         type: 'warning'
@@ -2344,7 +2471,8 @@ const validateWorkflowPublishAccounts = async () => {
 }
 
 const createJob = async (row) => {
-  if (!(await validateWorkflowPublishAccounts())) return
+  if (!(await validateWorkflowPublishAccounts(row))) return
+  const pendingPlatforms = new Set(pendingWorkflowPublishPlatforms(row).map(item => item.key))
   const shouldProcessBeforePublish = !(isTranslated(row) || isTranslationSkipped(row))
   if (shouldProcessBeforePublish && !(await confirmReplacingCurrentVersion(row))) return
   creatingJobId.value = row.id
@@ -2353,15 +2481,15 @@ const createJob = async (row) => {
       videoId: row.id,
       url: row.url,
       account: workflowForm.account.trim(),
-      publishToDouyin: workflowForm.publishToDouyin,
-      publishToBilibili: workflowForm.publishToBilibili,
+      publishToDouyin: pendingPlatforms.has('douyin'),
+      publishToBilibili: pendingPlatforms.has('bilibili'),
       bilibiliAccount: workflowForm.bilibiliAccount.trim(),
       bilibiliTid: workflowForm.bilibiliTid,
-      publishToXiaohongshu: workflowForm.publishToXiaohongshu,
+      publishToXiaohongshu: pendingPlatforms.has('xiaohongshu'),
       xiaohongshuAccount: workflowForm.xiaohongshuAccount.trim(),
-      publishToKuaishou: workflowForm.publishToKuaishou,
+      publishToKuaishou: pendingPlatforms.has('kuaishou'),
       kuaishouAccount: workflowForm.kuaishouAccount.trim(),
-      publishToTencent: workflowForm.publishToTencent,
+      publishToTencent: pendingPlatforms.has('tencent'),
       tencentAccount: workflowForm.tencentAccount.trim(),
       channel: row.channel,
       subscribers: row.subscribers,
@@ -2378,7 +2506,10 @@ const createJob = async (row) => {
       coverTitle: row.analysisDraft?.coverTitle || '',
       coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
-      watermarkText: workflowForm.watermarkText
+      watermarkText: workflowForm.watermarkText,
+      translationEnabled: workflowForm.translationEnabled,
+      highlightIntroEnabled: workflowForm.highlightIntroEnabled,
+      coverIntroEnabled: workflowForm.coverIntroEnabled
     })
     jobs.value.unshift(res.data)
     ElMessage.success('一键发布任务已创建')
@@ -2526,40 +2657,52 @@ const batchDeleteVideos = async () => {
   }
 }
 
-const resetProcessing = async (row) => {
+const resetProcessing = (row) => {
   if (activeJobForVideo(row)) {
     ElMessage.warning('该视频还有任务执行中，结束后再重新处理')
     return
   }
+  resetTarget.value = row
+  refreshTranscriptOnReset.value = false
+  resetDialogVisible.value = true
+}
 
-  try {
-    await ElMessageBox.confirm(
-      `确定删除「${row.title || row.url}」的${processVersionLabel(workflowForm.processVersion)}处理后视频并清除转写缓存吗？下次点击处理时会重新转写，其他处理版本和下载原视频会保留。`,
-      '重新处理视频',
-      {
-        confirmButtonText: '清除缓存并准备处理',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-  } catch (error) {
-    return
-  }
-
+const confirmResetProcessing = async () => {
+  const row = resetTarget.value
+  if (!row) return
   resettingId.value = row.id
   try {
     const res = await youtubeApi.resetProcessing(row.id, {
       deleteProcessed: true,
       processVersion: workflowForm.processVersion,
-      refreshTranscript: true
+      refreshTranscript: refreshTranscriptOnReset.value
     })
     const updatedVideo = res.data.video
     items.value = items.value.map(item => item.id === row.id ? normalizeVideoItem(updatedVideo) : item)
     await refreshVideosByIds([row.id])
     await loadJobs({ silent: true })
-    ElMessage.success(`已回退为可重新处理状态，将在下次处理时重新转写字幕`)
+    resetDialogVisible.value = false
+    ElMessage.success(refreshTranscriptOnReset.value ? '已删除成品和转写缓存，可重新处理' : '已删除成品，重新处理时将复用现有转写')
   } finally {
     resettingId.value = ''
+  }
+}
+
+const deletePublishedPlatform = async (row, platform) => {
+  if (!platform.recordId) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${platform.name}」的本地发布记录？不会删除平台上的视频，删除后可重新发布。`,
+      '删除本地发布记录',
+      { confirmButtonText: '删除记录', cancelButtonText: '取消', type: 'warning' }
+    )
+    const response = await materialApi.deletePublishTargetRecord(platform.recordId)
+    row.publishedPlatforms = (row.publishedPlatforms || []).filter(item => item.recordId !== platform.recordId)
+    row.publishStatus = Number(response.data?.publishStatus || 0)
+    appStore.invalidatePublishRecords(response.data?.videoId || row.id)
+    ElMessage.success(response.msg || '已删除本地发布记录')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
   }
 }
 
@@ -2711,7 +2854,10 @@ const processVideo = async (row) => {
       coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
       watermarkText: workflowForm.watermarkText,
-      highlightCount: workflowForm.highlightCount
+      highlightCount: workflowForm.highlightCount,
+      translationEnabled: workflowForm.translationEnabled,
+      highlightIntroEnabled: workflowForm.highlightIntroEnabled,
+      coverIntroEnabled: workflowForm.coverIntroEnabled
     }
     const res = await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)
@@ -2734,6 +2880,45 @@ const formatSegmentRange = (segment) => {
     return `${minutes}:${String(seconds).padStart(2, '0')}`
   }
   return `${format(segment.start)} - ${format(segment.end)}`
+}
+
+const updateEditingIntro = async (row) => {
+  translatingId.value = row.id
+  try {
+    const res = await youtubeApi.createEditingIntroJob({
+      videoId: row.id, url: row.url, channel: row.channel, subscribers: row.subscribers,
+      publishedAt: row.publishedAt, title: row.title || 'YouTube 视频', processVersion: 'editing_v1',
+      subtitleLanguage: workflowForm.subtitleLanguage, burnProfile: workflowForm.burnProfile,
+      subtitleSize: workflowForm.subtitleSize, translatorLabel: workflowForm.translatorLabel,
+      coverTitle: row.analysisDraft?.coverTitle || '', coverSignature: workflowForm.coverSignature,
+      watermarkEnabled: workflowForm.watermarkEnabled, watermarkText: workflowForm.watermarkText,
+      highlightCount: workflowForm.highlightCount, highlightIntroEnabled: workflowForm.highlightIntroEnabled,
+      coverIntroEnabled: workflowForm.coverIntroEnabled
+    })
+    jobs.value.unshift(res.data)
+    ElMessage.success('片头高光更新任务已创建')
+    startJobsPolling()
+  } finally {
+    translatingId.value = ''
+  }
+}
+
+const highlightCandidates = computed(() => {
+  const result = analysisResult.value || {}
+  return result.highlight_candidates || result.highlight_segments || []
+})
+
+const highlightSelection = (candidate) => {
+  const selected = (analysisResult.value?.selected_highlight_segments || []).find((segment) => {
+    if (candidate.candidateId && segment.candidateId) return candidate.candidateId === segment.candidateId
+    return Number(candidate.start) === Number(segment.originalStart ?? segment.start)
+      && Number(candidate.end) === Number(segment.originalEnd ?? segment.end)
+  })
+  return {
+    selected: Boolean(selected),
+    adjusted: Boolean(selected?.reviewAdjusted),
+    segment: selected || candidate
+  }
 }
 
 const jobStatusText = (status) => {
@@ -2843,6 +3028,12 @@ watch(() => route.query.focusJob, () => {
 
 watch(() => route.query.status, () => {
   consumeAgentStatusQuery()
+})
+
+watch(() => appStore.publishRecordsRevision, () => {
+  const videoId = appStore.lastChangedPublishedVideoId
+  if (videoId) refreshVideosByIds([videoId])
+  else loadVideos()
 })
 
 onBeforeUnmount(() => {
@@ -3727,6 +3918,15 @@ $ink-strong: #172033;
   color: $text-secondary;
 }
 
+.reset-processing-dialog {
+  display: grid;
+  gap: 14px;
+  color: $text-regular;
+
+  p { margin: 0; line-height: 1.7; }
+  > span { color: $text-secondary; font-size: 12px; line-height: 1.6; }
+}
+
 :deep(.danger-item) {
   color: $danger-color;
 }
@@ -4211,6 +4411,11 @@ $ink-strong: #172033;
   background: #fff;
 }
 
+.highlight-item.is-selected {
+  border-color: #8ed2aa;
+  box-shadow: inset 3px 0 0 #28a86b;
+}
+
 .highlight-time {
   color: $accent-blue;
   font-size: 12px;
@@ -4243,6 +4448,25 @@ $ink-strong: #172033;
     color: $text-secondary;
     font-size: 12px;
   }
+}
+
+.highlight-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.highlight-markers {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.highlight-adjustment {
+  color: #a86c12 !important;
 }
 
 .error-code {

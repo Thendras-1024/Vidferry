@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { getCsrfToken } from '@/auth/session'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL && import.meta.env.VITE_API_BASE_URL !== '/'
   ? import.meta.env.VITE_API_BASE_URL
@@ -56,12 +57,12 @@ export const agentApi = {
   },
 
   async chatStream(data, onEvent) {
-    const token = localStorage.getItem('token')
     const response = await fetch(`${apiBaseUrl}/agents/chat/stream`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
+        'X-CSRF-Token': getCsrfToken()
       },
       body: JSON.stringify(data)
     })

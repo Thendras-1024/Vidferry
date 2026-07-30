@@ -143,7 +143,7 @@
                     <span>话题</span>
                     <p>{{ formatTopicsForTarget(tab, target) }}</p>
                     <span>发布</span>
-                    <p>{{ tab.scheduleEnabled ? `定时发布 · ${tab.dailyTimes.join('、')}` : '立即发布' }}</p>
+                    <p>{{ tab.scheduleEnabled ? `定时发布 · ${tab.scheduledAt || '未选择时间'}` : '立即发布' }}</p>
                   </div>
                   <el-alert
                     v-if="isDouyinTopicTruncated(tab, target)"
@@ -219,31 +219,24 @@
               <span class="step-index">4</span>
               <div>
                 <h3>发布时间</h3>
-                <p>立即发布或设置批量排期。</p>
+                <p>立即发布，或由本机后端在指定时间自动执行。</p>
               </div>
             </div>
             <div class="schedule-controls">
               <el-switch v-model="tab.scheduleEnabled" active-text="定时发布" inactive-text="立即发布" />
               <div v-if="tab.scheduleEnabled" class="schedule-settings">
-                <div class="schedule-item">
-                  <span>每天发布视频数</span>
-                  <el-select v-model="tab.videosPerDay" placeholder="选择发布数量">
-                    <el-option v-for="num in 55" :key="num" :label="num" :value="num" />
-                  </el-select>
-                </div>
                 <div class="schedule-item wide">
-                  <span>每天发布时间</span>
-                  <div class="time-list">
-                    <el-time-select v-for="(time, index) in tab.dailyTimes" :key="index" v-model="tab.dailyTimes[index]" start="00:00" step="00:30" end="23:30" placeholder="选择时间" />
-                    <el-button v-if="tab.dailyTimes.length < tab.videosPerDay" type="primary" size="small" @click="tab.dailyTimes.push('10:00')">添加时间</el-button>
-                  </div>
-                </div>
-                <div class="schedule-item">
-                  <span>开始天数</span>
-                  <el-select v-model="tab.startDays" placeholder="选择开始天数">
-                    <el-option label="明天" :value="0" />
-                    <el-option label="后天" :value="1" />
-                  </el-select>
+                  <span>计划发布时间</span>
+                  <el-date-picker
+                    v-model="tab.scheduledAt"
+                    type="datetime"
+                    value-format="YYYY-MM-DD HH:mm:ss"
+                    format="YYYY-MM-DD HH:mm"
+                    placeholder="选择今天起 10 天内的时间"
+                    :disabled-date="disabledScheduleDate"
+                    :disabled-hours="(_, comparingDate) => disabledScheduleHours(tab, comparingDate)"
+                    :disabled-minutes="(hour, _, comparingDate) => disabledScheduleMinutes(tab, hour, comparingDate)"
+                  />
                 </div>
               </div>
             </div>
@@ -299,7 +292,7 @@
           <div class="submit-bar">
             <el-button @click="cancelPublish(tab)">取消</el-button>
             <el-button type="primary" @click="confirmPublish(tab)" :loading="tab.publishing || false">
-              {{ tab.publishing ? '发布中...' : '发布' }}
+              {{ tab.publishing ? '提交中...' : (tab.scheduleEnabled ? '创建定时任务' : '发布') }}
             </el-button>
           </div>
         </div>
@@ -313,13 +306,19 @@
           <h2>已发布视频</h2>
           <p>汇总已经提交到国内平台的处理后视频，方便从发布中心追踪结果。</p>
         </div>
-        <el-button :loading="publishedLoading" @click="loadPublishedVideos">
-          <el-icon><Refresh /></el-icon>
-          <span>刷新</span>
-        </el-button>
+        <div class="published-toolbar">
+          <el-radio-group v-model="publishedRecordScope" size="small">
+            <el-radio-button label="active">当前记录</el-radio-button>
+            <el-radio-button label="archived">已归档</el-radio-button>
+          </el-radio-group>
+          <el-button :loading="publishedLoading" @click="loadPublishedVideos">
+            <el-icon><Refresh /></el-icon>
+            <span>刷新</span>
+          </el-button>
+        </div>
       </div>
 
-      <div class="published-summary">
+      <div v-if="publishedRecordScope === 'active'" class="published-summary">
         <div class="summary-tile">
           <span>已发布</span>
           <strong>{{ publishedVideos.length }}</strong>
@@ -338,7 +337,7 @@
         </div>
       </div>
 
-      <div v-if="publishedVideos.length > 0" class="published-list">
+      <div v-if="publishedRecordScope === 'active' && publishedVideos.length > 0" class="published-list">
         <article v-for="video in publishedVideos" :key="video.id" class="published-card">
           <div class="published-cover">
             <img v-if="video.thumbnail" :src="video.thumbnail" :alt="video.title" />
@@ -361,6 +360,19 @@
               <el-tag size="small" type="success" effect="plain">{{ video.subtitleLanguageLabel || '字幕语言未知' }}</el-tag>
               <span>{{ video.processedFileSizeLabel || '素材大小未知' }}</span>
             </div>
+            <div class="published-record-list">
+              <div v-for="record in video.publishedRecords" :key="record.id" class="published-record-row">
+                <div>
+                  <el-tag size="small" effect="plain">{{ record.platform }}</el-tag>
+                  <span>{{ record.accountName || record.accountFile || '未记录账号' }}</span>
+                </div>
+                <span>{{ record.publishedAt || record.updatedAt || '-' }}</span>
+                <el-button type="danger" text size="small" @click="deletePublishedRecord(record)">
+                  <el-icon><Delete /></el-icon>
+                  <span>删除记录</span>
+                </el-button>
+              </div>
+            </div>
             <div class="published-actions">
               <span>{{ video.publishedLabel }}</span>
               <el-button type="primary" link @click="askAgentAboutPublishedVideo(video)">问 Agent</el-button>
@@ -368,7 +380,18 @@
           </div>
         </article>
       </div>
-      <el-empty v-else description="暂无已发布视频，发布成功后会在这里汇总展示。" :image-size="84" />
+      <div v-else-if="publishedRecordScope === 'archived' && archivedPublishedRecords.length" class="archived-record-list">
+        <div v-for="record in archivedPublishedRecords" :key="record.id" class="archived-record-row">
+          <div>
+            <strong>{{ record.publishTitle || record.title || record.filename }}</strong>
+            <span>{{ record.platform }} · {{ record.accountName || record.accountFile || '未记录账号' }}</span>
+          </div>
+          <el-tag size="small" :type="publishStatusTagType(record.status)">{{ publishStatusLabel(record.status) }}</el-tag>
+          <span>{{ record.publishedAt || '-' }}</span>
+          <span>归档于 {{ record.deletedAt || record.updatedAt || '-' }}</span>
+        </div>
+      </div>
+      <el-empty v-else :description="publishedRecordScope === 'active' ? '暂无已发布视频，发布成功后会在这里汇总展示。' : '暂无已归档发布记录。'" :image-size="84" />
     </section>
 
     <el-dialog v-model="batchPublishDialogVisible" title="批量发布进度" width="500px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="false">
@@ -530,7 +553,7 @@
 </template>
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { Plus, Close, Folder, Refresh, Clock } from '@element-plus/icons-vue'
+import { Plus, Close, Delete, Folder, Refresh, Clock } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
@@ -568,6 +591,8 @@ const materialLibraryPagination = reactive({ page: 1, pageSize: 10 })
 let materialLibrarySearchTimer = null
 const publishedLoading = ref(false)
 const publishedVideos = ref([])
+const archivedPublishedRecords = ref([])
+const publishedRecordScope = ref('active')
 
 // 批量发布相关状态
 const batchPublishing = ref(false)
@@ -587,6 +612,13 @@ const platformNameByKey = platforms.reduce((map, platform) => {
   map[platform.key] = platform.name
   return map
 }, {})
+const platformOrderByKey = new Map(platforms.map((platform, index) => [platform.key, index]))
+
+const sortPublishedRecords = records => [...records].sort((left, right) => {
+  const leftOrder = platformOrderByKey.get(Number(left.platformType)) ?? platforms.length
+  const rightOrder = platformOrderByKey.get(Number(right.platformType)) ?? platforms.length
+  return leftOrder - rightOrder
+})
 
 const fallbackBilibiliCategories = [
   { tid: 21, group: '生活', name: '日常', label: '生活 / 日常' },
@@ -650,9 +682,7 @@ const defaultTabInit = {
   agentGuardConfirmReason: '',
   sourceContentConfirmed: false,
   scheduleEnabled: false, // 定时发布开关
-  videosPerDay: 1, // 每天发布视频数量
-  dailyTimes: ['10:00'], // 每天发布时间点列表
-  startDays: 0, // 从今天开始计算的发布天数，0表示明天，1表示后天
+  scheduledAt: '', // 本地定时发布时间
   publishStatus: null, // 发布状态，包含message和type
   publishing: false, // 发布状态，用于控制按钮loading效果
   isDraft: false, // 是否保存为草稿，仅视频号平台可见
@@ -718,7 +748,7 @@ const normalizePublishTab = (tab, index) => {
     platformAccounts: normalizePlatformAccounts(tab?.platformAccounts),
     bilibiliTid: Number(tab?.bilibiliTid || defaultBilibiliTid.value),
     selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
-    dailyTimes: Array.isArray(tab?.dailyTimes) && tab.dailyTimes.length > 0 ? tab.dailyTimes : ['10:00'],
+    scheduledAt: String(tab?.scheduledAt || ''),
     publishTargetStatuses: Array.isArray(tab?.publishTargetStatuses) ? tab.publishTargetStatuses : [],
     lastPublishResults: Array.isArray(tab?.lastPublishResults) ? tab.lastPublishResults : [],
     lastPublishTaskId: String(tab?.lastPublishTaskId || ''),
@@ -759,9 +789,7 @@ const serializePublishTab = (tab) => ({
   lastPublishResults: tab.lastPublishResults || [],
   lastPublishTaskId: tab.lastPublishTaskId || '',
   scheduleEnabled: tab.scheduleEnabled,
-  videosPerDay: tab.videosPerDay,
-  dailyTimes: tab.dailyTimes,
-  startDays: tab.startDays,
+  scheduledAt: tab.scheduledAt || '',
   isDraft: tab.isDraft,
   isOriginal: tab.isOriginal
 })
@@ -1311,12 +1339,26 @@ const formatPublishDuration = (durationMs) => {
 const askAgentAboutPublishedVideo = (video) => {
   window.dispatchEvent(new CustomEvent('vidferry:ask-agent', {
     detail: {
-      message: `这个视频发布到了哪些平台？视频ID：${video.id}，标题：${video.title || ''}`,
-      context: {
+      videoContext: {
         source: 'publish-center',
-        videoId: video.id,
+        videoId: String(video.id || ''),
         title: video.title || '',
-        publishedPlatformTypes: video.publishedPlatformTypes || []
+        url: video.url || '',
+        channel: video.channel || '',
+        subscribers: video.subscribers || '',
+        sourcePublishedAt: video.publishedAt || '',
+        duration: video.duration || '',
+        processVersion: video.processVersionLabel || '',
+        subtitleLanguage: video.subtitleLanguageLabel || '',
+        fileSize: video.processedFileSizeLabel || '',
+        publishedPlatforms: publishedPlatforms(video),
+        publishedRecords: (video.publishedRecords || []).map(record => ({
+          platform: record.platform || platformNameByKey[Number(record.platformType)] || '',
+          platformType: Number(record.platformType || 0),
+          accountName: record.accountName || '',
+          status: record.status || 'success',
+          publishedAt: record.publishedAt || record.updatedAt || ''
+        }))
       }
     }
   }))
@@ -1325,9 +1367,14 @@ const askAgentAboutPublishedVideo = (video) => {
 const loadPublishedVideos = async () => {
   publishedLoading.value = true
   try {
+    if (publishedRecordScope.value === 'archived') {
+      const response = await materialApi.getPublishedMaterials({ limit: 200, recordScope: 'archived' })
+      archivedPublishedRecords.value = response?.data || []
+      return
+    }
     const [videoResponse, publishedResponse] = await Promise.all([
       youtubeApi.list({ page: 1, pageSize: 100, status: 'published', sort: 'publishedFirst' }),
-      http.get('/published-materials', { limit: 200 })
+      materialApi.getPublishedMaterials({ limit: 200, recordScope: 'active' })
     ])
     const sourceItems = videoResponse?.data?.items || []
     const sourceVideoIds = sourceItems.map(item => item.id).filter(Boolean)
@@ -1355,7 +1402,7 @@ const loadPublishedVideos = async () => {
       .filter(item => item.publishStatus === 1)
       .map(item => {
         const material = materialByVideoId.value.get(item.id)
-        const records = publishedByVideoId.get(item.id) || []
+        const records = sortPublishedRecords(publishedByVideoId.get(item.id) || [])
         return {
           ...item,
           publishedRecords: records,
@@ -1396,10 +1443,7 @@ const buildPublishData = (tab, targets = publishTargets(tab)) => ({
     productLink: Number(target.platformType) === 3 ? tab.productLink.trim() : undefined,
     productTitle: Number(target.platformType) === 3 ? tab.productTitle.trim() : undefined
   })),
-  enableTimer: tab.scheduleEnabled ? 1 : 0,
-  videosPerDay: tab.scheduleEnabled ? tab.videosPerDay || 1 : 1,
-  dailyTimes: tab.scheduleEnabled ? tab.dailyTimes || ['10:00'] : ['10:00'],
-  startDays: tab.scheduleEnabled ? tab.startDays || 0 : 0,
+  scheduledAt: tab.scheduleEnabled ? tab.scheduledAt : '',
   category: tab.isOriginal ? 1 : 0,
   bilibiliTid: Number(tab.bilibiliTid || defaultBilibiliTid.value),
   productLink: tab.productLink.trim() || '',
@@ -1409,6 +1453,60 @@ const buildPublishData = (tab, targets = publishTargets(tab)) => ({
     sourceContentConfirmed: Boolean(tab.sourceContentConfirmed)
   }
 })
+
+const disabledScheduleDate = (date) => {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const lastDay = new Date(today)
+  lastDay.setDate(lastDay.getDate() + 9)
+  return date < today || date > lastDay
+}
+
+const deletePublishedRecord = async (record) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除「${record.platform}」的本地发布记录？不会删除平台上的视频，删除后可重新发布。`,
+      '删除本地发布记录',
+      { confirmButtonText: '删除记录', cancelButtonText: '取消', type: 'warning' }
+    )
+    const response = await materialApi.deletePublishTargetRecord(record.id)
+    publishedVideos.value = publishedVideos.value
+      .map(video => video.id === record.videoId
+        ? { ...video, publishedRecords: video.publishedRecords.filter(item => item.id !== record.id) }
+        : video)
+      .filter(video => video.publishedRecords.length > 0)
+    appStore.invalidatePublishRecords(response.data?.videoId || record.videoId)
+    ElMessage.success(response.msg || '已删除本地发布记录')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+  }
+}
+
+const scheduleComparingDate = (tab, comparingDate) => {
+  if (comparingDate?.toDate) return comparingDate.toDate()
+  if (comparingDate) return comparingDate
+  const scheduledAt = String(tab?.scheduledAt || '').trim()
+  return scheduledAt ? new Date(scheduledAt.replace(' ', 'T')) : new Date()
+}
+
+const isScheduleToday = (tab, comparingDate) => {
+  const date = scheduleComparingDate(tab, comparingDate)
+  const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return value === today
+}
+
+const disabledScheduleHours = (tab, comparingDate) => {
+  if (!isScheduleToday(tab, comparingDate)) return []
+  return Array.from({ length: new Date().getHours() }, (_, hour) => hour)
+}
+
+const disabledScheduleMinutes = (tab, hour, comparingDate) => {
+  const now = new Date()
+  if (!isScheduleToday(tab, comparingDate) || Number(hour) !== now.getHours()) return []
+  return Array.from({ length: now.getMinutes() + 1 }, (_, minute) => minute)
+}
 
 const extractAgentErrorData = (error) => error?.response?.data?.data || {}
 
@@ -1608,6 +1706,11 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error('请至少选择一个平台账号')
   }
+  if (tab.scheduleEnabled && !tab.scheduledAt) {
+    ElMessage.error('请选择计划发布时间')
+    tab.publishing = false
+    throw new Error('请选择计划发布时间')
+  }
   const duplicatedTarget = targets.find(target => isPlatformPublishedForTab(tab, target.platformType))
   if (duplicatedTarget) {
     ElMessage.error(`该视频已发布到${duplicatedTarget.platformName}，不能重复发布`)
@@ -1623,7 +1726,7 @@ const confirmPublish = async (tab) => {
     platformName: target.platformName,
     accountName: target.accountName,
     status: 'running',
-    message: '发布中'
+    message: tab.scheduleEnabled ? '等待定时发布' : '发布中'
   }))
   tab.lastPublishResults = []
   tab.lastPublishTaskId = ''
@@ -1641,9 +1744,27 @@ const confirmPublish = async (tab) => {
     await ensureAgentGuardPublishConfirmation(tab)
     await ensureSourceContentRiskConfirmation(tab)
     const publishData = buildPublishData(tab, targets)
-    const data = await http.post('/postVideo', publishData, { silentError: true })
+    const endpoint = tab.scheduleEnabled ? '/publish/scheduled-tasks' : '/postVideo'
+    const data = await http.post(endpoint, publishData, { silentError: true })
     await loadAccounts()
     await loadPublishedVideos()
+    if (tab.scheduleEnabled) {
+      tab.publishStatus = { message: `定时任务已创建，将于 ${tab.scheduledAt.slice(0, 16)} 执行`, type: 'success' }
+      ElMessage.success('定时发布任务已创建')
+      tab.fileList = []
+      tab.displayFileList = []
+      tab.title = ''
+      tab.description = ''
+      tab.selectedTopics = []
+      tab.contentLocked = false
+      tab.selectedAccounts = []
+      tab.platformAccounts = {}
+      tab.publishTargetStatuses = []
+      tab.scheduleEnabled = false
+      tab.scheduledAt = ''
+      resetAgentGuard(tab)
+      return
+    }
     const results = Array.isArray(data?.data?.results) ? data.data.results : []
     tab.lastPublishResults = results
     tab.lastPublishTaskId = String(data?.data?.publishTaskId || '')
@@ -1889,6 +2010,9 @@ onMounted(async () => {
   })
 })
 
+watch(publishedRecordScope, loadPublishedVideos)
+watch(() => appStore.publishRecordsRevision, loadPublishedVideos)
+
 onBeforeUnmount(() => {
   window.clearTimeout(materialLibrarySearchTimer)
 })
@@ -1953,6 +2077,13 @@ $ink-strong: #172033;
 
   h2 { margin: 2px 0 6px; color: $ink-strong; font-size: 18px; }
   p { margin: 0; color: $text-secondary; font-size: 13px; line-height: 1.6; }
+}
+
+.published-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .published-summary {
@@ -2044,6 +2175,34 @@ $ink-strong: #172033;
 
 .published-actions {
   justify-content: space-between;
+}
+
+.published-record-list,
+.archived-record-list {
+  display: grid;
+  border-top: 1px solid $border-lighter;
+}
+
+.published-record-row,
+.archived-record-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid $border-lighter;
+  color: $text-secondary;
+  font-size: 12px;
+
+  > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+}
+
+.archived-record-row {
+  grid-template-columns: minmax(240px, 1fr) auto auto auto;
+  padding: 12px 4px;
+
+  > div { display: grid; align-items: initial; gap: 4px; }
+  strong { color: $ink-strong; font-size: 13px; }
 }
 
 .batch-panel { padding: 14px; position: sticky; top: 12px; }
@@ -2412,6 +2571,8 @@ $ink-strong: #172033;
   .panel-heading-row { align-items: flex-start; flex-direction: column; }
   .published-summary,
   .published-card { grid-template-columns: 1fr; }
+  .published-record-row,
+  .archived-record-row { grid-template-columns: 1fr; gap: 6px; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .two-col,
   .schedule-item { grid-template-columns: 1fr; }

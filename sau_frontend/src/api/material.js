@@ -37,6 +37,14 @@ export const materialApi = {
     return http.get('/publish/tasks', params)
   },
 
+  getScheduledPublishTasks: (params = {}) => {
+    return http.get('/publish/scheduled-tasks', params)
+  },
+
+  cancelScheduledPublishTask: (taskId) => {
+    return http.post(`/publish/scheduled-tasks/${taskId}/cancel`)
+  },
+
   deletePublishTargetRecord: (id) => {
     return http.delete(`/publish/target-records/${id}`)
   },

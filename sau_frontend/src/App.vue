@@ -1,5 +1,6 @@
 <template>
-  <div id="app">
+  <router-view v-if="route.meta.public" />
+  <div v-else id="app">
     <el-container>
       <el-aside :width="isCollapse ? '64px' : '200px'">
         <div class="sidebar">
@@ -24,7 +25,7 @@
               <el-icon><Search /></el-icon>
               <span>视频采集处理</span>
             </el-menu-item>
-            <el-menu-item index="/account-management">
+            <el-menu-item v-if="isAdmin" index="/account-management">
               <el-icon><User /></el-icon>
               <span>账号管理</span>
             </el-menu-item>
@@ -36,6 +37,10 @@
               <el-icon><Upload /></el-icon>
               <span>发布中心</span>
             </el-menu-item>
+            <el-menu-item index="/scheduled-publish-tasks">
+              <el-icon><Clock /></el-icon>
+              <span>定时发布任务列表</span>
+            </el-menu-item>
             <el-menu-item index="/workflow-statistics">
               <el-icon><DataAnalysis /></el-icon>
               <span>处理统计</span>
@@ -45,7 +50,7 @@
               <span>关于</span>
             </el-menu-item>
           </el-menu>
-          <div class="sidebar-settings">
+          <div v-if="isAdmin" class="sidebar-settings">
             <el-button
               class="sidebar-settings-button"
               type="primary"
@@ -97,9 +102,9 @@
               >
                 <template #reference>
                   <el-badge
-                    :value="notificationStore.unreadCount"
+                    :value="notificationStore.badgeCount"
                     :hidden="!notificationStore.hasUnread"
-                    :max="99"
+                    :max="9"
                     class="message-badge"
                   >
                     <el-button
@@ -114,52 +119,56 @@
                 <div class="message-panel">
                   <div class="message-panel-header">
                     <span>消息</span>
+                    <el-button size="small" link @click="toggleNotificationHistory">
+                      {{ showNotificationHistory ? '待处理' : '历史' }}
+                    </el-button>
                     <el-tag v-if="notificationStore.hasUnread" size="small" type="danger">
-                      {{ notificationStore.unreadCount }} 未读
+                      {{ notificationStore.unreadCount > 9 ? '9+' : notificationStore.unreadCount }} 待知晓
                     </el-tag>
                   </div>
 
                   <el-empty
-                    v-if="notificationStore.visibleMessages.length === 0"
-                    description="暂无消息"
+                    v-if="notificationMessages.length === 0"
+                    :description="showNotificationHistory ? '暂无历史消息' : '暂无待处理消息'"
                     :image-size="72"
                   />
 
                   <div v-else class="message-list">
                     <div
-                      v-for="message in notificationStore.visibleMessages"
+                      v-for="message in notificationMessages"
                       :key="message.id"
                       class="message-item"
-                      :class="{ 'is-read': message.acknowledged }"
+                      :class="{ 'is-read': message.status !== 'active' }"
                     >
                       <div class="message-item-title">
                         <span>{{ message.title }}</span>
-                        <el-tag size="small" :type="message.acknowledged ? 'info' : (message.severity === 'danger' ? 'danger' : 'warning')">
-                          {{ message.acknowledged ? '已知晓' : '待处理' }}
+                        <el-tag size="small" :type="message.status === 'resolved' || message.status === 'acknowledged' ? 'info' : (message.severity === 'danger' ? 'danger' : 'warning')">
+                          {{ message.status === 'resolved' ? '已处理' : (message.status === 'acknowledged' ? '已知晓' : '待处理') }}
                         </el-tag>
                       </div>
                       <div class="message-item-content">{{ message.content }}</div>
                       <div class="message-item-time">{{ formatMessageTime(message.updatedAt) }}</div>
                       <div class="message-item-actions">
                         <el-button
-                          v-if="message.actionUrl || message.actionRoute || message.actionType"
+                          v-if="message.actionRoute?.path"
                           size="small"
                           type="warning"
                           link
                           @click="handleMessageAction(message)"
                         >
-                          {{ message.actionLabel || '去解决' }}
+                          查看详情
                         </el-button>
                         <el-button
                           size="small"
                           type="primary"
                           link
-                          :disabled="message.acknowledged"
+                          v-if="message.status === 'active'"
                           @click="notificationStore.acknowledgeMessage(message.id)"
                         >
                           已知晓
                         </el-button>
                         <el-button
+                          v-if="message.status !== 'resolved'"
                           size="small"
                           type="success"
                           link
@@ -172,6 +181,20 @@
                   </div>
                 </div>
               </el-popover>
+              <el-dropdown trigger="click" @command="handleUserCommand">
+                <div class="user-dropdown">
+                  <el-avatar :size="32">{{ userInitial }}</el-avatar>
+                  <span class="username">{{ userStore.userInfo?.displayName }}</span>
+                  <el-icon><ArrowDown /></el-icon>
+                </div>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="isAdmin" command="users">用户与安全</el-dropdown-item>
+                    <el-dropdown-item command="password">修改密码</el-dropdown-item>
+                    <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </div>
         </el-header>
@@ -296,6 +319,15 @@
           </div>
         </div>
         <div class="agent-input">
+          <div
+            v-if="agentVideoContext"
+            class="agent-video-context"
+            :class="{ 'is-disabled': !agentIncludeVideoContext }"
+          >
+            <el-checkbox v-model="agentIncludeVideoContext">视频上下文</el-checkbox>
+            <span :title="agentVideoContext.title">{{ agentVideoContext.title || '未命名视频' }}</span>
+            <el-tag size="small" effect="plain">{{ agentVideoContext.publishedPlatforms?.length || 0 }} 个平台</el-tag>
+          </div>
           <el-input
             ref="agentInputRef"
             v-model="agentInput"
@@ -303,7 +335,7 @@
             :rows="3"
             maxlength="500"
             show-word-limit
-            placeholder="例如：已处理但还没发布的视频有哪些？"
+            :placeholder="agentVideoContext && agentIncludeVideoContext ? '询问这个视频的发布或处理信息' : '例如：已处理但还没发布的视频有哪些？'"
             @keydown="handleAgentInputKeydown"
           />
           <el-button type="primary" :loading="agentLoading" @click="sendAgentMessage()">
@@ -374,27 +406,34 @@ import { ref, computed, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
-  HomeFilled, User, DataAnalysis,
+  HomeFilled, User, DataAnalysis, ArrowDown,
   Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete, DocumentChecked
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { agentApi } from '@/api/agent'
 import { commonApi } from '@/api/common'
-import { youtubeApi } from '@/api/youtube'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
+const userStore = useUserStore()
+const isAdmin = computed(() => userStore.userInfo?.role === 'admin')
+const userInitial = computed(() => String(userStore.userInfo?.displayName || userStore.userInfo?.username || 'U').slice(0, 1).toUpperCase())
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
-const WORKFLOW_MESSAGE_CHECK_INTERVAL_MS = 10 * 1000
+const NOTIFICATION_SYNC_INTERVAL_MS = 10 * 1000
 const AGENT_MESSAGE_PAGE_SIZE = 12
 let accountCheckTimer = null
-let workflowMessageTimer = null
+let notificationSyncTimer = null
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
+const showNotificationHistory = ref(false)
+const notificationMessages = computed(() => (
+  showNotificationHistory.value ? notificationStore.historyMessages : notificationStore.visibleMessages
+))
 const agentDrawerVisible = ref(false)
 const agentLoading = ref(false)
 const agentInput = ref('')
@@ -407,6 +446,8 @@ const agentMessagesBeforeId = ref(null)
 const agentSessionRestoreLoading = ref(false)
 const agentInputRef = ref(null)
 const agentRetryContext = ref(null)
+const agentVideoContext = ref(null)
+const agentIncludeVideoContext = ref(false)
 const agentHistoryVisible = ref(false)
 const agentHistoryLoading = ref(false)
 const agentHistory = ref([])
@@ -429,8 +470,10 @@ const agentRouteLabels = {
   '/': '首页',
   '/youtube-research': '视频采集处理',
   '/account-management': '账号管理',
+  '/user-management': '用户与安全',
   '/material-management': '视频素材管理',
   '/publish-center': '发布中心',
+  '/scheduled-publish-tasks': '定时发布任务列表',
   '/workflow-statistics': '处理统计',
   '/about': '关于'
 }
@@ -441,7 +484,11 @@ const activeMenu = computed(() => {
 })
 
 // 侧边栏折叠状态
-const isCollapse = ref(false)
+const mobileSidebarQuery = window.matchMedia('(max-width: 760px)')
+const isCollapse = ref(mobileSidebarQuery.matches)
+const syncMobileSidebar = event => {
+  isCollapse.value = event.matches
+}
 
 // 切换侧边栏折叠状态
 const toggleSidebar = () => {
@@ -463,7 +510,6 @@ const refreshGlobalAccountMessages = async () => {
     const res = await accountApi.getAccounts()
     if (res.code === 200 && res.data) {
       accountStore.setAccounts(res.data)
-      notificationStore.syncAccountAbnormalMessages(accountStore.accounts)
     }
   } catch (error) {
     console.error('全局账号状态检查失败:', error)
@@ -482,15 +528,6 @@ const scrollAgentMessages = async () => {
   await nextTick()
   const container = agentMessagesRef.value
   if (container) container.scrollTop = container.scrollHeight
-}
-
-const refreshGlobalWorkflowMessages = async () => {
-  try {
-    const res = await youtubeApi.listWorkflowJobs({ page: 1, pageSize: 50, status: 'recent' })
-    notificationStore.syncWorkflowActionMessages(res?.data?.items || [])
-  } catch (error) {
-    console.error('全局工作流消息同步失败:', error)
-  }
 }
 
 const mapAgentHistoryMessage = item => ({
@@ -591,6 +628,8 @@ const newAgentConversation = () => {
   agentHasOlderMessages.value = false
   agentMessagesBeforeId.value = null
   agentRetryContext.value = null
+  agentVideoContext.value = null
+  agentIncludeVideoContext.value = false
   localStorage.removeItem('vidferry:agent-session-id')
 }
 
@@ -603,6 +642,11 @@ const sendAgentMessage = async (presetMessage = '', extraContext = {}) => {
     ...currentAgentContext.value,
     ...(presetMessage ? {} : (agentRetryContext.value || {})),
     ...extraContext
+  }
+  if (agentVideoContext.value && agentIncludeVideoContext.value) {
+    messageContext.videoContext = agentVideoContext.value
+  } else {
+    delete messageContext.videoContext
   }
   agentRetryContext.value = null
   pushAgentMessage('user', message, { context: messageContext })
@@ -685,6 +729,8 @@ const selectAgentSession = async (session) => {
   agentHasOlderMessages.value = false
   agentMessagesBeforeId.value = null
   agentRetryContext.value = null
+  agentVideoContext.value = null
+  agentIncludeVideoContext.value = false
   agentHistoryVisible.value = false
   agentDrawerVisible.value = true
   await restoreAgentMessages()
@@ -726,6 +772,10 @@ const handleAgentInputKeydown = (event) => {
 }
 
 const confirmAgentAction = async (action) => {
+  if (action?.type === 'ask' && action.message) {
+    await sendAgentMessage(action.message, { selectedAgentAction: action.label || '' })
+    return
+  }
   if (action?.type !== 'navigate' || !['/youtube-research', '/account-management'].includes(action.path)) return
   try {
     await ElMessageBox.confirm(`将打开“${action.label}”。`, '确认查看', { confirmButtonText: '打开', cancelButtonText: '取消', type: 'info' })
@@ -736,13 +786,13 @@ const confirmAgentAction = async (action) => {
   }
 }
 
-const handleAskAgentEvent = (event) => {
+const handleAskAgentEvent = async (event) => {
   const detail = event?.detail || {}
-  const message = detail.message || ''
+  agentVideoContext.value = detail.videoContext || null
+  agentIncludeVideoContext.value = Boolean(agentVideoContext.value)
   agentDrawerVisible.value = true
-  if (message) {
-    sendAgentMessage(message, detail.context || {})
-  }
+  await nextTick()
+  agentInputRef.value?.focus()
 }
 
 const refreshRuntimeConfigStatus = async () => {
@@ -756,10 +806,6 @@ const refreshRuntimeConfigStatus = async () => {
     if (textStatus && !textStatus.ready) {
       llmConfigWarning.value = textStatus.message || '文本模型不可用，请检查配置并重启后端。'
     }
-    notificationStore.syncLlmUnavailableMessage(llm)
-    const runtime = res?.data?.runtime || {}
-    notificationStore.syncRuntimeConfigMessages(runtime)
-
     const agent = res?.data?.agent
     agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.multimodalModelConfigured
       ? 'Agent 发布前质检已启用，但多模态模型未配置；发布会被关键帧审核阻断。'
@@ -793,26 +839,41 @@ const formatAgentSessionTime = (timestamp) => {
 
 const handleMessageAction = (message) => {
   if (!message) return
-  if (message.actionType === 'copy') {
-    navigator.clipboard?.writeText(message.actionValue || message.content || '')
-    ElMessage.success(message.actionValue ? '环境更新命令已复制' : '诊断信息已复制')
-  } else if (message.actionRoute) {
+  if (message.actionRoute?.path) {
     router.push(message.actionRoute)
-  } else if (message.actionUrl) {
-    window.open(message.actionUrl, '_blank', 'noopener,noreferrer')
   }
   notificationStore.acknowledgeMessage(message.id)
 }
 
+const handleUserCommand = async command => {
+  if (command === 'users') return router.push('/user-management')
+  if (command === 'password') return router.push('/change-password')
+  if (command === 'logout') {
+    await userStore.logout()
+    window.location.hash = '#/login'
+    window.location.reload()
+  }
+}
+
+const toggleNotificationHistory = async () => {
+  showNotificationHistory.value = !showNotificationHistory.value
+  if (showNotificationHistory.value) await notificationStore.refresh({ includeHistory: true })
+}
+
+const refreshNotifications = () => notificationStore.refresh({ includeHistory: showNotificationHistory.value })
+
 onMounted(() => {
+  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
+  mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
+  if (!userStore.isLoggedIn) return
   refreshRuntimeConfigStatus()
   refreshGlobalAccountMessages()
-  refreshGlobalWorkflowMessages()
+  refreshNotifications()
   accountCheckTimer = window.setInterval(() => {
     refreshGlobalAccountMessages()
   }, ACCOUNT_CHECK_INTERVAL_MS)
-  workflowMessageTimer = window.setInterval(refreshGlobalWorkflowMessages, WORKFLOW_MESSAGE_CHECK_INTERVAL_MS)
-  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
+  notificationSyncTimer = window.setInterval(refreshNotifications, NOTIFICATION_SYNC_INTERVAL_MS)
+  window.addEventListener('focus', refreshNotifications)
 })
 
 onBeforeUnmount(() => {
@@ -820,11 +881,13 @@ onBeforeUnmount(() => {
     window.clearInterval(accountCheckTimer)
     accountCheckTimer = null
   }
-  if (workflowMessageTimer) {
-    window.clearInterval(workflowMessageTimer)
-    workflowMessageTimer = null
+  if (notificationSyncTimer) {
+    window.clearInterval(notificationSyncTimer)
+    notificationSyncTimer = null
   }
+  window.removeEventListener('focus', refreshNotifications)
   window.removeEventListener('vidferry:ask-agent', handleAskAgentEvent)
+  mobileSidebarQuery.removeEventListener('change', syncMobileSidebar)
 })
 </script>
 
@@ -1049,6 +1112,7 @@ onBeforeUnmount(() => {
 }
 
 :global(.agent-drawer) {
+  max-width: 100vw;
   box-shadow: -14px 0 34px rgba(0, 21, 41, 0.12);
 }
 
@@ -1436,6 +1500,33 @@ onBeforeUnmount(() => {
   padding: 14px 16px 16px;
   border-top: 1px solid $border-light;
   background: #fff;
+}
+
+.agent-video-context {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #c6e2ff;
+  border-radius: 6px;
+  background: #f4f9ff;
+  transition: border-color 0.2s, background-color 0.2s, opacity 0.2s;
+
+  > span {
+    overflow: hidden;
+    color: $text-regular;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &.is-disabled {
+    border-color: $border-lighter;
+    background: $bg-color-page;
+    opacity: 0.68;
+  }
 }
 
 .agent-input :deep(.el-textarea__inner) {

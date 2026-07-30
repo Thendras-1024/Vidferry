@@ -73,6 +73,10 @@ export const youtubeApi = {
     return request.post('/youtube/analysis/jobs', data)
   },
 
+  createEditingIntroJob(data) {
+    return request.post('/youtube/editing/intro/jobs', data)
+  },
+
   getVideoAnalysis(videoId) {
     return request.get(`/youtube/videos/${videoId}/analysis`)
   },

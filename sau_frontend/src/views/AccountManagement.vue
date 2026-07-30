@@ -12,8 +12,8 @@
           <el-icon><Refresh /></el-icon>
           <span>{{ checkingCookies ? '检查中' : (checkCooldownRemaining > 0 ? `${checkCooldownRemaining}s 后可检查` : '检查 Cookie') }}</span>
         </el-button>
-        <el-button @click="fetchAccounts" :loading="appStore.isAccountRefreshing">
-          <el-icon :class="{ 'is-loading': appStore.isAccountRefreshing }"><Refresh /></el-icon>
+        <el-button @click="fetchAccounts" :disabled="appStore.isAccountRefreshing">
+          <el-icon><Refresh /></el-icon>
           <span>刷新状态</span>
         </el-button>
       </div>
@@ -569,14 +569,14 @@ const getDefaultAvatar = (name) => {
   return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`
 }
 
-// SSE事件源对象
-let eventSource = null
+// SSE 请求控制器
+let sseController = null
 
 // 关闭SSE连接
 const closeSSEConnection = () => {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
+  if (sseController) {
+    sseController.abort()
+    sseController = null
   }
 }
 
@@ -602,22 +602,16 @@ const connectSSE = (platform, name, accountId = null) => {
 
   const type = platformTypeMap[platform] || '1'
 
-  // 创建SSE连接
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5409'
-  const params = new URLSearchParams({
+  const params = {
     type,
     id: name
-  })
-  if (accountId) {
-    params.set('accountId', accountId)
   }
-  const url = `${baseUrl}/login?${params.toString()}`
+  if (accountId) {
+    params.accountId = accountId
+  }
+  sseController = new AbortController()
 
-  eventSource = new EventSource(url)
-
-  // 监听消息
-  eventSource.onmessage = (event) => {
-    const data = event.data
+  const handleSseMessage = data => {
 
     if (data.startsWith('ERROR::')) {
       loginErrorMessage.value = data.slice('ERROR::'.length) || '登录失败'
@@ -625,9 +619,9 @@ const connectSSE = (platform, name, accountId = null) => {
     }
 
     // 如果还没有二维码数据，且收到图片数据，显示二维码
-    if (!qrCodeData.value && (data.startsWith('data:image') || data.length > 100)) {
+    if (!qrCodeData.value && (data.startsWith('data:image') || data.startsWith('http://') || data.startsWith('https://') || data.length > 100)) {
       try {
-        if (data.startsWith('data:image')) {
+        if (data.startsWith('data:image') || data.startsWith('http://') || data.startsWith('https://')) {
           qrCodeData.value = data
         } else {
           qrCodeData.value = `data:image/png;base64,${data}`
@@ -685,17 +679,17 @@ const connectSSE = (platform, name, accountId = null) => {
     }
   }
 
-  // 监听错误
-  eventSource.onerror = (error) => {
+  accountApi.loginStream(params, handleSseMessage, sseController.signal).catch(error => {
     if (loginStatus.value === '200' || loginStatus.value === '500') {
       closeSSEConnection()
       return
     }
+    if (error?.name === 'AbortError') return
     console.error('SSE连接错误:', error)
-    ElMessage.error('连接服务器失败，请稍后再试')
+    ElMessage.error(error.message || '连接服务器失败，请稍后再试')
     closeSSEConnection()
     sseConnecting.value = false
-  }
+  })
 }
 
 // 提交账号表单
