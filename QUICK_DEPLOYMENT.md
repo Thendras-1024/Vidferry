@@ -169,6 +169,23 @@ WHISPER_COMPUTE_TYPE=int8
 
 仅在需要配置 Chrome、FFmpeg、LLM 或 yt-dlp JS runtime 时，读取仓库根目录的 [CONFIGURATION.md](CONFIGURATION.md)。
 
+## 4.1 初始化认证
+
+首次部署必须使用固定认证密钥。部署 Agent 可生成并写入本地 `.env`，但不得打印、提交或上传密钥：
+
+```powershell
+if (-not (Select-String -Path .env -Pattern '^VIDFERRY_AUTH_SECRET=\S' -Quiet)) {
+  $authSecret = conda run -n vidferry python -c "import secrets; print(secrets.token_urlsafe(64))"
+  Add-Content .env "VIDFERRY_AUTH_SECRET=$authSecret"
+}
+```
+
+初始化数据库后检查是否已有用户；没有用户时，执行下列命令。管理员密码只在交互提示中输入：
+
+```powershell
+conda run -n vidferry python -m app.auth.cli create-admin --username admin --display-name "管理员"
+```
+
 ## 5. 安装前端依赖
 
 ```powershell
