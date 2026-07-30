@@ -789,16 +789,23 @@ def _row_to_published_material(row):
     }
 
 
-def list_published_youtube_materials(limit=50):
+def list_published_youtube_materials(limit=50, record_scope="active"):
     init_database_tables()
     limit = max(1, min(int(limit or 50), 200))
+    scope = str(record_scope or "active").strip().lower()
+    if scope not in {"active", "archived", "all"}:
+        raise ValueError("recordScope 必须是 active、archived 或 all")
+    where_sql = {
+        "active": "deleted_at IS NULL AND COALESCE(NULLIF(status, ''), 'success') = 'success'",
+        "archived": "deleted_at IS NOT NULL",
+        "all": "1 = 1",
+    }[scope]
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
         SELECT * FROM published_youtube_materials
-        WHERE deleted_at IS NULL
-          AND COALESCE(NULLIF(status, ''), 'success') = 'success'
+        WHERE {where_sql}
         ORDER BY COALESCE(published_at, updated_at, created_at) DESC, id DESC
         LIMIT ?
         ''', (limit,))
@@ -882,6 +889,7 @@ def _archive_published_material(
             source_published_at = ?,
             publish_title = ?,
             metadata = ?,
+            publish_task_id = ?,
             status = ?,
             message = ?,
             duration_ms = ?,
@@ -906,6 +914,7 @@ def _archive_published_material(
             material.get("displayPublishedAt") or (video or {}).get("publishedAt") or "",
             publish_title or "",
             json.dumps(metadata, ensure_ascii=False),
+            publish_task_id or "",
             status or "success",
             message or "",
             int(duration_ms or 0),
@@ -1276,6 +1285,26 @@ def _active_success_publish_count(cursor, video_id):
     ''', (video_id,))
     row = cursor.fetchone()
     return int((row or {})["total"] or 0)
+
+
+def _published_platform_types_for_video(video_id, include_inflight=True):
+    if not video_id:
+        return set()
+    init_database_tables()
+    # 默认把 pending/running 也算作「已占用」：定时任务一旦创建（pending）或正在执行（running），
+    # 就应当挡住工作流的自动重复发布；仅 success 的旧语义保留给 include_inflight=False 的展示场景。
+    statuses = ("pending", "running", "success") if include_inflight else ("success",)
+    placeholders = ",".join("?" for _ in statuses)
+    with _db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f'''
+        SELECT platform_type
+        FROM published_youtube_materials
+        WHERE video_id = ?
+          AND deleted_at IS NULL
+          AND COALESCE(NULLIF(status, ''), 'success') IN ({placeholders})
+        ''', (video_id, *statuses))
+        return {int(row[0] or 0) for row in cursor.fetchall() if int(row[0] or 0)}
 
 
 def _sync_video_publish_status_from_records(cursor, video_id):

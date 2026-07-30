@@ -4,6 +4,10 @@
 import logging
 import threading
 import time
+import hashlib
+import json
+import re
+from pathlib import Path
 
 from app.core.llm_harness import LLMContractError, call_json_contract, contains_profanity, validate_chunk_summary, validate_editing_plan
 from app.core import llm_prompts
@@ -32,7 +36,11 @@ def _editing_cover_title(job, analysis_result):
 
 
 def _select_intro_highlight_segments(analysis_result, max_segments=3):
-    raw_segments = (analysis_result or {}).get("highlight_segments") or []
+    raw_segments = (
+        (analysis_result or {}).get("selected_highlight_segments")
+        or (analysis_result or {}).get("highlight_segments")
+        or []
+    )
     selected = []
     for segment in _normalize_highlight_segments(raw_segments):
         try:
@@ -131,11 +139,13 @@ def _write_editing_up_next_overlay_ass(ass_file, width, height, duration):
 
 
 def _editing_up_next_overlay_filters(width, height, ass_file):
+    """生成片头 up-next 浮层的 subtitles 滤镜(仅烧字幕,不画背景框)。"""
     subtitle_filter = f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'"
     return [subtitle_filter]
 
 
 def _editing_intro_video_filters(width, height, is_intro_clip=False, overlay_ass_file=None):
+    """片头/正片片段的统一 scale+pad 滤镜;is_intro_clip 时叠加 up-next 浮层字幕。"""
     video_filters = []
     if width and height:
         video_filters.extend([
@@ -150,179 +160,145 @@ def _editing_intro_video_filters(width, height, is_intro_clip=False, overlay_ass
     return video_filters
 
 
-def _build_editing_intro_video(job, source_file, processed_file, analysis_result, work_dir):
-    # 处理版本二核心:封面片头、设置数量的高光片段和正片统一规格后拼接。
-    job_id = job.get("id")
-    output_file = Path(processed_file)
-    highlight_intro_enabled = bool((analysis_result or {}).get(
-        "_highlightIntroEnabled", job.get("_highlightIntroEnabled", EDITING_ENABLE_HIGHLIGHT_INTRO),
-    ))
-    if not EDITING_ENABLE_COVER_INTRO and not highlight_intro_enabled:
-        return {
-            "path": output_file,
-            "segments": [],
-            "cover": None,
-            "skipped": True,
-            "reason": "封面片头与高光拼接均已关闭",
-            "watermarked": _watermark_enabled(job),
-        }
+def _editing_signature(payload):
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    segments = _select_intro_highlight_segments(analysis_result, max_segments=job.get("highlightCount") or 3) if highlight_intro_enabled else []
-    ffmpeg = _resolve_ffmpeg_command()
-    _, burn_config = _burn_profile_config(job.get("burnProfile"))
-    processed_info = _get_video_info(processed_file)
-    width = int(processed_info.get("width") or 0)
-    height = int(processed_info.get("height") or 0)
-    fps = float(processed_info.get("fps") or 30.0)
-    if fps <= 0:
-        fps = 30.0
-    max_fps = float(burn_config.get("max_fps") or 60.0)
-    if fps > max_fps:
-        fps = max_fps
 
-    work_dir = _ensure_dir(work_dir)
-    clip_files = []
-    cover_result = None
-    cover_error = ""
-    normalized_main = work_dir / f"{output_file.stem}_main_normalized.mp4"
-    final_tmp = work_dir / f"{output_file.stem}_editing_concat.mp4"
-    concat_file = work_dir / f"{output_file.stem}_concat.txt"
-
-    overlay_ass_file = work_dir / f"{output_file.stem}_up_next_overlay.ass"
-    cover_ass_file = work_dir / f"{output_file.stem}_cover.ass"
-    cover_clip_file = work_dir / f"{output_file.stem}_cover.mp4"
-
-    def encode_clip(input_file, output_clip, start=None, end=None, is_intro_clip=False):
-        command = [ffmpeg, "-y"]
-        clip_duration = None
-        if start is not None:
-            command.extend(["-ss", f"{start:.3f}"])
-        if end is not None and start is not None:
-            clip_duration = max(0.5, end - start)
-            command.extend(["-t", f"{clip_duration:.3f}"])
-        command.extend(["-i", str(input_file)])
-        if is_intro_clip:
-            _write_editing_up_next_overlay_ass(overlay_ass_file, width, height, clip_duration or 8)
-        video_filters = _editing_intro_video_filters(width, height, is_intro_clip, overlay_ass_file)
-        command.extend([
-            "-vf", ",".join(video_filters),
-            "-fps_mode", "cfr",
-            "-r", f"{fps:.3f}".rstrip("0").rstrip("."),
-            *video_encode_args(burn_config),
-            "-maxrate", burn_config["maxrate"],
-            "-bufsize", burn_config["bufsize"],
-            "-pix_fmt", "yuv420p",
-            "-profile:v", "high",
-            "-level:v", "4.1",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-ar", "48000",
-            "-ac", "2",
-            "-af", "aresample=async=1:first_pts=0",
-            "-movflags", "+faststart",
-            str(output_clip),
-        ])
-        _run_command(command, cwd=BASE_DIR)
-
-    cover_duration = EDITING_COVER_DURATION_SECONDS
-    cover_title = _editing_cover_title(job, analysis_result)
-    cover_path = find_cover_image(YOUTUBE_DOWNLOAD_DIR, job.get("videoId"), source_file)
-    if EDITING_ENABLE_COVER_INTRO and cover_title and cover_path:
-        try:
-            _update_translate_progress(job_id, 84, "处理版本二：正在生成封面片头", step="editing")
-            layout = analyze_cover_layout(cover_path, width, height, cover_title)
-            write_cover_ass(
-                cover_ass_file,
-                width,
-                height,
-                cover_duration,
-                cover_title,
-                layout,
-                signature=job.get("coverSignature") or job.get("coverBrandName"),
-                watermark_text=_watermark_text(job) if _watermark_enabled(job) else "",
-            )
-            _run_command(
-                build_cover_clip_command(
-                    ffmpeg,
-                    cover_path,
-                    cover_ass_file,
-                    cover_clip_file,
-                    width,
-                    height,
-                    fps,
-                    cover_duration,
-                    burn_config,
-                    layout,
-                    has_audio=bool(processed_info.get("has_audio")),
-                    color_info=processed_info.get("color"),
-                ),
-                cwd=BASE_DIR,
-            )
-            if not cover_clip_file.is_file() or cover_clip_file.stat().st_size <= 0:
-                raise RuntimeError("FFmpeg 未生成有效封面片头文件")
-            clip_files.append(cover_clip_file)
-            cover_result = {
-                "path": str(cover_path),
-                "title": cover_title,
-                "signature": job.get("coverSignature") or job.get("coverBrandName") or "Vidferry",
-                "durationSeconds": cover_duration,
-                "layout": layout,
-            }
-        except Exception as exc:
-            cover_error = str(exc)[:300]
-            backend_logger.warning(
-                "封面片头生成失败 : job_id = %s | video_id = %s | reason = %s",
-                job_id or "",
-                job.get("videoId") or "",
-                cover_error,
-            )
-
-    if not segments and not clip_files:
-        if cover_error:
-            reason = cover_error
-        elif not EDITING_ENABLE_COVER_INTRO:
-            reason = "封面片头已关闭且未找到可用高光片段"
-        else:
-            reason = "未找到本地封面或封面标题"
-        return {
-            "path": output_file,
-            "segments": [],
-            "cover": None,
-            "skipped": True,
-            "reason": reason,
-            "watermarked": _watermark_enabled(job),
-        }
-
-    if segments:
-        _update_translate_progress(job_id, 86, f"处理版本二：正在截取 {len(segments)} 个高光片段", step="editing")
-    for index, segment in enumerate(segments, start=1):
-        clip_file = work_dir / f"{output_file.stem}_intro_{index}.mp4"
-        encode_clip(processed_file, clip_file, start=segment["start"], end=segment["end"], is_intro_clip=True)
-        clip_files.append(clip_file)
-
-    _update_translate_progress(job_id, 91, "处理版本二：正在拼接封面、高光与正片", step="editing")
-    encode_clip(processed_file, normalized_main)
-    concat_lines = [f"file '{_ffmpeg_concat_file_path(path)}'" for path in [*clip_files, normalized_main]]
-    concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
-    _run_command([
-        ffmpeg,
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_file),
-        "-c", "copy",
-        "-movflags", "+faststart",
-        str(final_tmp),
-    ], cwd=BASE_DIR)
-    _replace_output_file(final_tmp, output_file)
+def _editing_body_signature_payload(job):
     return {
-        "path": output_file,
-        "segments": segments,
-        "cover": cover_result,
-        "skipped": False,
-        "reason": cover_error,
-        "watermarked": _watermark_enabled(job),
+        "version": 1,
+        "subtitleLanguage": job.get("subtitleLanguage"),
+        "burnProfile": job.get("burnProfile"),
+        "subtitleSize": job.get("subtitleSize"),
+        "translatorLabel": job.get("translatorLabel"),
+        "watermarkEnabled": bool(job.get("watermarkEnabled")),
+        "watermarkText": _watermark_text(job) if _watermark_enabled(job) else "",
     }
+
+
+def editing_legacy_body_signature(job):
+    return _editing_signature(_editing_body_signature_payload(job))
+
+
+def editing_body_signature(job):
+    return _editing_signature({
+        **_editing_body_signature_payload(job),
+        "translationEnabled": bool(job.get("translationEnabled", True)),
+    })
+
+
+def editing_intro_signature(job, analysis_result, body_signature):
+    segments = _select_intro_highlight_segments(analysis_result, job.get("highlightCount") or 3)
+    return _editing_signature({
+        "version": 1,
+        "body": body_signature,
+        "coverEnabled": bool(job.get("coverIntroEnabled", True)),
+        "coverTitle": _editing_cover_title(job, analysis_result),
+        "coverSignature": job.get("coverSignature") or "",
+        "highlightEnabled": bool(job.get("highlightIntroEnabled", True)),
+        "highlightCount": int(job.get("highlightCount") or 3),
+        "segments": [{"start": item["start"], "end": item["end"]} for item in segments],
+    })
+
+
+def _shift_ass_timestamp(value, offset):
+    match = re.fullmatch(r"(\d+):(\d{2}):(\d{2})\.(\d{2})", value.strip())
+    if not match:
+        return value
+    hours, minutes, seconds, centiseconds = (int(part) for part in match.groups())
+    total = hours * 3600 + minutes * 60 + seconds + centiseconds / 100 - offset
+    return _format_ass_timestamp(max(0, total))
+
+
+def _write_clip_ass(source_ass_file, output_ass_file, start, end):
+    lines = Path(source_ass_file).read_text(encoding="utf-8-sig").splitlines()
+    result = []
+    for line in lines:
+        if not line.startswith("Dialogue:"):
+            result.append(line)
+            continue
+        parts = line.split(",", 9)
+        if len(parts) != 10:
+            continue
+        try:
+            cue_start = _ass_timestamp_seconds(parts[1])
+            cue_end = _ass_timestamp_seconds(parts[2])
+        except ValueError:
+            continue
+        if cue_end <= start or cue_start >= end:
+            continue
+        parts[1] = _shift_ass_timestamp(parts[1], start)
+        parts[2] = _shift_ass_timestamp(parts[2], start)
+        result.append(",".join(parts))
+    Path(output_ass_file).write_text("\n".join(result), encoding="utf-8")
+    return Path(output_ass_file)
+
+
+def _ass_timestamp_seconds(value):
+    hours, minutes, seconds = value.strip().split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def _editing_target_info(source_file, job):
+    info = _get_video_info(source_file)
+    _, config = _burn_profile_config(job.get("burnProfile"))
+    width = int(info.get("width") or 0)
+    height = int(info.get("height") or 0)
+    target = _compatible_video_dimensions(width, height, config.get("max_long_side", 1920), config.get("max_short_side", 1080))
+    if target:
+        width, height = target
+    fps = min(float(info.get("fps") or 30), float(config.get("max_fps") or 60))
+    return info, max(2, width), max(2, height), max(1, fps), config
+
+
+def render_editing_intro_assets(job, source_file, ass_file, analysis_result, work_dir):
+    """从原视频制作短片；正片烧制可与本函数并行执行。"""
+    work_dir = _ensure_dir(work_dir)
+    source_info, width, height, fps, burn_config = _editing_target_info(source_file, job)
+    ffmpeg = _resolve_ffmpeg_command()
+    segments = _select_intro_highlight_segments(analysis_result, job.get("highlightCount") or 3) if job.get("highlightIntroEnabled", True) else []
+    clips, cover_result = [], None
+    cover_title = _editing_cover_title(job, analysis_result)
+    if job.get("coverIntroEnabled", True):
+        cover_path = find_cover_image(YOUTUBE_DOWNLOAD_DIR, job.get("videoId"), source_file)
+        if cover_path and cover_title:
+            cover_ass = work_dir / "cover.ass"
+            cover_clip = work_dir / "cover.mp4"
+            layout = analyze_cover_layout(cover_path, width, height, cover_title)
+            write_cover_ass(cover_ass, width, height, EDITING_COVER_DURATION_SECONDS, cover_title, layout,
+                            signature=job.get("coverSignature"), watermark_text=_watermark_text(job) if _watermark_enabled(job) else "")
+            _run_command(build_cover_clip_command(ffmpeg, cover_path, cover_ass, cover_clip, width, height, fps,
+                         EDITING_COVER_DURATION_SECONDS, burn_config, layout, bool(source_info.get("has_audio")), source_info.get("color")), cwd=BASE_DIR)
+            clips.append(cover_clip)
+            cover_result = {"path": str(cover_path), "title": cover_title, "signature": job.get("coverSignature") or "Vidferry", "durationSeconds": EDITING_COVER_DURATION_SECONDS, "layout": layout}
+    for index, segment in enumerate(segments, 1):
+        start, end = segment["start"], segment["end"]
+        overlay_ass = _write_editing_up_next_overlay_ass(work_dir / f"highlight_{index}_up_next.ass", width, height, end - start)
+        clip_file = work_dir / f"highlight_{index}.mp4"
+        filters = []
+        if ass_file and Path(ass_file).is_file():
+            clip_ass = _write_clip_ass(ass_file, work_dir / f"highlight_{index}.ass", start, end)
+            filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
+        filters.extend([f"scale={width}:{height}:flags=lanczos", "setsar=1", f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'"])
+        _run_command([ffmpeg, "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source_file), "-vf", ",".join(filters),
+                      "-fps_mode", "cfr", "-r", f"{fps:.3f}".rstrip("0").rstrip("."), *video_encode_args(burn_config),
+                      "-maxrate", burn_config["maxrate"], "-bufsize", burn_config["bufsize"], "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", burn_config.get("h264_level", "4.1"),
+                      "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(clip_file)], cwd=BASE_DIR)
+        clips.append(clip_file)
+    return {"clips": [str(item) for item in clips], "segments": segments, "cover": cover_result}
+
+
+def concat_editing_intro_assets(body_file, intro_assets, output_file, work_dir):
+    clips = [Path(item) for item in (intro_assets or {}).get("clips") or []]
+    if not clips:
+        return Path(body_file)
+    concat_file = Path(work_dir) / "concat.txt"
+    final_tmp = Path(work_dir) / "editing_concat.mp4"
+    concat_file.write_text("\n".join(f"file '{_ffmpeg_concat_file_path(item)}'" for item in [*clips, Path(body_file)]), encoding="utf-8")
+    _run_command([_resolve_ffmpeg_command(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", "-movflags", "+faststart", str(final_tmp)], cwd=BASE_DIR)
+    _replace_output_file(final_tmp, output_file)
+    return Path(output_file)
 
 
 def _format_segment_time(seconds):
@@ -389,7 +365,7 @@ def _unsafe_transcript_ranges(segments):
     return ranges
 
 
-def _call_editing_contract(messages, contract_id, validator, max_tokens, telemetry=None, soft_validator=None):
+def _call_editing_contract(messages, contract_id, validator, max_tokens, telemetry=None, soft_validator=None, retry_max_tokens=None):
     return call_json_contract(
         messages=messages,
         contract_id=contract_id,
@@ -403,6 +379,7 @@ def _call_editing_contract(messages, contract_id, validator, max_tokens, telemet
         prompt_version=llm_prompts.EDITING_PROMPT_VERSION,
         telemetry=telemetry,
         soft_validator=soft_validator,
+        retry_max_tokens=retry_max_tokens,
     )
 
 
@@ -430,8 +407,9 @@ def _summarize_transcript_chunks(job, transcript_text, max_timestamp, blocked_ra
             ],
             "editing_chunk_summary",
             lambda value: validate_chunk_summary(value, max_timestamp, blocked_ranges),
-            1200,
+            2400,
             telemetry,
+            retry_max_tokens=4800,
         )
         summaries.append(result)
         usage_total["tokens"] += int(usage.get("tokens") or 0)
@@ -504,7 +482,8 @@ def _generate_editing_plan(job, segments, telemetry=None):
 
 
 def _generate_editing_plan_impl(job, segments, telemetry=None):
-    research_context = youtube_video_research_context(job.get("videoId"))
+    context_loader = globals().get("youtube_video_research_context")
+    research_context = context_loader(job.get("videoId")) if callable(context_loader) else {}
     job = {**job, **research_context}
     transcript_text = _format_transcript_for_model(segments)
     if not transcript_text.strip():

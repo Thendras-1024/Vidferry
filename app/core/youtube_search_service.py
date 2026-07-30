@@ -118,16 +118,55 @@ def _canonical_youtube_url(url, video_id=""):
     return (url or "").strip()
 
 
+def _channel_subscribers(channel_url):
+    if not channel_url:
+        return ""
+    try:
+        import yt_dlp
+
+        ydl_opts = {
+            **_base_ytdlp_opts(),
+            "extract_flat": True,
+            "ignoreerrors": True,
+            "noplaylist": False,
+            "playlistend": 1,
+            "quiet": True,
+            "skip_download": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            channel = ydl.extract_info(channel_url, download=False) or {}
+        return _format_subscribers_w(channel.get("channel_follower_count"))
+    except Exception:
+        backend_logger.info(
+            "YouTube channel subscribers unavailable : channelUrl = %s",
+            channel_url,
+        )
+        return ""
+
+
+def _co_creators(item):
+    creators = item.get("creators") or []
+    if isinstance(creators, str):
+        creators = [creator.strip() for creator in creators.split(",")]
+    return [str(creator).strip() for creator in creators if str(creator).strip()]
+
+
 def _video_from_ytdlp_info(item, fallback_url=""):
     video_id = item.get("id") or _extract_youtube_video_id(fallback_url)
     url = item.get("webpage_url") or item.get("original_url") or fallback_url
     if video_id and (not url or not str(url).startswith("http")):
         url = f"https://www.youtube.com/watch?v={video_id}"
+    subscribers = _format_subscribers_w(item.get("channel_follower_count"))
+    creators = _co_creators(item)
+    if not subscribers:
+        subscribers = _channel_subscribers(item.get("channel_url") or item.get("uploader_url"))
+    if not subscribers and len(creators) > 1:
+        subscribers = "存在联合创作者"
     return {
         "id": video_id or "",
         "title": item.get("title") or "",
         "channel": item.get("channel") or item.get("uploader") or "",
-        "subscribers": _format_subscribers_w(item.get("channel_follower_count")),
+        "subscribers": subscribers,
         "publishedAt": _parse_upload_date(item.get("upload_date")) or _format_iso_date(item.get("release_date") or ""),
         "url": url or "",
         "thumbnail": item.get("thumbnail") or "",

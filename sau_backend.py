@@ -28,5 +28,6 @@ if __name__ == "__main__":
     if recovered_search_jobs:
         print(f"启动恢复：已标记 {len(recovered_search_jobs)} 个历史检索任务为失败")
     normalize_existing_youtube_subscribers()
+    start_scheduled_publish_scheduler()
     install_workflow_shutdown_handlers()
     app.run(host=HOST, port=PORT)

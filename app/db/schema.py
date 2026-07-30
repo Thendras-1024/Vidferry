@@ -6,9 +6,11 @@ import threading
 from app.config import BASE_DIR
 from app.db.models import (
     ensure_agent_tables,
+    ensure_auth_tables,
     ensure_core_tables,
     ensure_file_record_tables,
     ensure_published_youtube_material_tables,
+    ensure_scheduled_publish_tables,
     ensure_workflow_event_tables,
     ensure_workflow_llm_usage_tables,
     ensure_subtitle_audit_tables,
@@ -44,10 +46,12 @@ def _init_database_tables(database_key):
         ensure_core_tables(cursor)
         ensure_file_record_tables(cursor)
         ensure_agent_tables(cursor)
+        ensure_auth_tables(cursor)
         ensure_workflow_event_tables(cursor)
         ensure_workflow_llm_usage_tables(cursor)
         ensure_subtitle_audit_tables(cursor)
         ensure_published_youtube_material_tables(cursor)
+        ensure_scheduled_publish_tables(cursor)
         conn.commit()
     _initialized_database_paths.add(database_key)
 

@@ -32,6 +32,22 @@ KUAISHOU_COOKIE_INVALID_SELECTOR = "div.names div.container div.name:text('机�
 KUAISHOU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 KUAISHOU_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
 
+# 作品描述框定位:稳定锚点优先,绝不依赖每次构建都会变的 CSS-Module hash 类名。
+KS_DESCRIPTION_RESOLVE_TIMEOUT_MS = 8000
+
+
+def _build_description_candidates(page: Page):
+    """作品描述框候选定位器,按稳定性从高到低排序。
+
+    快手创作者页是 React + Ant Design,类名多为 _name_HASH_NNN(HASH 每次构建都会变)。
+    这里只锚定 id / 属性 / 区域 id / 文案,确保页面改版后回退链仍可命中。"""
+    return [
+        page.locator("#work-description-edit"),  # 1. 稳定 DOM id(首选)
+        page.locator('div[contenteditable="true"][placeholder*="作品描述"]'),  # 2. contenteditable + placeholder 属性
+        page.locator('#main-tours div[contenteditable="true"]'),  # 3. 主编辑区内首个 contenteditable(全页仅 1 个)
+        page.get_by_text("作品描述", exact=True).locator("xpath=following-sibling::div"),  # 4. 旧版 label 结构兜底
+    ]
+
 
 def _msg(emoji: str, text: str) -> str:
     return f"{emoji} {text}"
@@ -356,6 +372,58 @@ class KSBaseUploader(BaseVideoUploader):
         else:
             print("未检测到 Joyride 遮罩，继续执行")
 
+    async def _resolve_description_box(self, page: Page, timeout_ms: int = KS_DESCRIPTION_RESOLVE_TIMEOUT_MS):
+        """解析作品描述框:命中回退链中任一候选即返回;全部失败抛带 VF- 前缀的清晰错误。"""
+        candidates = _build_description_candidates(page)
+        # 用 .or_() 把候选组合后只 wait 一次,避免对每个候选串行吃满超时
+        combined = candidates[0]
+        for candidate in candidates[1:]:
+            combined = combined.or_(candidate)
+        try:
+            await combined.first.wait_for(state="visible", timeout=timeout_ms)
+        except Exception as exc:
+            if self.debug:
+                try:
+                    await page.screenshot(full_page=True)
+                except Exception:
+                    pass
+            raise RuntimeError(
+                "VF-PUBLISH-DESCRIPTION-MISSING: 未找到快手作品描述输入框,页面结构可能已改版,"
+                "请检查 _build_description_candidates 回退链。"
+            ) from exc
+
+        # 返回首个可见候选,便于日志定位命中了回退链的哪一条
+        for index, candidate in enumerate(candidates):
+            try:
+                if await candidate.first.count() and await candidate.first.is_visible():
+                    kuaishou_logger.info(_msg("🔍", f"描述框命中候选 #{index}"))
+                    return candidate.first
+            except Exception:
+                continue
+        return combined.first
+
+    async def _fill_description_and_tags(self, page: Page, text: str, tags, *, max_tags: int = 3) -> None:
+        """填充作品描述与话题。视频/图文两分支共用,消除重复。"""
+        kuaishou_logger.info(_msg("✍️", "小人开始填描述和话题"))
+        desc_box = await self._resolve_description_box(page)
+
+        # contenteditable + React 受控:必须用真实键盘事件才能让 React 同步 state;fill() 不可靠
+        await desc_box.click()
+        await human_delay(0.2, 0.5)
+        await page.keyboard.press("Control+KeyA")
+        await page.keyboard.press("Delete")
+        if text:
+            await page.keyboard.type(text)
+
+        tags = list(tags or [])
+        if text and tags:
+            await page.keyboard.press("Enter")  # 描述与话题分行
+
+        for index, tag in enumerate(tags[:max_tags], start=1):
+            kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
+            await page.keyboard.type(f"#{tag} ")  # 末尾空格触发话题联想
+            await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+
 
 class KSVideo(KSBaseUploader):
     def __init__(
@@ -476,18 +544,7 @@ class KSVideo(KSBaseUploader):
 
             await self.close_guide_overlay(page)
 
-            kuaishou_logger.info(_msg("✍️", "小人开始填描述和话题"))
-            await page.get_by_text("描述").locator("xpath=following-sibling::div").click()
-            await page.keyboard.press("Backspace")
-            await page.keyboard.press("Control+KeyA")
-            await page.keyboard.press("Delete")
-            await page.keyboard.type(self.desc or self.title)
-            await page.keyboard.press("Enter")
-
-            for index, tag in enumerate(self.tags[:3], start=1):
-                kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
-                await page.keyboard.type(f"#{tag} ")
-                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+            await self._fill_description_and_tags(page, self.desc or self.title, self.tags)
 
             max_retries = 60
             retry_count = 0
@@ -618,17 +675,7 @@ class KSNote(KSBaseUploader):
         await self.close_guide_overlay(page)
 
         kuaishou_logger.info(_msg("✍️", "小人开始填写图文内容和话题"))
-        await page.get_by_text("描述").locator("xpath=following-sibling::div").click()
-        await page.keyboard.press("Backspace")
-        await page.keyboard.press("Control+KeyA")
-        await page.keyboard.press("Delete")
-        await page.keyboard.type(self.note)
-        await page.keyboard.press("Enter")
-
-        for index, tag in enumerate(self.tags[:3], start=1):
-            kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
-            await page.keyboard.type(f"#{tag} ")
-            await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+        await self._fill_description_and_tags(page, self.note, self.tags)
 
         max_retries = 60
         retry_count = 0

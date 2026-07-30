@@ -76,7 +76,7 @@ def create_youtube_video_group(name):
             group_id = cursor.lastrowid
             cursor.execute("SELECT *, 0 AS video_count FROM youtube_video_groups WHERE id = ?", (group_id,))
             return _row_to_youtube_video_group(cursor.fetchone())
-    except sqlite3.IntegrityError as exc:
+    except DATABASE_INTEGRITY_ERRORS as exc:
         raise ValueError("分组名称已存在") from exc
 
 
@@ -101,7 +101,7 @@ def rename_youtube_video_group(group_id, name):
             WHERE groups.id = ? GROUP BY groups.id
             ''', (int(group_id),))
             return _row_to_youtube_video_group(cursor.fetchone())
-    except sqlite3.IntegrityError as exc:
+    except DATABASE_INTEGRITY_ERRORS as exc:
         raise ValueError("分组名称已存在") from exc
 
 

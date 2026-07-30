@@ -31,16 +31,22 @@ def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, 
 def _run_bilibili_cookie_check_sync(file_path):
     account_file = _safe_cookie_path(file_path)
     if not account_file.is_file():
+        backend_logger.warning("bilibili cookie check failed : reason = cookie_file_missing")
         return False
 
     try:
         from uploader.bilibili_uploader.runtime import run_biliup_command
     except Exception as exc:
-        print(f"B站 Cookie 检查依赖加载失败: {exc}")
+        backend_logger.warning(
+            "bilibili cookie check failed : reason = runtime_load_error error_type = %s",
+            type(exc).__name__,
+        )
         return False
 
+    backend_logger.info("bilibili cookie check started : action = renew")
     result = run_biliup_command(["-u", str(account_file), "renew"])
     if result.returncode == 0:
+        backend_logger.info("bilibili cookie check completed : valid = true return_code = 0")
         return True
 
     output = "\n".join(
@@ -48,7 +54,11 @@ def _run_bilibili_cookie_check_sync(file_path):
         for item in [getattr(result, "stderr", ""), getattr(result, "stdout", "")]
         if str(item or "").strip()
     )
-    print(f"B站 Cookie 检查失败: {output or f'biliup 退出码 {result.returncode}'}")
+    backend_logger.warning(
+        "bilibili cookie check failed : reason = renew_failed return_code = %s has_output = %s",
+        result.returncode,
+        bool(output),
+    )
     return False
 
 
@@ -94,8 +104,19 @@ def _check_account_cookie_row(cursor, row, *, force=False):
     cached_state = _account_cookie_check_state.get(account_id) or {}
     retry_after_seconds = int(max(0, float(cached_state.get("blocked_until") or 0) - now))
     current_status = int(row["status"] if row["status"] is not None else 0)
+    backend_logger.info(
+        "account cookie check started : account_id = %s platform_type = %s current_status = %s",
+        account_id,
+        row["type"],
+        current_status,
+    )
 
     if not force and retry_after_seconds > 0:
+        backend_logger.info(
+            "account cookie check skipped : account_id = %s retry_after_seconds = %s",
+            account_id,
+            retry_after_seconds,
+        )
         return _account_check_payload(
             row,
             skipped=True,
@@ -108,6 +129,11 @@ def _check_account_cookie_row(cursor, row, *, force=False):
     try:
         valid = _run_cookie_check_sync(row["type"], row["filePath"])
     except Exception as exc:
+        backend_logger.warning(
+            "account cookie check failed : account_id = %s reason = check_exception error_type = %s",
+            account_id,
+            type(exc).__name__,
+        )
         _account_cookie_check_state[account_id] = {
             "checked_at": now,
             "valid": False,
@@ -124,6 +150,14 @@ def _check_account_cookie_row(cursor, row, *, force=False):
 
     next_status = 1 if valid else 0
     cursor.execute("UPDATE user_info SET status = ? WHERE id = ?", (next_status, account_id))
+    log_method = backend_logger.info if valid else backend_logger.warning
+    log_method(
+        "account cookie check completed : account_id = %s valid = %s previous_status = %s next_status = %s",
+        account_id,
+        valid,
+        current_status,
+        next_status,
+    )
     cooldown_seconds = (
         ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SECONDS
         if valid

@@ -1,11 +1,30 @@
 ﻿"""YouTube 视频线索的存储、状态流转与列表查询(含阶段排序与状态对账)。"""
 
 
+def _local_youtube_thumbnail_path(video_id, downloaded_file_path=""):
+    candidates = [Path(downloaded_file_path)] if downloaded_file_path else []
+    if video_id:
+        candidates.append(Path(YOUTUBE_DOWNLOAD_DIR) / f"{video_id}.mp4")
+    for candidate in candidates:
+        for extension in (".webp", ".jpg", ".jpeg", ".png"):
+            thumbnail_path = candidate.with_suffix(extension)
+            if thumbnail_path.is_file():
+                return str(thumbnail_path)
+    return ""
+
+
 def _row_to_youtube_video(row):
     item = dict(row)
     analysis_result = _parse_json_object(item.get("analysis_result"))
     publish_draft = _parse_publish_draft(item.get("publish_draft"), analysis_result)
+    try:
+        editing_highlight_snapshot = json.loads(item.get("editing_highlight_snapshot") or "[]")
+    except (TypeError, ValueError):
+        editing_highlight_snapshot = []
+    if not isinstance(editing_highlight_snapshot, list):
+        editing_highlight_snapshot = []
     video_id = item.get("video_id") or ""
+    downloaded_file_path = item.get("downloaded_file_path") or ""
     return {
         "dbId": item.get("id"),
         "id": video_id,
@@ -24,7 +43,8 @@ def _row_to_youtube_video(row):
         "downloadStatus": int(item.get("download_status") or 0),
         "publishStatus": int(item.get("publish_status") or 0),
         "translateStatus": int(item.get("translate_status") or 0),
-        "downloadedFilePath": item.get("downloaded_file_path") or "",
+        "downloadedFilePath": downloaded_file_path,
+        "localThumbnailPath": _local_youtube_thumbnail_path(video_id, downloaded_file_path),
         "processedFilePath": item.get("processed_file_path") or "",
         "transcriptStatus": int(item.get("transcript_status") or 0),
         "transcriptFilePath": item.get("transcript_file_path") or "",
@@ -34,6 +54,12 @@ def _row_to_youtube_video(row):
         "analysisResult": analysis_result,
         "publishDraft": publish_draft,
         "analysisUpdatedAt": item.get("analysis_updated_at") or "",
+        "editingBodyPath": item.get("editing_body_path") or "",
+        "editingAssPath": item.get("editing_ass_path") or "",
+        "editingBodySignature": item.get("editing_body_signature") or "",
+        "editingIntroSignature": item.get("editing_intro_signature") or "",
+        "editingHighlightSnapshot": editing_highlight_snapshot,
+        "editingIntroStatus": item.get("editing_intro_status") or "",
         "createdAt": item.get("created_at") or "",
         "updatedAt": item.get("updated_at") or "",
     }
@@ -581,6 +607,27 @@ def list_youtube_videos(params=None):
         LIMIT ? OFFSET ?
         '''.format(where_sql=where_sql, order_sql=order_sql), query_values)
         videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
+        video_ids = [video["id"] for video in videos if video.get("id")]
+        published_platforms = {}
+        if video_ids:
+            placeholders = ",".join("?" for _ in video_ids)
+            cursor.execute(f'''
+            SELECT id, video_id, platform, platform_type
+            FROM published_youtube_materials
+            WHERE video_id IN ({placeholders})
+              AND deleted_at IS NULL
+              AND COALESCE(NULLIF(status, ''), 'success') = 'success'
+            ORDER BY platform_type
+            ''', video_ids)
+            for record in cursor.fetchall():
+                video_id = record["video_id"] or ""
+                published_platforms.setdefault(video_id, []).append({
+                    "recordId": int(record["id"] or 0),
+                    "type": int(record["platform_type"] or 0),
+                    "name": record["platform"] or platform_name(record["platform_type"]),
+                })
+        for video in videos:
+            video["publishedPlatforms"] = published_platforms.get(video.get("id"), [])
         _attach_processed_versions_for_videos(cursor, videos)
         return {
             "items": videos,
@@ -644,6 +691,29 @@ def update_youtube_video_status(video_id, download_status=None, publish_status=N
         return _row_to_youtube_video(cursor.fetchone())
 
 
+def _cleanup_editing_v1_artifacts(video_record, *, cursor=None):
+    """删除 editing_v1 的 body/ASS 内部产物与片头渲染临时目录，文件清理失败只记日志不抛。
+    字段清理由调用方按事务情况处理（事务内裸 UPDATE，事务外 update_youtube_video_artifacts）。"""
+    video_record = dict(video_record or {})
+    processed_path = Path(video_record.get("processed_file_path") or "")
+    # body/ASS 内部产物：跳过等于当前成片的（降级路径下 body 可能就是成片本身）。
+    for key in ("editing_body_path", "editing_ass_path"):
+        candidate = Path(video_record.get(key) or "")
+        if candidate.is_file() and candidate != processed_path:
+            safe_unlink(candidate)
+    # 片头渲染临时目录：按 video_id 查历史 job_id，清理 {job_id}_editing_intro。
+    video_id = video_record.get("video_id") or video_record.get("id") or ""
+    if video_id and cursor is not None:
+        try:
+            cursor.execute("SELECT id FROM youtube_workflow_jobs WHERE video_id = ?", (video_id,))
+            job_ids = [str(row[0]) for row in cursor.fetchall()]
+        except Exception as exc:
+            backend_logger.warning("查询历史任务失败，跳过 work_dir 清理 video_id=%s %s", video_id, exc)
+            job_ids = []
+        for job_id in job_ids:
+            safe_rmtree(YOUTUBE_PROCESSED_DIR / f"{job_id}_editing_intro")
+
+
 def delete_youtube_video_record(video_id):
     init_youtube_video_table()
     with _db_connect() as conn:
@@ -701,6 +771,7 @@ def delete_youtube_video_record(video_id):
                 },
             )
 
+        _cleanup_editing_v1_artifacts(video_record, cursor=cursor)
         if not is_published_archived:
             cursor.execute('''
             DELETE FROM youtube_workflow_events
@@ -818,6 +889,7 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
         material_rows = cursor.fetchall()
 
         if delete_processed:
+            _cleanup_editing_v1_artifacts(video, cursor=cursor)
             for row in material_rows:
                 record = _row_to_material(row)
                 if process_version and record.get("processVersion") != process_version:
@@ -862,6 +934,13 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
         sync_result = _sync_youtube_processed_state(cursor, video_id)
         if deleted_materials and not sync_result.get("analysisCleared"):
             sync_result.update(_clear_youtube_analysis_state(cursor, video_id))
+        if delete_processed:
+            cursor.execute('''
+            UPDATE youtube_videos
+            SET editing_body_path = '', editing_ass_path = '', editing_body_signature = '',
+                editing_intro_signature = '', editing_highlight_snapshot = '[]', editing_intro_status = ''
+            WHERE video_id = ?
+            ''', (video_id,))
         conn.commit()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
         updated_video = _row_to_youtube_video(cursor.fetchone())

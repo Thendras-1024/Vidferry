@@ -8,6 +8,22 @@ from pathlib import Path
 
 from app.config import BASE_DIR, SQLITE_BUSY_TIMEOUT_MS, SQLITE_ENABLE_WAL
 
+try:
+    import psycopg
+except ImportError:  # PostgreSQL 是可选运行时依赖。
+    psycopg = None
+
+
+DATABASE_INTEGRITY_ERRORS = (sqlite3.IntegrityError,) + ((psycopg.IntegrityError,) if psycopg else ())
+
+
+def close_database_pool():
+    """关闭 PostgreSQL 连接池的兼容入口。
+
+    当前 SQLite 默认路径按请求创建连接，无需额外释放资源。
+    """
+    return None
+
 
 _wal_configured_paths = set()
 _wal_configured_paths_lock = threading.Lock()

@@ -232,9 +232,53 @@ def _mark_account_abnormal(platform_type, account_file, reason=""):
                 (int(platform_type or 0), str(account_file)),
             )
             conn.commit()
-        print(f"发布账号状态已标记异常: platform={platform_type}, account={account_file}, reason={reason}", flush=True)
+        backend_logger.warning(
+            "publish account marked abnormal : platform_type = %s reason = cookie_invalid",
+            platform_type,
+        )
     except Exception as exc:
-        print(f"标记发布账号异常失败: {exc}", flush=True)
+        backend_logger.exception(
+            "publish account mark abnormal failed : platform_type = %s error_type = %s",
+            platform_type,
+            type(exc).__name__,
+        )
+
+
+# 进程级「在跑的发布子进程」注册表。键为 pid。仅用于关停时终止孤儿发布进程（R1），
+# 不参与正常流程的并发控制（同账号串行仍由 _get_publish_account_lock 负责）。
+_inflight_publish_processes = {}
+_inflight_publish_processes_lock = threading.Lock()
+
+
+def _register_inflight_publish_process(process):
+    if process is None:
+        return
+    with _inflight_publish_processes_lock:
+        _inflight_publish_processes[process.pid] = process
+
+
+def _unregister_inflight_publish_process(process):
+    if process is None:
+        return
+    with _inflight_publish_processes_lock:
+        _inflight_publish_processes.pop(process.pid, None)
+
+
+def terminate_inflight_publish_processes():
+    """关停钩子调用：终止仍在运行的发布子进程。已结束的进程 terminate() 为 no-op，
+    因此正常跑完的发布不受影响；只有「后端被关停/重启时还在跑」的孤儿会被中断。"""
+    with _inflight_publish_processes_lock:
+        processes = list(_inflight_publish_processes.values())
+    for process in processes:
+        try:
+            if process.poll() is None:
+                process.terminate()
+                backend_logger.info("terminated inflight publish subprocess : pid = %s", process.pid)
+        except Exception as exc:
+            backend_logger.warning(
+                "terminate inflight publish subprocess failed : pid = %s error_type = %s",
+                getattr(process, "pid", "?"), type(exc).__name__,
+            )
 
 
 def _run_isolated_publish_command(command, timeout=3600):
@@ -242,6 +286,7 @@ def _run_isolated_publish_command(command, timeout=3600):
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
     print(f"启动平台发布子进程: {' '.join(map(str, command))}", flush=True)
+    process = None
     try:
         process = subprocess.Popen(
             command,
@@ -253,6 +298,9 @@ def _run_isolated_publish_command(command, timeout=3600):
             errors="replace",
             env=env,
         )
+        # 登记到进程级注册表：关停时由 terminate_inflight_publish_processes 终止，
+        # 避免后端重启后孤儿子进程继续完成上传、却被恢复逻辑标 failed → 用户重建 → 重复上传。
+        _register_inflight_publish_process(process)
         output_lines = []
         started_at = time.time()
         while True:
@@ -276,6 +324,8 @@ def _run_isolated_publish_command(command, timeout=3600):
     except subprocess.TimeoutExpired as exc:
         output = "\n".join(part for part in [(exc.stdout or ""), (exc.stderr or "")] if part).strip()
         raise TimeoutError(output or f"平台发布超时: {' '.join(map(str, command))}") from exc
+    finally:
+        _unregister_inflight_publish_process(process)
 
 
 def _run_workflow_publish_command(command, platform_type, account_file, timeout=3600):
@@ -436,6 +486,39 @@ def _run_publish_tasks(tasks):
     return results
 
 
+def _mark_publish_tasks_pending(tasks):
+    # 发布中心与定时发布共用：执行前把每个目标登记为 pending（占住平台，供发布前去重）。
+    for task in tasks or []:
+        publish_title = f"{task['title']}; description={task['description']}" if task["description"] else task["title"]
+        _mark_published_materials(
+            task["fileList"],
+            platform_type=task["platformType"],
+            title=publish_title,
+            account_count=1,
+            account_file=task["accountFile"],
+            publish_task_id=task.get("publishTaskId") or "",
+            status="pending",
+            message="等待发布",
+            account_name=task.get("accountName") or "",
+        )
+
+
+def _summarize_publish_results(results):
+    # 发布中心与定时发布共用：由各目标执行结果聚合成功/失败计数与已发布视频。
+    results = list(results or [])
+    published_video_ids = []
+    for item in results:
+        published_video_ids.extend(item.get("publishedVideoIds") or [])
+    success_count = sum(1 for item in results if item.get("status") == "success")
+    failed_count = len(results) - success_count
+    return {
+        "publishedVideoIds": list(dict.fromkeys(published_video_ids)),
+        "successCount": success_count,
+        "failedCount": failed_count,
+        "hasFailures": failed_count > 0,
+    }
+
+
 def _publish_payload(data):
     if not data:
         raise ValueError("请求数据不能为空")
@@ -454,31 +537,11 @@ def _publish_payload(data):
     )
     publish_task_id = uuid.uuid4().hex
     tasks = _build_publish_tasks(data, targets, file_list, publish_task_id=publish_task_id)
-    for task in tasks:
-        publish_title = f"{task['title']}; description={task['description']}" if task["description"] else task["title"]
-        _mark_published_materials(
-            task["fileList"],
-            platform_type=task["platformType"],
-            title=publish_title,
-            account_count=1,
-            account_file=task["accountFile"],
-            publish_task_id=publish_task_id,
-            status="pending",
-            message="等待发布",
-            account_name=task.get("accountName") or "",
-        )
+    _mark_publish_tasks_pending(tasks)
     results = _run_publish_tasks(tasks)
-    published_video_ids = []
-    for item in results:
-        published_video_ids.extend(item.get("publishedVideoIds") or [])
-    success_count = sum(1 for item in results if item["status"] == "success")
-    failed_count = len(results) - success_count
     return {
-        "publishedVideoIds": list(dict.fromkeys(published_video_ids)),
+        **_summarize_publish_results(results),
         "publishTaskId": publish_task_id,
         "results": results,
-        "hasFailures": failed_count > 0,
-        "successCount": success_count,
-        "failedCount": failed_count,
         "agentGuard": agent_guard,
     }

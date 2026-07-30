@@ -310,7 +310,7 @@ def build_cover_clip_command(ffmpeg, cover_path, ass_file, output_file, width, h
         "-fps_mode", "cfr", "-r", fps_text,
         *video_encode_args(burn_config),
         "-maxrate", burn_config["maxrate"], "-bufsize", burn_config["bufsize"],
-        "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "4.1",
+        "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", burn_config.get("h264_level", "4.1"),
     ])
     color_info = color_info if isinstance(color_info, dict) else {}
     if color_info.get("space") and color_info.get("primaries") and color_info.get("transfer"):

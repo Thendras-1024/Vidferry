@@ -14,6 +14,19 @@ _AGENT_SECRET_PATTERNS = [
 
 _AGENT_ABSOLUTE_PATH_PATTERN = _re.compile(r"(?i)\b[A-Z]:\\[^\s\"'，。；;]+")
 
+_AGENT_VAGUE_REQUESTS = (
+    "处理一下", "弄一下", "搞一下", "帮我处理", "帮我弄", "帮我搞", "继续做",
+)
+
+
+def _clarification_actions():
+    return [
+        {"type": "ask", "label": "查看待处理视频", "message": "查看待处理的视频"},
+        {"type": "ask", "label": "查看失败任务", "message": "查看最近失败的任务"},
+        {"type": "ask", "label": "查看工作流", "message": "介绍 Vidferry 的完整工作流"},
+    ]
+
+
 _AGENT_POLICY_RULES = [
     (
         "secret_exfiltration",
@@ -55,6 +68,15 @@ def agent_policy_check(message, context=None):
             "category": "empty",
             "reason": "用户问题为空。",
             "message": "请输入要询问 Agent 的内容。",
+        }
+
+    if any(word in text for word in _AGENT_VAGUE_REQUESTS):
+        return {
+            "allowed": False,
+            "category": "needs_clarification",
+            "reason": "缺少要处理的视频、目标或操作类型。",
+            "message": "我需要先确认你希望处理什么。请选择一个方向，或补充视频和目标。",
+            "actions": _clarification_actions(),
         }
 
     for category, intent_words, action_words, message_text in _AGENT_POLICY_RULES:

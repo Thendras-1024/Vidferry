@@ -58,8 +58,12 @@ def _row_to_workflow_job(row):
         "watermarkEnabled": bool(item.get("watermark_enabled") or 0),
         "watermarkText": _normalize_watermark_text(item.get("watermark_text")),
         "highlightCount": _normalize_highlight_count(item.get("highlight_count")),
+        "translationEnabled": bool(item.get("translation_enabled") if item.get("translation_enabled") is not None else 1),
+        "highlightIntroEnabled": bool(item.get("highlight_intro_enabled") if item.get("highlight_intro_enabled") is not None else 1),
+        "coverIntroEnabled": bool(item.get("cover_intro_enabled") if item.get("cover_intro_enabled") is not None else 1),
         "coverTitle": normalize_cover_title(item.get("cover_title")),
         "coverSignature": normalize_cover_signature(item.get("cover_brand_name")),
+        "operation": item.get("operation") or "process",
         "title": item.get("title") or "",
         "description": item.get("description") or "",
         "tags": json.loads(item.get("tags") or "[]"),
@@ -188,6 +192,13 @@ def _workflow_highlight_count(payload):
     return _normalize_highlight_count(value)
 
 
+def _workflow_processing_options(payload):
+    saved_settings = get_workflow_settings()
+    return tuple(bool(payload[key] if key in payload else saved_settings.get(key, True)) for key in (
+        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled",
+    ))
+
+
 def _normalize_process_version(value):
     process_version = str(value or PROCESS_VERSION_TRANSLATION).strip()
     return process_version if process_version in PROCESS_VERSIONS else PROCESS_VERSION_TRANSLATION
@@ -202,6 +213,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
     watermark_enabled, watermark_text = _workflow_watermark_settings(payload)
     highlight_count = _workflow_highlight_count(payload)
+    translation_enabled, highlight_intro_enabled, cover_intro_enabled = _workflow_processing_options(payload)
     cover_title, cover_signature = _workflow_cover_settings(payload)
     process_version = _normalize_process_version(payload.get("processVersion"))
     tags = payload.get("tags") or []
@@ -229,7 +241,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
                     "INSERT INTO youtube_workflow_locks (video_id, scope, job_id) VALUES (?, ?, ?)",
                     (video_id, lock_scope, job_id),
                 )
-            except sqlite3.IntegrityError as exc:
+            except DATABASE_INTEGRITY_ERRORS as exc:
                 cursor.execute(
                     "SELECT job_id FROM youtube_workflow_locks WHERE video_id = ? AND scope = ?",
                     (video_id, lock_scope),
@@ -246,11 +258,11 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count,
-            cover_title, cover_context, cover_brand_name, cover_brand_platform,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled,
+            cover_title, cover_context, cover_brand_name, cover_brand_platform, operation,
             title, description, tags, schedule, status, step, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             job_id,
             video_id,
@@ -277,10 +289,14 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             int(watermark_enabled),
             watermark_text,
             highlight_count,
+            int(translation_enabled),
+            int(highlight_intro_enabled),
+            int(cover_intro_enabled),
             cover_title,
             "",
             cover_signature,
             "",
+            payload.get("operation") or "process",
             payload.get("title") or "",
             payload.get("description") or "",
             json.dumps(tags, ensure_ascii=False),
@@ -713,6 +729,10 @@ WORKFLOW_STAGE_LABELS = {
     "transcript": "英文语音转写",
     "subtitle": "字幕翻译与修订",
     "subtitle_burn": "字幕烧制",
+    "body_burn": "正片字幕烧制",
+    "cover_render": "封面片头生成",
+    "highlight_render": "高光短片生成",
+    "editing_concat": "片头与正片拼接",
     "analysis": "内容分析与文案生成",
     "editing": "封面片头与高光拼接",
     "publish": "发布",
@@ -944,6 +964,12 @@ def update_youtube_video_artifacts(video_id, **changes):
         "analysisStatus": "analysis_status",
         "analysisResult": "analysis_result",
         "publishDraft": "publish_draft",
+        "editingBodyPath": "editing_body_path",
+        "editingAssPath": "editing_ass_path",
+        "editingBodySignature": "editing_body_signature",
+        "editingIntroSignature": "editing_intro_signature",
+        "editingHighlightSnapshot": "editing_highlight_snapshot",
+        "editingIntroStatus": "editing_intro_status",
     }
     fields = []
     values = []

@@ -1,11 +1,15 @@
 """文件、路径与体积格式化辅助函数。"""
 
+import logging
 import shutil
 from pathlib import Path
 
 from werkzeug.utils import secure_filename
 
 from app.config import BASE_DIR
+
+
+_logger = logging.getLogger("vidferry.backend")
 
 
 def _safe_filename(value, default="file"):
@@ -25,14 +29,28 @@ def _safe_child_path(base_dir, filename, *, must_exist=False):
 
 
 def _safe_cookie_filename(value):
-    filename = _safe_filename(value, "cookie.json")
+    filename = str(value or "").strip()
+    if not filename:
+        return "cookie.json"
+    if (
+        filename != Path(filename).name
+        or filename in {".", ".."}
+        or any(char in filename for char in '<>:"/\\|?*')
+    ):
+        raise ValueError("非法 Cookie 文件名")
     if Path(filename).suffix.lower() != ".json":
         filename = f"{Path(filename).stem or 'cookie'}.json"
     return filename
 
 
 def _safe_cookie_path(filename, *, must_exist=False):
-    return _safe_child_path(BASE_DIR / "cookiesFile", _safe_cookie_filename(filename), must_exist=must_exist)
+    cookies_dir = (BASE_DIR / "cookiesFile").resolve()
+    candidate = (cookies_dir / _safe_cookie_filename(filename)).resolve()
+    if not candidate.is_relative_to(cookies_dir):
+        raise ValueError("非法 Cookie 文件路径")
+    if must_exist and not candidate.is_file():
+        raise FileNotFoundError("文件不存在")
+    return candidate
 
 
 def _ensure_dir(path):
@@ -94,3 +112,33 @@ def _find_newest_video_file(directory, since_timestamp):
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def safe_unlink(path):
+    """安全删除单个文件：路径为空或不存在时返回 False，删除失败只记录日志不抛异常。"""
+    if not path:
+        return False
+    target = Path(path)
+    try:
+        if not target.exists():
+            return False
+        target.unlink()
+        return True
+    except OSError as exc:
+        _logger.warning("删除文件失败: %s %s", target, exc)
+        return False
+
+
+def safe_rmtree(path):
+    """安全递归删除目录：路径为空或不存在时返回 False，删除失败只记录日志不抛异常。"""
+    if not path:
+        return False
+    target = Path(path)
+    try:
+        if not target.exists():
+            return False
+        shutil.rmtree(target)
+        return True
+    except OSError as exc:
+        _logger.warning("删除目录失败: %s %s", target, exc)
+        return False

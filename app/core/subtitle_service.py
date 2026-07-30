@@ -1,5 +1,7 @@
 """字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 烧录。"""
 
+import re
+
 from app.core.llm_harness import redact_profanity
 from app.core.subtitle_review import review_translated_segments
 
@@ -12,7 +14,10 @@ CUE_TARGET_DURATION_SECONDS = 3.8
 CUE_MAX_DURATION_SECONDS = 5.0
 CUE_MIN_VISIBLE_WORDS = 2
 CUE_MAX_SPACED_CHARS = 42
+CUE_MAX_KOREAN_CHARS = 28
 CUE_MAX_CJK_CHARS = 18
+# 原作者信息固定为 72px，与视频分辨率和字幕字号解耦。
+AUTHOR_OVERLAY_FONT_SIZE = 72
 
 
 def _format_ass_timestamp(seconds):
@@ -466,22 +471,32 @@ def _redact_generated_subtitles(segments, target_language):
 
 
 def _author_overlay_lines(job):
+    translation_label = _normalize_translator_label(job.get('translatorLabel')) if job.get("translationEnabled", True) else "原文字幕"
     return [
         f"博主: {job.get('channel') or job.get('account') or '未知'}",
         f"粉丝: {job.get('subscribers') or '未获取'}",
         f"时间: {job.get('publishedAt') or '未获取'}",
-        f"翻译: {_normalize_translator_label(job.get('translatorLabel'))}",
+        f"翻译: {translation_label}",
     ]
 
 
 def _is_cjk_language(language):
-    return str(language or "").lower().startswith(("zh", "ja", "ko"))
+    return str(language or "").lower().startswith(("zh", "ja"))
 
 
 def _join_cue_words(words, language):
     values = [str(item.get("word") or "").strip() for item in words]
     values = [value for value in values if value]
-    return "".join(values) if _is_cjk_language(language) else " ".join(values)
+    if _is_cjk_language(language) and not any(re.search(r"[A-Za-z0-9]", value) for value in values):
+        return "".join(values)
+    return " ".join(values)
+
+
+def _cue_max_visible_chars(language):
+    normalized = str(language or "").lower()
+    if normalized.startswith("ko"):
+        return CUE_MAX_KOREAN_CHARS
+    return CUE_MAX_CJK_CHARS if _is_cjk_language(normalized) else CUE_MAX_SPACED_CHARS
 
 
 def _visible_text_length(text):
@@ -558,7 +573,7 @@ def _finalize_cue_timings(cues):
 def _build_subtitle_cues(segments, language):
     """把 Whisper 原始段落拆为可独立显示的短语时间轴。"""
     cues = []
-    max_chars = CUE_MAX_CJK_CHARS if _is_cjk_language(language) else CUE_MAX_SPACED_CHARS
+    max_chars = _cue_max_visible_chars(language)
     sentence_endings = ".!?。！？"
 
     for segment_index, segment in enumerate(segments or []):
@@ -797,9 +812,8 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     font_scale = layout["fontScale"]
     subtitle_font_size = layout["subtitleFontSize"]
     english_floor = 40 if is_vertical else 34
-    info_floor = 36 if is_vertical else 30
     english_font_size = int(max(english_floor, min(82, int(short_side * 0.052))) * font_scale)
-    info_font_size = int(max(info_floor, min(46, int(short_side * 0.042))))
+    info_font_size = AUTHOR_OVERLAY_FONT_SIZE
     horizontal_margin = layout["horizontalMargin"]
     subtitle_margin_v = max(92 if is_vertical else 78, int(height * (0.092 if is_vertical else 0.086)))
     english_margin_v = max(34, int(subtitle_margin_v - english_font_size * 1.38))
@@ -807,11 +821,11 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     subtitle_outline = max(4, int(short_side * 0.0065))
     info_outline = max(3, int(short_side * 0.0055))
     subtitle_shadow = max(1, int(short_side * 0.0022))
-    watermark_font_size = max(20, min(54, int(short_side * 0.032)))
+    watermark_font_size = max(40, min(108, int(short_side * 0.064)))
     watermark_margin = max(20, int(width * 0.042))
     watermark_margin_v = max(40, int(height * 0.070))
     always_show_english_line = True
-    has_translated_line = target_language != "en"
+    has_translated_line = target_language != "en" and bool(job.get("translationEnabled", True))
 
     overlay_text = "\\N".join(_escape_ass_text(line) for line in _author_overlay_lines(job))
     dialogue_lines = [
@@ -827,13 +841,13 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
         f"Style: Subtitle,Microsoft YaHei,{subtitle_font_size},&H0000E6FF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{subtitle_margin_v},1",
         f"Style: English,Arial,{english_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{english_margin_v},1",
         f"Style: Info,Microsoft YaHei,{info_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{info_outline},{subtitle_shadow},7,{horizontal_margin},{horizontal_margin},{info_margin_v},1",
-        f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,0,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
+        f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,-1,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
     if include_subtitles:
-        dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
         for segment in segments:
             start = _format_ass_timestamp(segment["start"])
             end = _format_ass_timestamp(max(segment["end"], segment["start"] + 0.5))
@@ -945,7 +959,7 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         "-bufsize", burn_config["bufsize"],
         "-pix_fmt", "yuv420p",
         "-profile:v", "high",
-        "-level:v", "4.1",
+        "-level:v", burn_config.get("h264_level", "4.1"),
         "-c:a", "aac",
         "-b:a", "192k",
         "-af", "aresample=async=1:first_pts=0",
@@ -1043,16 +1057,14 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
     return output_file
 
 
-def _apply_watermark_to_mp4(media_file, job):
-    if not _watermark_enabled(job):
-        return Path(media_file)
+def _apply_author_overlay_to_mp4(media_file, job):
     media_file = Path(media_file)
     video_info = _get_video_info(media_file)
     duration = video_info.get("duration") or 0.1
-    ass_file = media_file.with_name(f"{media_file.stem}_watermark.ass")
-    output_file = media_file.with_name(f"{media_file.stem}.watermarked{media_file.suffix}")
+    ass_file = media_file.with_name(f"{media_file.stem}_author_overlay.ass")
+    output_file = media_file.with_name(f"{media_file.stem}.author_overlayed{media_file.suffix}")
     _build_ass_file(job, [], ass_file, duration, video_info, include_subtitles=False)
-    _burn_subtitles_to_mp4(media_file, ass_file, output_file, duration=duration, job_id=job.get("id") or "", progress_label="水印")
+    _burn_subtitles_to_mp4(media_file, ass_file, output_file, duration=duration, job_id=job.get("id") or "", progress_label="原作者信息")
     output_file.replace(media_file)
     return media_file
 
@@ -1117,6 +1129,12 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
     output_file = processed_dir / f"{video_key}_{process_version}_{language_meta['suffix']}.mp4"
     job_id = job.get("id")
 
+    if not job.get("translationEnabled", True):
+        _replace_file_with_backup(source_file, output_file)
+        _apply_author_overlay_to_mp4(output_file, job)
+        _update_translate_progress(job_id, 98, "已按设置跳过字幕翻译和烧录")
+        return {"path": output_file, "skipped": True, "skippedBySetting": True}
+
     if SUBTITLE_COMMAND_TEMPLATE:
         _update_translate_progress(job_id, 10, "正在执行自定义字幕处理命令")
         previous_output_file = None
@@ -1143,8 +1161,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
             if previous_output_file and previous_output_file.exists():
                 previous_output_file.replace(output_file)
             raise
-        if _watermark_burns_with_subtitles(job):
-            _apply_watermark_to_mp4(output_file, job)
+        _apply_author_overlay_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, "自定义字幕处理完成，正在保存结果")
         return {"path": output_file, "skipped": False}
 
@@ -1155,16 +1172,11 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
         segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir)
     except NoSpeechDetectedError as exc:
         _replace_file_with_backup(source_file, output_file)
-        if _watermark_burns_with_subtitles(job):
-            _apply_watermark_to_mp4(output_file, job)
+        _apply_author_overlay_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, str(exc))
         return {"path": output_file, "skipped": True}
     cues = _build_subtitle_cues(segments, language)
-    _update_translate_progress(
-        job_id,
-        34,
-        f"已识别 {len(segments)} 段字幕，已切分为 {len(cues)} 条短语，正在处理为{language_meta['label']}",
-    )
+    _update_translate_progress(job_id, 34, f"已识别 {len(segments)} 段字幕，已切分为 {len(cues)} 条短语，正在处理为{language_meta['label']}")
     try:
         translated_segments = _translate_segments(segments, target_language, job_id=job_id)
     except Exception as exc:
@@ -1218,6 +1230,6 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
         raise RuntimeError(f"SUBTITLE_BURN_FAILED: {exc.__class__.__name__}") from exc
     message = "字幕烧制完成，正在等待高光审核" if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING else "视频已生成，正在写入素材库"
     _update_translate_progress(job_id, 98, message)
-    return {"path": result, "skipped": False}
+    return {"path": result, "assPath": str(ass_file), "skipped": False}
 
 

@@ -113,6 +113,7 @@ def ensure_agent_tables(cursor):
     )
     ''')
     _add_missing_columns(cursor, "agent_sessions", {
+        "owner_user_id": "INTEGER",
         "summary": "TEXT DEFAULT '{}'",
         "summary_through_id": "INTEGER DEFAULT 0",
         "message_count": "INTEGER DEFAULT 0",
@@ -190,6 +191,47 @@ def ensure_agent_tables(cursor):
     )
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_type ON agent_memory_items(memory_type, updated_at)")
+
+
+def ensure_auth_tables(cursor):
+    cursor.execute('''CREATE TABLE IF NOT EXISTS auth_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', must_change_password INTEGER NOT NULL DEFAULT 1,
+        password_changed_at DATETIME, created_by INTEGER, failed_login_count INTEGER NOT NULL DEFAULT 0,
+        locked_until DATETIME, last_login_at DATETIME, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS auth_sessions (
+        token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at DATETIME NOT NULL,
+        last_seen_at DATETIME NOT NULL, idle_expires_at DATETIME NOT NULL,
+        absolute_expires_at DATETIME NOT NULL, ip_address TEXT, user_agent TEXT, revoked_at DATETIME,
+        FOREIGN KEY(user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS auth_audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, actor_user_id INTEGER, action TEXT NOT NULL,
+        target_type TEXT, target_id TEXT, result TEXT NOT NULL, ip_address TEXT, user_agent TEXT,
+        details TEXT NOT NULL DEFAULT '{}', created_at DATETIME NOT NULL,
+        FOREIGN KEY(actor_user_id) REFERENCES auth_users(id) ON DELETE SET NULL
+    )''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, revoked_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_audit_created ON auth_audit_logs(created_at DESC, id DESC)")
+
+
+def ensure_scheduled_publish_tables(cursor):
+    cursor.execute('''CREATE TABLE IF NOT EXISTS scheduled_publish_tasks (
+        id TEXT PRIMARY KEY, video_id TEXT NOT NULL, material_id INTEGER NOT NULL, file_path TEXT NOT NULL,
+        scheduled_at DATETIME NOT NULL, status TEXT NOT NULL DEFAULT 'pending', overdue INTEGER NOT NULL DEFAULT 0,
+        message TEXT, risk_override TEXT DEFAULT '{}', created_at DATETIME NOT NULL, started_at DATETIME,
+        finished_at DATETIME, canceled_at DATETIME, updated_at DATETIME NOT NULL
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS scheduled_publish_targets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, platform_type INTEGER NOT NULL,
+        account_id INTEGER, account_name TEXT, settings TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending',
+        message TEXT, duration_ms INTEGER NOT NULL DEFAULT 0, started_at DATETIME, finished_at DATETIME,
+        updated_at DATETIME NOT NULL, FOREIGN KEY(task_id) REFERENCES scheduled_publish_tasks(id) ON DELETE CASCADE
+    )''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_publish_tasks_due ON scheduled_publish_tasks(status, scheduled_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_publish_targets_task ON scheduled_publish_targets(task_id, id)")
 
 
 def ensure_workflow_event_tables(cursor):

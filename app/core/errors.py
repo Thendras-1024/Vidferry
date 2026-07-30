@@ -63,6 +63,7 @@ LLM_CATEGORY_ERROR_INFO = {
     "http_auth": ("VF-LLM-AUTH", "LLM_AUTH_ERROR", "模型鉴权失败；请检查所选模型的 API Key 是否有效及是否有该模型权限。"),
     "http_not_found": ("VF-LLM-MODEL-NOT-FOUND", "LLM_MODEL_NOT_FOUND", "模型或接口不存在；请检查所选模型名称与 Base URL 是否匹配。"),
     "http_rate_limit": ("VF-LLM-RATE-LIMIT", "LLM_RATE_LIMIT", "触发模型限流或额度不足；请稍后重试或提升配额。"),
+    "input_content_filtered": ("VF-LLM-INPUT-CONTENT-FILTERED", "LLM_INPUT_CONTENT_FILTERED", "输入图片或文本触发内容审核；请检查对应高光候选的关键帧，改用邻近画面或跳过该候选。"),
     "http_bad_request": ("VF-LLM-BAD-REQUEST", "LLM_BAD_REQUEST", "请求参数被模型拒绝；多为模型不支持 response_format，请核对兼容性。"),
     "http_server_error": ("VF-LLM-PROVIDER-ERROR", "LLM_PROVIDER_ERROR", "模型服务商侧异常；请稍后重试。"),
     "http_other": ("VF-LLM-HTTP-ERROR", "LLM_HTTP_ERROR", "模型接口返回异常 HTTP 状态；请查看后端日志中的 http 状态码与响应。"),

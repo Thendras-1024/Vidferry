@@ -184,6 +184,7 @@ async def get_tencent_cookie(id,status_queue,account_id=None):
         headless=False,
     )
     if not result.get("success"):
+        status_queue.put(f"ERROR::{result.get('message') or '视频号登录失败'}")
         status_queue.put("500")
         return None
 

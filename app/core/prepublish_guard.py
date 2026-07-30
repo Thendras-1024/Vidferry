@@ -177,6 +177,10 @@ def get_source_content_risk(publish_materials):
 
 
 def _extract_guard_frames(publish_materials):
+    status_loader = globals().get("get_llm_config_status")
+    multimodal_status = ((status_loader() or {}).get("multimodal") or {}) if callable(status_loader) else {}
+    if AGENT_REQUIRE_VISION_CHECK and multimodal_status and (not multimodal_status.get("ready") or not multimodal_status.get("visionReady")):
+        raise RuntimeError(multimodal_status.get("message") or "多模态模型不支持图片输入。")
     if AGENT_REQUIRE_VISION_CHECK and not MULTIMODAL_LLM_MODEL:
         raise RuntimeError("MULTIMODAL_LLM_MODEL 未配置，无法完成关键帧审核。")
     if not MULTIMODAL_LLM_MODEL:

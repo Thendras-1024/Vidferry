@@ -14,12 +14,19 @@ from app.config import (
     WORKFLOW_MAX_SEARCH_JOBS,
     WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
 )
-from app.db.base import _connect_database, _db_path
+from app.db.base import (
+    DATABASE_INTEGRITY_ERRORS,
+    _connect_database,
+    _db_path,
+    close_database_pool,
+)
 from app.utils.file_util import (
     _safe_child_path,
     _safe_cookie_filename,
     _safe_cookie_path,
     _safe_filename,
+    safe_rmtree,
+    safe_unlink,
 )
 from app.utils.format_util import (
     _build_default_publish_draft,
@@ -75,9 +82,15 @@ _workflow_submit_slots = {
 
 def _run_background_task(resource, target, args):
     try:
-        target(*args)
+        # 必须返回 target 的结果：analysis 等任务靠 future.result() 把成果交回主流程，
+        # 不 return 会导致剪辑阶段拿到空结果、高光片段无法拼接。
+        return target(*args)
     except Exception as exc:
-        print(f"后台任务未捕获异常: {getattr(target, '__name__', target)} {exc}", flush=True)
+        print(
+            f"background task failed : target = {getattr(target, '__name__', target)} | error = {exc}",
+            flush=True,
+        )
+        raise
     finally:
         _workflow_submit_slots[resource].release()
 

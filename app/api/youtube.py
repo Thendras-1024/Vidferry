@@ -543,6 +543,29 @@ def create_youtube_analysis():
         return _json_response(500, f"创建剪辑方案任务失败: {str(e)}", None, 500)
 
 
+@app.route('/youtube/editing/intro/jobs', methods=['POST'])
+def create_youtube_editing_intro_job():
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not (payload.get("url") or "").strip() or not payload.get("videoId"):
+            return _json_response(400, "videoId 和 url 不能为空", None, 400)
+        job = create_youtube_workflow_job({
+            **payload,
+            "operation": "intro_refresh",
+            "account": "", "publishToDouyin": False, "publishToBilibili": False,
+            "publishToXiaohongshu": False, "publishToKuaishou": False, "publishToTencent": False,
+            "description": "", "tags": payload.get("tags") or [], "schedule": "",
+        })
+        _submit_workflow_job("processing", run_youtube_update_editing_intro_job, job, "更新片头高光任务提交失败")
+        backend_logger.info("片头高光更新任务已提交 : job_id = %s | video_id = %s", job["id"], job.get("videoId", ""))
+        return _json_response(data=job, status=202)
+    except WorkflowConflictError as e:
+        return _error_response(409, str(e), e.error_code, e.error_type, e.data)
+    except Exception as e:
+        backend_logger.exception("创建片头高光更新任务失败")
+        return _json_response(500, f"创建片头高光更新任务失败: {str(e)}", None, 500)
+
+
 @app.route('/youtube/analysis/jobs', methods=['GET'])
 def youtube_analysis_jobs():
     try:

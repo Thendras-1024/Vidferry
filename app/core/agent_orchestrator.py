@@ -24,6 +24,7 @@ class _AgentState(TypedDict, total=False):
     observations: list
     iterations: int
     safety_decision: dict
+    actions: list
     answer: str
 
 
@@ -456,6 +457,7 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
             _logging.exception("Agent 流式回答整理失败 session=%s，将使用降级回答", session_id)
     answer = answer.strip() or "我暂时没有查到结果。"
     cards, actions = _agent_result_cards(tool_results)
+    actions = (state.get("safety_decision") or {}).get("actions") or actions
     safety_decision = state.get("safety_decision") or {"allowed": True, "category": "normal", "reason": ""}
     input_summary = {"message": message, "context": page_context, "session": {
         "messageCount": session_memory.get("messageCount", 0),
@@ -631,13 +633,14 @@ def _run_agent_chat_locked(message, session_id="", context=None):
     output = {
         "answer": answer,
         "toolResults": tool_results,
+        "actions": (state.get("safety_decision") or {}).get("actions") or [],
         "safetyDecision": safety_decision,
         "iterations": iterations,
     }
     finalized = _finalize_agent_chat_turn(
         session_id,
         answer,
-        {"toolResults": tool_results, "safetyDecision": safety_decision, "iterations": iterations},
+        {"toolResults": tool_results, "actions": output["actions"], "safetyDecision": safety_decision, "iterations": iterations},
         input_summary=input_summary,
         output=output,
         started_at=started_at,
@@ -648,6 +651,7 @@ def _run_agent_chat_locked(message, session_id="", context=None):
         "runId": run_id,
         "answer": answer,
         "toolResults": tool_results,
+        "actions": output["actions"],
         "iterations": iterations,
         "safetyDecision": safety_decision,
         "sessionContext": {

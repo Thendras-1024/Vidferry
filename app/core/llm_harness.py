@@ -11,6 +11,8 @@ import urllib.error
 import urllib.request
 
 from app.core.errors import LLMContractError, LLMRequestError
+from app.config import llm_provider_profile
+from app.core.llm_provider import fallback_payloads, provider_optional_fields
 
 
 CONTRACT_VERSION = "zh-safe-structured-v2"
@@ -35,12 +37,21 @@ _SEVERITIES = {"none", "low", "medium", "high", "critical"}
 # 本模块通过顶部 import re-export，下方分类函数仍直接使用这两个类名。
 
 
-def _classify_http_error(exc, model=""):
-    code = getattr(exc, "code", None)
+def _http_error_body(exc):
+    cached_body = getattr(exc, "_vidferry_response_body", None)
+    if cached_body is not None:
+        return cached_body
     try:
         body = exc.read().decode("utf-8", errors="replace")
     except Exception:
         body = ""
+    setattr(exc, "_vidferry_response_body", body)
+    return body
+
+
+def _classify_http_error(exc, model=""):
+    code = getattr(exc, "code", None)
+    body = _http_error_body(exc)
     snippet = " ".join(body.split())[:300]
     if code in (401, 403):
         return LLMRequestError("http_auth", f"鉴权失败 HTTP {code}：{snippet}", http_code=code, model=model,
@@ -52,6 +63,14 @@ def _classify_http_error(exc, model=""):
         return LLMRequestError("http_rate_limit", f"触发限流 HTTP 429：{snippet}", http_code=code, model=model,
                                recommendation="请求过于频繁或额度不足，稍后重试或提升配额。")
     if code == 400:
+        if "data_inspection_failed" in body.lower():
+            return LLMRequestError(
+                "input_content_filtered",
+                f"输入图片触发内容审核 HTTP 400：{snippet}",
+                http_code=code,
+                model=model,
+                recommendation="请检查该高光候选的关键帧；可改用邻近画面或跳过该候选。这不是模型参数兼容性问题。",
+            )
         return LLMRequestError("http_bad_request", f"请求参数被拒 HTTP 400：{snippet}", http_code=code, model=model,
                                recommendation="多为模型不支持某参数（如 response_format），请核对模型兼容性。")
     if code is not None and 500 <= code < 600:
@@ -78,8 +97,14 @@ _EMPTY_CONTENT_REASONS = {
 }
 
 
-def _classify_contract_failure(exc, last_raw, finish_reason=None):
+def _classify_contract_failure(exc, last_raw, finish_reason=None, completion_tokens=0, max_tokens=0):
     """区分契约失败的具体原因：空 content / 被审查拦截 / 被截断 / JSON 损坏 / 字段校验。"""
+    if finish_reason == "length" or (
+        isinstance(exc, (ValueError, TypeError))
+        and int(max_tokens or 0) > 0
+        and int(completion_tokens or 0) >= int(max_tokens)
+    ):
+        return "length_truncated"
     if str(last_raw or "").strip():
         return "json_parse" if isinstance(exc, ValueError) else "contract_validation"
     if finish_reason == "content_filter":
@@ -131,26 +156,28 @@ def _completion_with_json_mode(base_url, api_key, timeout, payload, model=""):
     try:
         return _request_completion(base_url, api_key, timeout, payload)
     except urllib.error.HTTPError as exc:
-        # 仅当疑似模型不支持 json_object 时，去掉 response_format 再试一次。
-        if exc.code == 400 and "response_format" in payload:
-            fallback_payload = dict(payload)
-            fallback_payload.pop("response_format", None)
-            try:
-                return _request_completion(base_url, api_key, timeout, fallback_payload)
-            except (urllib.error.HTTPError, urllib.error.URLError) as fallback_exc:
-                raise _classify_request_error(fallback_exc, model) from exc
+        # 400 多为服务商不认某参数（response_format / thinking / enable_thinking），
+        # 逐个去掉这些可选参数重试，最坏回退到「不禁推理」的等价现状，避免硬中断。
+        if exc.code == 400:
+            classified_error = _classify_http_error(exc, model)
+            if classified_error.category == "input_content_filtered":
+                raise classified_error from exc
+            for fallback_payload, removed in list(fallback_payloads(payload))[1:]:
+                try:
+                    return _request_completion(base_url, api_key, timeout, fallback_payload)
+                except (urllib.error.HTTPError, urllib.error.URLError):
+                    continue
         raise _classify_request_error(exc, model) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise _classify_url_error(exc, model) from exc
 
 
-def _structured_request_options(base_url):
-    """Return provider-specific options for documented OpenAI-compatible APIs."""
-    host = str(base_url or "").lower()
-    if "longcat.chat" in host:
-        # LongCat documents `thinking`; it does not document response_format/json_object.
-        return {"thinking": {"type": "disabled"}}
-    return {"response_format": {"type": "json_object"}}
+def _structured_request_options(base_url, profile):
+    provider = (profile or {}).get("provider") or "auto"
+    options = provider_optional_fields(provider, disable_thinking=(profile or {}).get("thinkingRequested", True), structured=True)
+    for key in (profile or {}).get("removedOptionalFields") or []:
+        options.pop(key, None)
+    return options
 
 
 def _usage(data):
@@ -190,24 +217,27 @@ def _emit_usage_telemetry(telemetry, payload):
         logging.exception("LLM 用量遥测写入失败 contract = %s", payload.get("operation") or "")
 
 
-def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None):
+def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None):
     """调用模型并最多进行一次针对契约错误的完整重写。"""
     if not api_key or not base_url or not model:
         raise RuntimeError("模型 API Key、Base URL 或模型名称未配置。")
 
     started_at = time.time()
+    profile = llm_provider_profile(model, api_key, base_url)
     total_usage = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0}
     current_messages = list(messages)
     last_raw = ""
     last_violations = []
+    use_retry_max_tokens = False
     for attempt in range(1, 3):
+        attempt_max_tokens = retry_max_tokens if attempt == 2 and use_retry_max_tokens else max_tokens
         payload = {
             "model": model,
             "messages": current_messages,
             "temperature": temperature,
-            "max_tokens": int(max_tokens),
+            "max_tokens": int(attempt_max_tokens),
         }
-        payload.update(_structured_request_options(base_url))
+        payload.update(_structured_request_options(base_url, profile))
         attempt_started_at = time.time()
         try:
             data = _completion_with_json_mode(base_url, api_key, timeout, payload, model)
@@ -244,9 +274,15 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
             parsed = extract_json_object(last_raw)
             result = validator(parsed)
         except (ValueError, TypeError, LLMContractError) as exc:
-            contract_category = _classify_contract_failure(exc, last_raw, last_finish_reason)
+            contract_category = _classify_contract_failure(
+                exc,
+                last_raw,
+                last_finish_reason,
+                attempt_usage.get("completionTokens"),
+                attempt_max_tokens,
+            )
             last_violations = list(getattr(exc, "violations", []) or [str(exc)])
-            if not last_raw.strip():
+            if not last_raw.strip() or contract_category == "length_truncated":
                 last_violations = _EMPTY_CONTENT_REASONS.get(contract_category, ["模型返回空 content"])
             if isinstance(exc, LLMContractError) and parsed is not None and attempt == 2 and callable(soft_validator):
                 soft_warnings = []
@@ -294,6 +330,7 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
                 contract_id, attempt, contract_category, last_violations[:8],
             )
             if attempt == 1:
+                use_retry_max_tokens = contract_category == "length_truncated" and retry_max_tokens is not None
                 current_messages = [*messages, _repair_message(last_raw, last_violations)]
                 continue
             raise LLMContractError(contract_id, last_violations, last_raw, category=contract_category) from exc
@@ -412,7 +449,7 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
 
 
 def _cover_title_list(value, violations, soft_warnings=None):
-    titles = _string_list(value, "cover_title_options", violations, max_items=4, allow_empty=False, soft_warnings=soft_warnings)
+    titles = _string_list(value, "cover_title_options", violations, chinese=False, max_items=4, allow_empty=False, soft_warnings=soft_warnings)
     if isinstance(value, list) and not 2 <= len(value) <= 4:
         violations.append("cover_title_options 必须包含 2-4 项")
     result = []
@@ -421,15 +458,18 @@ def _cover_title_list(value, violations, soft_warnings=None):
         if len(lines) != 2:
             violations.append(f"cover_title_options[{index}] 必须严格包含两行")
             continue
-        if any(len(line) < 2 or len(line) > 12 for line in lines):
-            violations.append(f"cover_title_options[{index}] 每行必须为 2-12 个字符")
+        if any(len(line) < 2 or len(line) > 24 for line in lines):
+            violations.append(f"cover_title_options[{index}] 每行必须为 2-24 个字符")
             continue
-        if sum(len(line) for line in lines) > 20:
-            violations.append(f"cover_title_options[{index}] 总长度不得超过 20 个字符")
+        if sum(len(line) for line in lines) > 40:
+            violations.append(f"cover_title_options[{index}] 总长度不得超过 40 个字符")
             continue
         if any("#" in line for line in lines):
             violations.append(f"cover_title_options[{index}] 不得包含 #")
             continue
+        if contains_disallowed_text(title):
+            warning = f"cover_title_options[{index}] 不得包含粗俗、攻击或负面吐槽表达"
+            (soft_warnings if soft_warnings is not None else violations).append(warning)
         result.append("\n".join(lines))
     return result
 
@@ -529,8 +569,32 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             "blockedByContentRisk": int(highlight_filter_stats.get("blockedByContentRisk") or 0),
         },
     }
-    raw_tags = _string_list(value.get("tags"), "tags", violations, allow_empty=False, soft_warnings=soft_warnings)
-    result["tags"] = list(dict.fromkeys(tag.lstrip("#").strip() for tag in raw_tags if tag.lstrip("#").strip()))
+    # tags 放宽：允许纯英文/品牌标签（如 FIFA、DJI、halftime show），不再强制简体中文。
+    # 仅保留非空、去 #、去重、最多 8 项（超出截断为软警告）与负面词软警告，
+    # 避免单个英文标签触发硬违规导致整个 editing_plan 失败；
+    # summary/publish_copy 等字段仍用 _chinese_text 强制中文；封面标题允许英文专有名词。
+    raw_tags_value = value.get("tags")
+    if not isinstance(raw_tags_value, list):
+        violations.append("tags 必须是数组")
+        raw_tags_value = []
+    cleaned_tags = []
+    for item in raw_tags_value:
+        if not isinstance(item, str):
+            continue
+        text = item.lstrip("#").strip()
+        if text and text not in cleaned_tags:
+            cleaned_tags.append(text)
+    if not cleaned_tags:
+        violations.append("tags 不能为空")
+    elif len(cleaned_tags) > 8:
+        if soft_warnings is not None:
+            soft_warnings.append("tags 超过 8 项，已截断为前 8 项")
+        cleaned_tags = cleaned_tags[:8]
+    if soft_warnings is not None:
+        for tag_index, tag in enumerate(cleaned_tags):
+            if contains_disallowed_text(tag):
+                soft_warnings.append(f"tags[{tag_index}] 含粗俗、攻击或负面表达，建议人工确认")
+    result["tags"] = cleaned_tags
     _fail(violations)
     return result
 
@@ -544,6 +608,7 @@ def validate_chunk_summary(value, max_timestamp=0, blocked_ranges=()):
         "chunk_summary": _chinese_text(value.get("chunk_summary"), "chunk_summary", violations),
         "highlight_candidates": _highlight_segments(
             value.get("highlight_candidates"), max_timestamp, violations, "highlight_candidates", blocked_ranges,
+            max_items=4,
         ),
     }
     _fail(violations)

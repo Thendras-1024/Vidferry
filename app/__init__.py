@@ -33,4 +33,5 @@ def initialize_runtime() -> None:
     if reconciled_events:
         print(f"启动修复：已收口 {len(reconciled_events)} 个历史任务的阶段记录")
     backend.normalize_existing_youtube_subscribers()
+    backend.start_scheduled_publish_scheduler()
     backend.install_workflow_shutdown_handlers()

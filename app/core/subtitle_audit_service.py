@@ -41,7 +41,18 @@ def save_subtitle_audit_snapshot(job, initial_segments, reviewed_segments, revie
         backend_logger.exception("字幕审查快照保存失败 : jobId = %s", job_id)
 
 
-def list_subtitle_audits(keyword="", status="", page=1, page_size=20):
+def _subtitle_audit_sort_sql(value):
+    return {
+        "saved_desc": "a.saved_at DESC, a.job_id DESC",
+        "saved_asc": "a.saved_at ASC, a.job_id ASC",
+        "job_started_desc": "COALESCE(j.started_at, a.saved_at) DESC, a.job_id DESC",
+        "job_started_asc": "COALESCE(j.started_at, a.saved_at) ASC, a.job_id ASC",
+        "fallback_desc": "a.fallback_segment_count DESC, a.saved_at DESC, a.job_id DESC",
+        "review_status_asc": "a.review_status ASC, a.saved_at DESC, a.job_id DESC",
+    }.get(str(value or "").strip(), "a.saved_at DESC, a.job_id DESC")
+
+
+def list_subtitle_audits(keyword="", status="", sort="saved_desc", page=1, page_size=20):
     init_database_tables()
     page = _parse_positive_int(page, 1, 1, 999999)
     page_size = _parse_positive_int(page_size, 20, 1, 100)
@@ -55,6 +66,7 @@ def list_subtitle_audits(keyword="", status="", page=1, page_size=20):
         clauses.append("a.review_status = ?")
         params.append(status)
     where = " AND ".join(clauses)
+    order_by = _subtitle_audit_sort_sql(sort)
     with _db_connect() as conn:
         conn.row_factory = sqlite3.Row
         total = conn.execute(f"SELECT COUNT(*) FROM youtube_subtitle_audits a WHERE {where}", params).fetchone()[0]
@@ -63,10 +75,10 @@ def list_subtitle_audits(keyword="", status="", page=1, page_size=20):
             FROM youtube_subtitle_audits a
             LEFT JOIN youtube_workflow_jobs j ON j.id = a.job_id
             WHERE {where}
-            ORDER BY COALESCE(j.started_at, a.saved_at) DESC, a.saved_at DESC
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
-        ''', [*params, page_size, (page - 1) * page_size]).fetchall()
-    return {"items": [_subtitle_audit_list_item(dict(row)) for row in rows], "total": int(total), "page": page, "pageSize": page_size}
+        '''.format(where=where, order_by=order_by), [*params, page_size, (page - 1) * page_size]).fetchall()
+    return {"items": [_subtitle_audit_list_item(dict(row)) for row in rows], "total": int(total), "page": page, "pageSize": page_size, "sort": str(sort or "saved_desc")}
 
 
 def delete_subtitle_audits(job_ids):

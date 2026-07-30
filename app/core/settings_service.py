@@ -27,6 +27,9 @@ def _default_workflow_settings():
         "watermarkText": "",
         "coverSignature": DEFAULT_COVER_SIGNATURE,
         "highlightCount": 3,
+        "translationEnabled": True,
+        "highlightIntroEnabled": True,
+        "coverIntroEnabled": True,
     }
 
 
@@ -65,6 +68,9 @@ def _normalize_workflow_settings(payload=None):
 
     settings["coverSignature"] = normalize_cover_signature(payload.get("coverSignature", payload.get("coverBrandName")))
     settings["highlightCount"] = _normalize_highlight_count(payload.get("highlightCount", settings["highlightCount"]))
+    settings["translationEnabled"] = bool(payload.get("translationEnabled", True))
+    settings["highlightIntroEnabled"] = bool(payload.get("highlightIntroEnabled", True))
+    settings["coverIntroEnabled"] = bool(payload.get("coverIntroEnabled", True))
 
     return settings
 

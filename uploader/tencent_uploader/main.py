@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -140,36 +142,52 @@ async def cookie_auth(account_file):
             await browser.close()
 
 
-async def _extract_tencent_qrcode_src(page: Page) -> str:
-    if hasattr(page, "frame_locator"):
-        try:
-            iframe_locator = page.frame_locator('[src*="login-for-iframe"]')
-            qr_code_img = iframe_locator.locator('div#app img.qrcode').first
-            await qr_code_img.wait_for(state="visible", timeout=30000)
-            src = await qr_code_img.get_attribute("src")
+async def _qrcode_data_url_from_locator(locator) -> str:
+    try:
+        # 微信 OAuth iframe 会同时保留隐藏模板与可见二维码，不能固定读取第一个节点。
+        for index in range(await locator.count()):
+            image = locator.nth(index)
+            if not await image.is_visible():
+                continue
+            src = await image.get_attribute("src")
             if src and src.startswith("data:image/"):
                 return src
-        except Exception:
-            pass
+            image_bytes = await image.screenshot(type="png")
+            if image_bytes:
+                return "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    except Exception:
+        return ""
+    return ""
 
+
+async def _extract_tencent_qrcode_src(page: Page, timeout_seconds: int = 30) -> str:
     selector_candidates = [
+        "img.js_qrcode_img",
+        "img.web_qrcode_img",
+        "img.qrcode.lightBorder",
         "div.login-qrcode-wrap img.qrcode",
         "div.qrcode-wrap img.qrcode",
         "img.qrcode",
+        'img[alt*="二维码"]',
+        'img[src*="qrcode"]',
+        'img[src*="qr-code"]',
         'img[src^="data:image/"]',
+        "div.login-qrcode-wrap canvas",
+        "div.qrcode-wrap canvas",
+        "canvas",
     ]
-    for selector in selector_candidates:
-        qr_code_img = page.locator(selector).first
-        try:
-            if not await qr_code_img.count() or not await qr_code_img.is_visible():
-                continue
-            src = await qr_code_img.get_attribute("src")
-            if src and src.startswith("data:image/"):
-                return src
-        except Exception:
-            continue
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        targets = [page]
+        targets.extend(frame for frame in page.frames if frame != page.main_frame)
+        for target in targets:
+            for selector in selector_candidates:
+                qrcode_data_url = await _qrcode_data_url_from_locator(target.locator(selector))
+                if qrcode_data_url:
+                    return qrcode_data_url
+        await page.wait_for_timeout(250)
 
-    raise RuntimeError("未获取到视频号登录二维码地址")
+    raise RuntimeError(f"未在 {timeout_seconds} 秒内获取到视频号登录二维码，请检查微信登录页面是否正常加载")
 
 
 async def _save_tencent_qrcode(page: Page, account_file: str, previous_qrcode_path: Path | None = None, qrcode_callback=None) -> dict:

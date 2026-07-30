@@ -30,6 +30,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from flask_cors import CORS
 from flask import Flask, request, jsonify, Response, render_template, send_from_directory, stream_with_context
+from app.auth.middleware import register_auth_middleware
 from werkzeug.utils import secure_filename
 from app.utils.text_util import clean_display_text, ensure_utf8_stdio
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command, video_encode_args
@@ -74,8 +75,6 @@ from app.config import (
     DEFAULT_SUBTITLE_SIZE,
     DEFAULT_TRANSLATOR_LABEL,
     DEFAULT_WATERMARK_TEXT,
-    EDITING_ENABLE_COVER_INTRO,
-    EDITING_ENABLE_HIGHLIGHT_INTRO,
     FFMPEG_COMMAND,
     PORT,
     LLM_MAX_TRANSCRIPT_CHARS,
@@ -99,6 +98,7 @@ from app.config import (
     TEXT_LLM_API_KEY,
     TEXT_LLM_BASE_URL,
     TEXT_LLM_MODEL,
+    get_llm_config_status,
     WORKFLOW_MAX_ANALYSIS_JOBS,
     WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS,
     WORKFLOW_MAX_DOWNLOAD_JOBS,
@@ -163,7 +163,7 @@ def _bootstrap_local_tool_path():
 _bootstrap_local_tool_path()
 
 # 默认仅允许本地前端访问，避免局域网/网页跨源调用本机敏感接口。
-CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
+CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}}, supports_credentials=True)
 
 
 def _request_origin_allowed():
@@ -186,6 +186,9 @@ def _request_origin_allowed():
 def reject_cross_origin_writes():
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _request_origin_allowed():
         return jsonify({"code": 403, "msg": "跨来源请求被拒绝", "data": None}), 403
+
+
+register_auth_middleware(app)
 
 # 限制上传文件大小为160MB
 app.config['MAX_CONTENT_LENGTH'] = 160 * 1024 * 1024

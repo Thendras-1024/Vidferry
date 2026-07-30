@@ -6,12 +6,14 @@ def _mark_shutdown_once():
     if _shutdown_marked:
         return
     _shutdown_marked = True
+    stop_scheduled_publish_scheduler()
     try:
         interrupted = mark_shutdown_interrupted_jobs()
         if interrupted:
             print(f"已标记 {len(interrupted)} 个后端关闭中断任务")
     except Exception as exc:
         print(f"标记后端关闭中断任务失败: {exc}")
+    close_database_pool()
 
 
 def _handle_shutdown_signal(signum, frame):

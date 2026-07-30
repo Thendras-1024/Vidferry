@@ -2,11 +2,14 @@
 def published_materials():
     try:
         limit = int(request.args.get("limit", 50))
+        record_scope = request.args.get("recordScope", "active")
         return jsonify({
             "code": 200,
             "msg": "success",
-            "data": list_published_youtube_materials(limit)
+            "data": list_published_youtube_materials(limit, record_scope)
         }), 200
+    except ValueError as e:
+        return jsonify({"code": 400, "msg": str(e), "data": None}), 400
     except Exception as e:
         return jsonify({"code": 500, "msg": f"获取已发布素材失败: {str(e)}", "data": None}), 500
 
@@ -46,3 +49,41 @@ def delete_publish_target(record_id):
         }), 409
     except Exception as e:
         return jsonify({"code": 500, "msg": f"删除发布记录失败: {str(e)}", "data": None}), 500
+
+
+@app.route('/publish/scheduled-tasks', methods=['POST'])
+def create_scheduled_publish():
+    try:
+        task = create_scheduled_publish_task(request.get_json(silent=True) or {})
+        return _json_response(data=task, status=201)
+    except AgentGuardError as exc:
+        return _json_response(exc.status_code, str(exc), {"errorCode": exc.error_code, "guard": exc.result}, exc.status_code)
+    except WorkflowConflictError as exc:
+        return _error_response(409, str(exc), exc.error_code, exc.error_type, exc.data)
+    except ValueError as exc:
+        return _json_response(400, str(exc), None, 400)
+    except Exception as exc:
+        backend_logger.exception("scheduled publish create failed : error_type = %s", type(exc).__name__)
+        return _json_response(500, f"创建定时发布任务失败: {exc}", None, 500)
+
+
+@app.route('/publish/scheduled-tasks', methods=['GET'])
+def scheduled_publish_tasks():
+    try:
+        return _json_response(data=list_scheduled_publish_tasks(request.args))
+    except Exception as exc:
+        backend_logger.exception("scheduled publish list failed : error_type = %s", type(exc).__name__)
+        return _json_response(500, f"获取定时发布任务失败: {exc}", None, 500)
+
+
+@app.route('/publish/scheduled-tasks/<task_id>/cancel', methods=['POST'])
+def cancel_scheduled_publish(task_id):
+    try:
+        return _json_response(data=cancel_scheduled_publish_task(task_id))
+    except LookupError as exc:
+        return _json_response(404, str(exc), None, 404)
+    except WorkflowConflictError as exc:
+        return _error_response(409, str(exc), exc.error_code, exc.error_type, exc.data)
+    except Exception as exc:
+        backend_logger.exception("scheduled publish cancel failed : task_id = %s | error_type = %s", task_id, type(exc).__name__)
+        return _json_response(500, f"取消定时发布任务失败: {exc}", None, 500)

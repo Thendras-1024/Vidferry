@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 
-EDITING_PROMPT_VERSION = "editing-plan-zh-v7"
+EDITING_PROMPT_VERSION = "editing-plan-zh-v9"
 HIGHLIGHT_VISION_PROMPT_VERSION = "highlight-vision-zh-v1"
 GUARD_PROMPT_VERSION = "prepublish-guard-zh-v2"
 AGENT_PROMPT_VERSION = "read-only-agent-zh-v2"
@@ -85,7 +85,8 @@ def build_editing_analysis_prompt(job, transcript_text, chunk_context=""):
         "若没有明确反应证据，应改为有反差和看点的总结式概述。"
         "cover_title_options 生成 4 个候选，每项严格两行、每行 2-12 个字符、总长度不超过 20 个字符；"
         "title_options 与 cover_title_options 均不得包含平台违禁、粗俗、攻击、贬损或诱导点击表达。\n"
-        "highlight_segments 最多生成 8 个，按实际内容返回，信息不足时允许为空；仅基于转写选择，不得编造。"
+        "highlight_segments 必须生成且仅生成 8 个；这 8 个是供后续视觉审核使用的文本候选，与用户最终选择拼接 1-3 条无关。"
+        "仅基于转写选择，不得编造；若某个候选不合规，必须改选其他合法时间段补足 8 个。"
         "start >= 30，end - start 在 6 到 12 秒之间，按吸引力由高到低排列，候选之间不得重叠；不得选择包含明确脏话的片段。"
         + _JSON_RULE
         + "\n"
@@ -110,7 +111,7 @@ def build_chunk_summary_prompt(job, index, total, chunk):
         + _UNTRUSTED_INPUT_RULE
         + _DISPLAY_RULE
         + f"当前职责：评审第 {index}/{total} 段转写，只输出 JSON，且只能包含 chunk_summary 与 highlight_candidates。"
-        "chunk_summary 必须为简体中文。highlight_candidates 每项只能含 start、end、type、reason、suggested_caption；"
+        "chunk_summary 必须为简体中文。highlight_candidates 最多返回 4 条，每项只能含 start、end、type、reason、suggested_caption；"
         "reason 与 suggested_caption 必须为简体中文。忽略开始 30 秒内的片段，排除包含明确脏话的片段，每段时长 6-12 秒并按吸引力由高到低排列。"
         + _JSON_RULE
         + "\n"

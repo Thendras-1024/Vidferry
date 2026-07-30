@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.config import LLM_TIMEOUT, MULTIMODAL_LLM_API_KEY, MULTIMODAL_LLM_BASE_URL, MULTIMODAL_LLM_MODEL
+from app.config import LLM_TIMEOUT, MULTIMODAL_LLM_API_KEY, MULTIMODAL_LLM_BASE_URL, MULTIMODAL_LLM_MODEL, get_llm_config_status
 from app.core import llm_prompts
 from app.core.llm_harness import call_json_contract, contains_profanity
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command
@@ -105,8 +105,8 @@ def _validate_vision_result(value, cues):
         raise ValueError("高光视觉审核返回值不合法")
     start = cues[start_index]["start"]
     end = cues[end_index]["end"]
-    if not HIGHLIGHT_MIN_DURATION_SECONDS <= end - start <= HIGHLIGHT_MAX_DURATION_SECONDS:
-        raise ValueError("高光视觉审核时长不符合要求")
+    # 视觉审核只负责画面质量打分，不再强制时长边界：模型圈出的 start/end 可能因波动落在 6-12s
+    # 之外，此处不再据此判失败；最终高光时长由下游 _normalize_highlight_segments 钳制到 6-12s。
     return {"start": start, "end": end, "score": round(score, 2), "reason": reason}
 
 
@@ -154,8 +154,11 @@ def refine_highlight_segments(job, video_path, transcript_segments, candidates, 
     fallback = [dict(item) for item in candidates[:target_count]]
     if not candidates:
         return [], {"status": "skipped", "reason": "无可用文本候选", "candidateCount": 0, "timedOut": False}
+    multimodal_status = (get_llm_config_status() or {}).get("multimodal") or {}
     if not (MULTIMODAL_LLM_API_KEY and MULTIMODAL_LLM_BASE_URL and MULTIMODAL_LLM_MODEL):
         return fallback, {"status": "degraded", "reason": "未配置多模态模型", "candidateCount": len(candidates), "timedOut": False}
+    if not multimodal_status.get("ready") or not multimodal_status.get("visionReady"):
+        return fallback, {"status": "degraded", "reason": multimodal_status.get("message") or "多模态模型不支持图片输入", "candidateCount": len(candidates), "timedOut": False}
 
     started_at = time.monotonic()
     reviewed = []
@@ -188,10 +191,15 @@ def refine_highlight_segments(job, video_path, transcript_segments, candidates, 
         )
         try:
             result = _review_candidate(candidate, video_path, transcript_segments, video_duration, blocked_ranges, request_timeout, telemetry)
+            original_start = _clip_float(candidate.get("start"))
+            original_end = _clip_float(candidate.get("end"))
             reviewed.append({
                 **candidate,
                 "start": result["start"],
                 "end": result["end"],
+                "originalStart": original_start,
+                "originalEnd": original_end,
+                "reviewAdjusted": abs(result["start"] - original_start) > 0.01 or abs(result["end"] - original_end) > 0.01,
                 "reason": f"{candidate.get('reason') or ''}；视觉审核：{result['reason']}".strip("；"),
                 "_score": result["score"],
             })

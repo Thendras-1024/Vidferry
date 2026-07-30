@@ -137,10 +137,19 @@ def _agent_text(value, limit=1200):
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def _agent_current_user_id():
+    try:
+        from flask import g, has_request_context
+        return int(g.current_user["id"]) if has_request_context() and getattr(g, "current_user", None) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _active_session_row(cursor, session_id):
+    owner_user_id = _agent_current_user_id()
     cursor.execute(
-        "SELECT * FROM agent_sessions WHERE id = ? AND deleted_at IS NULL",
-        (str(session_id or "").strip(),),
+        "SELECT * FROM agent_sessions WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)",
+        (str(session_id or "").strip(), owner_user_id, owner_user_id),
     )
     return cursor.fetchone()
 
@@ -152,8 +161,12 @@ def ensure_agent_session(session_id="", title="", context=None):
         with _db_connect(row_factory=True) as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
+            owner_user_id = _agent_current_user_id()
             cursor.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,))
             row = cursor.fetchone()
+            if row and owner_user_id is not None and row["owner_user_id"] != owner_user_id:
+                session_id = _agent_new_id("session")
+                row = None
             if row and row["deleted_at"]:
                 session_id = _agent_new_id("session")
                 row = None
@@ -178,24 +191,25 @@ def ensure_agent_session(session_id="", title="", context=None):
                 cursor.execute(
                     """
                     INSERT INTO agent_sessions (
-                        id, title, context, summary, summary_through_id,
+                        id, owner_user_id, title, context, summary, summary_through_id,
                         message_count, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, '{}', 0, 0, ?, ?)
+                    VALUES (?, ?, ?, ?, '{}', 0, 0, ?, ?)
                     """,
-                    (session_id, title or "Vidferry Agent", _agent_json_dumps(context), now, now),
+                    (session_id, owner_user_id, title or "Vidferry Agent", _agent_json_dumps(context), now, now),
                 )
             conn.commit()
     return session_id
 
 
 def _insert_agent_message(cursor, session_id, role, content, context=None):
+    owner_user_id = _agent_current_user_id()
     cursor.execute(
         """
         INSERT INTO agent_messages (session_id, role, content, context, created_at)
         SELECT ?, ?, ?, ?, ?
         WHERE EXISTS (
-            SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL
+            SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)
         )
         """,
         (
@@ -205,6 +219,8 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
             _agent_json_dumps(context),
             _agent_now_iso(),
             session_id,
+            owner_user_id,
+            owner_user_id,
         ),
     )
     if cursor.rowcount != 1:
@@ -219,9 +235,9 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
             END,
             message_count = COALESCE(message_count, 0) + 1,
             updated_at = ?
-        WHERE id = ? AND deleted_at IS NULL
+        WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)
         """,
-        (role, _agent_text(content, 64) or "Vidferry Agent", _agent_now_iso(), session_id),
+        (role, _agent_text(content, 64) or "Vidferry Agent", _agent_now_iso(), session_id, owner_user_id, owner_user_id),
     )
     if cursor.rowcount != 1:
         raise ValueError("Agent 会话在消息保存期间被删除。")
@@ -246,8 +262,12 @@ def start_agent_turn(session_id="", message="", context=None):
         with _db_connect(row_factory=True) as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
+            owner_user_id = _agent_current_user_id()
             cursor.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,))
             row = cursor.fetchone()
+            if row and owner_user_id is not None and row["owner_user_id"] != owner_user_id:
+                session_id = _agent_new_id("session")
+                row = None
             if row and row["deleted_at"]:
                 session_id = _agent_new_id("session")
                 row = None
@@ -266,12 +286,12 @@ def start_agent_turn(session_id="", message="", context=None):
                 cursor.execute(
                     """
                     INSERT INTO agent_sessions (
-                        id, title, context, summary, summary_through_id,
+                        id, owner_user_id, title, context, summary, summary_through_id,
                         message_count, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, '{}', 0, 0, ?, ?)
+                    VALUES (?, ?, ?, ?, '{}', 0, 0, ?, ?)
                     """,
-                    (session_id, "Vidferry Agent", _agent_json_dumps(context), now, now),
+                    (session_id, owner_user_id, "Vidferry Agent", _agent_json_dumps(context), now, now),
                 )
             message_id = _insert_agent_message(cursor, session_id, "user", message, context)
             conn.commit()
@@ -280,7 +300,8 @@ def start_agent_turn(session_id="", message="", context=None):
 
 def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
     limit = max(1, min(int(limit or 12), 100))
-    values = [str(session_id or "").strip()]
+    owner_user_id = _agent_current_user_id()
+    values = [str(session_id or "").strip(), owner_user_id, owner_user_id]
     before_sql = ""
     after_sql = ""
     if before_id:
@@ -303,7 +324,8 @@ def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
             SELECT m.*
             FROM agent_messages AS m
             JOIN agent_sessions AS s ON s.id = m.session_id
-            WHERE m.session_id = ? AND s.deleted_at IS NULL {before_sql} {after_sql}
+            WHERE m.session_id = ? AND s.deleted_at IS NULL
+              AND (? IS NULL OR s.owner_user_id = ?) {before_sql} {after_sql}
             ORDER BY m.id DESC
             LIMIT ?
             """,
@@ -348,8 +370,9 @@ def _agent_session_payload(row):
 def list_agent_sessions(*, from_date="", to_date="", page=1, page_size=20):
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 20), 50))
-    where = ["s.deleted_at IS NULL"]
-    values = []
+    owner_user_id = _agent_current_user_id()
+    where = ["s.deleted_at IS NULL", "(? IS NULL OR s.owner_user_id = ?)"]
+    values = [owner_user_id, owner_user_id]
     if from_date:
         value = str(from_date).strip()
         where.append("s.updated_at >= ?")
@@ -404,7 +427,8 @@ def delete_agent_session(session_id):
         with _db_connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM agent_sessions WHERE id = ?", (session_id,))
+            owner_user_id = _agent_current_user_id()
+            cursor.execute("SELECT id FROM agent_sessions WHERE id = ? AND (? IS NULL OR owner_user_id = ?)", (session_id, owner_user_id, owner_user_id))
             if not cursor.fetchone():
                 return False
             cursor.execute("DELETE FROM agent_messages WHERE session_id = ?", (session_id,))
@@ -800,7 +824,13 @@ def get_agent_run(run_id):
         return None
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,))
+        owner_user_id = _agent_current_user_id()
+        cursor.execute(
+            """SELECT r.* FROM agent_runs AS r
+               LEFT JOIN agent_sessions AS s ON s.id = r.session_id
+               WHERE r.id = ? AND (r.run_type != 'chat' OR ? IS NULL OR s.owner_user_id = ?)""",
+            (run_id, owner_user_id, owner_user_id),
+        )
         row = cursor.fetchone()
         if not row:
             return None
