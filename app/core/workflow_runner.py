@@ -1,4 +1,4 @@
-﻿"""YouTube 工作流执行编排:下载/转写/分析/剪辑/发布各阶段的串联与状态流转。"""
+"""YouTube 工作流执行编排:下载/转写/分析/剪辑/发布各阶段的串联与状态流转。"""
 
 
 from app.core.error_catalog import classify_workflow_exception
@@ -10,7 +10,7 @@ def _get_youtube_video_record(video_id):
         return None
     init_youtube_video_table()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
         row = cursor.fetchone()
@@ -24,7 +24,7 @@ def _resolve_downloaded_source_file(job):
         return downloaded_path
 
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute('''
         SELECT * FROM file_records
@@ -769,7 +769,7 @@ def _processed_material_for_workflow(job):
     record = _get_youtube_video_record(job.get("videoId")) or {}
     processed_path = Path(record.get("processedFilePath") or "")
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         material = _find_latest_processed_material(cursor, job.get("videoId") or "", _normalize_process_version(job.get("processVersion")))
         if not material:
@@ -793,7 +793,7 @@ def _video_has_processed_output(record):
     if processed_path.is_file():
         return True
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         material = _find_latest_youtube_material(cursor, record.get("id") or record.get("videoId") or "", "youtube_processed")
     if not material:

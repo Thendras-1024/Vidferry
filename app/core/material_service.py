@@ -1,4 +1,4 @@
-﻿"""素材库服务:素材登记、查询、删除、发布记录归档与视频状态同步。"""
+"""素材库服务:素材登记、查询、删除、发布记录归档与视频状态同步。"""
 
 
 def _material_file_path(record):
@@ -233,7 +233,7 @@ def delete_material_records(file_ids):
     init_database_tables()
     results = []
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         for file_id in file_ids:
             try:
@@ -358,7 +358,7 @@ def verify_youtube_file_consistency():
         "issues": [],
     }
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
 
         cursor.execute("SELECT * FROM file_records")
@@ -696,7 +696,7 @@ def list_material_records(params=None):
     page_size = _parse_positive_int(params.get("pageSize"), 20, 1, 100)
     offset = (page - 1) * page_size
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         where_sql, values = _material_where(params)
         cursor.execute(f"SELECT COUNT(*) AS total FROM file_records{where_sql}", values)
@@ -801,7 +801,7 @@ def list_published_youtube_materials(limit=50, record_scope="active"):
         "all": "1 = 1",
     }[scope]
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''
         SELECT * FROM published_youtube_materials
@@ -913,7 +913,7 @@ def _archive_published_material(
             material.get("displaySubscribers") or (video or {}).get("subscribers") or "",
             material.get("displayPublishedAt") or (video or {}).get("publishedAt") or "",
             publish_title or "",
-            json.dumps(metadata, ensure_ascii=False),
+            json.dumps(metadata, ensure_ascii=False, default=str),
             publish_task_id or "",
             status or "success",
             message or "",
@@ -949,7 +949,7 @@ def _archive_published_material(
         material.get("displaySubscribers") or (video or {}).get("subscribers") or "",
         material.get("displayPublishedAt") or (video or {}).get("publishedAt") or "",
         publish_title or "",
-        json.dumps(metadata, ensure_ascii=False),
+        json.dumps(metadata, ensure_ascii=False, default=str),
         published_at if (status or "success") == "success" else None,
         publish_task_id or "",
         status or "success",
@@ -1025,7 +1025,7 @@ def register_material(
         except Exception:
             duration_seconds = 0
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM file_records WHERE file_path = ? OR storage_key = ?", (file_path_value, file_path_value))
         existing = cursor.fetchone()
@@ -1101,7 +1101,7 @@ def _save_processed_video_to_material(file_path, job=None):
     process_version = job.get("processVersion") or "translation_v1"
     if video_id:
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
             replaced = _delete_replaced_processed_materials(
                 cursor,
@@ -1141,7 +1141,7 @@ def _validate_publish_processed_files(file_list):
     materials = []
     init_database_tables()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         for file_path in normalized_paths:
             cursor.execute(
@@ -1168,7 +1168,7 @@ def _assert_publish_targets_available(material, targets):
 
     init_database_tables()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         for target in targets:
             platform_type = int(target.get("platformType") or 0)
@@ -1213,7 +1213,7 @@ def _mark_published_materials(
 
     init_database_tables()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         for file_path in file_list:
             cursor.execute(
@@ -1390,7 +1390,7 @@ def list_publish_tasks(limit=20):
     limit = max(1, min(int(limit or 20), 100))
     fetch_limit = max(limit * 8, 80)
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute('''
         SELECT * FROM published_youtube_materials
@@ -1411,7 +1411,7 @@ def list_publish_tasks(limit=20):
 def delete_publish_target_record(record_id):
     init_database_tables()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM published_youtube_materials WHERE id = ?", (record_id,))
         row = cursor.fetchone()

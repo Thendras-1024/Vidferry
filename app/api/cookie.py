@@ -1,4 +1,4 @@
-﻿@app.route('/uploadCookie', methods=['POST'])
+@app.route('/uploadCookie', methods=['POST'])
 def upload_cookie():
     try:
         if 'file' not in request.files:
@@ -53,7 +53,7 @@ def upload_cookie():
 
         # 从数据库获取账号的文件路径
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
             cursor.execute('SELECT type, filePath FROM user_info WHERE id = ?', (account_id,))
             result = cursor.fetchone()

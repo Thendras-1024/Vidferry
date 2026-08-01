@@ -1,4 +1,4 @@
-﻿@app.route('/postVideo', methods=['POST'])
+@app.route('/postVideo', methods=['POST'])
 def postVideo():
     data = request.get_json()
     try:
@@ -37,7 +37,7 @@ def updateUserinfo():
     try:
         # 获取数据库连接
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
 
             # 更新数据库记录

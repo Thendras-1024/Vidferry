@@ -27,13 +27,23 @@ class HybridRow(Mapping):
 
 def _replace_placeholders(sql):
     parts, quoted, quote = [], False, ""
-    for char in sql:
+    index = 0
+    while index < len(sql):
+        char = sql[index]
         if char in "'\"":
             if not quoted:
                 quoted, quote = True, char
             elif quote == char:
                 quoted = False
-        parts.append("%s" if char == "?" and not quoted else char)
+        if char == "?" and not quoted:
+            parts.append("%s")
+        elif char == "%":
+            next_char = sql[index + 1] if index + 1 < len(sql) else ""
+            # Psycopg parses percent signs inside SQL literals too.
+            parts.append("%" if next_char in {"%", "s", "b", "t"} else "%%")
+        else:
+            parts.append(char)
+        index += 1
     return "".join(parts)
 
 

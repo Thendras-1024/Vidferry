@@ -229,7 +229,7 @@ def _stats_fetch_task_bundle(job_rows):
         return []
     placeholders = ",".join("?" for _ in job_ids)
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f"SELECT * FROM youtube_workflow_events WHERE job_id IN ({placeholders}) ORDER BY started_at, id", job_ids)
         events_by_job = {}
@@ -244,20 +244,20 @@ def _stats_fetch_task_bundle(job_rows):
 
 def _stats_task_page(start, end, page, page_size):
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
-        where = "COALESCE(NULLIF(started_at, ''), created_at) >= ? AND COALESCE(NULLIF(started_at, ''), created_at) < ?"
+        where = "COALESCE(started_at, created_at) >= ? AND COALESCE(started_at, created_at) < ?"
         params = (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
         cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_workflow_jobs WHERE {where}", params)
         total = int(cursor.fetchone()["total"] or 0)
         cursor.execute(f'''SELECT * FROM youtube_workflow_jobs WHERE {where}
-            ORDER BY COALESCE(NULLIF(started_at, ''), created_at) DESC, id DESC LIMIT ? OFFSET ?''', (*params, page_size, (page - 1) * page_size))
+            ORDER BY COALESCE(started_at, created_at) DESC, id DESC LIMIT ? OFFSET ?''', (*params, page_size, (page - 1) * page_size))
         rows = [dict(item) for item in cursor.fetchall()]
     return _stats_fetch_task_bundle(rows), total
 
 
 def _stats_aggregates(start, end, granularity):
-    where = "COALESCE(NULLIF(j.started_at, ''), j.created_at) >= ? AND COALESCE(NULLIF(j.started_at, ''), j.created_at) < ?"
+    where = "COALESCE(j.started_at, j.created_at) >= ? AND COALESCE(j.started_at, j.created_at) < ?"
     params = (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
     bucket = "%m-%d %H:00" if granularity == "hour" else "%m-%d"
     usage_cte = '''WITH all_usage AS (
@@ -274,21 +274,23 @@ def _stats_aggregates(start, end, granularity):
               )
         )'''
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''WITH scoped_jobs AS (
                 SELECT id FROM youtube_workflow_jobs j WHERE {where}
             ), task_durations AS (
                 SELECT j.id, COALESCE(
                     MAX(CASE WHEN e.stage = 'workflow' THEN e.duration_seconds END),
-                    MAX(julianday(e.ended_at)) - MIN(julianday(e.started_at)),
+                    EXTRACT(EPOCH FROM (
+                        MAX(e.ended_at) - MIN(e.started_at)
+                    )),
                     0
                 ) AS duration_seconds
                 FROM scoped_jobs j
                 LEFT JOIN youtube_workflow_events e ON e.job_id = j.id
                 GROUP BY j.id
             )
-            SELECT COUNT(*) AS job_count, COALESCE(SUM(MAX(0, duration_seconds)), 0) AS duration_seconds
+            SELECT COUNT(*) AS job_count, COALESCE(SUM(GREATEST(0.0, duration_seconds)), 0) AS duration_seconds
             FROM task_durations''', params)
         jobs = cursor.fetchone()
         cursor.execute(f'''SELECT COUNT(*) AS event_count
@@ -310,7 +312,8 @@ def _stats_aggregates(start, end, granularity):
                 GROUP BY workflow_event_id
             )
             SELECT e.stage, COALESCE(e.stage_label, e.stage) AS stage_label, COUNT(*) AS count,
-            SUM(e.status = 'success') AS success, SUM(e.status = 'failed') AS failed,
+            COUNT(*) FILTER (WHERE e.status = 'success') AS success,
+            COUNT(*) FILTER (WHERE e.status = 'failed') AS failed,
             COALESCE(SUM(e.duration_seconds), 0) AS duration_seconds,
             COALESCE(SUM(COALESCE(u.prompt_tokens, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN e.prompt_tokens ELSE 0 END)), 0) AS prompt_tokens,
             COALESCE(SUM(COALESCE(u.completion_tokens, CASE WHEN e.total_tokens > 0 OR e.cloud_latency_ms > 0 THEN e.completion_tokens ELSE 0 END)), 0) AS completion_tokens,
@@ -356,7 +359,7 @@ def _stats_aggregates(start, end, granularity):
 def get_workflow_task_statistics(job_id):
     init_youtube_workflow_table()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         row = conn.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,)).fetchone()
     if not row:
         return None
@@ -365,7 +368,7 @@ def get_workflow_task_statistics(job_id):
     if not task:
         return None
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         rows = conn.execute("SELECT * FROM youtube_workflow_llm_usage_events WHERE job_id = ? ORDER BY created_at DESC, id DESC", (job_id,)).fetchall()
     task["requests"] = [{
         "id": item["id"], "workflowEventId": item["workflow_event_id"], "stage": item["stage"] or "",

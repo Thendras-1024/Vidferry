@@ -30,6 +30,9 @@ def main(argv=None):
     if not database_url:
         raise SystemExit("migrate requires DATABASE_URL in the local environment")
     sqlite_preflight(args.sqlite)
+    from app.db.schema import init_database_tables
+
+    init_database_tables()
     backup = create_sqlite_backup(args.sqlite, args.backup_dir)
     report = migrate_sqlite_to_postgres(backup["path"], database_url)
     report["backup"] = backup

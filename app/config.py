@@ -220,7 +220,7 @@ DATABASE_POOL_MIN_SIZE = _env_int("DATABASE_POOL_MIN_SIZE", 1, 1, 20)
 DATABASE_POOL_MAX_SIZE = _env_int("DATABASE_POOL_MAX_SIZE", 8, 1, 50)
 DATABASE_POOL_MAX_SIZE = max(DATABASE_POOL_MIN_SIZE, DATABASE_POOL_MAX_SIZE)
 DATABASE_POOL_TIMEOUT_SECONDS = _env_int("DATABASE_POOL_TIMEOUT_SECONDS", 30, 1, 120)
-FEISHU_BUTLER_CONSOLE_URL = _env_text("FEISHU_BUTLER_CONSOLE_URL", "http://127.0.0.1:5173").rstrip("/")
+FEISHU_BUTLER_CONSOLE_URL = _env_text("FEISHU_BUTLER_CONSOLE_URL", "http://127.0.0.1:55173").rstrip("/")
 WORKFLOW_MAX_DOWNLOAD_JOBS = max(1, _env_int("WORKFLOW_MAX_DOWNLOAD_JOBS", 2))
 WORKFLOW_MAX_PROCESSING_JOBS = max(1, _env_int("WORKFLOW_MAX_PROCESSING_JOBS", 1))
 WORKFLOW_MAX_ANALYSIS_JOBS = max(1, _env_int("WORKFLOW_MAX_ANALYSIS_JOBS", 2))
@@ -320,7 +320,7 @@ CORS_ORIGINS = [
     item.strip()
     for item in os.environ.get(
         "VIDFERRY_CORS_ORIGINS",
-        "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175",
+        "http://127.0.0.1:55173,http://localhost:55173",
     ).split(",")
     if item.strip()
 ]

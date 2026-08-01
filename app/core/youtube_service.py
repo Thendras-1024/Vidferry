@@ -1,4 +1,4 @@
-﻿"""YouTube 视频线索的存储、状态流转与列表查询(含阶段排序与状态对账)。"""
+"""YouTube 视频线索的存储、状态流转与列表查询(含阶段排序与状态对账)。"""
 
 
 def _local_youtube_thumbnail_path(video_id, downloaded_file_path=""):
@@ -68,7 +68,7 @@ def _row_to_youtube_video(row):
 def save_new_youtube_videos(videos, query, group_id=None):
     init_youtube_video_table()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         target_group = _resolve_youtube_group(cursor, group_id)
@@ -265,33 +265,9 @@ def _youtube_video_status_clause(status):
     return "", []
 
 
-def _duration_text_to_seconds(value):
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.isdigit():
-        return int(text)
-    parts = text.split(":")
-    if len(parts) in (2, 3) and all(part.strip().isdigit() for part in parts):
-        numbers = [int(part) for part in parts]
-        if len(numbers) == 2:
-            minutes, seconds = numbers
-            return minutes * 60 + seconds
-        hours, minutes, seconds = numbers
-        return hours * 3600 + minutes * 60 + seconds
-    match = re.match(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?\s*$", text, re.I)
-    if match and any(match.groups()):
-        hours = int(match.group(1) or 0)
-        minutes = int(match.group(2) or 0)
-        seconds = int(match.group(3) or 0)
-        return hours * 3600 + minutes * 60 + seconds
-    return None
-
-
 def _published_newest_order_sql():
     return """
-    CASE WHEN julianday(published_at) IS NULL THEN 1 ELSE 0 END ASC,
-    julianday(published_at) DESC,
+    NULLIF(published_at, '') DESC NULLS LAST,
     created_at DESC,
     id DESC
     """
@@ -345,6 +321,20 @@ def _default_stage_order_sql():
     """
 
 
+def _duration_seconds_sql():
+    return """
+    CASE
+        WHEN duration ~ '^\\d+$' THEN duration::BIGINT
+        WHEN duration ~ '^\\d+:\\d+$' THEN split_part(duration, ':', 1)::BIGINT * 60 + split_part(duration, ':', 2)::BIGINT
+        WHEN duration ~ '^\\d+:\\d+:\\d+$' THEN split_part(duration, ':', 1)::BIGINT * 3600 + split_part(duration, ':', 2)::BIGINT * 60 + split_part(duration, ':', 3)::BIGINT
+        WHEN duration ~ '^\\s*(\\d+\\s*h)?\\s*(\\d+\\s*m)?\\s*(\\d+\\s*s)?\\s*$' THEN
+            COALESCE((regexp_match(duration, '(\\d+)\\s*h'))[1]::BIGINT, 0) * 3600 +
+            COALESCE((regexp_match(duration, '(\\d+)\\s*m'))[1]::BIGINT, 0) * 60 +
+            COALESCE((regexp_match(duration, '(\\d+)\\s*s'))[1]::BIGINT, 0)
+    END
+    """
+
+
 def _youtube_video_sort_sql(sort):
     if sort == "publishedNewest":
         return _published_newest_order_sql()
@@ -353,11 +343,11 @@ def _youtube_video_sort_sql(sort):
     if sort == "importedOldest":
         return "created_at ASC, id ASC"
     if sort == "durationShortest":
-        return """
-        CASE WHEN duration_to_seconds(duration) IS NULL THEN 1 ELSE 0 END ASC,
-        duration_to_seconds(duration) ASC,
-        CASE WHEN julianday(published_at) IS NULL THEN 1 ELSE 0 END ASC,
-        julianday(published_at) DESC,
+        duration_sql = _duration_seconds_sql()
+        return f"""
+        CASE WHEN ({duration_sql}) IS NULL THEN 1 ELSE 0 END ASC,
+        ({duration_sql}) ASC,
+        NULLIF(published_at, '') DESC NULLS LAST,
         created_at DESC,
         id DESC
         """
@@ -580,8 +570,7 @@ def list_youtube_videos(params=None):
     page_size = _parse_positive_int(params.get("pageSize"), 20, 1, 100)
     offset = (page - 1) * page_size
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
-        conn.create_function("duration_to_seconds", 1, _duration_text_to_seconds)
+        conn.row_factory = True
         cursor = conn.cursor()
         _reconcile_youtube_statuses_with_material_records(cursor)
         _reconcile_youtube_generated_publish_drafts(cursor)
@@ -677,7 +666,7 @@ def update_youtube_video_status(video_id, download_status=None, publish_status=N
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(video_id)
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''
         UPDATE youtube_videos
@@ -717,7 +706,7 @@ def _cleanup_editing_v1_artifacts(video_record, *, cursor=None):
 def delete_youtube_video_record(video_id):
     init_youtube_video_table()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
@@ -873,7 +862,7 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
     deleted_transcript_files = []
     deleted_workflow_job_count = 0
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
         video = cursor.fetchone()

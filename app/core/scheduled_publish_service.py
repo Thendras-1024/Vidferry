@@ -107,7 +107,7 @@ def create_scheduled_publish_task(data):
     video = _get_youtube_video_record(video_id) or {}
 
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         for target in targets:
@@ -172,7 +172,7 @@ def list_scheduled_publish_tasks(params=None):
         values.extend([f"%{keyword}%", f"%{keyword}%"])
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''SELECT COUNT(*) AS total FROM scheduled_publish_tasks task
             LEFT JOIN youtube_videos video ON video.video_id = task.video_id{where}''', values)
@@ -197,7 +197,7 @@ def list_scheduled_publish_tasks(params=None):
 def cancel_scheduled_publish_task(task_id):
     now = _now_iso()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         cursor.execute("UPDATE scheduled_publish_tasks SET status = 'canceled', message = '已取消', canceled_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'", (now, now, task_id))
@@ -217,7 +217,7 @@ def cancel_scheduled_publish_task(task_id):
 def _claim_due_scheduled_publish_task():
     now = _now_iso()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         cursor.execute("SELECT id, scheduled_at FROM scheduled_publish_tasks WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?) ORDER BY datetime(scheduled_at), created_at LIMIT 1", (now,))
@@ -244,7 +244,7 @@ def _scheduled_publish_content(video_id):
 
 def _aggregate_scheduled_task_status(cursor, task_id):
     # D2：由 targets 状态派生 task 终态，统一 success/partial/failed 判定，避免两张状态表手动同步漂移。
-    # 用下标取值，兼容 row_factory 为 sqlite3.Row 或默认 tuple 的连接。
+    # 用下标取值，兼容按列名行模式或默认 tuple 的连接。
     cursor.execute("SELECT status FROM scheduled_publish_targets WHERE task_id = ?", (task_id,))
     statuses = [row[0] for row in cursor.fetchall()]
     if not statuses:
@@ -257,7 +257,7 @@ def _aggregate_scheduled_task_status(cursor, task_id):
 
 def _load_scheduled_task_payload(task_id):
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ?", (task_id,))
         row = cursor.fetchone()
@@ -287,7 +287,7 @@ def _revalidate_scheduled_publish(task, targets):
 
 def run_scheduled_publish_task(task_id):
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ? AND status = 'running'", (task_id,))
         task = cursor.fetchone()
@@ -315,7 +315,7 @@ def run_scheduled_publish_task(task_id):
             cursor.execute("UPDATE scheduled_publish_targets SET status = 'running', message = '发布中', started_at = ?, updated_at = ? WHERE id = ?", (started_at, started_at, target["id"]))
         try:
             with _db_connect() as conn:
-                conn.row_factory = sqlite3.Row
+                conn.row_factory = True
                 account = conn.execute("SELECT * FROM user_info WHERE id = ? AND type = ?", (target["accountId"], target["platformType"])).fetchone()
             account_file = account["filePath"] if account else ""
             account_name = account["userName"] if account else account_name
@@ -347,7 +347,7 @@ def run_scheduled_publish_task(task_id):
         with _db_connect() as conn:
             conn.execute("UPDATE scheduled_publish_targets SET status = ?, message = ?, duration_ms = ?, finished_at = ?, updated_at = ? WHERE id = ?", (result["status"], clean_display_text(result.get("message")), int(result.get("durationMs") or 0), finished_at, finished_at, target["id"]))
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         aggregated = _aggregate_scheduled_task_status(cursor, task_id)
         if aggregated is None:

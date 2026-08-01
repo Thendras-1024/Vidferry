@@ -194,7 +194,7 @@ def _sync_notification_issues(issues, resolve_stale=True):
                     source_active = 1, manual_resolved = CASE WHEN ? THEN 0 ELSE manual_resolved END,
                     updated_at = ?
                 WHERE id = ?
-                ''', (*values[:6], int(changed or reopened), "active" if reopened else existing["status"], now if changed or reopened else existing["last_seen_at"], int(reopened), int(reopened), int(reopened), now if changed or reopened else existing["updated_at"], existing["id"]))
+                ''', (*values[:6], int(changed or reopened), "active" if reopened else existing["status"], now if changed or reopened else existing["last_seen_at"], reopened, reopened, reopened, now if changed or reopened else existing["updated_at"], existing["id"]))
             else:
                 cursor.execute('''
                 INSERT INTO app_notifications (

@@ -1,4 +1,4 @@
-﻿ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
+ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
 _account_cookie_check_last_at = {}
 ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SECONDS = 600
 ACCOUNT_COOKIE_CHECK_FAILURE_COOLDOWN_SECONDS = 120
@@ -200,7 +200,7 @@ def _check_accounts_for_publish(targets):
     if not targets:
         return []
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         results = []
         for target in targets:
@@ -231,7 +231,7 @@ def _check_named_publish_account(platform_type, account_name):
     if not account_name:
         return None
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
             "SELECT * FROM user_info WHERE type = ? AND userName = ?",
@@ -250,7 +250,7 @@ def getAccounts():
     """快速获取所有账号信息，不进行cookie验证"""
     try:
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
             cursor.execute('''
             SELECT * FROM user_info''')
@@ -275,7 +275,7 @@ def getAccounts():
 @app.route("/getValidAccounts",methods=['GET'])
 def getValidAccounts():
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         rows = _load_accounts(cursor)
         for row in rows:
@@ -303,7 +303,7 @@ def check_account_cookies():
         check_all = bool(payload.get("all")) or not account_ids
 
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
             rows = _load_accounts(cursor, None if check_all else account_ids)
             found_ids = {int(row["id"]) for row in rows}
@@ -354,7 +354,7 @@ def delete_account():
     try:
         # 获取数据库连接
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
 
             # 查询要删除的记录
@@ -428,7 +428,7 @@ def create_account():
             file_path = f"{file_prefix_map[platform_type]}_{safe_name}.json"
 
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO user_info (type, filePath, userName, status)

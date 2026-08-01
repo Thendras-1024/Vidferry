@@ -68,7 +68,7 @@ def list_subtitle_audits(keyword="", status="", sort="saved_desc", page=1, page_
     where = " AND ".join(clauses)
     order_by = _subtitle_audit_sort_sql(sort)
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         total = conn.execute(f"SELECT COUNT(*) FROM youtube_subtitle_audits a WHERE {where}", params).fetchone()[0]
         rows = conn.execute(f'''
             SELECT a.*, j.status AS job_status, j.started_at AS job_started_at
@@ -114,7 +114,7 @@ def _subtitle_audit_list_item(row):
 def get_subtitle_audit_detail(job_id):
     init_database_tables()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         row = conn.execute('''
             SELECT a.*, j.status AS job_status, j.started_at AS job_started_at
             FROM youtube_subtitle_audits a LEFT JOIN youtube_workflow_jobs j ON j.id = a.job_id

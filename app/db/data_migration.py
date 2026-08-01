@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import shutil
 import sqlite3
 from pathlib import Path
 
-from app.db.postgres_compat import normalize_postgres_sql
-
 
 LOCK_TABLES = {"agent_session_locks", "youtube_workflow_locks"}
+DEFAULT_VIDEO_GROUP_NAME = "未分类"
 TABLE_ORDER = (
     "app_settings", "app_notifications", "user_info", "file_records", "auth_users",
     "agent_sessions", "agent_rules", "agent_memory_items", "agent_messages", "agent_runs",
@@ -76,50 +74,83 @@ def sqlite_preflight(path):
     return {"path": str(path), "size": path.stat().st_size, "tables": sorted(tables), "sha256": _file_digest(path)}
 
 
-def _schema_statements(conn):
-    rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL").fetchall()
-    return {name: normalize_postgres_sql(sql) for name, sql in rows}
+def _postgres_columns(cursor):
+    rows = cursor.execute(
+        """SELECT table_name, column_name FROM information_schema.columns
+           WHERE table_schema = current_schema()"""
+    ).fetchall()
+    columns = {}
+    for table, column in rows:
+        columns.setdefault(table, set()).add(column)
+    return columns
 
 
-def _index_statements(conn):
-    rows = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL").fetchall()
-    return [normalize_postgres_sql(sql) for (sql,) in rows]
+def _remove_generated_default_group(cursor):
+    count = cursor.execute("SELECT COUNT(*) FROM youtube_video_groups").fetchone()[0]
+    if count != 1:
+        return False
+    cursor.execute(
+        "DELETE FROM youtube_video_groups WHERE name = %s AND is_default = 1",
+        (DEFAULT_VIDEO_GROUP_NAME,),
+    )
+    return True
+
+
+def _ensure_default_group(cursor):
+    cursor.execute(
+        """INSERT INTO youtube_video_groups (name, is_default)
+           SELECT %s, 1
+           WHERE NOT EXISTS (SELECT 1 FROM youtube_video_groups WHERE is_default = 1)
+           ON CONFLICT (name) DO NOTHING""",
+        (DEFAULT_VIDEO_GROUP_NAME,),
+    )
 
 
 def migrate_sqlite_to_postgres(sqlite_path, database_url):
-    """将已备份的 SQLite 文件复制到空 PostgreSQL 数据库，不修改源文件。"""
+    """将已备份的 SQLite 文件复制到已初始化且没有业务数据的 PostgreSQL。"""
     import psycopg
 
     source = Path(sqlite_path)
-    report = {"source": str(source), "tables": {}, "sourceSha256": _file_digest(source)}
+    report = {"source": str(source), "tables": {}, "skippedTables": [], "sourceSha256": _file_digest(source)}
     with sqlite3.connect(source) as sqlite_conn, psycopg.connect(database_url) as pg_conn:
         with pg_conn.cursor() as cursor:
-            existing = cursor.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
-            ).fetchall()
-            if existing:
-                raise RuntimeError("PostgreSQL target database must be empty before migration")
-            schemas = _schema_statements(sqlite_conn)
-            for ddl in schemas.values():
-                cursor.execute(ddl)
-            for statement in _index_statements(sqlite_conn):
-                cursor.execute(statement)
-            ordered_tables = [table for table in TABLE_ORDER if table in schemas and table not in LOCK_TABLES]
-            ordered_tables.extend(sorted(set(schemas) - set(ordered_tables) - LOCK_TABLES))
+            pg_columns = _postgres_columns(cursor)
+            if not pg_columns:
+                raise RuntimeError("PostgreSQL target must be initialized by Vidferry before migration")
+            source_tables = {
+                name for (name,) in sqlite_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            ordered_tables = [table for table in TABLE_ORDER if table in source_tables and table not in LOCK_TABLES]
+            ordered_tables.extend(sorted(source_tables - set(ordered_tables) - LOCK_TABLES))
+            if "youtube_video_groups" in source_tables:
+                _remove_generated_default_group(cursor)
             for table in ordered_tables:
-                if table not in schemas:
+                target_columns = pg_columns.get(table)
+                if not target_columns:
+                    report["skippedTables"].append(table)
                     continue
+                if cursor.execute(f'SELECT EXISTS (SELECT 1 FROM "{table}" LIMIT 1)').fetchone()[0]:
+                    raise RuntimeError(f"PostgreSQL target table is not empty: {table}")
                 rows = sqlite_conn.execute(f'SELECT * FROM "{table}"').fetchall()
+                source_columns = [item[1] for item in sqlite_conn.execute(f'PRAGMA table_info("{table}")')]
+                columns = [column for column in source_columns if column in target_columns]
                 if rows:
-                    columns = [item[0] for item in sqlite_conn.execute(f'PRAGMA table_info("{table}")')]
                     placeholders = ", ".join(["%s"] * len(columns))
-                    cursor.executemany(f'INSERT INTO "{table}" ({", ".join(columns)}) VALUES ({placeholders})', rows)
+                    quoted_columns = ", ".join(f'"{column}"' for column in columns)
+                    column_positions = [source_columns.index(column) for column in columns]
+                    cursor.executemany(
+                        f'INSERT INTO "{table}" ({quoted_columns}) VALUES ({placeholders})',
+                        [[row[index] for index in column_positions] for row in rows],
+                    )
                 report["tables"][table] = {"rows": len(rows), "sha256": _rows_hash(rows)}
-                columns = list(sqlite_conn.execute(f'PRAGMA table_info("{table}")'))
-                id_column = next((item for item in columns if item[1] == "id"), None)
-                if id_column and "INT" in str(id_column[2]).upper():
+                id_column = next((item for item in sqlite_conn.execute(f'PRAGMA table_info("{table}")') if item[1] == "id"), None)
+                if rows and id_column and "INT" in str(id_column[2]).upper() and "id" in columns:
                     cursor.execute(
                         f"SELECT setval(pg_get_serial_sequence('public.{table}', 'id'), COALESCE((SELECT MAX(id) FROM \"{table}\"), 1), true)"
                     )
+            if "youtube_video_groups" in source_tables:
+                _ensure_default_group(cursor)
             pg_conn.commit()
     return report

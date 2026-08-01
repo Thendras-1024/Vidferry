@@ -1,4 +1,4 @@
-﻿@app.route('/deleteFile', methods=['DELETE'])
+@app.route('/deleteFile', methods=['DELETE'])
 def delete_file():
     payload = request.get_json(silent=True) or {}
     file_id = payload.get('id') or request.args.get('id')
@@ -12,7 +12,7 @@ def delete_file():
 
     try:
         with _db_connect() as conn:
-            conn.row_factory = sqlite3.Row
+            conn.row_factory = True
             cursor = conn.cursor()
 
             data = delete_material_record(cursor, int(file_id))

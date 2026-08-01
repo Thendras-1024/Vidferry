@@ -182,7 +182,7 @@ def _agent_find_video(identifier):
     if not text:
         return None
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (text,))
         row = cursor.fetchone()
@@ -238,7 +238,7 @@ def get_publish_platforms(video_id):
     if not video_id:
         return {"videoId": "", "items": [], "total": 0}
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -273,7 +273,7 @@ def agent_list_publish_tasks(limit=None):
 
 def list_failed_jobs(limit=None):
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -303,7 +303,7 @@ def list_failed_jobs(limit=None):
 
 def get_account_status():
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT id, type, userName, status FROM user_info ORDER BY type, id")
         rows = cursor.fetchall()
