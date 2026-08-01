@@ -24,7 +24,7 @@ _logger = logging.getLogger("vidferry.backend")
 
 
 EDITING_INTRO_MIN_START_SECONDS = 30
-EDITING_COVER_DURATION_SECONDS = 1.0
+EDITING_COVER_DURATION_SECONDS = 2.0
 
 
 def _editing_cover_title(job, analysis_result):
@@ -635,7 +635,7 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
 
     init_youtube_workflow_table()
     with _db_connect() as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("SELECT analysis_status FROM youtube_videos WHERE video_id = ?", (video_id,))
         row = cursor.fetchone()
