@@ -13,9 +13,10 @@ Vidferry 是一个本地优先的视频采集、处理、视频素材管理和�
 1. 若尚未克隆：git clone https://github.com/Thendras-1024/Vidferry.git 并进入目录
 2. 仔细阅读仓库根目录的 QUICK_DEPLOYMENT.md，严格按照其中的环境检查、缺失工具安装和部署流程执行；需要配置项说明时，再阅读 CONFIGURATION.md
 3. 首先检查 conda、python、node/npm、git、ffmpeg、Docker Desktop 和 Google Chrome 是否已安装且版本可用；缺失时按 QUICK_DEPLOYMENT.md 协助我安装，安装后重新验证
-4. 目标：浏览器能打开 http://127.0.0.1:5173 且首页正常加载
-5. 每完成一步向我简短汇报；遇到报错先自行排查并重试
-6. 只有在需要我开启 VPN/代理、提供 LLM 的 API Key/Base URL/模型名，或进行各平台账号扫码登录时才停下来问我，不要编造
+4. 使用 `python scripts/prepare_local_env.py` 生成本机数据库和认证配置，使用 `docker compose --env-file .env -f docker-compose.postgres.yml up -d` 启动 PostgreSQL；不得打印、提交或上传 `.env` 中的任何值
+5. 目标：浏览器能打开 http://127.0.0.1:55173、后端运行在 5409，且在没有用户时交互式创建首个管理员
+6. 每完成一步向我简短汇报；遇到报错先自行排查并重试
+7. 只有在需要我开启 VPN/代理、提供 LLM 的 API Key/Base URL/模型名，或进行各平台账号扫码登录时才停下来问我，不要编造
 ```
 ## 界面预览
 
@@ -136,6 +137,8 @@ python run.py
 
 `DATABASE_URL` 是必填配置。后端首次连接空 PostgreSQL 数据库时会自动执行 `app/db/migrations/postgresql/V001__initial_schema.sql` 创建全部业务表；运行时仅使用 PostgreSQL。
 
+旧版本 SQLite 数据库迁移到 PostgreSQL 请按 [SQLite 迁移指南](docs/postgresql-migration.md) 执行。迁移只作为一次性导入工具，运行期不再支持 SQLite。
+
 ### 2. 创建首个管理员
 
 后端启动完成后，使用交互式命令创建首个管理员：
@@ -158,7 +161,7 @@ npm run dev
 访问：
 
 ```text
-http://127.0.0.1:5173
+http://127.0.0.1:55173
 ```
 
 ### 4. 配置账号

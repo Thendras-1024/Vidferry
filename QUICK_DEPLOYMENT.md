@@ -179,34 +179,16 @@ WHISPER_COMPUTE_TYPE=int8
 PostgreSQL is the only runtime database. For a new `.env`, generate local credentials, start the bundled database service, and wait for it to become ready:
 
 ```powershell
-if (-not (Select-String -Path .env -Pattern '^POSTGRES_PASSWORD=\S' -Quiet)) {
-  $postgresPassword = conda run -n vidferry python -c "import secrets; print(secrets.token_urlsafe(32))"
-  Add-Content .env "POSTGRES_PASSWORD=$postgresPassword"
-}
-if (-not (Select-String -Path .env -Pattern '^POSTGRES_DB=\S' -Quiet)) { Add-Content .env 'POSTGRES_DB=vidferry' }
-if (-not (Select-String -Path .env -Pattern '^POSTGRES_USER=\S' -Quiet)) { Add-Content .env 'POSTGRES_USER=vidferry' }
-if (-not (Select-String -Path .env -Pattern '^DATABASE_URL=\S' -Quiet)) {
-  $postgresPassword = (Select-String -Path .env -Pattern '^POSTGRES_PASSWORD=(.+)$').Matches[0].Groups[1].Value
-  Add-Content .env "DATABASE_URL=postgresql://vidferry:$postgresPassword@127.0.0.1:5432/vidferry"
-}
+python scripts/prepare_local_env.py
 docker compose --env-file .env -f docker-compose.postgres.yml up -d
-docker compose --env-file .env -f docker-compose.postgres.yml exec -T postgres pg_isready -U vidferry -d vidferry
+docker compose --env-file .env -f docker-compose.postgres.yml exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-When Docker is installed but its daemon is not running, ask the user to start Docker Desktop before retrying. Do not print, commit, or upload generated credentials.
+该脚本只填补空的必填值，不覆盖已有 `DATABASE_URL` 或认证密钥，也不会输出密钥。Docker 已安装但 daemon 未启动时，先启动 Docker Desktop 再重试。不要打印、提交或上传 `.env`。
 
 ## 4.1 初始化认证
 
-首次部署必须使用固定认证密钥。部署 Agent 可生成并写入本地 `.env`，但不得打印、提交或上传密钥：
-
-```powershell
-if (-not (Select-String -Path .env -Pattern '^VIDFERRY_AUTH_SECRET=\S' -Quiet)) {
-  $authSecret = conda run -n vidferry python -c "import secrets; print(secrets.token_urlsafe(64))"
-  Add-Content .env "VIDFERRY_AUTH_SECRET=$authSecret"
-}
-```
-
-初始化数据库后检查是否已有用户；没有用户时，执行下列命令。管理员密码只在交互提示中输入：
+`prepare_local_env.py` 同时会生成缺失的 `VIDFERRY_AUTH_SECRET`。初始化数据库后检查是否已有用户；没有用户时，执行下列命令。管理员密码只在交互提示中输入：
 
 ```powershell
 conda run -n vidferry python -m app.auth.cli create-admin --username admin --display-name "管理员"
@@ -243,7 +225,7 @@ cd sau_frontend
 npm run dev
 ```
 
-访问 `http://127.0.0.1:5173`，确认首页正常加载。Vite 已将 `/api` 代理到 `http://127.0.0.1:5409`。
+访问 `http://127.0.0.1:55173`，确认首页正常加载。Vite 已将 `/api` 代理到 `http://127.0.0.1:5409`。
 
 ## 部署 Agent 执行准则
 
