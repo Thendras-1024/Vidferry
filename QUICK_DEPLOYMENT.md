@@ -1,235 +1,136 @@
-# Vidferry 快速部署指南
+# Vidferry 快速部署
 
-本指南面向 Windows 10/11 和 PowerShell。部署 Agent 必须先完成环境检查；已经安装且版本符合要求的工具应直接复用，缺失或版本不符合要求时应协助用户安装并重新验证。
+本指南用于 Windows 本地部署 Vidferry。项目运行期使用 PostgreSQL，不再使用 SQLite 作为主库。
 
-## 0. 检查并安装本机工具
+## 1. 前置条件
 
-先在 PowerShell 执行以下检查：
+- Conda 或 Miniforge，建议 Python 3.12。
+- Node.js 20+ 与 npm，用于前端和 yt-dlp 的 YouTube JS runtime。
+- FFmpeg，命令需可在 `PATH` 中执行。
+- Docker Desktop，用于本地 PostgreSQL。
+- Google Chrome，用于平台登录和发布自动化。
+
+检查工具：
 
 ```powershell
 conda --version
 python --version
 node --version
 npm --version
-git --version
 ffmpeg -version
 docker --version
-docker compose version
-
-$chromePaths = @(
-  "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-  "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-  "$env:LocalAppData\Google\Chrome\Application\chrome.exe"
-)
-$chromePath = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-if ($chromePath) { & $chromePath --version } else { Write-Host "Google Chrome 未安装" }
 ```
 
-目标版本和用途：
+## 2. 创建 Python 环境并安装依赖
 
-- Conda：用于创建后端 Python 环境。
-- Python：`>=3.10,<3.13`；本指南创建 Python 3.12 的 Conda 环境。
-- Node.js/npm：Node.js `>=18`，用于前端和 YouTube 下载所需的 JS runtime。
-- Git：用于克隆仓库。
-- FFmpeg：用于视频处理；必须能运行 `ffmpeg -version`。
-- Google Chrome：用于扫码登录和各平台发布。
-
-缺少工具时，先检查 Windows 包管理器是否可用：
-
-```powershell
-winget --version
-```
-
-如果可用，按缺失项安装。安装命令需要网络；遇到管理员授权或安装器确认时，应提示用户确认后继续。不要重装已通过检查的工具。
-
-```powershell
-# Conda（安装后需关闭并重新打开 PowerShell，再执行 conda init powershell）
-winget install --id Anaconda.Miniconda3 -e --accept-package-agreements --accept-source-agreements
-
-# Node.js LTS（包含 npm）
-winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
-
-# Git
-winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements
-
-# FFmpeg
-winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements
-
-# Google Chrome
-winget install --id Google.Chrome -e --accept-package-agreements --accept-source-agreements
-
-# Docker Desktop (PostgreSQL local runtime)
-winget install --id Docker.DockerDesktop -e --accept-package-agreements --accept-source-agreements
-```
-
-安装完成后，重新打开 PowerShell，必要时执行 `conda init powershell` 并再次打开终端，然后重复本节的检查命令。若 `winget` 不可用或某个包安装失败，向用户说明缺少的工具和失败原因，并打开其官方安装渠道协助完成安装；安装后仍须验证版本和命令可用性。
-
-> YouTube 下载及首次下载 biliup 运行时需要用户自行开启 VPN/代理。LLM API Key/Base URL/模型名和各平台扫码登录属于用户信息，不能编造或替代完成。
-
-## 1. 克隆项目
-
-若当前目录还不是 Vidferry 仓库：
-
-```powershell
-git clone https://github.com/Thendras-1024/Vidferry.git
-cd Vidferry
-```
-
-## 2. 创建后端环境并安装依赖
+在项目根目录执行：
 
 ```powershell
 conda create -n vidferry python=3.12 -y
-conda activate vidferry
-python -m pip install -U pip
-pip install -r requirements.txt
-pip install -e .
+conda run -n vidferry python -m pip install --upgrade pip
+conda run -n vidferry python -m pip install -r requirements.txt
+conda run -n vidferry python -m pip install -e .
 ```
 
-### NVIDIA GPU Whisper（可选）
-
-默认的 `cpu / int8` 配置不需要 CUDA。需要使用 `WHISPER_DEVICE=cuda` 时，在完成上述环境安装后执行：
+如后端提示缺少 Flask、认证或 CORS 依赖，补装 Web extra：
 
 ```powershell
-conda env update -n vidferry -f environment.gpu-win.yml
+conda run -n vidferry python -m pip install -e ".[web]"
 ```
 
-该环境文件会把 CUDA 12 的 cuBLAS、cuDNN 运行库安装到 `vidferry` 环境，避免依赖系统 PATH。缺少 GPU 运行库时，字幕任务会被阻断，并在右上角消息中给出修复指引；也可将 `WHISPER_DEVICE` 改为 `cpu` 后重启后端。
-
-后端运行、CLI、视频下载/处理和平台自动化发布都需要在 `vidferry` 环境中执行。`pip install -e .` 会以开发模式安装项目并注册 `sau` 命令。
-
-Linux/macOS 上如 `requirements.txt` 存在平台兼容性问题，可优先使用：
+安装前端依赖：
 
 ```powershell
-pip install -e ".[web]"
+Set-Location sau_frontend
+npm install
+Set-Location ..
 ```
 
-如果使用 uv，也可以执行：
+## 3. 准备本地配置与 PostgreSQL
+
+准备脚本会从 `.env.example` 生成 `.env`（如文件不存在），并为本机写入数据库密码、连接串和认证密钥：
 
 ```powershell
-python -m pip install uv
-uv sync --extra web
-```
-
-## 3. 安装浏览器自动化依赖
-
-项目使用 `patchright` 驱动浏览器。国内网络可使用镜像：
-
-```powershell
-conda activate vidferry
-$env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
-patchright install chromium
-```
-
-即使已安装本机 Chrome，也需要安装 Patchright Chromium。Chrome 用于更稳定的扫码登录和发布流程。
-
-## 4. 配置后端文件
-
-仅在文件不存在时从示例创建；已有 `conf.py` 或 `.env` 时保留用户现有配置并补充必要项。
-
-```powershell
-if (-not (Test-Path conf.py)) { Copy-Item conf.example.py conf.py }
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-```
-
-检查 `conf.py`。将 `LOCAL_CHROME_PATH` 填为第 0 步检测到的 Chrome 路径；FFmpeg 已加入 PATH 时保留 `ffmpeg`，否则填入其绝对路径：
-
-```python
-LOCAL_CHROME_PATH = "C:/Program Files/Google/Chrome/Application/chrome.exe"
-LOCAL_CHROME_HEADLESS = False
-FFMPEG_COMMAND = "ffmpeg"
-YOUTUBE_DOWNLOAD_DIR = BASE_DIR.parent / "video"
-YOUTUBE_PROCESSED_DIR = BASE_DIR / "videos" / "processed"
-```
-
-`.env` 至少保留以下本地路径配置；LLM 配置在用户提供 API 信息后再填写：
-
-```env
-YOUTUBE_DOWNLOAD_DIR=./videos/youtube
-YOUTUBE_PROCESSED_DIR=./videos/processed
-YOUTUBE_TRANSCRIPT_DIR=./videos/transcripts
-
-# 可选：YouTube 需要 JS challenge 时使用
-# YTDLP_JS_RUNTIME=node
-# YTDLP_JS_RUNTIME_PATH=C:/Program Files/nodejs/node.exe
-# YTDLP_REMOTE_COMPONENTS=ejs:github
-
-# 可选：内容分析和发布文案生成（由用户提供真实值）
-# TEXT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# TEXT_LLM_API_KEY=sk-your-key
-# TEXT_LLM_MODEL=qwen-plus
-# MULTIMODAL_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# MULTIMODAL_LLM_API_KEY=sk-your-key
-# MULTIMODAL_LLM_MODEL=qwen-vl-max
-# LLM_TIMEOUT=90
-# LLM_MAX_TRANSCRIPT_CHARS=28000
-
-
-# 可选：Whisper 转写模型下载和缓存
-# HF_HOME=./models/huggingface
-# HF_ENDPOINT=https://hf-mirror.com
-WHISPER_MODEL_SIZE=small
-WHISPER_DEVICE=cpu
-WHISPER_COMPUTE_TYPE=int8
-```
-
-仅在需要配置 Chrome、FFmpeg、LLM 或 yt-dlp JS runtime 时，读取仓库根目录的 [CONFIGURATION.md](CONFIGURATION.md)。
-
-## 4.0 初始化 PostgreSQL
-
-PostgreSQL is the only runtime database. For a new `.env`, generate local credentials, start the bundled database service, and wait for it to become ready:
-
-```powershell
-python scripts/prepare_local_env.py
+conda run -n vidferry python scripts/prepare_local_env.py
 docker compose --env-file .env -f docker-compose.postgres.yml up -d
-docker compose --env-file .env -f docker-compose.postgres.yml exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-该脚本只填补空的必填值，不覆盖已有 `DATABASE_URL` 或认证密钥，也不会输出密钥。Docker 已安装但 daemon 未启动时，先启动 Docker Desktop 再重试。不要打印、提交或上传 `.env`。
+确认数据库已启动：
 
-## 4.1 初始化认证
+```powershell
+docker compose --env-file .env -f docker-compose.postgres.yml ps
+```
 
-`prepare_local_env.py` 同时会生成缺失的 `VIDFERRY_AUTH_SECRET`。初始化数据库后检查是否已有用户；没有用户时，执行下列命令。管理员密码只在交互提示中输入：
+然后编辑 `.env`，至少将 `TEXT_LLM_API_KEY` 替换为本地真实密钥。模型配置、GPU 转写和超时项见 [配置参考](CONFIGURATION.md)。`.env` 不得提交或共享。
+
+## 4. 启动服务
+
+启动后端：
+
+```powershell
+conda run -n vidferry python run.py
+```
+
+另开一个终端启动前端：
+
+```powershell
+Set-Location E:\Vidferry\sau_frontend
+npm run dev
+```
+
+打开 `http://127.0.0.1:55173`。前端会将 `/api` 与 `/accounts` 请求代理到 `http://127.0.0.1:5409`。
+
+## 5. 创建首个管理员
+
+数据库为空时创建首个管理员：
 
 ```powershell
 conda run -n vidferry python -m app.auth.cli create-admin --username admin --display-name "管理员"
 ```
 
-## 5. 安装前端依赖
+密码以交互方式输入，不会写入命令历史。后续用户由管理员在控制台的“用户与安全”页面创建。
+
+## 6. 首次使用检查
+
+1. 登录控制台，确认素材列表可打开。
+2. 在“视频采集处理”导入一个可访问的 YouTube 链接。
+3. 下载后检查 `videos/youtube/` 是否生成原视频。
+4. 执行一次处理，确认 FFmpeg、转写与字幕流程正常。
+5. 需要评论烧制时，在处理版本二中启用该开关。它会在处理阶段而非检索阶段抓取评论，LLM 或 yt-dlp 失败时主成片仍会继续。
+6. 使用发布前先在账号管理中完成各平台登录，并在发布中心确认 Cookie 状态。
+
+## 常见问题
+
+### 后端无法连接数据库
+
+确认 `.env` 中 `DATABASE_URL` 非空，且 PostgreSQL 容器运行：
 
 ```powershell
-cd sau_frontend
-npm install
-cd ..
+docker compose --env-file .env -f docker-compose.postgres.yml logs postgres
 ```
 
-## 6. 启动服务并验证
+### 前端可以打开但接口失败
 
-在项目根目录打开第一个终端，启动后端：
+确认 `python run.py` 正在运行在 `127.0.0.1:5409`，且没有修改 `sau_frontend/vite.config.js` 中的代理目标。
+
+### YouTube 下载或评论获取失败
+
+确认网络可访问 YouTube，Node.js 20+ 已安装，并保留 `.env` 中的 `YTDLP_REMOTE_COMPONENTS=ejs:github`。更新 yt-dlp 后重试：
 
 ```powershell
-conda activate vidferry
-python run.py
+conda run -n vidferry python -m pip install -U yt-dlp
 ```
 
-默认后端地址是 `http://127.0.0.1:5409`。若需变更，在 `.env` 中设置 `VIDFERRY_HOST` 和 `VIDFERRY_PORT`。
+评论是否可取由视频的公开评论状态、地区限制和 yt-dlp 当前解析能力决定；评论失败只会跳过评论层。
 
-```env
-VIDFERRY_HOST=0.0.0.0
-VIDFERRY_PORT=5409
-```
+### LLM 请求超时
 
-打开第二个终端，启动前端：
+默认 `LLM_TIMEOUT=180` 秒。可在 `.env` 取消注释并设置更大值，例如 `LLM_TIMEOUT=240`，然后重启后端。也可保持 `LLM_DISABLE_THINKING=true` 降低推理模型延迟。
 
-```powershell
-cd sau_frontend
-npm run dev
-```
+### GPU 转写或 NVENC 失败
 
-访问 `http://127.0.0.1:55173`，确认首页正常加载。Vite 已将 `/api` 代理到 `http://127.0.0.1:5409`。
+先使用默认 CPU 配置 `WHISPER_DEVICE=cpu`、`WHISPER_COMPUTE_TYPE=int8` 和 `VIDEO_ENCODER=libx264` 验证流程。GPU 模式必须由当前 CUDA、驱动及 FFmpeg 实际支持。
 
-## 部署 Agent 执行准则
+## 生产部署提示
 
-1. 每完成一个阶段，简短汇报检查结果、安装内容或错误处理结果。
-2. 遇到命令失败先自行排查并重试；不要跳过环境验证。
-3. 仅在需要用户授权、VPN/代理、LLM API 信息或平台扫码登录时暂停并询问用户。
-4. 不要把 `.env`、`conf.py`、Cookie 或 API Key 提交到 Git。
+生产环境使用 HTTPS 反向代理，让后端只监听内网或 `127.0.0.1`，设置 `VIDFERRY_AUTH_COOKIE_SECURE=true` 与强随机 `VIDFERRY_AUTH_SECRET`，并保持单个后端进程运行。详情见 [用户认证与部署](docs/用户认证与部署.md)。
