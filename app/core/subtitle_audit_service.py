@@ -43,13 +43,13 @@ def save_subtitle_audit_snapshot(job, initial_segments, reviewed_segments, revie
 
 def _subtitle_audit_sort_sql(value):
     return {
-        "saved_desc": "a.saved_at DESC, a.job_id DESC",
-        "saved_asc": "a.saved_at ASC, a.job_id ASC",
-        "job_started_desc": "COALESCE(j.started_at, a.saved_at) DESC, a.job_id DESC",
-        "job_started_asc": "COALESCE(j.started_at, a.saved_at) ASC, a.job_id ASC",
-        "fallback_desc": "a.fallback_segment_count DESC, a.saved_at DESC, a.job_id DESC",
-        "review_status_asc": "a.review_status ASC, a.saved_at DESC, a.job_id DESC",
-    }.get(str(value or "").strip(), "a.saved_at DESC, a.job_id DESC")
+        "saved_desc": "COALESCE(a.saved_at, j.updated_at, j.started_at, j.created_at) DESC, j.id DESC",
+        "saved_asc": "COALESCE(a.saved_at, j.updated_at, j.started_at, j.created_at) ASC, j.id ASC",
+        "job_started_desc": "COALESCE(j.started_at, j.created_at) DESC, j.id DESC",
+        "job_started_asc": "COALESCE(j.started_at, j.created_at) ASC, j.id ASC",
+        "fallback_desc": "COALESCE(a.fallback_segment_count, 0) DESC, COALESCE(a.saved_at, j.updated_at) DESC, j.id DESC",
+        "review_status_asc": "COALESCE(a.review_status, 'not_recorded') ASC, COALESCE(a.saved_at, j.updated_at) DESC, j.id DESC",
+    }.get(str(value or "").strip(), "COALESCE(a.saved_at, j.updated_at, j.started_at, j.created_at) DESC, j.id DESC")
 
 
 def list_subtitle_audits(keyword="", status="", sort="saved_desc", page=1, page_size=20):
@@ -60,20 +60,23 @@ def list_subtitle_audits(keyword="", status="", sort="saved_desc", page=1, page_
     status = str(status or "").strip()
     clauses, params = ["1 = 1"], []
     if keyword:
-        clauses.append("(a.video_title LIKE ? OR a.video_id LIKE ? OR a.job_id LIKE ?)")
+        clauses.append("(COALESCE(a.video_title, j.title) LIKE ? OR COALESCE(a.video_id, j.video_id) LIKE ? OR j.id LIKE ?)")
         params.extend([f"%{keyword}%"] * 3)
     if status:
-        clauses.append("a.review_status = ?")
+        clauses.append("COALESCE(a.review_status, 'not_recorded') = ?")
         params.append(status)
     where = " AND ".join(clauses)
     order_by = _subtitle_audit_sort_sql(sort)
     with _db_connect() as conn:
         conn.row_factory = True
-        total = conn.execute(f"SELECT COUNT(*) FROM youtube_subtitle_audits a WHERE {where}", params).fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id WHERE {where}", params).fetchone()[0]
         rows = conn.execute(f'''
-            SELECT a.*, j.status AS job_status, j.started_at AS job_started_at
-            FROM youtube_subtitle_audits a
-            LEFT JOIN youtube_workflow_jobs j ON j.id = a.job_id
+            SELECT a.*, j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title,
+                   j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
+                   j.updated_at AS job_updated_at, j.comment_burn_enabled,
+                   EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
+            FROM youtube_workflow_jobs j
+            LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
             WHERE {where}
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
@@ -92,22 +95,39 @@ def delete_subtitle_audits(job_ids):
     init_database_tables()
     placeholders = ", ".join("?" for _ in unique_job_ids)
     with _db_connect() as conn:
-        cursor = conn.execute(
-            f"DELETE FROM youtube_subtitle_audits WHERE job_id IN ({placeholders})",
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        rows = cursor.execute(
+            f"SELECT id, video_id, status FROM youtube_workflow_jobs WHERE id IN ({placeholders})",
             unique_job_ids,
-        )
+        ).fetchall()
+        active_ids = [row["id"] for row in rows if row["status"] in {"queued", "running", "waiting_confirmation"}]
+        if active_ids:
+            raise ValueError("运行中或待确认的任务不能删除")
+        video_ids = {str(row["video_id"] or "") for row in rows if row["video_id"]}
+        for table in ("youtube_workflow_llm_usage_events", "youtube_workflow_events", "youtube_subtitle_audits", "youtube_workflow_locks"):
+            cursor.execute(f"DELETE FROM {table} WHERE job_id IN ({placeholders})", unique_job_ids)
+        cursor.execute(f"DELETE FROM youtube_workflow_jobs WHERE id IN ({placeholders})", unique_job_ids)
+        for video_id in video_ids:
+            if cursor.execute("SELECT 1 FROM youtube_workflow_jobs WHERE video_id = ? LIMIT 1", (video_id,)).fetchone():
+                continue
+            cursor.execute(
+                "UPDATE youtube_videos SET comment_burn_snapshot = ?, comment_burn_signature = ?, comment_burn_status = ?, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?",
+                ("{}", "", "", video_id),
+            )
         conn.commit()
     return {"deletedCount": max(0, int(cursor.rowcount or 0))}
 
 
 def _subtitle_audit_list_item(row):
     return {
-        "jobId": row.get("job_id") or "", "videoId": row.get("video_id") or "",
-        "title": row.get("video_title") or row.get("video_id") or "未命名视频",
-        "targetLanguage": row.get("target_language") or "", "reviewStatus": row.get("review_status") or "unknown",
+        "jobId": row.get("job_id") or row.get("workflow_job_id") or "", "videoId": row.get("video_id") or row.get("workflow_video_id") or "",
+        "title": row.get("video_title") or row.get("workflow_title") or row.get("video_id") or row.get("workflow_video_id") or "未命名视频",
+        "targetLanguage": row.get("target_language") or "", "reviewStatus": row.get("review_status") or "not_recorded",
         "fallbackSegmentCount": int(row.get("fallback_segment_count") or 0),
-        "savedAt": row.get("saved_at") or "", "jobStatus": row.get("job_status") or "",
-        "jobStartedAt": row.get("job_started_at") or "",
+        "savedAt": row.get("saved_at") or row.get("job_updated_at") or row.get("job_started_at") or row.get("job_created_at") or "", "jobStatus": row.get("job_status") or "",
+        "jobStartedAt": row.get("job_started_at") or row.get("job_created_at") or "",
+        "commentBurnEnabled": bool(row.get("comment_burn_enabled")), "hasCommentAudit": bool(row.get("has_comment_audit")),
     }
 
 
@@ -116,9 +136,12 @@ def get_subtitle_audit_detail(job_id):
     with _db_connect() as conn:
         conn.row_factory = True
         row = conn.execute('''
-            SELECT a.*, j.status AS job_status, j.started_at AS job_started_at
-            FROM youtube_subtitle_audits a LEFT JOIN youtube_workflow_jobs j ON j.id = a.job_id
-            WHERE a.job_id = ?
+            SELECT a.*, j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title,
+                   j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
+                   j.updated_at AS job_updated_at, j.comment_burn_enabled,
+                   EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
+            FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
+            WHERE j.id = ?
         ''', (str(job_id or ""),)).fetchone()
         if not row:
             return None
@@ -129,10 +152,25 @@ def get_subtitle_audit_detail(job_id):
             WHERE job_id = ? AND status IN ('contract_failed', 'soft_warning') AND raw_output <> ''
             ORDER BY created_at DESC, id DESC
         ''', (str(job_id or ""),)).fetchall()
+        comment_events = conn.execute('''
+            SELECT metadata FROM youtube_workflow_events
+            WHERE job_id = ? AND stage IN ('comment_review', 'comment_fetch')
+            ORDER BY CASE stage WHEN 'comment_review' THEN 0 ELSE 1 END, id DESC
+        ''', (str(job_id or ""),)).fetchall()
     result = _subtitle_audit_list_item(dict(row))
     result["initialSegments"] = _subtitle_audit_json(row["initial_segments"], "[]")
     result["reviewedSegments"] = _subtitle_audit_json(row["reviewed_segments"], "[]")
     result["reviewBatches"] = _subtitle_audit_json(row["review_batches"], "[]")
+    comment_metadata = {}
+    for comment_event in comment_events:
+        candidate = _subtitle_audit_json(comment_event["metadata"], "{}")
+        if not comment_metadata and isinstance(candidate, dict):
+            comment_metadata = candidate
+        if isinstance(candidate, dict) and isinstance(candidate.get("reviewItems"), list):
+            comment_metadata = candidate
+            break
+    result["commentReviewItems"] = comment_metadata.get("reviewItems") if isinstance(comment_metadata, dict) else []
+    result["commentReviewMeta"] = comment_metadata if isinstance(comment_metadata, dict) else {}
     result["diagnostics"] = [{
         "operation": item["operation"] or "", "model": item["model"] or "", "attempt": int(item["attempt"] or 1),
         "promptTokens": int(item["prompt_tokens"] or 0), "completionTokens": int(item["completion_tokens"] or 0),

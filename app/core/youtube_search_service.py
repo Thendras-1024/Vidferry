@@ -1,5 +1,6 @@
 """YouTube 视频搜索与元数据抓取:yt-dlp 搜索、网页兜底解析、订阅数与发布日期补全。"""
 
+import datetime as _datetime
 
 def _extract_yt_initial_data(content):
     marker = "var ytInitialData = "
@@ -413,7 +414,7 @@ def create_youtube_search_job(query, requested, group_id=None, duration_min_seco
     init_youtube_video_table()
     duration_min_seconds, duration_max_seconds = _normalize_duration_range(duration_min_seconds, duration_max_seconds)
     job_id = uuid.uuid4().hex
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
@@ -443,7 +444,7 @@ def get_youtube_search_job(job_id):
 
 
 def _claim_youtube_search_job(job_id):
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
@@ -459,7 +460,7 @@ def _claim_youtube_search_job(job_id):
 
 
 def _update_youtube_search_source(job_id, source):
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect() as conn:
         conn.execute('''
         UPDATE youtube_search_jobs
@@ -509,7 +510,7 @@ def _record_youtube_search_item(cursor, job, ordinal, video, decision, error="",
         "failed": "failed_count",
     }[decision]
     found = int(job.get("found") or 0) + 1
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     duration_filtered_sql = ", duration_filtered_count = duration_filtered_count + 1" if duration_filtered else ""
     cursor.execute(f'''
     UPDATE youtube_search_jobs
@@ -570,7 +571,7 @@ def _record_youtube_search_failure(job_id, ordinal, video, error):
 
 
 def _finish_youtube_search_job(job_id, status, message):
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect() as conn:
         conn.execute('''
         UPDATE youtube_search_jobs
@@ -580,7 +581,7 @@ def _finish_youtube_search_job(job_id, status, message):
 
 
 def fail_youtube_search_job(job_id, message):
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect() as conn:
         conn.execute('''
         UPDATE youtube_search_jobs
@@ -592,7 +593,7 @@ def fail_youtube_search_job(job_id, message):
 
 def recover_interrupted_youtube_search_jobs():
     init_youtube_video_table()
-    timestamp = datetime.datetime.now().isoformat(timespec="microseconds")
+    timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM youtube_search_jobs WHERE status IN ('queued', 'running')")

@@ -23,6 +23,7 @@ def _row_to_youtube_video(row):
         editing_highlight_snapshot = []
     if not isinstance(editing_highlight_snapshot, list):
         editing_highlight_snapshot = []
+    comment_burn_snapshot = _parse_json_object(item.get("comment_burn_snapshot"))
     video_id = item.get("video_id") or ""
     downloaded_file_path = item.get("downloaded_file_path") or ""
     return {
@@ -60,9 +61,49 @@ def _row_to_youtube_video(row):
         "editingIntroSignature": item.get("editing_intro_signature") or "",
         "editingHighlightSnapshot": editing_highlight_snapshot,
         "editingIntroStatus": item.get("editing_intro_status") or "",
+        "commentBurnSnapshot": comment_burn_snapshot,
+        "commentBurnSignature": item.get("comment_burn_signature") or "",
+        "commentBurnStatus": item.get("comment_burn_status") or "",
         "createdAt": item.get("created_at") or "",
         "updatedAt": item.get("updated_at") or "",
     }
+
+
+def get_youtube_comment_burn_snapshot(video_id):
+    if not video_id:
+        return {}
+    init_youtube_video_table()
+    with _db_connect() as conn:
+        conn.row_factory = True
+        row = conn.execute(
+            "SELECT comment_burn_snapshot, comment_burn_signature, comment_burn_status FROM youtube_videos WHERE video_id = ?",
+            (video_id,),
+        ).fetchone()
+    if not row:
+        return {}
+    snapshot = _parse_json_object(row["comment_burn_snapshot"])
+    return {
+        **snapshot,
+        "signature": row["comment_burn_signature"] or "",
+        "status": row["comment_burn_status"] or snapshot.get("status") or "",
+    }
+
+
+def save_youtube_comment_burn_snapshot(video_id, snapshot, signature="", status=""):
+    if not video_id:
+        return
+    init_youtube_video_table()
+    value = snapshot if isinstance(snapshot, dict) else {}
+    with _db_connect() as conn:
+        conn.execute(
+            """
+            UPDATE youtube_videos
+            SET comment_burn_snapshot = ?, comment_burn_signature = ?, comment_burn_status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = ?
+            """,
+            (json.dumps(value, ensure_ascii=False), str(signature or ""), str(status or value.get("status") or ""), video_id),
+        )
+        conn.commit()
 
 
 def save_new_youtube_videos(videos, query, group_id=None):
@@ -927,7 +968,8 @@ def reset_youtube_video_processing(video_id, delete_processed=True, process_vers
             cursor.execute('''
             UPDATE youtube_videos
             SET editing_body_path = '', editing_ass_path = '', editing_body_signature = '',
-                editing_intro_signature = '', editing_highlight_snapshot = '[]', editing_intro_status = ''
+                editing_intro_signature = '', editing_highlight_snapshot = '[]', editing_intro_status = '',
+                comment_burn_snapshot = '{}', comment_burn_signature = '', comment_burn_status = ''
             WHERE video_id = ?
             ''', (video_id,))
         conn.commit()

@@ -786,6 +786,23 @@
                 </div>
                 <el-switch v-model="workflowForm.coverIntroEnabled" />
               </div>
+              <div v-if="workflowForm.processVersion === 'editing_v1'" class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">烧制评论</span>
+                  <span class="setting-hint">{{ commentBurnAvailable ? '获取热门评论并筛选翻译，从正片第 60 秒开始显示' : '已启用自定义字幕命令，评论烧制不可用' }}</span>
+                </div>
+                <el-switch v-model="workflowForm.commentBurnEnabled" :disabled="!commentBurnAvailable" />
+              </div>
+              <div v-if="workflowForm.processVersion === 'editing_v1' && workflowForm.commentBurnEnabled" class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">评论翻译</span>
+                  <span class="setting-hint">非中文评论先初译，再按所选模式修订</span>
+                </div>
+                <el-radio-group v-model="workflowForm.commentTranslationMode" size="small" aria-label="评论翻译模式">
+                  <el-radio-button label="google_llm">Google 初译 + LLM 修订</el-radio-button>
+                  <el-radio-button label="google">Google 初译</el-radio-button>
+                </el-radio-group>
+              </div>
             </div>
           </el-tab-pane>
 
@@ -1189,8 +1206,11 @@ const workflowForm = reactive({
   highlightCount: 3,
   translationEnabled: true,
   highlightIntroEnabled: true,
-  coverIntroEnabled: true
+  coverIntroEnabled: true,
+  commentBurnEnabled: false,
+  commentTranslationMode: 'google_llm'
 })
+const commentBurnAvailable = ref(true)
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
 
@@ -1415,8 +1435,11 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
   if ([1, 2, 3].includes(highlightCount)) {
     next.highlightCount = highlightCount
   }
-  for (const key of ['translationEnabled', 'highlightIntroEnabled', 'coverIntroEnabled']) {
+  for (const key of ['translationEnabled', 'highlightIntroEnabled', 'coverIntroEnabled', 'commentBurnEnabled']) {
     if (typeof settings[key] === 'boolean') next[key] = settings[key]
+  }
+  if (['google_llm', 'google'].includes(settings.commentTranslationMode)) {
+    next.commentTranslationMode = settings.commentTranslationMode
   }
   return next
 }
@@ -1453,12 +1476,16 @@ const currentWorkflowSettingsPayload = () => ({
   highlightCount: workflowForm.highlightCount,
   translationEnabled: workflowForm.translationEnabled,
   highlightIntroEnabled: workflowForm.highlightIntroEnabled,
-  coverIntroEnabled: workflowForm.coverIntroEnabled
+  coverIntroEnabled: workflowForm.coverIntroEnabled,
+  commentBurnEnabled: workflowForm.commentBurnEnabled,
+  commentTranslationMode: workflowForm.commentTranslationMode
 })
 
 const applyStoredWorkflowSettings = (settings) => {
+  commentBurnAvailable.value = settings?.commentBurnAvailable !== false
   const { searchQuery, ...workflowSettings } = normalizeStoredWorkflowSettings(settings)
   Object.assign(workflowForm, workflowSettings)
+  if (!commentBurnAvailable.value || workflowForm.processVersion !== 'editing_v1') workflowForm.commentBurnEnabled = false
   if (searchQuery) {
     form.query = searchQuery
   }
@@ -1487,8 +1514,7 @@ const loadWorkflowSettings = async () => {
   }
   try {
     const response = await youtubeApi.getWorkflowSettings()
-    const settings = normalizeStoredWorkflowSettings(response.data || response)
-    applyStoredWorkflowSettings(settings)
+    applyStoredWorkflowSettings(response.data || response)
     persistLocalWorkflowSettings(currentWorkflowSettingsPayload())
   } catch (error) {
     console.warn('读取后端处理设置失败，使用本地缓存', error)
@@ -1531,6 +1557,7 @@ const processVersionLabel = (value) => {
 }
 
 watch(() => workflowForm.processVersion, (nextVersion, previousVersion) => {
+  if (nextVersion !== 'editing_v1') workflowForm.commentBurnEnabled = false
   if (!previousVersion || nextVersion === previousVersion) return
   if (!workflowSettingsLoaded || loadingWorkflowSettings) return
   const label = processVersionLabel(nextVersion)
@@ -1556,7 +1583,9 @@ watch(
     highlightCount: workflowForm.highlightCount,
     translationEnabled: workflowForm.translationEnabled,
     highlightIntroEnabled: workflowForm.highlightIntroEnabled,
-    coverIntroEnabled: workflowForm.coverIntroEnabled
+    coverIntroEnabled: workflowForm.coverIntroEnabled,
+    commentBurnEnabled: workflowForm.commentBurnEnabled,
+    commentTranslationMode: workflowForm.commentTranslationMode
   }),
   saveWorkflowSettings,
   { deep: true }
@@ -2509,7 +2538,9 @@ const createJob = async (row) => {
       watermarkText: workflowForm.watermarkText,
       translationEnabled: workflowForm.translationEnabled,
       highlightIntroEnabled: workflowForm.highlightIntroEnabled,
-      coverIntroEnabled: workflowForm.coverIntroEnabled
+      coverIntroEnabled: workflowForm.coverIntroEnabled,
+      commentBurnEnabled: workflowForm.commentBurnEnabled,
+      commentTranslationMode: workflowForm.commentTranslationMode
     })
     jobs.value.unshift(res.data)
     ElMessage.success('一键发布任务已创建')
@@ -2857,7 +2888,9 @@ const processVideo = async (row) => {
       highlightCount: workflowForm.highlightCount,
       translationEnabled: workflowForm.translationEnabled,
       highlightIntroEnabled: workflowForm.highlightIntroEnabled,
-      coverIntroEnabled: workflowForm.coverIntroEnabled
+      coverIntroEnabled: workflowForm.coverIntroEnabled,
+      commentBurnEnabled: workflowForm.commentBurnEnabled,
+      commentTranslationMode: workflowForm.commentTranslationMode
     }
     const res = await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)
@@ -2893,7 +2926,9 @@ const updateEditingIntro = async (row) => {
       coverTitle: row.analysisDraft?.coverTitle || '', coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled, watermarkText: workflowForm.watermarkText,
       highlightCount: workflowForm.highlightCount, highlightIntroEnabled: workflowForm.highlightIntroEnabled,
-      coverIntroEnabled: workflowForm.coverIntroEnabled
+      coverIntroEnabled: workflowForm.coverIntroEnabled,
+      commentBurnEnabled: workflowForm.commentBurnEnabled,
+      commentTranslationMode: workflowForm.commentTranslationMode
     })
     jobs.value.unshift(res.data)
     ElMessage.success('片头高光更新任务已创建')

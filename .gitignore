@@ -231,8 +231,10 @@ qrcode.png
 docs/*
 !docs/SQLite迁移至PostgreSQL.md
 !docs/用户认证与部署.md
+!docs/处理版本二评论烧制功能需求.md
 tests/*
 !tests/test_postgres_compat.py
 !tests/test_postgres_migrations.py
 !tests/conftest.py
 !tests/test_authentication.py
+!tests/test_comment_burn_service.py

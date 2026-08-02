@@ -63,6 +63,8 @@ def _row_to_workflow_job(row):
         "translationEnabled": bool(item.get("translation_enabled") if item.get("translation_enabled") is not None else 1),
         "highlightIntroEnabled": bool(item.get("highlight_intro_enabled") if item.get("highlight_intro_enabled") is not None else 1),
         "coverIntroEnabled": bool(item.get("cover_intro_enabled") if item.get("cover_intro_enabled") is not None else 1),
+        "commentBurnEnabled": bool(item.get("comment_burn_enabled") or 0),
+        "commentTranslationMode": _normalize_comment_translation_mode(item.get("comment_translation_mode")),
         "coverTitle": normalize_cover_title(item.get("cover_title")),
         "coverSignature": normalize_cover_signature(item.get("cover_brand_name")),
         "operation": item.get("operation") or "process",
@@ -166,6 +168,11 @@ def _normalize_highlight_count(value):
     return count if count in {1, 2, 3} else 3
 
 
+def _normalize_comment_translation_mode(value):
+    mode = str(value or "google_llm").strip()
+    return mode if mode in {"google_llm", "google"} else "google_llm"
+
+
 def _workflow_watermark_settings(payload):
     saved_settings = get_workflow_settings()
     watermark_enabled = bool(
@@ -196,8 +203,9 @@ def _workflow_highlight_count(payload):
 
 def _workflow_processing_options(payload):
     saved_settings = get_workflow_settings()
-    return tuple(bool(payload[key] if key in payload else saved_settings.get(key, True)) for key in (
-        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled",
+    defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False}
+    return tuple(bool(payload[key] if key in payload else saved_settings.get(key, defaults[key])) for key in (
+        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled", "commentBurnEnabled",
     ))
 
 
@@ -215,9 +223,14 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
     watermark_enabled, watermark_text = _workflow_watermark_settings(payload)
     highlight_count = _workflow_highlight_count(payload)
-    translation_enabled, highlight_intro_enabled, cover_intro_enabled = _workflow_processing_options(payload)
+    comment_translation_mode = _normalize_comment_translation_mode(payload.get("commentTranslationMode"))
+    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled = _workflow_processing_options(payload)
     cover_title, cover_signature = _workflow_cover_settings(payload)
     process_version = _normalize_process_version(payload.get("processVersion"))
+    if comment_burn_enabled and process_version != PROCESS_VERSION_EDITING:
+        raise ValueError("评论烧制仅支持处理版本二")
+    if comment_burn_enabled and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
+        raise ValueError("启用自定义字幕命令时不支持评论烧制")
     tags = payload.get("tags") or []
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
@@ -260,11 +273,11 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_translation_mode,
             cover_title, cover_context, cover_brand_name, cover_brand_platform, operation,
             title, description, tags, schedule, status, step, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             job_id,
             video_id,
@@ -294,6 +307,8 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             int(translation_enabled),
             int(highlight_intro_enabled),
             int(cover_intro_enabled),
+            int(comment_burn_enabled),
+            comment_translation_mode,
             cover_title,
             "",
             cover_signature,
@@ -734,6 +749,9 @@ WORKFLOW_STAGE_LABELS = {
     "subtitle": "字幕翻译与修订",
     "subtitle_burn": "字幕烧制",
     "body_burn": "正片字幕烧制",
+    "comment_fetch": "热门评论获取",
+    "comment_review": "评论筛选与翻译",
+    "comment_render": "评论烧制",
     "cover_render": "封面片头生成",
     "highlight_render": "高光短片生成",
     "editing_concat": "片头与正片拼接",

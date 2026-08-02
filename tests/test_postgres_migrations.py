@@ -57,6 +57,27 @@ def test_editing_artifact_migration_defines_all_runtime_columns():
         assert column in content
 
 
+def test_comment_burn_migration_defines_runtime_columns():
+    migration = Path("app/db/migrations/postgresql/V005__comment_burn.sql")
+    content = migration.read_text(encoding="utf-8")
+
+    for column in (
+        "comment_burn_enabled",
+        "comment_burn_snapshot",
+        "comment_burn_signature",
+        "comment_burn_status",
+    ):
+        assert column in content
+
+
+def test_comment_translation_mode_migration_defines_runtime_column():
+    migration = Path("app/db/migrations/postgresql/V006__comment_translation_mode.sql")
+    content = migration.read_text(encoding="utf-8")
+
+    assert "comment_translation_mode" in content
+    assert "google_llm" in content
+
+
 def test_baseline_schema_contains_all_runtime_migration_additions():
     baseline = Path("app/db/migrations/postgresql/V001__initial_schema.sql")
     content = baseline.read_text(encoding="utf-8")

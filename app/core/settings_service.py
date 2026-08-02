@@ -30,7 +30,12 @@ def _default_workflow_settings():
         "translationEnabled": True,
         "highlightIntroEnabled": True,
         "coverIntroEnabled": True,
+        "commentBurnEnabled": False,
     }
+
+
+def _comment_burn_available():
+    return not str(SUBTITLE_COMMAND_TEMPLATE or "").strip()
 
 
 def _normalize_workflow_settings(payload=None):
@@ -71,6 +76,7 @@ def _normalize_workflow_settings(payload=None):
     settings["translationEnabled"] = bool(payload.get("translationEnabled", True))
     settings["highlightIntroEnabled"] = bool(payload.get("highlightIntroEnabled", True))
     settings["coverIntroEnabled"] = bool(payload.get("coverIntroEnabled", True))
+    settings["commentBurnEnabled"] = bool(payload.get("commentBurnEnabled", False)) and settings["processVersion"] == PROCESS_VERSION_EDITING and _comment_burn_available()
 
     return settings
 
@@ -82,11 +88,13 @@ def get_workflow_settings():
         cursor.execute("SELECT value FROM app_settings WHERE key = ?", (WORKFLOW_SETTINGS_KEY,))
         row = cursor.fetchone()
     if not row:
-        return _default_workflow_settings()
+        settings = _default_workflow_settings()
+        return {**settings, "commentBurnAvailable": _comment_burn_available()}
     try:
-        return _normalize_workflow_settings(json.loads(row[0]))
+        settings = _normalize_workflow_settings(json.loads(row[0]))
     except Exception:
-        return _default_workflow_settings()
+        settings = _default_workflow_settings()
+    return {**settings, "commentBurnAvailable": _comment_burn_available()}
 
 
 def update_workflow_settings(payload):
@@ -106,4 +114,4 @@ def update_workflow_settings(payload):
             (WORKFLOW_SETTINGS_KEY, json.dumps(settings, ensure_ascii=False)),
         )
         conn.commit()
-    return settings
+    return {**settings, "commentBurnAvailable": _comment_burn_available()}

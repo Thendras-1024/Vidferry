@@ -185,6 +185,7 @@ def editing_body_signature(job):
     return _editing_signature({
         **_editing_body_signature_payload(job),
         "translationEnabled": bool(job.get("translationEnabled", True)),
+        "commentBurnEnabled": bool(job.get("commentBurnEnabled", False)),
     })
 
 

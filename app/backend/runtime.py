@@ -25,6 +25,7 @@ MODULE_ORDER = [
     "app/core/subtitle_service.py",
     "app/core/llm_harness.py",
     "app/core/llm_prompts.py",
+    "app/core/comment_burn_service.py",
     "app/core/editing_service.py",
     "app/core/material_service.py",
     "app/core/agent_memory.py",

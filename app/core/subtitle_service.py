@@ -801,7 +801,121 @@ def _subtitle_render_layout(job, video_info):
     }
 
 
-def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, include_subtitles=True):
+def _comment_display_text(value):
+    return " ".join(str(value or "").split()).strip()
+
+
+def _comment_like_count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _comment_burn_layout(video_info):
+    width = max(320, int((video_info or {}).get("width") or 1080))
+    height = max(320, int((video_info or {}).get("height") or 1920))
+    short_side = min(width, height)
+    margin = max(24, int(width * 0.046))
+    avatar_size = max(52, min(112, int(short_side * 0.094)))
+    meta_font_size = max(20, min(40, int(short_side * 0.034)))
+    text_font_size = max(24, min(46, int(short_side * 0.040)))
+    translation_font_size = max(20, min(40, int(short_side * 0.033)))
+    like_font_size = max(18, min(34, int(short_side * 0.029)))
+    return {
+        "x": max(24, int(margin * 0.5)),
+        "y": max(26, int(height * 0.042)),
+        "avatarSize": avatar_size,
+        "textX": margin + avatar_size + max(12, int(short_side * 0.018)),
+        "textWidth": max(160, width - margin * 2 - avatar_size - max(12, int(short_side * 0.018))),
+        "metaFontSize": meta_font_size,
+        "textFontSize": text_font_size,
+        "translationFontSize": translation_font_size,
+        "likeFontSize": like_font_size,
+    }
+
+
+def _wrap_comment_ass_text(text, max_chars, max_lines=2):
+    text = _comment_display_text(text)
+    if not text:
+        return ""
+    lines = [text[index:index + max_chars] for index in range(0, len(text), max_chars)]
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1].rstrip() + "…"
+    return "\\N".join(_escape_ass_text(line) for line in lines)
+
+
+def _comment_burn_style_lines(video_info):
+    layout = _comment_burn_layout(video_info)
+    return [
+        f"Style: CommentMeta,Microsoft YaHei,{layout['metaFontSize']},&H00FFFFFF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,2,1,7,0,0,0,1",
+        f"Style: CommentText,Microsoft YaHei,{layout['textFontSize']},&H00FFFFFF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,3,1,7,0,0,0,1",
+        f"Style: CommentTranslation,Microsoft YaHei,{layout['translationFontSize']},&H00DFF7FF,&H000000FF,&H00111111,&H78000000,0,0,0,0,100,100,0,0,1,2,1,7,0,0,0,1",
+        f"Style: CommentLike,Microsoft YaHei,{layout['likeFontSize']},&H00DDDDDD,&H000000FF,&H00111111,&H78000000,0,0,0,0,100,100,0,0,1,2,1,7,0,0,0,1",
+    ]
+
+
+def _comment_avatar_y(layout, comment):
+    meta_y = layout["y"]
+    text_y = meta_y + int(layout["metaFontSize"] * 1.35)
+    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.78, 1)))
+    original = _wrap_comment_ass_text((comment or {}).get("text"), max_chars)
+    if (comment or {}).get("translationRequired") and _wrap_comment_ass_text((comment or {}).get("translationZh"), max_chars):
+        translation_y = text_y + int(layout["textFontSize"] * (2.25 if "\\N" in original else 1.45))
+        bottom = translation_y + int(layout["translationFontSize"] * 1.35) + int(layout["likeFontSize"] * 1.25)
+    else:
+        bottom = text_y + int(layout["textFontSize"] * 2.25) + int(layout["likeFontSize"] * 1.25)
+    return max(meta_y, meta_y + (bottom - meta_y - layout["avatarSize"]) // 2)
+
+
+def _append_comment_burn_ass(dialogue_lines, comments, video_info):
+    comments = list(comments or [])
+    if not comments:
+        return
+    layout = _comment_burn_layout(video_info)
+    meta_y = layout["y"]
+    text_y = meta_y + int(layout["metaFontSize"] * 1.35)
+    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.78, 1)))
+    for comment in comments:
+        start = _format_ass_timestamp(comment.get("displayStart"))
+        end = _format_ass_timestamp(comment.get("displayEnd"))
+        motion = r"\fad(480,280)\fscx94\fscy94\t(0,300,\fscx102\fscy102)\t(300,540,\fscx100\fscy100)\t(1600,2150,\fscx101\fscy101)\t(2150,2700,\fscx100\fscy100)\t(4200,4750,\fscx101\fscy101)\t(4750,5300,\fscx100\fscy100)"
+        author = _escape_ass_text(comment.get("author") or "")
+        time_text = _escape_ass_text(comment.get("timeText") or "")
+        meta = author + (f"  {time_text}" if time_text else "")
+        original = _wrap_comment_ass_text(comment.get("text"), max_chars)
+        translation = _wrap_comment_ass_text(comment.get("translationZh"), max_chars)
+        translation_y = text_y + int(layout["textFontSize"] * (2.25 if "\\N" in original else 1.45))
+        like_y = translation_y + int(layout["translationFontSize"] * 1.35)
+        meta_position = fr"\move({layout['textX']},{meta_y + 18},{layout['textX']},{meta_y},0,480)"
+        text_position = fr"\move({layout['textX']},{text_y + 18},{layout['textX']},{text_y},0,480)"
+        dialogue_lines.append(f"Dialogue: 4,{start},{end},CommentMeta,,0,0,0,,{{{motion}{meta_position}}}{meta}")
+        dialogue_lines.append(f"Dialogue: 5,{start},{end},CommentText,,0,0,0,,{{{motion}{text_position}}}{original}")
+        if comment.get("translationRequired") and translation:
+            translation_position = fr"\move({layout['textX']},{translation_y + 18},{layout['textX']},{translation_y},0,480)"
+            dialogue_lines.append(f"Dialogue: 6,{start},{end},CommentTranslation,,0,0,0,,{{{motion}{translation_position}}}{translation}")
+            like_position = like_y
+        else:
+            like_position = text_y + int(layout["textFontSize"] * 2.25)
+        like_motion = fr"\move({layout['textX']},{like_position + 18},{layout['textX']},{like_position},0,480)"
+        dialogue_lines.append(f"Dialogue: 4,{start},{end},CommentLike,,0,0,0,,{{{motion}{like_motion}}}👍 {_comment_like_count(comment.get('likeCount'))}")
+
+
+def _resolve_comment_burn_snapshot(job, comment_future, duration):
+    if not job.get("commentBurnEnabled"):
+        return {"status": "disabled", "comments": []}
+    try:
+        snapshot = comment_future.result() if comment_future else {"status": "skipped", "comments": [], "reason": "评论任务未启动"}
+    except Exception as exc:
+        snapshot = {"status": "failed", "comments": [], "reason": f"评论任务异常：{str(exc)[:160]}"}
+    scheduled = schedule_comment_burn(snapshot, duration)
+    signature = comment_burn_signature(job)
+    save_youtube_comment_burn_snapshot(job.get("videoId"), scheduled, signature, scheduled.get("status"))
+    return scheduled
+
+
+def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, include_subtitles=True, comment_snapshot=None):
     ass_file = Path(ass_file)
     layout = _subtitle_render_layout(job, video_info)
     width = layout["width"]
@@ -842,11 +956,14 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
         f"Style: English,Arial,{english_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{english_margin_v},1",
         f"Style: Info,Microsoft YaHei,{info_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{info_outline},{subtitle_shadow},7,{horizontal_margin},{horizontal_margin},{info_margin_v},1",
         f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,-1,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
+        *(_comment_burn_style_lines(video_info) if (comment_snapshot or {}).get("comments") else []),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
+    if not (comment_snapshot or {}).get("comments"):
+        dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
+    _append_comment_burn_ass(dialogue_lines, (comment_snapshot or {}).get("comments"), video_info)
     if include_subtitles:
         for segment in segments:
             start = _format_ass_timestamp(segment["start"])
@@ -870,6 +987,39 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
 def _ffmpeg_subtitle_path(path):
     value = Path(path).resolve().as_posix()
     return value.replace(":", "\\:").replace("'", "\\'")
+
+
+def _comment_avatar_filter_complex(ass_file, video_filters, avatar_assets, video_info):
+    # The ASS layer is scaled with the video filters. Avatar overlays are added
+    # afterwards, so their coordinates must use the final frame dimensions.
+    layout = _comment_burn_layout(video_info)
+    base_filters = [f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'", *video_filters[1:]]
+    chain = [f"[0:v]{','.join(base_filters)}[comment_base]"]
+    current = "comment_base"
+    for index, asset in enumerate(avatar_assets or [], start=1):
+        try:
+            start, end = float(asset.get("start")), float(asset.get("end"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        path = Path(asset.get("path") or "")
+        if not path.is_file() or end <= start:
+            continue
+        avatar = f"comment_avatar_{index}"
+        output = f"comment_video_{index}"
+        display_duration = end - start
+        avatar_y = _comment_avatar_y(layout, asset)
+        entrance_end = start + 0.48
+        chain.append(
+            f"movie='{_ffmpeg_subtitle_path(path)}':loop=1,scale={layout['avatarSize']}:{layout['avatarSize']},"
+            f"format=rgba,fade=t=in:st=0:d=0.48:alpha=1,fade=t=out:st={display_duration - 0.28:.2f}:d=0.28:alpha=1,"
+            f"setpts=PTS-STARTPTS+{start:.2f}/TB[{avatar}]"
+        )
+        chain.append(
+            f"[{current}][{avatar}]overlay=x={layout['x']}:y='{avatar_y}+if(lt(t\\,{entrance_end:.2f})\\,({entrance_end:.2f}-t)*37.5\\,0)+sin(2*PI*(t-{start:.2f})/2.4)*2':"
+            f"eval=frame:enable='between(t,{start:.2f},{end:.2f})'[{output}]"
+        )
+        current = output
+    return ";".join(chain), current
 
 
 def _compatible_video_dimensions(width, height, max_long_side=1920, max_short_side=1080):
@@ -901,7 +1051,7 @@ def _ffmpeg_error_summary(lines):
     return " | ".join(tail)[:240] or "FFmpeg 未返回错误摘要"
 
 
-def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_id="", progress_label="字幕"):
+def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_id="", progress_label="字幕", comment_avatar_assets=None):
     ffmpeg = _resolve_ffmpeg_command()
     subtitle_filter = f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'"
     output_file = Path(output_file)
@@ -935,6 +1085,16 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         video_filters.append(f"scale={target_width}:{target_height}:flags=lanczos")
         video_filters.append("setsar=1")
     video_filter = ",".join(video_filters)
+    filter_args = ["-vf", video_filter]
+    if comment_avatar_assets:
+        avatar_video_info = {
+            **video_info,
+            "width": target_width if target_dimensions else video_info.get("width"),
+            "height": target_height if target_dimensions else video_info.get("height"),
+        }
+        filter_complex, output_label = _comment_avatar_filter_complex(ass_file, video_filters, comment_avatar_assets, avatar_video_info)
+        if output_label != "comment_base":
+            filter_args = ["-filter_complex", filter_complex, "-map", f"[{output_label}]", "-map", "0:a?"]
     video_id = job.get("videoId") or ""
     source_size = f"{int(video_info.get('width') or 0)}x{int(video_info.get('height') or 0)}"
     target_size = f"{target_width}x{target_height}" if target_dimensions else source_size
@@ -951,7 +1111,7 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         "-y",
         "-fflags", "+genpts",
         "-i", str(source_file),
-        "-vf", video_filter,
+        *filter_args,
         "-fps_mode", "cfr",
         "-r", f"{output_fps:.3f}".rstrip("0").rstrip("."),
         *video_encode_args(burn_config),
@@ -1121,7 +1281,7 @@ def _update_translate_progress(job_id, progress, message, step="subtitle"):
     )
 
 
-def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
+def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comment_future=None):
     processed_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR)
     target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
     process_version = _normalize_process_version(job.get("processVersion"))
@@ -1130,6 +1290,26 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
     job_id = job.get("id")
 
     if not job.get("translationEnabled", True):
+        work_dir = _ensure_dir(processed_dir / f"{Path(source_file).stem}_work")
+        video_info = _get_video_info(source_file)
+        duration = video_info.get("duration") or 0
+        comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
+        if comment_snapshot.get("comments"):
+            comment_event_id = start_workflow_event(job, "comment_render", f"正在烧制 {len(comment_snapshot['comments'])} 条评论")
+            ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
+            if before_burn:
+                before_burn(ass_file)
+            try:
+                result = _burn_subtitles_to_mp4(
+                    source_file, ass_file, output_file, duration=duration, job_id=job_id,
+                    progress_label="评论", comment_avatar_assets=prepare_comment_avatar_assets(comment_snapshot, work_dir),
+                )
+            except Exception as exc:
+                finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(exc)[:160]}")
+                raise
+            finish_workflow_event(comment_event_id, "success", f"已烧制 {len(comment_snapshot['comments'])} 条评论", output_file_path=result)
+            _update_translate_progress(job_id, 98, "已按设置跳过字幕翻译，评论烧制完成")
+            return {"path": result, "assPath": str(ass_file), "skipped": False, "skippedBySetting": True}
         _replace_file_with_backup(source_file, output_file)
         _apply_author_overlay_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, "已按设置跳过字幕翻译和烧录")
@@ -1168,9 +1348,27 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
     work_dir = _ensure_dir(processed_dir / f"{Path(source_file).stem}_work")
     _update_translate_progress(job_id, 6, "正在读取视频信息")
     video_info = _get_video_info(source_file)
+    duration = video_info.get("duration") or 0
+    comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
     try:
         segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir)
     except NoSpeechDetectedError as exc:
+        if comment_snapshot.get("comments"):
+            comment_event_id = start_workflow_event(job, "comment_render", f"正在烧制 {len(comment_snapshot['comments'])} 条评论")
+            ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
+            if before_burn:
+                before_burn(ass_file)
+            try:
+                result = _burn_subtitles_to_mp4(
+                    source_file, ass_file, output_file, duration=duration, job_id=job_id,
+                    progress_label="评论", comment_avatar_assets=prepare_comment_avatar_assets(comment_snapshot, work_dir),
+                )
+            except Exception as burn_exc:
+                finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(burn_exc)[:160]}")
+                raise
+            finish_workflow_event(comment_event_id, "success", f"已烧制 {len(comment_snapshot['comments'])} 条评论", output_file_path=result)
+            _update_translate_progress(job_id, 98, str(exc))
+            return {"path": result, "assPath": str(ass_file), "skipped": True}
         _replace_file_with_backup(source_file, output_file)
         _apply_author_overlay_to_mp4(output_file, job)
         _update_translate_progress(job_id, 98, str(exc))
@@ -1219,15 +1417,24 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None):
             ),
         )
     _update_translate_progress(job_id, 46, f"{language_meta['label']}字幕已生成，正在构建自适应字幕样式")
-    duration = video_info.get("duration") or max((segment.get("end") or 0) for segment in segments)
-    ass_file = _build_ass_file(job, rendered_segments, work_dir / f"{Path(source_file).stem}.ass", duration, video_info)
+    duration = duration or max((segment.get("end") or 0) for segment in segments)
+    comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
+    ass_file = _build_ass_file(job, rendered_segments, work_dir / f"{Path(source_file).stem}.ass", duration, video_info, comment_snapshot=comment_snapshot)
     _update_translate_progress(job_id, 50, f"正在使用 FFmpeg 烧录{language_meta['label']}字幕")
     if before_burn:
         before_burn(ass_file)
+    comment_event_id = start_workflow_event(job, "comment_render", f"正在烧制 {len(comment_snapshot.get('comments') or [])} 条评论") if job.get("commentBurnEnabled") else None
     try:
-        result = _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=duration, job_id=job_id)
+        result = _burn_subtitles_to_mp4(
+            source_file, ass_file, output_file, duration=duration, job_id=job_id,
+            comment_avatar_assets=prepare_comment_avatar_assets(comment_snapshot, work_dir),
+        )
     except Exception as exc:
+        finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(exc)[:160]}")
         raise RuntimeError(f"SUBTITLE_BURN_FAILED: {exc}") from exc
+    if comment_event_id:
+        rendered_count = len(comment_snapshot.get("comments") or [])
+        finish_workflow_event(comment_event_id, "success", f"已烧制 {rendered_count} 条评论" if rendered_count else comment_snapshot.get("reason") or "未烧制评论", output_file_path=result, metadata={"selectedCount": rendered_count})
     message = "字幕烧制完成，正在等待高光审核" if _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING else "视频已生成，正在写入素材库"
     _update_translate_progress(job_id, 98, message)
     return {"path": result, "assPath": str(ass_file), "skipped": False}

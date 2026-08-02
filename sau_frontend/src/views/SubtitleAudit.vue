@@ -4,7 +4,7 @@
       <div>
         <span class="kicker">LOCAL ADMIN</span>
         <h1>字幕审查与模型诊断</h1>
-        <p>按处理批次查看 Google 初译、LLM 修订原文及契约失败诊断。</p>
+        <p>按处理任务查看字幕修订、评论筛选与模型诊断。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="loadList">刷新</el-button>
     </section>
@@ -45,15 +45,16 @@
           <template #default="{ row }"><el-tag size="small" :type="jobType(row.jobStatus)">{{ jobLabel(row.jobStatus) }}</el-tag></template>
         </el-table-column>
         <el-table-column label="审查状态" min-width="130"><template #default="{ row }">{{ reviewLabel(row.reviewStatus) }}</template></el-table-column>
+        <el-table-column label="评论筛选" width="120"><template #default="{ row }"><el-tag size="small" :type="commentAuditType(row)">{{ commentAuditLabel(row) }}</el-tag></template></el-table-column>
         <el-table-column label="回退段数" width="100"><template #default="{ row }">{{ row.fallbackSegmentCount || 0 }}</template></el-table-column>
         <el-table-column label="保存时间" width="175"><template #default="{ row }">{{ formatTime(row.savedAt) }}</template></el-table-column>
         <el-table-column label="查看" width="74" fixed="right"><template #default="{ row }"><el-button link type="primary" @click.stop="openDetail(row)">详情</el-button></template></el-table-column>
       </el-table>
-      <el-empty v-if="!loading && !items.length" description="暂无审查记录；历史任务不会从旧字幕反推。" :image-size="82" />
+      <el-empty v-if="!loading && !items.length" description="暂无处理任务。" :image-size="82" />
       <div v-if="total > pageSize" class="pager"><el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="loadList" /></div>
     </section>
 
-    <el-drawer v-model="drawerVisible" title="字幕审查详情" direction="rtl" size="min(920px, 92vw)" append-to-body>
+    <el-drawer v-model="drawerVisible" title="处理审查详情" direction="rtl" size="min(920px, 92vw)" append-to-body>
       <template v-if="detailLoading"><div class="detail-loading"><el-icon class="is-loading"><Loading /></el-icon>正在读取完整字幕</div></template>
       <template v-else-if="detail">
         <span ref="detailTop" class="detail-top-anchor" />
@@ -72,6 +73,30 @@
           <el-button v-if="fallbackBatches.length" size="small" type="danger" plain :icon="CircleCloseFilled" @click="jumpToBatch('fallback')">回退初译 {{ fallbackBatches.length }}</el-button>
         </div>
         <el-tabs v-model="activeTab">
+          <el-tab-pane v-if="commentReviewItems.length || detail.commentBurnEnabled" label="评论筛选" name="comments">
+            <section class="comment-summary">
+              <div><strong>已选中 {{ selectedCommentItems.length }} 条</strong><span>展示烧制前的原文与中文结果</span></div>
+              <div><strong>其余 {{ rejectedCommentItems.length }} 条</strong><span>保留未入选或规则过滤原因</span></div>
+            </section>
+            <section v-if="selectedCommentItems.length" class="comment-review-section">
+              <div class="comment-section-heading"><strong>选中的评论</strong><span>最多 20 条</span></div>
+              <el-table :data="selectedCommentItems" size="small" class="comment-table">
+                <el-table-column label="评论" min-width="260">
+                  <template #default="{ row }"><strong>{{ row.author || '未知用户' }}</strong><span class="comment-time">{{ row.timeText || '—' }} · 点赞 {{ row.likeCount || 0 }}</span><p class="comment-original">{{ row.text || '—' }}</p></template>
+                </el-table-column>
+                <el-table-column label="中文" min-width="230"><template #default="{ row }">{{ row.translationZh || (row.translationRequired ? '翻译未生成' : '原文为中文，无需翻译') }}</template></el-table-column>
+                <el-table-column label="结果" width="116"><template #default="{ row }"><el-tag type="success" size="small">{{ row.filterReason }}</el-tag></template></el-table-column>
+              </el-table>
+            </section>
+            <section v-if="rejectedCommentItems.length" class="comment-review-section">
+              <div class="comment-section-heading"><strong>其余抓取评论</strong><span>过滤或未入选原因</span></div>
+              <el-table :data="rejectedCommentItems" size="small" class="comment-table">
+                <el-table-column label="评论" min-width="310"><template #default="{ row }"><strong>{{ row.author || '未知用户' }}</strong><span class="comment-time">{{ row.timeText || '—' }} · 点赞 {{ row.likeCount || 0 }}</span><p class="comment-original">{{ row.text || '—' }}</p></template></el-table-column>
+                <el-table-column label="过滤原因" min-width="190"><template #default="{ row }"><el-tag type="info" size="small">{{ row.filterReason || '未入选' }}</el-tag></template></el-table-column>
+              </el-table>
+            </section>
+            <el-empty v-if="!commentReviewItems.length" description="该任务未开启评论烧制，或为旧任务，未保留评论筛选明细。" :image-size="72" />
+          </el-tab-pane>
           <el-tab-pane label="字幕对照" name="subtitles">
             <section v-for="batch in reviewBatches" :id="`review-batch-${batch.key}`" :key="batch.key" class="review-batch" :class="{ 'is-fallback': batchState(batch) === 'fallback', 'is-retried': batchState(batch) === 'retried' }">
               <div class="batch-heading">
@@ -115,7 +140,7 @@ const auditTable = ref(null); const selectedRows = ref([]); const exporting = re
 const loadList = async () => { loading.value = true; try { const res = await subtitleAuditApi.list({ ...filters.value, page: page.value, pageSize }); const data = res?.data || {}; items.value = data.items || []; total.value = data.total || 0; selectedRows.value = []; auditTable.value?.clearSelection() } catch (error) { ElMessage.error(error?.message || '读取审查记录失败') } finally { loading.value = false } }
 const search = () => { page.value = 1; loadList() }
 const handleSelectionChange = rows => { selectedRows.value = rows }
-const openDetail = async (row, column) => { if (column?.type === 'selection') return; drawerVisible.value = true; detail.value = null; activeTab.value = 'subtitles'; detailLoading.value = true; try { const res = await subtitleAuditApi.detail(row.jobId); detail.value = res?.data || null } catch (error) { ElMessage.error(error?.message || '读取审查详情失败') } finally { detailLoading.value = false } }
+const openDetail = async (row, column) => { if (column?.type === 'selection') return; drawerVisible.value = true; detail.value = null; activeTab.value = 'subtitles'; detailLoading.value = true; try { const res = await subtitleAuditApi.detail(row.jobId); detail.value = res?.data || null; activeTab.value = detail.value?.commentReviewItems?.length ? 'comments' : 'subtitles' } catch (error) { ElMessage.error(error?.message || '读取审查详情失败') } finally { detailLoading.value = false } }
 const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 const formatRange = item => `${Number(item?.start || 0).toFixed(1)}s - ${Number(item?.end || 0).toFixed(1)}s`
 const failedAttempts = batch => (batch?.attempts || []).filter(item => ['contract_failed', 'failed'].includes(item?.status))
@@ -137,6 +162,9 @@ const reviewBatches = computed(() => {
     return { ...batch, indexes, items, key: `${batch.number}-${batchIndex}`, range: items.length ? `${formatRange(items[0].initial).split(' - ')[0]} - ${formatRange(items[items.length - 1].initial).split(' - ')[1]}` : '时间未知' }
   })
 })
+const commentReviewItems = computed(() => Array.isArray(detail.value?.commentReviewItems) ? detail.value.commentReviewItems : [])
+const selectedCommentItems = computed(() => commentReviewItems.value.filter(item => item.status === 'selected'))
+const rejectedCommentItems = computed(() => commentReviewItems.value.filter(item => item.status !== 'selected'))
 const retriedBatches = computed(() => reviewBatches.value.filter(batch => batchState(batch) === 'retried'))
 const fallbackBatches = computed(() => reviewBatches.value.filter(batch => batchState(batch) === 'fallback'))
 const jumpPositions = { retried: 0, fallback: 0 }
@@ -153,6 +181,8 @@ const formatJson = value => { try { return JSON.stringify(JSON.parse(value), nul
 const jobLabel = value => ({ success: '成功', failed: '失败', processing: '处理中', waiting_confirmation: '待确认' }[value] || value || '—')
 const jobType = value => ({ success: 'success', failed: 'danger', processing: 'warning', waiting_confirmation: 'warning' }[value] || 'info')
 const reviewLabel = value => ({ success: 'LLM 修订成功', partial_fallback: '部分回退初译', disabled: 'LLM 已关闭', unavailable: 'LLM 不可用', empty: '无字幕段落' }[value] || '审查状态未知')
+const commentAuditLabel = row => row.hasCommentAudit ? '已记录' : row.commentBurnEnabled ? '处理中/无记录' : '未开启'
+const commentAuditType = row => row.hasCommentAudit ? 'success' : row.commentBurnEnabled ? 'warning' : 'info'
 const reviewType = value => {
   const batches = value?.reviewBatches || []
   if (batches.some(item => batchState(item) === 'fallback')) return 'error'
@@ -195,7 +225,7 @@ const exportSelected = async () => {
 }
 const deleteSelected = async () => {
   const selectedJobIds = selectedRows.value.map(row => row.jobId); const count = selectedJobIds.length
-  try { await ElMessageBox.confirm(`将删除 ${count} 条字幕审查快照。原视频、处理任务和字幕文件不会被删除。`, '确认删除', { type: 'warning', confirmButtonText: '删除审查快照', cancelButtonText: '取消' }) } catch (_) { return }
+  try { await ElMessageBox.confirm(`将删除 ${count} 条已结束处理记录及其字幕、评论审查数据。原视频和字幕文件不会被删除。`, '确认删除', { type: 'warning', confirmButtonText: '删除处理记录', cancelButtonText: '取消' }) } catch (_) { return }
   deleting.value = true
   try { const res = await subtitleAuditApi.remove(selectedJobIds); ElMessage.success(`已删除 ${res?.data?.deletedCount || 0} 条审查记录`); if (drawerVisible.value && detail.value && selectedJobIds.includes(detail.value.jobId)) drawerVisible.value = false; await loadList() } catch (error) { ElMessage.error(error?.message || '删除审查记录失败') } finally { deleting.value = false }
 }
@@ -210,6 +240,7 @@ onMounted(loadList)
 .detail-loading { display:flex; align-items:center; gap:8px; color:$text-secondary; } .detail-top-anchor { display:block; height:0; } .detail-meta { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; } .detail-meta div { display:grid; gap:4px; min-width:0; } .detail-meta strong,.detail-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .issue-jump { position:sticky; top:0; z-index:2; display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:12px 0 4px; padding:8px 10px; border:1px solid #dfe7ef; border-radius:6px; box-shadow:0 5px 14px rgba(15, 23, 42, .08); background:rgba(255, 255, 255, .97); color:$text-secondary; font-size:12px; } .issue-jump-top { color:#475569; } .issue-jump-label { color:$text-regular; font-weight:700; } .issue-jump-divider { width:1px; height:20px; margin:0 2px; background:#dfe7ef; }
 .review-batch { margin-bottom:12px; border:1px solid $border-light; border-radius:8px; overflow:hidden; } .review-batch.is-retried { border-color:#f0b429; background:#fffdf4; } .review-batch.is-fallback { border-color:#f2b8b5; background:#fffafa; } .batch-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; background:#f5f8fc; } .is-retried .batch-heading { background:#fff7d6; } .is-fallback .batch-heading { background:#fff1f0; } .batch-heading div { display:flex; align-items:baseline; gap:8px; min-width:0; } .batch-heading span { color:$text-secondary; font-size:12px; } .review-batch :deep(.el-alert) { margin:10px 12px 0; } .batch-columns,.batch-segment { display:grid; grid-template-columns:125px minmax(0, 1fr) minmax(0, 1fr); gap:16px; } .batch-columns { padding:10px 12px; color:$text-secondary; font-size:12px; } .batch-columns span:first-child { grid-column:2; } .batch-segment { padding:12px; border-top:1px solid $border-lighter; line-height:1.65; font-size:13px; } .batch-segment time { color:$text-secondary; font-variant-numeric:tabular-nums; } .batch-segment p { margin:0 0 7px; white-space:pre-wrap; } .batch-segment .source { color:$text-regular; }
+.comment-summary { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; margin:0 0 14px; } .comment-summary div { padding:10px 12px; border-left:3px solid #0f9f8f; background:#f5f8fc; } .comment-summary strong,.comment-summary span { display:block; } .comment-summary span,.comment-time { margin-top:4px; color:$text-secondary; font-size:12px; } .comment-review-section { margin-bottom:18px; } .comment-section-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:0 0 8px; } .comment-section-heading span { color:$text-secondary; font-size:12px; } .comment-table { border:1px solid $border-light; } .comment-table strong { display:block; } .comment-table p { margin:6px 0 0; white-space:pre-wrap; line-height:1.55; } .comment-original { color:$text-regular; }
 .diagnostic { padding:14px 0; border-bottom:1px solid $border-lighter; } .diagnostic-meta { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; } .diagnostic-meta span,.diagnostic-stats { color:$text-secondary; font-size:12px; } .violations { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; } pre { max-height:360px; overflow:auto; margin:10px 0 0; padding:12px; border-radius:6px; background:#101828; color:#d0d5dd; font-size:12px; line-height:1.55; white-space:pre-wrap; }
-@media (max-width: 760px) { .audit-heading,.audit-filters { align-items:stretch; flex-direction:column; } .audit-filters .el-input,.audit-filters .el-select { max-width:none; width:100%; } .batch-columns { display:none; } .batch-segment { grid-template-columns:1fr; gap:8px; } }
+@media (max-width: 760px) { .audit-heading,.audit-filters { align-items:stretch; flex-direction:column; } .audit-filters .el-input,.audit-filters .el-select { max-width:none; width:100%; } .batch-columns { display:none; } .batch-segment { grid-template-columns:1fr; gap:8px; } .comment-summary { grid-template-columns:1fr; } }
 </style>
