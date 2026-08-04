@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.utils.render_layout import _render_layout_scales
+
 from app.utils.ffmpeg_util import video_encode_args
 
 
@@ -221,6 +223,7 @@ def _cover_text_width(text, font_size):
 
 def write_cover_ass(ass_file, width, height, duration, cover_title, layout, signature=DEFAULT_COVER_SIGNATURE, watermark_text=""):
     ass_file = Path(ass_file)
+    horizontal_scale, vertical_scale, scalar_scale = _render_layout_scales(width, height)
     lines = normalize_cover_title(cover_title).splitlines()
     if not lines:
         raise ValueError("封面标题不能为空")
@@ -238,19 +241,24 @@ def write_cover_ass(ass_file, width, height, duration, cover_title, layout, sign
     second_y = layout["y"] + int(layout["height"] * 0.72)
     font_size = int(layout["fontSize"])
     info_size = font_size
-    outline = max(3, round(font_size * 0.065, 1))
+    outline = max(1, round(font_size * 0.065, 1))
     end = _ass_timestamp(duration)
     primary, secondary = layout.get("palette") or ("&H0000D6FF", "&H00F5F5F5")
     signature = f"@{normalize_cover_signature(signature).lstrip('@')}"
     title_width = _cover_text_width(lines[0], font_size)
     title_right = x + title_width // 2 if alignment == "center" else x + title_width if alignment == "left" else x
     signature_half_width = _cover_text_width(signature, info_size) // 2
-    signature_x = max(signature_half_width + 24, min(width - signature_half_width - 24, title_right))
-    signature_y = max(info_size + 24, first_y - int(font_size * 0.30))
+    margin_x = max(8, round(24 * horizontal_scale))
+    margin_y = max(8, round(24 * vertical_scale))
+    signature_x = max(signature_half_width + margin_x, min(width - signature_half_width - margin_x, title_right))
+    signature_y = max(info_size + margin_y, first_y - int(font_size * 0.30))
     watermark_text = _ass_text(watermark_text)
-    watermark_size = max(20, min(54, int(min(width, height) * 0.032)))
-    watermark_margin = max(20, int(width * 0.042))
-    watermark_margin_v = max(40, int(height * 0.070))
+    watermark_size = max(10, round(35 * scalar_scale))
+    watermark_margin = max(8, round(45 * horizontal_scale))
+    watermark_margin_v = max(8, round(134 * vertical_scale))
+    title_shadow = round(2.6 * scalar_scale, 1)
+    signature_outline = round(1.5 * scalar_scale, 1)
+    signature_shadow = round(1.4 * scalar_scale, 1)
 
     content = [
         "[Script Info]",
@@ -262,10 +270,10 @@ def write_cover_ass(ass_file, width, height, duration, cover_title, layout, sign
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: CoverPrimary,Microsoft YaHei,{font_size},{primary},&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{outline},2.6,5,0,0,0,1",
-        f"Style: CoverSecondary,Microsoft YaHei,{font_size},{secondary},&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{outline},2.6,5,0,0,0,1",
-        f"Style: CoverSignature,Microsoft YaHei,{info_size},&H00F5F5F5,&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,1.5,1.4,4,0,0,0,1",
-        f"Style: Watermark,Microsoft YaHei,{watermark_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,0,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
+        f"Style: CoverPrimary,Microsoft YaHei,{font_size},{primary},&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{outline},{title_shadow},5,0,0,0,1",
+        f"Style: CoverSecondary,Microsoft YaHei,{font_size},{secondary},&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{outline},{title_shadow},5,0,0,0,1",
+        f"Style: CoverSignature,Microsoft YaHei,{info_size},&H00F5F5F5,&H000000FF,&H00000000,&HFF000000,1,0,0,0,100,100,0,0,1,{signature_outline},{signature_shadow},4,0,0,0,1",
+        f"Style: Watermark,Microsoft YaHei,{watermark_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,0,0,0,0,100,100,0,{round(-15 * scalar_scale, 1)},1,{max(1, round(scalar_scale))},0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",

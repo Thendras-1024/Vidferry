@@ -1,4 +1,4 @@
-﻿"""处理版本二的剪辑增强:高光片段开头混剪与「Up Next」覆盖层生成。"""
+"""处理版本二的剪辑增强:高光片段开头混剪与「Up Next」覆盖层生成。"""
 
 
 import logging
@@ -72,13 +72,12 @@ EDITING_UP_NEXT_TEXT = "精彩片段 Up Next"
 def _editing_up_next_layout(width, height):
     width = max(320, int(width or 1080))
     height = max(320, int(height or 1920))
-    short_side = min(width, height)
-    font_size = max(28, min(62, int(short_side * 0.052)))
-    box_x = max(24, int(width * 0.15))
-    box_y = max(18, int(height * 0.040))
-    box_w = min(width - box_x - 24, max(int(font_size * 8.8), int(width * 0.31)))
-    box_h = max(int(font_size * 1.45), 48)
-    box_w = max(box_w, int(font_size * 6.9))
+    horizontal_scale, vertical_scale, scalar_scale = _render_layout_scales(width, height)
+    font_size = max(14, round(39 * scalar_scale))
+    box_x = max(8, round(162 * horizontal_scale))
+    box_y = max(8, round(76 * vertical_scale))
+    box_w = max(80, round(493 * horizontal_scale))
+    box_h = max(24, round(81 * vertical_scale))
     center_x = box_x + box_w / 2
     center_y = box_y + box_h / 2
     return {
@@ -89,10 +88,11 @@ def _editing_up_next_layout(width, height):
         "box_h": box_h,
         "center_x": round(center_x, 1),
         "center_y": round(center_y, 1),
+        "scalar_scale": scalar_scale,
     }
 
 
-def _editing_up_next_breath_tags(duration):
+def _editing_up_next_breath_tags(duration, scalar_scale=1):
     duration_ms = max(1200, int(float(duration or 0) * 1000))
     tags = [
         r"\t(0,220,\fscx106\fscy106)",
@@ -101,8 +101,8 @@ def _editing_up_next_breath_tags(duration):
     for start in range(0, duration_ms, 1600):
         mid = min(start + 800, duration_ms)
         end = min(start + 1600, duration_ms)
-        tags.append(fr"\t({start},{mid},\alpha&H06&\blur0.2)")
-        tags.append(fr"\t({mid},{end},\alpha&H18&\blur0.8)")
+        tags.append(fr"\t({start},{mid},\alpha&H06&\blur{0.2 * scalar_scale:.1f})")
+        tags.append(fr"\t({mid},{end},\alpha&H18&\blur{0.8 * scalar_scale:.1f})")
     return "".join(tags)
 
 
@@ -113,8 +113,18 @@ def _write_editing_up_next_overlay_ass(ass_file, width, height, duration):
     end = _format_ass_timestamp(max(0.5, float(duration or 0.5)))
     text = _escape_ass_text(EDITING_UP_NEXT_TEXT)
     pos = fr"\pos({layout['center_x']},{layout['center_y']})"
-    breath_tags = _editing_up_next_breath_tags(duration)
-    glow_tags = _editing_up_next_breath_tags(duration).replace(r"\blur0.2", r"\blur5").replace(r"\blur0.8", r"\blur7")
+    breath_tags = _editing_up_next_breath_tags(duration, layout["scalar_scale"])
+    glow_tags = _editing_up_next_breath_tags(duration, layout["scalar_scale"]).replace(
+        f"\\blur{0.2 * layout['scalar_scale']:.1f}", f"\\blur{5 * layout['scalar_scale']:.1f}"
+    ).replace(
+        f"\\blur{0.8 * layout['scalar_scale']:.1f}", f"\\blur{7 * layout['scalar_scale']:.1f}"
+    )
+    glow_border = max(1, round(10 * layout["scalar_scale"], 1))
+    inner_glow_border = max(1, round(4 * layout["scalar_scale"], 1))
+    text_border = max(1, round(1.4 * layout["scalar_scale"], 1))
+    glow_blur = max(1, round(7 * layout["scalar_scale"], 1))
+    inner_glow_blur = max(1, round(3 * layout["scalar_scale"], 1))
+    text_blur = round(0.4 * layout["scalar_scale"], 1)
     dialogue_lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -125,14 +135,14 @@ def _write_editing_up_next_overlay_ass(ass_file, width, height, duration):
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: UpNextGlow,Microsoft YaHei,{layout['font_size']},&H00FFFFEB,&H000000FF,&H00FFE660,&H00000000,1,0,0,0,100,100,0,0,1,8,0,5,0,0,0,1",
-        f"Style: UpNextText,Microsoft YaHei,{layout['font_size']},&H00FFFFEB,&H000000FF,&H00FFE660,&H00000000,1,0,0,0,100,100,0,0,1,1.4,0,5,0,0,0,1",
+        f"Style: UpNextGlow,Microsoft YaHei,{layout['font_size']},&H00FFFFEB,&H000000FF,&H00FFE660,&H00000000,1,0,0,0,100,100,0,0,1,{max(1, round(8 * layout['scalar_scale'], 1))},0,5,0,0,0,1",
+        f"Style: UpNextText,Microsoft YaHei,{layout['font_size']},&H00FFFFEB,&H000000FF,&H00FFE660,&H00000000,1,0,0,0,100,100,0,0,1,{max(1, round(1.4 * layout['scalar_scale'], 1))},0,5,0,0,0,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-        f"Dialogue: 0,{start},{end},UpNextGlow,,0,0,0,,{{\\an5{pos}\\alpha&H92&\\1c&HFFE660&\\3c&HFFE660&\\bord10\\blur7{glow_tags}}}{text}",
-        f"Dialogue: 1,{start},{end},UpNextGlow,,0,0,0,,{{\\an5{pos}\\alpha&H72&\\1c&HFFFFEB&\\3c&HFFE660&\\bord4\\blur3{glow_tags}}}{text}",
-        f"Dialogue: 2,{start},{end},UpNextText,,0,0,0,,{{\\an5{pos}\\alpha&H10&\\1c&HFFFFEB&\\3c&HFFE660&\\bord1.4\\blur0.4{breath_tags}}}{text}",
+        f"Dialogue: 0,{start},{end},UpNextGlow,,0,0,0,,{{\\an5{pos}\\alpha&H92&\\1c&HFFE660&\\3c&HFFE660&\\bord{glow_border}\\blur{glow_blur}{glow_tags}}}{text}",
+        f"Dialogue: 1,{start},{end},UpNextGlow,,0,0,0,,{{\\an5{pos}\\alpha&H72&\\1c&HFFFFEB&\\3c&HFFE660&\\bord{inner_glow_border}\\blur{inner_glow_blur}{glow_tags}}}{text}",
+        f"Dialogue: 2,{start},{end},UpNextText,,0,0,0,,{{\\an5{pos}\\alpha&H10&\\1c&HFFFFEB&\\3c&HFFE660&\\bord{text_border}\\blur{text_blur}{breath_tags}}}{text}",
     ]
     ass_file.write_text("\n".join(dialogue_lines), encoding="utf-8")
     return ass_file
@@ -212,15 +222,19 @@ def _shift_ass_timestamp(value, offset):
     return _format_ass_timestamp(max(0, total))
 
 
-def _write_clip_ass(source_ass_file, output_ass_file, start, end):
+def _write_clip_ass(source_ass_file, output_ass_file, start, end, include_comments=True):
     lines = Path(source_ass_file).read_text(encoding="utf-8-sig").splitlines()
     result = []
     for line in lines:
+        if not include_comments and line.startswith("Style: Comment"):
+            continue
         if not line.startswith("Dialogue:"):
             result.append(line)
             continue
         parts = line.split(",", 9)
         if len(parts) != 10:
+            continue
+        if not include_comments and parts[3].startswith("Comment"):
             continue
         try:
             cue_start = _ass_timestamp_seconds(parts[1])
@@ -277,11 +291,11 @@ def render_editing_intro_assets(job, source_file, ass_file, analysis_result, wor
         start, end = segment["start"], segment["end"]
         overlay_ass = _write_editing_up_next_overlay_ass(work_dir / f"highlight_{index}_up_next.ass", width, height, end - start)
         clip_file = work_dir / f"highlight_{index}.mp4"
-        filters = []
+        filters = [f"scale={width}:{height}:flags=lanczos", "setsar=1"]
         if ass_file and Path(ass_file).is_file():
-            clip_ass = _write_clip_ass(ass_file, work_dir / f"highlight_{index}.ass", start, end)
+            clip_ass = _write_clip_ass(ass_file, work_dir / f"highlight_{index}.ass", start, end, include_comments=False)
             filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
-        filters.extend([f"scale={width}:{height}:flags=lanczos", "setsar=1", f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'"])
+        filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
         _run_command([ffmpeg, "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source_file), "-vf", ",".join(filters),
                       "-fps_mode", "cfr", "-r", f"{fps:.3f}".rstrip("0").rstrip("."), *video_encode_args(burn_config),
                       "-maxrate", burn_config["maxrate"], "-bufsize", burn_config["bufsize"], "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", burn_config.get("h264_level", "4.1"),

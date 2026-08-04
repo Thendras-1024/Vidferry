@@ -52,12 +52,13 @@ def _subtitle_audit_sort_sql(value):
     }.get(str(value or "").strip(), "COALESCE(a.saved_at, j.updated_at, j.started_at, j.created_at) DESC, j.id DESC")
 
 
-def list_subtitle_audits(keyword="", status="", sort="saved_desc", page=1, page_size=20):
+def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_desc", page=1, page_size=20):
     init_database_tables()
     page = _parse_positive_int(page, 1, 1, 999999)
     page_size = _parse_positive_int(page_size, 20, 1, 100)
     keyword = str(keyword or "").strip()
     status = str(status or "").strip()
+    safety_status = str(safety_status or "").strip()
     clauses, params = ["1 = 1"], []
     if keyword:
         clauses.append("(COALESCE(a.video_title, j.title) LIKE ? OR COALESCE(a.video_id, j.video_id) LIKE ? OR j.id LIKE ?)")
@@ -65,18 +66,23 @@ def list_subtitle_audits(keyword="", status="", sort="saved_desc", page=1, page_
     if status:
         clauses.append("COALESCE(a.review_status, 'not_recorded') = ?")
         params.append(status)
+    if safety_status:
+        clauses.append("COALESCE(s.status, 'not_enabled') = ?")
+        params.append(safety_status)
     where = " AND ".join(clauses)
     order_by = _subtitle_audit_sort_sql(sort)
     with _db_connect() as conn:
         conn.row_factory = True
-        total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id WHERE {where}", params).fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id WHERE {where}", params).fetchone()[0]
         rows = conn.execute(f'''
-            SELECT a.*, j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title,
+            SELECT a.*, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
+                   j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.url AS workflow_url,
                    j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
                    EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j
             LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
+            LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
             WHERE {where}
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
@@ -120,14 +126,17 @@ def delete_subtitle_audits(job_ids):
 
 
 def _subtitle_audit_list_item(row):
+    safety = _subtitle_audit_json(row.get("content_safety_snapshot"), "{}")
     return {
-        "jobId": row.get("job_id") or row.get("workflow_job_id") or "", "videoId": row.get("video_id") or row.get("workflow_video_id") or "",
+        "jobId": row.get("job_id") or row.get("workflow_job_id") or "", "videoId": row.get("video_id") or row.get("workflow_video_id") or "", "url": row.get("workflow_url") or "",
         "title": row.get("video_title") or row.get("workflow_title") or row.get("video_id") or row.get("workflow_video_id") or "未命名视频",
         "targetLanguage": row.get("target_language") or "", "reviewStatus": row.get("review_status") or "not_recorded",
         "fallbackSegmentCount": int(row.get("fallback_segment_count") or 0),
         "savedAt": row.get("saved_at") or row.get("job_updated_at") or row.get("job_started_at") or row.get("job_created_at") or "", "jobStatus": row.get("job_status") or "",
         "jobStartedAt": row.get("job_started_at") or row.get("job_created_at") or "",
         "commentBurnEnabled": bool(row.get("comment_burn_enabled")), "hasCommentAudit": bool(row.get("has_comment_audit")),
+        "contentSafetyStatus": row.get("content_safety_status") or safety.get("status") or "not_enabled",
+        "contentSafetyRiskCount": len(safety.get("risks") or []), "contentSafetyDecision": safety.get("decision") or "",
     }
 
 
@@ -136,11 +145,13 @@ def get_subtitle_audit_detail(job_id):
     with _db_connect() as conn:
         conn.row_factory = True
         row = conn.execute('''
-            SELECT a.*, j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title,
+            SELECT a.*, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
+                   j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.url AS workflow_url,
                    j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
                    EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
+            LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
             WHERE j.id = ?
         ''', (str(job_id or ""),)).fetchone()
         if not row:
@@ -161,6 +172,7 @@ def get_subtitle_audit_detail(job_id):
     result["initialSegments"] = _subtitle_audit_json(row["initial_segments"], "[]")
     result["reviewedSegments"] = _subtitle_audit_json(row["reviewed_segments"], "[]")
     result["reviewBatches"] = _subtitle_audit_json(row["review_batches"], "[]")
+    result["contentSafety"] = _subtitle_audit_json(row.get("content_safety_snapshot"), "{}")
     comment_metadata = {}
     for comment_event in comment_events:
         candidate = _subtitle_audit_json(comment_event["metadata"], "{}")

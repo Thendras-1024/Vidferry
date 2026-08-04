@@ -19,7 +19,7 @@ from app.core.llm_harness import call_json_contract, contains_profanity
 
 _logger = logging.getLogger("vidferry.backend")
 
-COMMENT_BURN_VERSION = 3
+COMMENT_BURN_VERSION = 4
 COMMENT_LIMIT = 100
 COMMENT_SELECTED_LIMIT = 20
 COMMENT_SCREEN_BATCH_SIZE = 20
@@ -27,10 +27,15 @@ COMMENT_SCREEN_SELECTED_LIMIT = 5
 COMMENT_SCREEN_CONCURRENCY = 2
 COMMENT_SCREEN_TIMEOUT_SECONDS = min(LLM_TIMEOUT, 60)
 COMMENT_AVATAR_DOWNLOAD_CONCURRENCY = 4
-COMMENT_START_SECONDS = 60
-COMMENT_DURATION_SECONDS = 8
-COMMENT_GAP_SECONDS = 8
+COMMENT_START_SECONDS = 25
+COMMENT_DURATION_SECONDS = 11
+COMMENT_GAP_SECONDS = 5
 _URL_ONLY_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.I)
+_EMOJI_SHORTCODE_RE = re.compile(r":[a-z0-9][a-z0-9_-]*:", re.I)
+_LOW_INFORMATION_RE = re.compile(
+    r"^(?:wow+|omg+|lol+|lmao+|haha+|ha+|哇+|哇哦+|哇塞+|哈哈+|呵呵+|厉害+|牛+|棒+|大?赞+|대박+|헐+|와+|와우+)[!！?？~*…。.、\s]*$",
+    re.I,
+)
 _TEXT_RE = re.compile(r"[A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0400-\u04ff]")
 _HAN_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _JAPANESE_RE = re.compile(r"[\u3040-\u30ff]")
@@ -90,6 +95,10 @@ def _comment_rejection_reason(item):
         return "纯链接评论"
     if not _TEXT_RE.search(text):
         return "无有效文本"
+    if _EMOJI_SHORTCODE_RE.search(text):
+        return "包含未解析 Emoji 短码"
+    if _LOW_INFORMATION_RE.fullmatch(text):
+        return "仅包含低信息语气词或感叹词"
     if _COMMENT_PROFANITY_RE.search(text):
         return "命中严格脏话规则"
     return ""
@@ -141,7 +150,8 @@ def normalize_comment_candidates(raw_comments, limit=COMMENT_LIMIT, stats=None, 
     regex_filtered = 0
     for index, raw in enumerate((raw_comments or [])[:max(1, int(limit or COMMENT_LIMIT))]):
         review_item = _comment_review_item(raw, index)
-        if isinstance(raw, dict) and _COMMENT_PROFANITY_RE.search(_comment_text(raw.get("text"))):
+        rejection_reason = _comment_rejection_reason(raw)
+        if rejection_reason in {"包含未解析 Emoji 短码", "仅包含低信息语气词或感叹词", "命中严格脏话规则"}:
             regex_filtered += 1
         candidate = _comment_candidate(raw)
         if not candidate:
@@ -454,6 +464,13 @@ def schedule_comment_burn(snapshot, video_duration):
         duration = max(0.0, float(video_duration or 0))
     except (TypeError, ValueError):
         duration = 0.0
+    if not selected:
+        result["scheduledCount"] = 0
+        if result.get("status") in {"failed", "skipped", "disabled"}:
+            return result
+        result["status"] = "skipped"
+        result["reason"] = result.get("reason") or "未获取到可烧制评论"
+        return result
     scheduled = []
     for index, comment in enumerate(selected[:COMMENT_SELECTED_LIMIT]):
         start = COMMENT_START_SECONDS + index * (COMMENT_DURATION_SECONDS + COMMENT_GAP_SECONDS)

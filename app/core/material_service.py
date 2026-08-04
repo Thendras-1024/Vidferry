@@ -786,6 +786,9 @@ def _row_to_published_material(row):
         "updatedAt": item.get("updated_at") or item.get("published_at") or item.get("created_at") or "",
         "publishedAt": item.get("published_at") or item.get("created_at") or "",
         "createdAt": item.get("created_at") or "",
+        "retryOfTaskId": item.get("retry_of_task_id") or "",
+        "retryOfRecordId": item.get("retry_of_record_id"),
+        "retrySource": item.get("retry_source") or "",
     }
 
 
@@ -849,6 +852,9 @@ def _archive_published_material(
     message="",
     duration_ms=0,
     account_name="",
+    retry_of_task_id="",
+    retry_of_record_id=None,
+    retry_source="",
 ):
     video_id = material.get("source_video_id") or _material_source_video_id(material) or (video or {}).get("id") or ""
     source_url = _canonical_youtube_url((video or {}).get("url") or material.get("displayUrl") or "", video_id)
@@ -865,9 +871,14 @@ def _archive_published_material(
         WHERE video_id = ?
           AND platform_type = ?
           AND deleted_at IS NULL
+          AND (
+              (publish_task_id = ? AND ? != '')
+              OR COALESCE(NULLIF(status, ''), 'success') IN ('pending', 'running', 'success')
+          )
+        ORDER BY CASE WHEN publish_task_id = ? THEN 0 ELSE 1 END, id DESC
         LIMIT 1
         """,
-        (video_id, int(platform_type or 0)),
+        (video_id, int(platform_type or 0), publish_task_id or "", publish_task_id or "", publish_task_id or ""),
     )
     existing = cursor.fetchone()
     if existing:
@@ -893,6 +904,9 @@ def _archive_published_material(
             status = ?,
             message = ?,
             duration_ms = ?,
+            retry_of_task_id = ?,
+            retry_of_record_id = ?,
+            retry_source = ?,
             published_at = CASE WHEN ? = 'success' THEN ? ELSE published_at END,
             updated_at = ?,
             deleted_at = NULL
@@ -918,6 +932,9 @@ def _archive_published_material(
             status or "success",
             message or "",
             int(duration_ms or 0),
+            retry_of_task_id or "",
+            retry_of_record_id,
+            retry_source or "",
             status or "success",
             published_at,
             published_at,
@@ -929,9 +946,10 @@ def _archive_published_material(
         video_id, source_url, title, platform, platform_type, account_file, account_count, material_id,
         filename, file_path, filesize, thumbnail, channel, subscribers,
         source_published_at, publish_title, metadata, published_at,
-        publish_task_id, status, message, duration_ms, account_name, updated_at
+        publish_task_id, status, message, duration_ms, account_name, updated_at,
+        retry_of_task_id, retry_of_record_id, retry_source
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
     ''', (
         video_id,
         source_url,
@@ -957,6 +975,9 @@ def _archive_published_material(
         int(duration_ms or 0),
         account_name or "",
         published_at,
+        retry_of_task_id or "",
+        retry_of_record_id,
+        retry_source or "",
     ))
     return cursor.fetchone()[0]
 
@@ -1203,6 +1224,9 @@ def _mark_published_materials(
     message="发布成功",
     duration_ms=0,
     account_name="",
+    retry_of_task_id="",
+    retry_of_record_id=None,
+    retry_source="",
 ):
     if not file_list:
         return []
@@ -1244,6 +1268,9 @@ def _mark_published_materials(
                 message=message,
                 duration_ms=duration_ms,
                 account_name=account_name,
+                retry_of_task_id=retry_of_task_id,
+                retry_of_record_id=retry_of_record_id,
+                retry_source=retry_source,
             )
             if status == "success":
                 cursor.execute(
@@ -1369,6 +1396,11 @@ def _row_to_publish_task(task_id, targets):
         or "未命名发布任务"
     )
     english_title = first.get("title") or first.get("filename") or first.get("sourceUrl") or "暂无英文标题"
+    overall_status = _publish_task_status(targets)
+    retry_targets = [item for item in targets if item.get("status") in {"failed", "timeout"}]
+    can_retry = bool(retry_targets) and overall_status not in {"pending", "running", "canceled"} and not first.get("retrySource")
+    for target in retry_targets:
+        target["retryable"] = can_retry
     return {
         "taskId": task_id,
         "videoId": first.get("videoId") or "",
@@ -1379,9 +1411,11 @@ def _row_to_publish_task(task_id, targets):
         "filePath": first.get("filePath") or "",
         "sourceUrl": first.get("sourceUrl") or "",
         "publishedAt": task_time,
-        "overallStatus": _publish_task_status(targets),
+        "overallStatus": overall_status,
         "summary": _publish_task_summary(targets),
         "targets": targets,
+        "retryTargets": retry_targets,
+        "canRetry": can_retry,
     }
 
 

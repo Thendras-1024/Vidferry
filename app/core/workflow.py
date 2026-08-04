@@ -26,6 +26,10 @@ def _workflow_content_risk(value):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _content_safety_enabled(item):
+    return bool(_workflow_content_risk(item.get("content_risk")).get("contentSafetyReviewEnabled"))
+
+
 def _validate_workflow_job_changes(changes):
     invalid_fields = set(changes) - _WORKFLOW_JOB_MUTABLE_FIELDS
     if invalid_fields:
@@ -47,7 +51,7 @@ def _row_to_workflow_job(row):
         "xiaohongshuAccount": item.get("xiaohongshu_account") or "",
         "kuaishouAccount": item.get("kuaishou_account") or "",
         "tencentAccount": item.get("tencent_account") or "",
-        "publishToDouyin": int(item.get("publish_to_douyin") if item.get("publish_to_douyin") is not None else 1),
+        "publishToDouyin": int(item.get("publish_to_douyin") or 0),
         "publishToBilibili": int(item.get("publish_to_bilibili") or 0),
         "publishToXiaohongshu": int(item.get("publish_to_xiaohongshu") or 0),
         "publishToKuaishou": int(item.get("publish_to_kuaishou") or 0),
@@ -81,6 +85,7 @@ def _row_to_workflow_job(row):
         "publishConfirmationRequired": bool(item.get("publish_confirmation_required") or 0),
         "publishConfirmationStatus": item.get("publish_confirmation_status") or "",
         "contentRisk": _workflow_content_risk(item.get("content_risk")),
+        "contentSafetyReviewEnabled": _content_safety_enabled(item),
         "progress": round(float(item.get("progress") or 0), 1),
         "speed": item.get("speed") or "",
         "eta": item.get("eta") or "",
@@ -138,6 +143,21 @@ def _normalize_burn_profile(value):
 def _burn_profile_config(value):
     profile = _normalize_burn_profile(value)
     return profile, BURN_PROFILES[profile]
+
+
+def _validate_burn_profile_source_resolution(video_id, burn_profile):
+    if burn_profile != "2k":
+        return
+    source_file = _resolve_downloaded_source_file({"videoId": video_id})
+    video_info = _get_video_info(source_file)
+    width = int(video_info.get("width") or 0)
+    height = int(video_info.get("height") or 0)
+    if max(width, height) >= 2560 and min(width, height) >= 1440:
+        return
+    raise ValueError(
+        "2K 高清仅支持原视频不低于 2560x1440（竖屏不低于 1440x2560）。"
+        f"当前下载视频为 {width}x{height}，请改用 1080p 预设后重试。"
+    )
 
 
 def _normalize_subtitle_size(value):
@@ -235,6 +255,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
     video_id = payload.get("videoId") or ""
+    _validate_burn_profile_source_resolution(video_id, burn_profile)
     if lock_scope not in {"media", "analysis"}:
         raise ValueError("任务锁范围不合法")
     with _db_connect() as conn:
@@ -291,7 +312,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             payload.get("xiaohongshuAccount") or "",
             payload.get("kuaishouAccount") or "",
             payload.get("tencentAccount") or "",
-            int(1 if payload.get("publishToDouyin", True) else 0),
+            int(1 if payload.get("publishToDouyin") else 0),
             int(1 if payload.get("publishToBilibili") else 0),
             int(1 if payload.get("publishToXiaohongshu") else 0),
             int(1 if payload.get("publishToKuaishou") else 0),
@@ -322,6 +343,10 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             "queued",
             "任务已创建，等待后台执行",
         ))
+        cursor.execute(
+            "UPDATE youtube_workflow_jobs SET content_risk = ? WHERE id = ?",
+            (json.dumps({"contentSafetyReviewEnabled": bool(payload.get("contentSafetyReviewEnabled"))}, ensure_ascii=False), job_id),
+        )
         conn.commit()
     return get_youtube_workflow_job(job_id)
 
@@ -756,6 +781,9 @@ WORKFLOW_STAGE_LABELS = {
     "highlight_render": "高光短片生成",
     "editing_concat": "片头与正片拼接",
     "analysis": "内容分析与文案生成",
+    "content_safety_detect": "广告风险检测",
+    "content_safety_confirm": "等待视频处理确认",
+    "content_trim": "风险片段裁剪",
     "editing": "封面片头与高光拼接",
     "publish": "发布",
     "workflow": "完整工作流",

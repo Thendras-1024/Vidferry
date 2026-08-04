@@ -7,6 +7,7 @@ def list_subtitle_audits_route():
         data = list_subtitle_audits(
             keyword=request.args.get('keyword', ''),
             status=request.args.get('status', ''),
+            safety_status=request.args.get('safetyStatus', ''),
             sort=request.args.get('sort', 'saved_desc'),
             page=request.args.get('page', 1),
             page_size=request.args.get('pageSize', 20),

@@ -134,6 +134,73 @@ def _mark_editing_intro_stale(job, analysis_result):
         update_youtube_video_artifacts(job["videoId"], editingIntroStatus="stale")
 
 
+def _editing_intro_requested(job):
+    return bool(job.get("highlightIntroEnabled", True) or job.get("coverIntroEnabled", True))
+
+
+def _editing_analysis_required(job):
+    if job.get("highlightIntroEnabled", True):
+        return True
+    return bool(job.get("coverIntroEnabled", True) and not normalize_cover_title(job.get("coverTitle")))
+
+
+def _run_content_safety_review(job, source_file, segments, transcript_file):
+    existing = (job.get("contentRisk") or {}).get("contentSafety") or {}
+    if existing.get("decision") in {"trim", "safe"}:
+        return job, False
+    job = update_youtube_workflow_job(job["id"], source_file_path=str(source_file))
+    event_id = start_workflow_event(job, "content_safety_detect", "开始检测长广告与站外引流", input_file_path=transcript_file)
+    usage = {}
+    try:
+        snapshot, usage = detect_content_safety(
+            job, segments, build_workflow_llm_telemetry(job, event_id, "content_safety_detect"),
+        )
+        finish_workflow_event(event_id, "success", "广告风险检测完成", cloud_usage=_editing_plan_usage(usage), metadata={"candidateCount": len(snapshot.get("candidates") or []), "riskCount": len(snapshot.get("risks") or [])})
+    except Exception as exc:
+        snapshot = {"status": "unavailable", "version": CONTENT_SAFETY_VERSION, "candidates": [], "risks": [], "reason": str(exc)[:240]}
+        finish_workflow_event(event_id, "failed", "广告风险检测不可用，等待人工确认")
+        backend_logger.warning("content safety detection failed : job_id = %s | error = %s", job.get("id") or "", exc.__class__.__name__)
+    snapshot.update({"transcriptFilePath": str(transcript_file), "sourceDuration": float(_get_video_info(source_file).get("duration") or 0)})
+    save_content_safety_snapshot(job, snapshot)
+    content_risk = {**(job.get("contentRisk") or {}), "contentSafetyReviewEnabled": True, "contentSafety": snapshot}
+    job = update_youtube_workflow_job(job["id"], content_risk=content_risk)
+    if snapshot.get("status") == "clear":
+        backend_logger.info("content safety detection clear : job_id = %s | candidate_count = %s", job.get("id") or "", len(snapshot.get("candidates") or []))
+        return job, False
+    confirm_event = start_workflow_event(job, "content_safety_confirm", "检测到广告风险，等待管理员确认", input_file_path=source_file, metadata={"riskCount": len(snapshot.get("risks") or []), "status": snapshot.get("status")})
+    finish_workflow_event(confirm_event, "success", "等待视频处理确认", metadata={"riskCount": len(snapshot.get("risks") or []), "status": snapshot.get("status")})
+    update_youtube_workflow_job(job["id"], status="waiting_confirmation", step="content_safety_confirm", message="检测到广告风险，等待视频处理确认", progress=28, speed="", eta="")
+    backend_logger.info("content safety review pending : job_id = %s | candidate_count = %s | risk_count = %s", job.get("id") or "", len(snapshot.get("candidates") or []), len(snapshot.get("risks") or []))
+    return job, True
+
+
+def _apply_content_safety_trim(job, source_file):
+    snapshot = (job.get("contentRisk") or {}).get("contentSafety") or {}
+    if snapshot.get("decision") != "trim":
+        return Path(source_file)
+    event_id = start_workflow_event(job, "content_trim", "正在裁剪广告风险片段", input_file_path=source_file, metadata={"rangeCount": len(snapshot.get("trimRanges") or [])})
+    try:
+        output_file, ranges = _content_safety_trim_video(job, source_file, snapshot.get("trimRanges") or [])
+        transcript_path = Path(snapshot.get("transcriptFilePath") or "")
+        if transcript_path.is_file():
+            payload = json.loads(transcript_path.read_text(encoding="utf-8-sig"))
+            payload["segments"] = _content_safety_remap_segments(payload.get("segments") or [], ranges)
+            payload["sourceFile"] = str(output_file)
+            payload["contentSafetyTrimRanges"] = ranges
+            trimmed_transcript = transcript_path.with_name(f"{transcript_path.stem}_content_safe.json")
+            trimmed_transcript.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            update_youtube_video_artifacts(job.get("videoId"), transcriptFilePath=str(trimmed_transcript))
+        update_youtube_workflow_job(job["id"], source_file_path=str(output_file), step="subtitle", message="广告风险片段裁剪完成，正在继续处理", progress=34)
+        finish_workflow_event(event_id, "success", "广告风险片段裁剪完成", output_file_path=output_file, metadata={"rangeCount": len(ranges), "removedSeconds": round(sum(item["end"] - item["start"] for item in ranges), 2)})
+        backend_logger.info("content trim completed : job_id = %s | range_count = %s", job.get("id") or "", len(ranges))
+        return output_file
+    except Exception as exc:
+        error_fields = _workflow_error_fields(exc)
+        finish_workflow_event(event_id, "failed", error_fields["error_reason"])
+        backend_logger.error("content trim failed : job_id = %s | error_code = %s | error_type = %s | exception = %s", job.get("id") or "", error_fields["error_code"], error_fields["error_type"], exc.__class__.__name__)
+        raise
+
+
 def _run_editing_plan_analysis(job, source_file, segments, language, transcript_file, event_id):
     try:
         result, usage = _generate_editing_plan(
@@ -299,6 +366,8 @@ def _run_comment_burn_preparation(job):
 def _start_parallel_editing_plan(job, source_file):
     job_id = job["id"]
     comment_future = _submit_background_task("comment", _run_comment_burn_preparation, job) if job.get("commentBurnEnabled") else None
+    if not _editing_analysis_required(job):
+        return job, None, None, comment_future
     job = update_youtube_workflow_job(
         job_id,
         source_file_path=str(source_file),
@@ -442,6 +511,39 @@ def _finalize_parallel_editing(job, subtitle_result, source_file, intro_future):
             safe_rmtree(work_dir)
 
 
+def _append_translation_cover_intro(job, source_file, subtitle_result):
+    if not job.get("coverIntroEnabled", True):
+        return {"path": subtitle_result["path"], "cover": None, "skipped": True}
+    work_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{job['id']}_translation_cover")
+    cover_event = start_workflow_event(job, "cover_render", "开始生成封面片头", input_file_path=source_file)
+    try:
+        cover_job = {
+            **job,
+            "highlightIntroEnabled": False,
+            "coverTitle": normalize_cover_title(job.get("coverTitle")) or normalize_cover_title(job.get("title")),
+        }
+        assets = render_editing_intro_assets(cover_job, source_file, None, {}, work_dir)
+        if not assets.get("clips"):
+            finish_workflow_event(cover_event, "success", "未生成封面片头")
+            return {"path": subtitle_result["path"], "cover": None, "skipped": True}
+        body_file = Path(subtitle_result["path"])
+        final_file = body_file.with_name(f"{body_file.stem}_with_cover{body_file.suffix}")
+        concat_event = start_workflow_event(job, "editing_concat", "开始拼接封面片头与正片", input_file_path=body_file)
+        try:
+            final_file = concat_editing_intro_assets(body_file, assets, final_file, work_dir)
+        except Exception as exc:
+            finish_workflow_event(concat_event, "failed", _workflow_error_fields(exc)["error_reason"])
+            raise
+        finish_workflow_event(cover_event, "success", "封面片头生成完成", output_file_path=(assets.get("clips") or [""])[0])
+        finish_workflow_event(concat_event, "success", "封面片头与正片拼接完成", output_file_path=final_file)
+        return {"path": str(final_file), "cover": assets.get("cover"), "skipped": False}
+    except Exception as exc:
+        finish_workflow_event(cover_event, "failed", _workflow_error_fields(exc)["error_reason"])
+        raise
+    finally:
+        safe_rmtree(work_dir)
+
+
 def _prepare_transcript_with_event(job, source_file):
     transcript_event_id = start_workflow_event(job, "transcript", "开始英文语音转写", input_file_path=source_file)
     work_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{Path(source_file).stem}_work")
@@ -541,6 +643,16 @@ def run_youtube_translate_job(job_id):
         job = initial_job
         source_file = _resolve_downloaded_source_file(job)
 
+        if job.get("contentSafetyReviewEnabled"):
+            try:
+                safety_segments, _safety_language, safety_transcript = _get_or_create_transcript(job, source_file, _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{Path(source_file).stem}_content_safety"))
+            except NoSpeechDetectedError:
+                safety_segments, safety_transcript = [], ""
+            job, pending_content_safety_confirmation = _run_content_safety_review(job, source_file, safety_segments, safety_transcript)
+            if pending_content_safety_confirmation:
+                return
+            source_file = _apply_content_safety_trim(job, source_file)
+
         analysis_result = None
         editing_result = None
         if process_version == PROCESS_VERSION_EDITING:
@@ -557,7 +669,7 @@ def run_youtube_translate_job(job_id):
         )
         def start_intro_render(ass_file):
             nonlocal intro_future
-            if process_version == PROCESS_VERSION_EDITING:
+            if process_version == PROCESS_VERSION_EDITING and _editing_intro_requested(job):
                 intro_future = _submit_background_task("analysis", _render_parallel_editing_intro, job, source_file, ass_file, analysis_future)
 
         subtitle_result, event_id, burn_event_id = _process_subtitles_with_events(job, source_file, language_meta, start_intro_render, comment_future=comment_future if process_version == PROCESS_VERSION_EDITING else None)
@@ -567,8 +679,12 @@ def run_youtube_translate_job(job_id):
             maybe_start_youtube_analysis_job(job, source_file)
         processed_file = subtitle_result["path"]
         skipped_subtitles = bool(subtitle_result.get("skipped"))
+        translation_cover_result = None
+        if process_version == PROCESS_VERSION_TRANSLATION:
+            translation_cover_result = _append_translation_cover_intro(job, source_file, subtitle_result)
+            processed_file = translation_cover_result["path"]
 
-        if process_version == PROCESS_VERSION_EDITING:
+        if process_version == PROCESS_VERSION_EDITING and intro_future:
             editing_event_id = start_workflow_event(job, "editing", "正在等待并行片头高光与正片烧制", input_file_path=processed_file)
             editing_result = _finalize_parallel_editing(job, subtitle_result, source_file, intro_future)
             processed_file = editing_result["path"]
@@ -585,6 +701,8 @@ def run_youtube_translate_job(job_id):
 
         if editing_result and editing_result.get("cover"):
             job = {**job, "coverIntro": editing_result["cover"]}
+        elif translation_cover_result and translation_cover_result.get("cover"):
+            job = {**job, "coverIntro": translation_cover_result["cover"]}
         material = _save_processed_video_to_material(processed_file, job)
         update_youtube_video_artifacts(
             job["videoId"],
@@ -594,6 +712,8 @@ def run_youtube_translate_job(job_id):
         final_message = f"{_subtitle_skip_reason(subtitle_result)}并保存到素材库" if skipped_subtitles else f"{language_meta['label']}字幕视频已生成并保存到素材库"
         if process_version == PROCESS_VERSION_EDITING and editing_result:
             final_message = f"{final_message}；{_editing_result_message(editing_result)}"
+        elif translation_cover_result and translation_cover_result.get("cover"):
+            final_message = f"{final_message}；已添加封面片头"
         update_youtube_workflow_job(
             job_id,
             status="success",
@@ -898,6 +1018,11 @@ def _video_has_processed_output(record, job=None):
     return bool(material_path and material_path.is_file())
 
 
+def workflow_job_resource(job):
+    record = _get_youtube_video_record((job or {}).get("videoId")) or {}
+    return "publish" if _video_has_processed_output(record, job) else "processing"
+
+
 def run_youtube_workflow(job_id):
     workflow_event_id = None
     download_event_id = None
@@ -929,7 +1054,7 @@ def run_youtube_workflow(job_id):
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
         process_version = _normalize_process_version(initial_job.get("processVersion"))
         video_record = _get_youtube_video_record(initial_job.get("videoId")) or {}
-        if _video_has_processed_output(video_record, initial_job):
+        if not initial_job.get("contentSafetyReviewEnabled") and _video_has_processed_output(video_record, initial_job):
             job = update_youtube_workflow_job(
                 job_id,
                 status="running",
@@ -986,6 +1111,17 @@ def run_youtube_workflow(job_id):
                 downloaded_file_path=str(source_file),
             )
 
+        if job.get("contentSafetyReviewEnabled"):
+            try:
+                safety_segments, _safety_language, safety_transcript = _get_or_create_transcript(job, source_file, _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{Path(source_file).stem}_content_safety"))
+            except NoSpeechDetectedError:
+                safety_segments, safety_transcript = [], ""
+            job, pending_content_safety_confirmation = _run_content_safety_review(job, source_file, safety_segments, safety_transcript)
+            if pending_content_safety_confirmation:
+                finish_workflow_event(workflow_event_id, "success", "广告风险检测完成，等待视频处理确认")
+                return
+            source_file = _apply_content_safety_trim(job, source_file)
+
         analysis_result = None
         editing_result = None
         if process_version == PROCESS_VERSION_EDITING:
@@ -1004,7 +1140,7 @@ def run_youtube_workflow(job_id):
         )
         def start_intro_render(ass_file):
             nonlocal intro_future
-            if process_version == PROCESS_VERSION_EDITING:
+            if process_version == PROCESS_VERSION_EDITING and _editing_intro_requested(job):
                 intro_future = _submit_background_task("analysis", _render_parallel_editing_intro, job, source_file, ass_file, analysis_future)
 
         subtitle_result, subtitle_event_id, burn_event_id = _process_subtitles_with_events(job, source_file, language_meta, start_intro_render, comment_future=comment_future if process_version == PROCESS_VERSION_EDITING else None)
@@ -1014,8 +1150,12 @@ def run_youtube_workflow(job_id):
             maybe_start_youtube_analysis_job(job, source_file)
         processed_file = subtitle_result["path"]
         skipped_subtitles = bool(subtitle_result.get("skipped"))
+        translation_cover_result = None
+        if process_version == PROCESS_VERSION_TRANSLATION:
+            translation_cover_result = _append_translation_cover_intro(job, source_file, subtitle_result)
+            processed_file = translation_cover_result["path"]
 
-        if process_version == PROCESS_VERSION_EDITING:
+        if process_version == PROCESS_VERSION_EDITING and intro_future:
             editing_event_id = start_workflow_event(job, "editing", "正在等待并行片头高光与正片烧制", input_file_path=processed_file)
             editing_result = _finalize_parallel_editing(job, subtitle_result, source_file, intro_future)
             processed_file = editing_result["path"]
@@ -1032,6 +1172,8 @@ def run_youtube_workflow(job_id):
 
         if editing_result and editing_result.get("cover"):
             job = {**job, "coverIntro": editing_result["cover"]}
+        elif translation_cover_result and translation_cover_result.get("cover"):
+            job = {**job, "coverIntro": translation_cover_result["cover"]}
         material = _save_processed_video_to_material(processed_file, job)
         update_youtube_workflow_job(
             job_id,

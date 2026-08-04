@@ -75,7 +75,7 @@ def _is_notification_upload_paused(job):
 
 def _workflow_notification_issues(cursor):
     cursor.execute('''
-    SELECT id, video_id, title, status, message, error_code, error_type, error_reason,
+    SELECT id, video_id, title, status, step, message, error_code, error_type, error_reason,
            error_detail, publish_confirmation_required, updated_at
     FROM youtube_workflow_jobs
     WHERE status IN ('failed', 'abnormal', 'waiting_confirmation')
@@ -86,7 +86,10 @@ def _workflow_notification_issues(cursor):
         job = dict(row)
         title = job.get("title") or job.get("video_id") or "未命名任务"
         route = {"path": "/youtube-research", "query": {"focusJob": job.get("id") or "", "focusAction": "error"}}
-        if job.get("status") == "waiting_confirmation" and job.get("publish_confirmation_required"):
+        if job.get("status") == "waiting_confirmation" and job.get("step") == "content_safety_confirm":
+            key = "content-safety-confirmation"
+            issue = grouped.setdefault(key, {"type": "content-safety-confirmation", "severity": "warning", "items": [], "route": {"path": "/subtitle-audit", "query": {"jobId": job.get("id") or ""}}})
+        elif job.get("status") == "waiting_confirmation" and job.get("publish_confirmation_required"):
             key = "publish-confirmation"
             issue = grouped.setdefault(key, {"type": "publish-confirmation", "severity": "warning", "items": [], "route": route})
         elif job.get("status") == "abnormal":
@@ -108,7 +111,10 @@ def _workflow_notification_issues(cursor):
         count = len(group["items"])
         first = group["items"][0]
         suffix = f"等 {count} 个任务" if count > 1 else ""
-        if group["type"] == "publish-confirmation":
+        if group["type"] == "content-safety-confirmation":
+            title = f"{count} 个视频等待广告裁剪确认"
+            content = f"{first['title']}{suffix} 检测到站外引流或长广告，需要确认裁剪范围。"
+        elif group["type"] == "publish-confirmation":
             title = f"{count} 个发布任务等待确认"
             content = f"{first['title']}{suffix} 检测到发布前风险，需要人工确认。"
         elif group["type"] == "publish-upload-paused":
@@ -128,7 +134,7 @@ def _account_notification_issues(cursor):
     cursor.execute("SELECT id, type, userName, status FROM user_info WHERE COALESCE(status, 0) = 0 ORDER BY id DESC")
     groups = {}
     for row in cursor.fetchall():
-        item = dict(row)
+        item = row
         platform = {1: "小红书", 2: "视频号", 3: "抖音", 4: "快手", 5: "B站"}.get(int(item.get("type") or 0), "平台")
         groups.setdefault(platform, []).append({"id": item.get("id"), "title": item.get("userName") or "未命名账号"})
     return [

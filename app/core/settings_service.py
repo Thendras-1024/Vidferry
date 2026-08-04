@@ -1,4 +1,4 @@
-﻿"""工作流默认设置的读写与归一化(存储在 app_settings 键值表)。"""
+"""工作流默认设置的读写与归一化(存储在 app_settings 键值表)。"""
 
 
 from app.core.cover_service import DEFAULT_COVER_SIGNATURE, normalize_cover_signature
@@ -31,6 +31,7 @@ def _default_workflow_settings():
         "highlightIntroEnabled": True,
         "coverIntroEnabled": True,
         "commentBurnEnabled": False,
+        "contentSafetyReviewEnabled": False,
     }
 
 
@@ -77,6 +78,7 @@ def _normalize_workflow_settings(payload=None):
     settings["highlightIntroEnabled"] = bool(payload.get("highlightIntroEnabled", True))
     settings["coverIntroEnabled"] = bool(payload.get("coverIntroEnabled", True))
     settings["commentBurnEnabled"] = bool(payload.get("commentBurnEnabled", False)) and settings["processVersion"] == PROCESS_VERSION_EDITING and _comment_burn_available()
+    settings["contentSafetyReviewEnabled"] = bool(payload.get("contentSafetyReviewEnabled", False))
 
     return settings
 

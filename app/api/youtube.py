@@ -352,7 +352,7 @@ def confirm_youtube_workflow_publish(job_id):
             return _json_response(400, "confirmed 必须是 true 或 false", None, 400)
         job = resolve_youtube_workflow_publish_confirmation(job_id, confirmed)
         if confirmed:
-            _submit_workflow_job("processing", run_youtube_workflow, job, "发布确认后的后台任务提交失败")
+            _submit_workflow_job(workflow_job_resource(job), run_youtube_workflow, job, "发布确认后的后台任务提交失败")
             return _json_response(data=job, status=202)
         return _json_response(data=job)
     except LookupError as e:
@@ -362,6 +362,47 @@ def confirm_youtube_workflow_publish(job_id):
     except Exception as e:
         backend_logger.exception("处理发布确认失败 : job_id = %s", job_id)
         return _json_response(500, f"处理发布确认失败: {str(e)}", None, 500)
+
+
+@app.route('/youtube/workflow/jobs/<job_id>/content-safety-confirmation', methods=['POST'])
+def confirm_youtube_workflow_content_safety(job_id):
+    try:
+        payload = request.get_json(silent=True) or {}
+        job = resolve_content_safety_confirmation(
+            job_id,
+            payload.get("decision"),
+            payload.get("ranges"),
+            payload.get("reason"),
+        )
+        target = run_youtube_workflow if any(job.get(key) for key in ("publishToDouyin", "publishToBilibili", "publishToXiaohongshu", "publishToKuaishou", "publishToTencent")) else run_youtube_translate_job
+        _submit_workflow_job("processing", target, job, "视频处理确认后的后台任务提交失败")
+        backend_logger.info("content safety confirmation accepted : job_id = %s | decision = %s", job_id, payload.get("decision") or "")
+        return _json_response(data=job, status=202)
+    except LookupError as e:
+        return _json_response(404, str(e), None, 404)
+    except (ValueError, WorkflowConflictError) as e:
+        return _error_response(409 if isinstance(e, WorkflowConflictError) else 400, str(e), getattr(e, "error_code", None), getattr(e, "error_type", None), getattr(e, "data", None))
+    except Exception as e:
+        backend_logger.exception("处理视频裁剪确认失败 : job_id = %s", job_id)
+        return _json_response(500, f"处理视频裁剪确认失败: {str(e)}", None, 500)
+
+
+@app.route('/youtube/workflow/jobs/<job_id>/source-preview', methods=['GET'])
+def youtube_workflow_source_preview(job_id):
+    try:
+        job = get_youtube_workflow_job(job_id)
+        source_file = Path(job.get("sourceFilePath") or "")
+        if not source_file.is_file():
+            return _json_response(404, "未找到本地源视频", None, 404)
+        source_root = Path(YOUTUBE_DOWNLOAD_DIR).resolve()
+        if not source_file.resolve().is_relative_to(source_root):
+            return _json_response(403, "源视频路径无效", None, 403)
+        return send_from_directory(str(source_file.parent), source_file.name, conditional=True)
+    except LookupError as e:
+        return _json_response(404, str(e), None, 404)
+    except Exception as e:
+        backend_logger.exception("读取本地源视频失败 : job_id = %s", job_id)
+        return _json_response(500, "读取本地源视频失败", None, 500)
 
 
 @app.route('/youtube/workflow/statistics', methods=['GET'])
@@ -423,12 +464,14 @@ def create_youtube_workflow():
         if payload.get("publishToTencent") and payload.get("tencentAccount"):
             _check_named_publish_account(2, payload.get("tencentAccount"))
         job = create_youtube_workflow_job(payload)
-        _submit_workflow_job("processing", run_youtube_workflow, job, "完整工作流提交失败")
+        resource = workflow_job_resource(job)
+        _submit_workflow_job(resource, run_youtube_workflow, job, "完整工作流提交失败")
         backend_logger.info(
-            "完整工作流已提交 job_id=%s video_id=%s process_version=%s",
+            "完整工作流已提交 job_id=%s video_id=%s process_version=%s resource=%s",
             job["id"],
             job.get("videoId", ""),
             job.get("processVersion", ""),
+            resource,
         )
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
@@ -459,6 +502,14 @@ def create_youtube_download():
             "description": payload.get("description") or "",
             "tags": payload.get("tags") or [],
             "schedule": "",
+            "processVersion": PROCESS_VERSION_TRANSLATION,
+            "translationEnabled": False,
+            "highlightIntroEnabled": False,
+            "coverIntroEnabled": False,
+            "commentBurnEnabled": False,
+            "watermarkEnabled": False,
+            "watermarkText": "",
+            "contentSafetyReviewEnabled": False,
         })
         _submit_workflow_job("download", run_youtube_download_job, job, "下载任务提交失败")
         backend_logger.info("下载任务已提交 job_id=%s video_id=%s", job["id"], job.get("videoId", ""))

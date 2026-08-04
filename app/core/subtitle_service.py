@@ -1,6 +1,7 @@
 """字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 烧录。"""
 
 import re
+from threading import RLock
 
 from app.core.llm_harness import redact_profanity
 from app.core.subtitle_review import review_translated_segments
@@ -16,8 +17,8 @@ CUE_MIN_VISIBLE_WORDS = 2
 CUE_MAX_SPACED_CHARS = 42
 CUE_MAX_KOREAN_CHARS = 28
 CUE_MAX_CJK_CHARS = 18
-# 原作者信息固定为 72px，与视频分辨率和字幕字号解耦。
-AUTHOR_OVERLAY_FONT_SIZE = 72
+AUTHOR_OVERLAY_FONT_SIZE = 50
+_GOOGLE_TRANSLATOR_REQUEST_LOCK = RLock()
 
 
 def _format_ass_timestamp(seconds):
@@ -327,8 +328,7 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
     fallback_line_limit = TRANSLATION_FALLBACK_LINE_LIMIT
 
     def log(message):
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"{timestamp} | TRANSLATE | job={job_id or '-'} | {message}", flush=True)
+        _subtitle_stage_log("info", "subtitle translation : job_id = %s | %s", job_id or "-", message)
 
     def translate_text(text):
         import deep_translator.google as google_module
@@ -339,11 +339,13 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
             kwargs.setdefault("timeout", request_timeout)
             return original_get(*args, **kwargs)
 
-        google_module.requests.get = get_with_timeout
-        try:
-            return translator.translate(text)
-        finally:
-            google_module.requests.get = original_get
+        # deep-translator 通过模块级 requests.get 发起请求，必须串行替换避免并发任务互相还原补丁。
+        with _GOOGLE_TRANSLATOR_REQUEST_LOCK:
+            google_module.requests.get = get_with_timeout
+            try:
+                return translator.translate(text)
+            finally:
+                google_module.requests.get = original_get
 
     def update_translation_progress(message=""):
         if not job_id or not total_segments:
@@ -373,7 +375,7 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
             log(f"批次 {batch_number} 翻译完成，用时 {time.time() - started_at:.1f}s")
         except Exception as exc:
             batch_failed = True
-            log(f"批次 {batch_number} 翻译失败，准备兜底重试或终止任务: {exc.__class__.__name__}: {exc}")
+            log(f"批次 {batch_number} 翻译失败，准备兜底重试或终止任务: error_type = {exc.__class__.__name__}")
             lines = []
 
         if batch_failed:
@@ -389,7 +391,7 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
                     log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 完成，用时 {time.time() - started_at:.1f}s")
                     lines.append(line)
                 except Exception as exc:
-                    log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 失败: {exc.__class__.__name__}: {exc}")
+                    log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 失败: error_type = {exc.__class__.__name__}")
                     raise RuntimeError("字幕翻译失败，请检查网络或翻译服务。") from exc
                 translated_count += 1
                 update_translation_progress()
@@ -397,26 +399,18 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
             log(
                 f"批次 {batch_number} 返回行数不匹配: expected={len(current_batch)}, actual={len(lines)}，改为逐段翻译"
             )
-            if len(current_batch) > fallback_line_limit:
-                log(
-                    f"批次 {batch_number} 超过逐段兜底上限 {fallback_line_limit}，终止任务避免生成错误字幕"
-                )
-                raise RuntimeError(
-                    f"字幕翻译失败，请检查网络或翻译服务。批次 {batch_number} 返回行数异常。"
-                )
-            else:
-                lines = []
-                for offset, text in enumerate(current_batch, start=1):
-                    try:
-                        started_at = time.time()
-                        line = str(translate_text(text)).strip()
-                        log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 完成，用时 {time.time() - started_at:.1f}s")
-                        lines.append(line)
-                    except Exception as exc:
-                        log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 失败: {exc.__class__.__name__}: {exc}")
-                        raise RuntimeError("字幕翻译失败，请检查网络或翻译服务。") from exc
-                    translated_count += 1
-                    update_translation_progress()
+            lines = []
+            for offset, text in enumerate(current_batch, start=1):
+                try:
+                    started_at = time.time()
+                    line = str(translate_text(text)).strip()
+                    log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 完成，用时 {time.time() - started_at:.1f}s")
+                    lines.append(line)
+                except Exception as exc:
+                    log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 失败: error_type = {exc.__class__.__name__}")
+                    raise RuntimeError("字幕翻译失败，请检查网络或翻译服务。") from exc
+                translated_count += 1
+                update_translation_progress()
         else:
             translated_count += len(current_batch)
             update_translation_progress()
@@ -780,20 +774,19 @@ def _subtitle_render_layout(job, video_info):
     video_info = video_info or {}
     width = max(320, int(video_info.get("width") or 1080))
     height = max(320, int(video_info.get("height") or 1920))
-    short_side = min(width, height)
-    is_vertical = height > width
+    horizontal_scale, vertical_scale, scalar_scale = _render_layout_scales(width, height)
     _, size_config = _subtitle_size_config(job.get("subtitleSize"))
     font_scale = float(size_config.get("scale") or 1)
-    subtitle_floor = 56 if is_vertical else 48
-    subtitle_font_size = int(max(subtitle_floor, min(112, int(short_side * 0.092))) * font_scale)
-    horizontal_margin = max(22, int(width * (0.046 if is_vertical else 0.055)))
+    subtitle_font_size = max(16, int(69 * font_scale * scalar_scale))
+    horizontal_margin = max(8, round(50 * horizontal_scale))
     usable_width = max(1, width - 2 * horizontal_margin)
     single_line_capacity = max(1, int(usable_width / max(subtitle_font_size * 0.92, 1)))
     return {
         "width": width,
         "height": height,
-        "shortSide": short_side,
-        "isVertical": is_vertical,
+        "horizontalScale": horizontal_scale,
+        "verticalScale": vertical_scale,
+        "scalarScale": scalar_scale,
         "fontScale": font_scale,
         "subtitleFontSize": subtitle_font_size,
         "horizontalMargin": horizontal_margin,
@@ -815,23 +808,22 @@ def _comment_like_count(value):
 def _comment_burn_layout(video_info):
     width = max(320, int((video_info or {}).get("width") or 1080))
     height = max(320, int((video_info or {}).get("height") or 1920))
-    short_side = min(width, height)
-    margin = max(24, int(width * 0.046))
-    avatar_size = max(52, min(112, int(short_side * 0.094)))
-    meta_font_size = max(20, min(40, int(short_side * 0.034)))
-    text_font_size = max(24, min(46, int(short_side * 0.040)))
-    translation_font_size = max(20, min(40, int(short_side * 0.033)))
-    like_font_size = max(18, min(34, int(short_side * 0.029)))
+    horizontal_scale, vertical_scale, scalar_scale = _render_layout_scales(width, height)
+    margin = max(8, round(50 * horizontal_scale))
+    avatar_size = max(16, round(71 * scalar_scale))
+    meta_font_size = max(12, round(31 * scalar_scale))
+    text_font_size = max(14, round(33 * scalar_scale))
+    translation_font_size = max(12, round(31 * scalar_scale))
     return {
-        "x": max(24, int(margin * 0.5)),
-        "y": max(26, int(height * 0.042)),
+        "x": max(8, round(24 * horizontal_scale)),
+        "y": max(8, round(80 * vertical_scale)),
         "avatarSize": avatar_size,
-        "textX": margin + avatar_size + max(12, int(short_side * 0.018)),
-        "textWidth": max(160, width - margin * 2 - avatar_size - max(12, int(short_side * 0.018))),
+        "textX": max(8, round(24 * horizontal_scale)),
+        "textWidth": max(80, width - max(8, round(24 * horizontal_scale)) - margin),
         "metaFontSize": meta_font_size,
         "textFontSize": text_font_size,
         "translationFontSize": translation_font_size,
-        "likeFontSize": like_font_size,
+        "scalarScale": scalar_scale,
     }
 
 
@@ -848,24 +840,27 @@ def _wrap_comment_ass_text(text, max_chars, max_lines=2):
 
 def _comment_burn_style_lines(video_info):
     layout = _comment_burn_layout(video_info)
+    scalar_scale = layout["scalarScale"]
+    meta_outline = max(1, round(2 * scalar_scale))
+    text_outline = max(1, round(3 * scalar_scale))
+    shadow = max(1, round(scalar_scale))
     return [
-        f"Style: CommentMeta,Microsoft YaHei,{layout['metaFontSize']},&H00FFFFFF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,2,1,7,0,0,0,1",
-        f"Style: CommentText,Microsoft YaHei,{layout['textFontSize']},&H00FFFFFF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,3,1,7,0,0,0,1",
-        f"Style: CommentTranslation,Microsoft YaHei,{layout['translationFontSize']},&H00DFF7FF,&H000000FF,&H00111111,&H78000000,0,0,0,0,100,100,0,0,1,2,1,7,0,0,0,1",
-        f"Style: CommentLike,Microsoft YaHei,{layout['likeFontSize']},&H00DDDDDD,&H000000FF,&H00111111,&H78000000,0,0,0,0,100,100,0,0,1,2,1,7,0,0,0,1",
+        f"Style: CommentMeta,Microsoft YaHei,{layout['metaFontSize']},&H00FFFFFF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,{meta_outline},{shadow},7,0,0,0,1",
+        f"Style: CommentText,Microsoft YaHei,{layout['textFontSize']},&H00FFFFFF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,{text_outline},{shadow},7,0,0,0,1",
+        f"Style: CommentTranslation,Microsoft YaHei,{layout['translationFontSize']},&H00DFF7FF,&H000000FF,&H00111111,&H78000000,1,0,0,0,100,100,0,0,1,{meta_outline},{shadow},7,0,0,0,1",
     ]
 
 
 def _comment_avatar_y(layout, comment):
     meta_y = layout["y"]
     text_y = meta_y + int(layout["metaFontSize"] * 1.35)
-    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.78, 1)))
+    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.68, 1)))
     original = _wrap_comment_ass_text((comment or {}).get("text"), max_chars)
     if (comment or {}).get("translationRequired") and _wrap_comment_ass_text((comment or {}).get("translationZh"), max_chars):
         translation_y = text_y + int(layout["textFontSize"] * (2.25 if "\\N" in original else 1.45))
-        bottom = translation_y + int(layout["translationFontSize"] * 1.35) + int(layout["likeFontSize"] * 1.25)
+        bottom = translation_y + int(layout["translationFontSize"] * 1.35)
     else:
-        bottom = text_y + int(layout["textFontSize"] * 2.25) + int(layout["likeFontSize"] * 1.25)
+        bottom = text_y + int(layout["textFontSize"] * 2.25)
     return max(meta_y, meta_y + (bottom - meta_y - layout["avatarSize"]) // 2)
 
 
@@ -876,30 +871,25 @@ def _append_comment_burn_ass(dialogue_lines, comments, video_info):
     layout = _comment_burn_layout(video_info)
     meta_y = layout["y"]
     text_y = meta_y + int(layout["metaFontSize"] * 1.35)
-    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.78, 1)))
+    motion_offset = max(1, round(18 * layout["scalarScale"]))
+    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.68, 1)))
     for comment in comments:
         start = _format_ass_timestamp(comment.get("displayStart"))
         end = _format_ass_timestamp(comment.get("displayEnd"))
-        motion = r"\fad(480,280)\fscx94\fscy94\t(0,300,\fscx102\fscy102)\t(300,540,\fscx100\fscy100)\t(1600,2150,\fscx101\fscy101)\t(2150,2700,\fscx100\fscy100)\t(4200,4750,\fscx101\fscy101)\t(4750,5300,\fscx100\fscy100)"
+        motion = r"\fad(600,360)\fscx94\fscy94\t(0,300,\fscx102\fscy102)\t(300,540,\fscx100\fscy100)\t(1600,2150,\fscx101\fscy101)\t(2150,2700,\fscx100\fscy100)\t(4200,4750,\fscx101\fscy101)\t(4750,5300,\fscx100\fscy100)"
         author = _escape_ass_text(comment.get("author") or "")
         time_text = _escape_ass_text(comment.get("timeText") or "")
-        meta = author + (f"  {time_text}" if time_text else "")
+        meta = author + (f"  {time_text}" if time_text else "") + f"  👍 {_comment_like_count(comment.get('likeCount'))}"
         original = _wrap_comment_ass_text(comment.get("text"), max_chars)
         translation = _wrap_comment_ass_text(comment.get("translationZh"), max_chars)
         translation_y = text_y + int(layout["textFontSize"] * (2.25 if "\\N" in original else 1.45))
-        like_y = translation_y + int(layout["translationFontSize"] * 1.35)
-        meta_position = fr"\move({layout['textX']},{meta_y + 18},{layout['textX']},{meta_y},0,480)"
-        text_position = fr"\move({layout['textX']},{text_y + 18},{layout['textX']},{text_y},0,480)"
+        meta_position = fr"\move({layout['textX']},{meta_y + motion_offset},{layout['textX']},{meta_y},0,2000)"
+        text_position = fr"\move({layout['textX']},{text_y + motion_offset},{layout['textX']},{text_y},0,2000)"
         dialogue_lines.append(f"Dialogue: 4,{start},{end},CommentMeta,,0,0,0,,{{{motion}{meta_position}}}{meta}")
         dialogue_lines.append(f"Dialogue: 5,{start},{end},CommentText,,0,0,0,,{{{motion}{text_position}}}{original}")
         if comment.get("translationRequired") and translation:
-            translation_position = fr"\move({layout['textX']},{translation_y + 18},{layout['textX']},{translation_y},0,480)"
+            translation_position = fr"\move({layout['textX']},{translation_y + motion_offset},{layout['textX']},{translation_y},0,2000)"
             dialogue_lines.append(f"Dialogue: 6,{start},{end},CommentTranslation,,0,0,0,,{{{motion}{translation_position}}}{translation}")
-            like_position = like_y
-        else:
-            like_position = text_y + int(layout["textFontSize"] * 2.25)
-        like_motion = fr"\move({layout['textX']},{like_position + 18},{layout['textX']},{like_position},0,480)"
-        dialogue_lines.append(f"Dialogue: 4,{start},{end},CommentLike,,0,0,0,,{{{motion}{like_motion}}}👍 {_comment_like_count(comment.get('likeCount'))}")
 
 
 def _resolve_comment_burn_snapshot(job, comment_future, duration):
@@ -920,24 +910,23 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     layout = _subtitle_render_layout(job, video_info)
     width = layout["width"]
     height = layout["height"]
-    short_side = layout["shortSide"]
-    is_vertical = layout["isVertical"]
     target_language, language_meta = _subtitle_language_meta(job.get("subtitleLanguage"))
     font_scale = layout["fontScale"]
+    scalar_scale = layout["scalarScale"]
+    vertical_scale = layout["verticalScale"]
     subtitle_font_size = layout["subtitleFontSize"]
-    english_floor = 40 if is_vertical else 34
-    english_font_size = int(max(english_floor, min(82, int(short_side * 0.052))) * font_scale)
-    info_font_size = AUTHOR_OVERLAY_FONT_SIZE
+    english_font_size = max(12, int(39 * font_scale * scalar_scale))
+    info_font_size = max(12, round(AUTHOR_OVERLAY_FONT_SIZE * scalar_scale))
     horizontal_margin = layout["horizontalMargin"]
-    subtitle_margin_v = max(92 if is_vertical else 78, int(height * (0.092 if is_vertical else 0.086)))
-    english_margin_v = max(34, int(subtitle_margin_v - english_font_size * 1.38))
-    info_margin_v = max(28, int(height * 0.028))
-    subtitle_outline = max(4, int(short_side * 0.0065))
-    info_outline = max(3, int(short_side * 0.0055))
-    subtitle_shadow = max(1, int(short_side * 0.0022))
-    watermark_font_size = max(40, min(108, int(short_side * 0.064)))
-    watermark_margin = max(20, int(width * 0.042))
-    watermark_margin_v = max(40, int(height * 0.070))
+    subtitle_margin_v = max(16, round(176 * vertical_scale))
+    english_margin_v = max(8, round(99 * vertical_scale))
+    info_margin_v = max(8, round(54 * vertical_scale))
+    subtitle_outline = max(1, round(7 * scalar_scale))
+    info_outline = max(1, round(5 * scalar_scale))
+    subtitle_shadow = max(1, round(2 * scalar_scale))
+    watermark_font_size = max(12, round(48 * scalar_scale))
+    watermark_margin = max(8, round(45 * layout["horizontalScale"]))
+    watermark_margin_v = max(8, round(134 * vertical_scale))
     always_show_english_line = True
     has_translated_line = target_language != "en" and bool(job.get("translationEnabled", True))
 
@@ -952,17 +941,16 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Subtitle,Microsoft YaHei,{subtitle_font_size},&H0000E6FF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{subtitle_margin_v},1",
-        f"Style: English,Arial,{english_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{english_margin_v},1",
+        f"Style: Subtitle,Microsoft YaHei,{subtitle_font_size},&H0000E6FF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{subtitle_margin_v},1",
+        f"Style: English,Arial,{english_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{english_margin_v},1",
         f"Style: Info,Microsoft YaHei,{info_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{info_outline},{subtitle_shadow},7,{horizontal_margin},{horizontal_margin},{info_margin_v},1",
-        f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,-1,0,0,0,100,100,0,-15,1,1,0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
+        f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,-1,0,0,0,100,100,0,{round(-15 * scalar_scale, 1)},1,{max(1, round(scalar_scale))},0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
         *(_comment_burn_style_lines(video_info) if (comment_snapshot or {}).get("comments") else []),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    if not (comment_snapshot or {}).get("comments"):
-        dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
+    dialogue_lines.append(f"Dialogue: 1,{_format_ass_timestamp(0)},{_format_ass_timestamp(min(20, audio_duration or 20))},Info,,0,0,0,,{overlay_text}")
     _append_comment_burn_ass(dialogue_lines, (comment_snapshot or {}).get("comments"), video_info)
     if include_subtitles:
         for segment in segments:
@@ -990,11 +978,8 @@ def _ffmpeg_subtitle_path(path):
 
 
 def _comment_avatar_filter_complex(ass_file, video_filters, avatar_assets, video_info):
-    # The ASS layer is scaled with the video filters. Avatar overlays are added
-    # afterwards, so their coordinates must use the final frame dimensions.
     layout = _comment_burn_layout(video_info)
-    base_filters = [f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'", *video_filters[1:]]
-    chain = [f"[0:v]{','.join(base_filters)}[comment_base]"]
+    chain = [f"[0:v]{','.join(video_filters)}[comment_base]"]
     current = "comment_base"
     for index, asset in enumerate(avatar_assets or [], start=1):
         try:
@@ -1014,8 +999,10 @@ def _comment_avatar_filter_complex(ass_file, video_filters, avatar_assets, video
             f"format=rgba,fade=t=in:st=0:d=0.48:alpha=1,fade=t=out:st={display_duration - 0.28:.2f}:d=0.28:alpha=1,"
             f"setpts=PTS-STARTPTS+{start:.2f}/TB[{avatar}]"
         )
+        entrance_offset = max(1, round(37.5 * layout["scalarScale"]))
+        bob_offset = max(1, round(2 * layout["scalarScale"]))
         chain.append(
-            f"[{current}][{avatar}]overlay=x={layout['x']}:y='{avatar_y}+if(lt(t\\,{entrance_end:.2f})\\,({entrance_end:.2f}-t)*37.5\\,0)+sin(2*PI*(t-{start:.2f})/2.4)*2':"
+            f"[{current}][{avatar}]overlay=x={layout['x']}:y='{avatar_y}+if(lt(t\\,{entrance_end:.2f})\\,({entrance_end:.2f}-t)*{entrance_offset}\\,0)+sin(2*PI*(t-{start:.2f})/2.4)*{bob_offset}':"
             f"eval=frame:enable='between(t,{start:.2f},{end:.2f})'[{output}]"
         )
         current = output
@@ -1046,6 +1033,18 @@ def _compatible_video_dimensions(width, height, max_long_side=1920, max_short_si
     return target_width, target_height
 
 
+def _burn_output_video_info(video_info, job):
+    output_info = dict(video_info or {})
+    _, config = _burn_profile_config((job or {}).get("burnProfile"))
+    target = _compatible_video_dimensions(
+        output_info.get("width"), output_info.get("height"),
+        config.get("max_long_side", 1920), config.get("max_short_side", 1080),
+    )
+    if target:
+        output_info["width"], output_info["height"] = target
+    return output_info
+
+
 def _ffmpeg_error_summary(lines):
     tail = [" ".join(str(line).split()) for line in (lines or []) if str(line).strip()][-2:]
     return " | ".join(tail)[:240] or "FFmpeg 未返回错误摘要"
@@ -1073,7 +1072,7 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
     if output_fps <= 0 or output_fps > max_fps:
         output_fps = max_fps
 
-    video_filters = [subtitle_filter]
+    video_filters = []
     target_dimensions = _compatible_video_dimensions(
         video_info.get("width"),
         video_info.get("height"),
@@ -1083,7 +1082,9 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
     if target_dimensions:
         target_width, target_height = target_dimensions
         video_filters.append(f"scale={target_width}:{target_height}:flags=lanczos")
-        video_filters.append("setsar=1")
+    else:
+        target_width, target_height = int(video_info.get("width") or 0), int(video_info.get("height") or 0)
+    video_filters.extend(["setsar=1", subtitle_filter])
     video_filter = ",".join(video_filters)
     filter_args = ["-vf", video_filter]
     if comment_avatar_assets:
@@ -1223,7 +1224,7 @@ def _apply_author_overlay_to_mp4(media_file, job):
     duration = video_info.get("duration") or 0.1
     ass_file = media_file.with_name(f"{media_file.stem}_author_overlay.ass")
     output_file = media_file.with_name(f"{media_file.stem}.author_overlayed{media_file.suffix}")
-    _build_ass_file(job, [], ass_file, duration, video_info, include_subtitles=False)
+    _build_ass_file(job, [], ass_file, duration, _burn_output_video_info(video_info, job), include_subtitles=False)
     _burn_subtitles_to_mp4(media_file, ass_file, output_file, duration=duration, job_id=job.get("id") or "", progress_label="原作者信息")
     output_file.replace(media_file)
     return media_file
@@ -1292,11 +1293,12 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
     if not job.get("translationEnabled", True):
         work_dir = _ensure_dir(processed_dir / f"{Path(source_file).stem}_work")
         video_info = _get_video_info(source_file)
+        output_video_info = _burn_output_video_info(video_info, job)
         duration = video_info.get("duration") or 0
         comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
         if comment_snapshot.get("comments"):
             comment_event_id = start_workflow_event(job, "comment_render", f"正在烧制 {len(comment_snapshot['comments'])} 条评论")
-            ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
+            ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, output_video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
             if before_burn:
                 before_burn(ass_file)
             try:
@@ -1348,6 +1350,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
     work_dir = _ensure_dir(processed_dir / f"{Path(source_file).stem}_work")
     _update_translate_progress(job_id, 6, "正在读取视频信息")
     video_info = _get_video_info(source_file)
+    output_video_info = _burn_output_video_info(video_info, job)
     duration = video_info.get("duration") or 0
     comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
     try:
@@ -1355,7 +1358,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
     except NoSpeechDetectedError as exc:
         if comment_snapshot.get("comments"):
             comment_event_id = start_workflow_event(job, "comment_render", f"正在烧制 {len(comment_snapshot['comments'])} 条评论")
-            ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
+            ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, output_video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
             if before_burn:
                 before_burn(ass_file)
             try:
@@ -1412,14 +1415,14 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
             translated_segments,
             language,
             max_single_line_chars=(
-                _subtitle_render_layout(job, video_info)["singleLineCapacity"]
+                _subtitle_render_layout(job, output_video_info)["singleLineCapacity"]
                 if target_language == "zh-CN" else 0
             ),
         )
     _update_translate_progress(job_id, 46, f"{language_meta['label']}字幕已生成，正在构建自适应字幕样式")
     duration = duration or max((segment.get("end") or 0) for segment in segments)
     comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
-    ass_file = _build_ass_file(job, rendered_segments, work_dir / f"{Path(source_file).stem}.ass", duration, video_info, comment_snapshot=comment_snapshot)
+    ass_file = _build_ass_file(job, rendered_segments, work_dir / f"{Path(source_file).stem}.ass", duration, output_video_info, comment_snapshot=comment_snapshot)
     _update_translate_progress(job_id, 50, f"正在使用 FFmpeg 烧录{language_meta['label']}字幕")
     if before_burn:
         before_burn(ass_file)

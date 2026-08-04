@@ -397,7 +397,7 @@ def _fixed_fields(value, expected, path, violations):
         violations.append(f"{path} 包含未定义字段：{','.join(extra)}")
 
 
-def _chinese_text(value, path, violations, allow_empty=False, soft_warnings=None):
+def _chinese_text(value, path, violations, allow_empty=False, soft_warnings=None, validate_text=True):
     if not isinstance(value, str):
         violations.append(f"{path} 必须是字符串")
         return ""
@@ -406,12 +406,12 @@ def _chinese_text(value, path, violations, allow_empty=False, soft_warnings=None
         return ""
     if not text:
         violations.append(f"{path} 不能为空")
-    elif len(_HAN_RE.findall(text)) < 2:
+    elif validate_text and len(_HAN_RE.findall(text)) < 2:
         violations.append(f"{path} 必须使用简体中文")
-    elif contains_disallowed_text(text):
+    elif validate_text and contains_disallowed_text(text):
         warning = f"{path} 不得包含粗俗、攻击或负面吐槽表达"
         (soft_warnings if soft_warnings is not None else violations).append(warning)
-    elif _has_invalid_mixed_language(text):
+    elif validate_text and _has_invalid_mixed_language(text):
         warning = f"{path} 不得包含外文口语或中英文混杂表达"
         (soft_warnings if soft_warnings is not None else violations).append(warning)
     return text
@@ -424,7 +424,7 @@ def _number(value, path, violations):
     return float(value)
 
 
-def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_empty=True, soft_warnings=None):
+def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_empty=True, soft_warnings=None, validate_text=True):
     if not isinstance(value, list):
         violations.append(f"{path} 必须是数组")
         return []
@@ -435,7 +435,7 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
     result = []
     for index, item in enumerate(value[:max_items]):
         if chinese:
-            text = _chinese_text(item, f"{path}[{index}]", violations, soft_warnings=soft_warnings)
+            text = _chinese_text(item, f"{path}[{index}]", violations, soft_warnings=soft_warnings, validate_text=validate_text)
         elif isinstance(item, str):
             text = item.strip()
             if not text:
@@ -448,7 +448,7 @@ def _string_list(value, path, violations, *, chinese=True, max_items=8, allow_em
     return result
 
 
-def _cover_title_list(value, violations, soft_warnings=None):
+def _cover_title_list(value, violations, soft_warnings=None, validate_text=True):
     titles = _string_list(value, "cover_title_options", violations, chinese=False, max_items=4, allow_empty=False, soft_warnings=soft_warnings)
     if isinstance(value, list) and not 2 <= len(value) <= 4:
         violations.append("cover_title_options 必须包含 2-4 项")
@@ -467,7 +467,7 @@ def _cover_title_list(value, violations, soft_warnings=None):
         if any("#" in line for line in lines):
             violations.append(f"cover_title_options[{index}] 不得包含 #")
             continue
-        if contains_disallowed_text(title):
+        if validate_text and contains_disallowed_text(title):
             warning = f"cover_title_options[{index}] 不得包含粗俗、攻击或负面吐槽表达"
             (soft_warnings if soft_warnings is not None else violations).append(warning)
         result.append("\n".join(lines))
@@ -482,6 +482,7 @@ def _highlight_segments(
     blocked_ranges=(),
     max_items=8,
     filter_stats=None,
+    validate_text=True,
 ):
     if not isinstance(value, list):
         violations.append(f"{path} 必须是数组")
@@ -498,8 +499,8 @@ def _highlight_segments(
         kind = str(item.get("type") or "").strip()
         if not kind:
             item_violations.append(f"{item_path}.type 不能为空")
-        reason = _chinese_text(item.get("reason"), f"{item_path}.reason", item_violations)
-        caption = _chinese_text(item.get("suggested_caption"), f"{item_path}.suggested_caption", item_violations)
+        reason = _chinese_text(item.get("reason"), f"{item_path}.reason", item_violations, validate_text=validate_text)
+        caption = _chinese_text(item.get("suggested_caption"), f"{item_path}.suggested_caption", item_violations, validate_text=validate_text)
         if start < 30:
             item_violations.append(f"{item_path}.start 不得早于 30 秒")
         if end - start < 6 or end - start > 12:
@@ -537,6 +538,7 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
         violations,
         blocked_ranges=blocked_ranges,
         filter_stats=highlight_filter_stats,
+        validate_text=False,
     )
     if len(highlights) < max(0, int(minimum_highlights or 0)):
         violations.append(f"可用安全高光不足 {int(minimum_highlights)} 条，请人工检查转写内容或重新生成剪辑方案")
@@ -547,7 +549,7 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
     else:
         for index, item in enumerate(raw_risk_notes[:8]):
             item_violations = []
-            text = _chinese_text(item, f"risk_notes[{index}]", item_violations)
+            text = _chinese_text(item, f"risk_notes[{index}]", item_violations, validate_text=False)
             if text and not item_violations:
                 risk_notes.append(text)
     if blocked_ranges:
@@ -556,23 +558,20 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             risk_notes = risk_notes[:7]
             risk_notes.append(review_note)
     result = {
-        "summary": _chinese_text(value.get("summary"), "summary", violations),
-        "china_view_angle": _chinese_text(value.get("china_view_angle"), "china_view_angle", violations, allow_empty=True),
-        "title_options": _string_list(value.get("title_options"), "title_options", violations, allow_empty=False, soft_warnings=soft_warnings),
-        "cover_title_options": _cover_title_list(value.get("cover_title_options"), violations, soft_warnings=soft_warnings),
-        "publish_copy": _chinese_text(value.get("publish_copy"), "publish_copy", violations, soft_warnings=soft_warnings),
+        "summary": _chinese_text(value.get("summary"), "summary", violations, validate_text=False),
+        "china_view_angle": _chinese_text(value.get("china_view_angle"), "china_view_angle", violations, allow_empty=True, validate_text=False),
+        "title_options": _string_list(value.get("title_options"), "title_options", violations, allow_empty=False, soft_warnings=soft_warnings, validate_text=False),
+        "cover_title_options": _cover_title_list(value.get("cover_title_options"), violations, soft_warnings=soft_warnings, validate_text=False),
+        "publish_copy": _chinese_text(value.get("publish_copy"), "publish_copy", violations, soft_warnings=soft_warnings, validate_text=False),
         "tags": [],
         "highlight_segments": highlights,
         "risk_notes": risk_notes,
-        "editing_focus": _chinese_text(value.get("editing_focus"), "editing_focus", violations, soft_warnings=soft_warnings),
+        "editing_focus": _chinese_text(value.get("editing_focus"), "editing_focus", violations, soft_warnings=soft_warnings, validate_text=False),
         "_highlightFilterSummary": {
             "blockedByContentRisk": int(highlight_filter_stats.get("blockedByContentRisk") or 0),
         },
     }
-    # tags 放宽：允许纯英文/品牌标签（如 FIFA、DJI、halftime show），不再强制简体中文。
-    # 仅保留非空、去 #、去重、最多 8 项（超出截断为软警告）与负面词软警告，
-    # 避免单个英文标签触发硬违规导致整个 editing_plan 失败；
-    # summary/publish_copy 等字段仍用 _chinese_text 强制中文；封面标题允许英文专有名词。
+    # editing_plan 暂停本地文本内容过滤，仅保留标签的结构和数量约束。
     raw_tags_value = value.get("tags")
     if not isinstance(raw_tags_value, list):
         violations.append("tags 必须是数组")
@@ -590,10 +589,6 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
         if soft_warnings is not None:
             soft_warnings.append("tags 超过 8 项，已截断为前 8 项")
         cleaned_tags = cleaned_tags[:8]
-    if soft_warnings is not None:
-        for tag_index, tag in enumerate(cleaned_tags):
-            if contains_disallowed_text(tag):
-                soft_warnings.append(f"tags[{tag_index}] 含粗俗、攻击或负面表达，建议人工确认")
     result["tags"] = cleaned_tags
     _fail(violations)
     return result
