@@ -11,9 +11,14 @@ class HybridRow(Mapping):
         self._columns = tuple(columns)
         self._values = tuple(values)
         self._by_name = dict(zip(self._columns, self._values))
+        self._by_name_casefold = {str(name).casefold(): value for name, value in self._by_name.items()}
 
     def __getitem__(self, key):
-        return self._values[key] if isinstance(key, int) else self._by_name[key]
+        if isinstance(key, int):
+            return self._values[key]
+        if key in self._by_name:
+            return self._by_name[key]
+        return self._by_name_casefold[str(key).casefold()]
 
     def __iter__(self):
         return iter(self._values)
