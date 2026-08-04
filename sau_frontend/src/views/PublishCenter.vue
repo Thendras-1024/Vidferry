@@ -380,7 +380,16 @@
           </div>
         </article>
       </div>
-      <div v-else-if="publishedRecordScope === 'archived' && archivedPublishedRecords.length" class="archived-record-list">
+      <div v-if="publishedRecordScope === 'active' && retryablePublishTasks.length" class="retry-task-list">
+        <div v-for="task in retryablePublishTasks" :key="task.taskId" class="retry-task-row">
+          <div>
+            <strong>{{ task.chineseTitle || '未命名发布任务' }}</strong>
+            <span>{{ (task.retryTargets || []).map(target => `${target.platform} · ${target.accountName || target.accountFile || '原账号缺失'}`).join(' / ') }}</span>
+          </div>
+          <el-button type="primary" plain size="small" @click="openRetryDialog(task)">重发失败项</el-button>
+        </div>
+      </div>
+      <div v-if="publishedRecordScope === 'archived' && archivedPublishedRecords.length" class="archived-record-list">
         <div v-for="record in archivedPublishedRecords" :key="record.id" class="archived-record-row">
           <div>
             <strong>{{ record.publishTitle || record.title || record.filename }}</strong>
@@ -391,8 +400,14 @@
           <span>归档于 {{ record.deletedAt || record.updatedAt || '-' }}</span>
         </div>
       </div>
-      <el-empty v-else :description="publishedRecordScope === 'active' ? '暂无已发布视频，发布成功后会在这里汇总展示。' : '暂无已归档发布记录。'" :image-size="84" />
+      <el-empty
+        v-if="(publishedRecordScope === 'active' && !publishedVideos.length && !retryablePublishTasks.length) || (publishedRecordScope === 'archived' && !archivedPublishedRecords.length)"
+        :description="publishedRecordScope === 'active' ? '暂无已发布视频，发布成功后会在这里汇总展示。' : '暂无已归档发布记录。'"
+        :image-size="84"
+      />
     </section>
+
+    <PublishRetryDialog v-model="retryDialogVisible" :task="retryTask" @completed="refreshPublishRetryTasks" />
 
     <el-dialog v-model="batchPublishDialogVisible" title="批量发布进度" width="500px" :close-on-click-modal="false" :close-on-press-escape="false" :show-close="false">
       <div class="publish-progress">
@@ -564,6 +579,7 @@ import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { http } from '@/utils/request'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
+import PublishRetryDialog from '@/components/PublishRetryDialog.vue'
 
 // 当前激活的tab
 const activeTab = ref('tab1')
@@ -593,6 +609,9 @@ const publishedLoading = ref(false)
 const publishedVideos = ref([])
 const archivedPublishedRecords = ref([])
 const publishedRecordScope = ref('active')
+const retryablePublishTasks = ref([])
+const retryDialogVisible = ref(false)
+const retryTask = ref(null)
 
 // 批量发布相关状态
 const batchPublishing = ref(false)
@@ -936,6 +955,50 @@ const normalizePublishDraft = (material) => {
 }
 
 const materialPublishDraft = (material) => normalizePublishDraft(material)
+
+const publishDraftSnapshot = (draft = {}) => ({
+  title: String(draft.title || '').trim(),
+  description: String(draft.description || '').trim(),
+  tags: normalizeAnalysisTags(draft.tags)
+})
+
+const hasStalePublishDraft = (tab, draft) => {
+  const current = publishDraftSnapshot(draft)
+  const selected = publishDraftSnapshot({
+    title: tab.title,
+    description: tab.description,
+    tags: tab.selectedTopics
+  })
+  return current.title !== selected.title
+    || current.description !== selected.description
+    || current.tags.join('\n') !== selected.tags.join('\n')
+}
+
+const ensureLatestPublishDraftConfirmation = async (tab) => {
+  const videoId = selectedVideoId(tab)
+  if (!videoId) return
+  try {
+    const response = await youtubeApi.getVideoAnalysis(videoId)
+    if (!hasStalePublishDraft(tab, response.data?.draft)) return
+  } catch (error) {
+    ElMessage.warning('未能检查发布稿是否更新，将按当前批次内容继续提交')
+    return
+  }
+
+  const scheduled = Boolean(tab.scheduleEnabled)
+  const message = scheduled
+    ? '当前批次仍显示选择素材时的旧发布稿。定时任务执行时会读取视频采集处理页最新保存的发布稿，本页预览不会自动同步。'
+    : '当前批次仍使用选择素材时的旧发布稿。立即发布将使用旧稿，不会使用视频采集处理页后来保存的新稿。'
+  try {
+    await ElMessageBox.confirm(message, '发布稿已更新', {
+      confirmButtonText: scheduled ? '创建定时任务' : '仍使用旧稿发布',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    throw new Error('已取消发布')
+  }
+}
 
 const accountsByPlatform = (platformName) => {
   return accountStore.accounts.filter(account => account.platform === platformName)
@@ -1423,6 +1486,25 @@ const loadPublishedVideos = async () => {
   }
 }
 
+const loadPublishRetryTasks = async () => {
+  try {
+    const response = await materialApi.getPublishTasks({ limit: 50 })
+    retryablePublishTasks.value = (response.data || []).filter(task => task.canRetry)
+  } catch (error) {
+    console.error('加载可重发发布任务失败:', error)
+  }
+}
+
+const openRetryDialog = (task) => {
+  retryTask.value = task
+  retryDialogVisible.value = true
+}
+
+const refreshPublishRetryTasks = async () => {
+  await Promise.all([loadPublishRetryTasks(), loadPublishedVideos()])
+  appStore.invalidatePublishRecords()
+}
+
 // 取消发布
 const cancelPublish = (tab) => {
   ElMessage.info('已取消发布')
@@ -1741,6 +1823,7 @@ const confirmPublish = async (tab) => {
 
   // 一次提交所有平台，后端按平台隔离并发执行，同时返回每个平台结果。
   try {
+    await ensureLatestPublishDraftConfirmation(tab)
     await ensureAgentGuardPublishConfirmation(tab)
     await ensureSourceContentRiskConfirmation(tab)
     const publishData = buildPublishData(tab, targets)
@@ -2004,14 +2087,17 @@ const batchPublish = async () => {
 }
 
 onMounted(async () => {
-  await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishedVideos()])
+  await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishedVideos(), loadPublishRetryTasks()])
   tabs.filter(tab => tab.fileList.length > 0).forEach(tab => {
     void loadLatestAgentGuard(tab)
   })
 })
 
 watch(publishedRecordScope, loadPublishedVideos)
-watch(() => appStore.publishRecordsRevision, loadPublishedVideos)
+watch(() => appStore.publishRecordsRevision, () => {
+  void loadPublishedVideos()
+  void loadPublishRetryTasks()
+})
 
 onBeforeUnmount(() => {
   window.clearTimeout(materialLibrarySearchTimer)
@@ -2108,6 +2194,11 @@ $ink-strong: #172033;
   display: grid;
   gap: 10px;
 }
+
+.retry-task-list { display: grid; gap: 8px; margin-top: 16px; }
+.retry-task-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid $panel-border; padding: 10px 12px; }
+.retry-task-row > div { display: grid; gap: 4px; min-width: 0; }
+.retry-task-row span { color: $text-secondary; font-size: 12px; overflow-wrap: anywhere; }
 
 .published-card {
   display: grid;

@@ -1,5 +1,10 @@
 import request from '@/utils/request'
 
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL
+const apiBaseUrl = configuredApiBaseUrl && configuredApiBaseUrl !== '/'
+  ? configuredApiBaseUrl.replace(/\/$/, '')
+  : (import.meta.env.DEV ? '/api' : '')
+
 export const youtubeApi = {
   search(params = {}) {
     return request.get('/youtube/search', { params })
@@ -99,6 +104,14 @@ export const youtubeApi = {
 
   confirmWorkflowPublish(jobId, confirmed) {
     return request.post(`/youtube/workflow/jobs/${jobId}/publish-confirmation`, { confirmed })
+  },
+
+  confirmContentSafety(jobId, data) {
+    return request.post(`/youtube/workflow/jobs/${jobId}/content-safety-confirmation`, data)
+  },
+
+  getSourcePreviewUrl(jobId) {
+    return `${apiBaseUrl}/youtube/workflow/jobs/${encodeURIComponent(jobId)}/source-preview`
   },
 
   getWorkflowStatistics(params = {}) {

@@ -88,64 +88,50 @@
                   {{ publishStatusText(target.status) }}
                 </el-tag>
                 <span class="target-meta">耗时 {{ formatDurationMs(target.durationMs) }}</span>
-                <span class="target-meta">{{ target.updatedAt || target.publishedAt || '-' }}</span>
+                <span class="target-meta">{{ formatPublishDate(target.updatedAt || target.publishedAt) }}</span>
                 <span class="target-message">{{ target.message || '-' }}</span>
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  :disabled="isTargetRecordLocked(target)"
-                  @click="deletePublishRecord(row, target)"
-                >
-                  删除记录
-                </el-button>
+                <div class="target-actions">
+                  <el-button size="small" type="danger" text :disabled="isTargetRecordLocked(target)" @click="deletePublishRecord(row, target)">删除</el-button>
+                  <el-button v-if="target.retryable" size="small" type="primary" text @click="openRetryDialog(row)">重发</el-button>
+                </div>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="发布任务" min-width="360">
+        <el-table-column label="发布任务" min-width="300">
           <template #default="{ row }">
             <div class="material-cell">
               <strong>{{ row.chineseTitle || '未命名发布任务' }}</strong>
-              <span>{{ row.englishTitle || row.sourceUrl || '暂无英文标题' }}</span>
+              <div class="task-title-meta">
+                <el-tag :type="publishStatusTag(row.overallStatus)" effect="plain" size="small">
+                  {{ publishStatusText(row.overallStatus) }}
+                </el-tag>
+                <span>成功 {{ row.summary?.success || 0 }}</span>
+                <span v-if="(row.summary?.failed || 0) + (row.summary?.timeout || 0)" class="is-failed">
+                  失败 {{ (row.summary?.failed || 0) + (row.summary?.timeout || 0) }}
+                </span>
+              </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="大小" width="110">
+        <el-table-column label="大小" width="94">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="publishedAt" label="任务时间" width="180" />
-        <el-table-column label="总体状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="publishStatusTag(row.overallStatus)" effect="plain" size="small">
-              {{ publishStatusText(row.overallStatus) }}
-            </el-tag>
-          </template>
+        <el-table-column label="任务时间" width="156">
+          <template #default="{ row }">{{ formatPublishDate(row.publishedAt) }}</template>
         </el-table-column>
-        <el-table-column label="平台情况" width="170">
+        <el-table-column label="操作" width="132" fixed="right">
           <template #default="{ row }">
-            <div class="status-summary">
-              <span class="success">成功 {{ row.summary?.success || 0 }}</span>
-              <span class="failed">失败 {{ (row.summary?.failed || 0) + (row.summary?.timeout || 0) }}</span>
-              <span>共 {{ row.summary?.total || 0 }}</span>
+            <div class="task-actions">
+              <el-link v-if="publishedPreviewUrl(row)" :href="publishedPreviewUrl(row)" target="_blank" type="primary">预览</el-link>
+              <span v-else class="muted-text">无预览</span>
+              <el-button v-if="row.canRetry" size="small" type="primary" text @click="openRetryDialog(row)">重发</el-button>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
-          <template #default="{ row }">
-            <el-link
-              v-if="publishedPreviewUrl(row)"
-              :href="publishedPreviewUrl(row)"
-              target="_blank"
-              type="primary"
-            >
-              预览视频
-            </el-link>
-            <span v-else class="muted-text">无预览</span>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
+    <PublishRetryDialog v-model="retryDialogVisible" :task="retryTask" @completed="refreshPublishTasks" />
   </div>
 </template>
 
@@ -160,12 +146,15 @@ import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
+import PublishRetryDialog from '@/components/PublishRetryDialog.vue'
 
 const router = useRouter()
 const accountStore = useAccountStore()
 const appStore = useAppStore()
 const loading = ref(false)
 const materialSummary = ref({ total: 0, processed: 0, downloaded: 0, other: 0 })
+const retryDialogVisible = ref(false)
+const retryTask = ref(null)
 
 const quickActions = [
   { title: '视频采集处理', desc: '查找线索、下载、翻译和烧录', path: '/youtube-research', icon: Search },
@@ -296,6 +285,29 @@ const deletePublishRecord = async (task, target) => {
     if (error === 'cancel' || error === 'close') return
     ElMessage.error(error.message || '删除发布记录失败')
   }
+}
+
+const formatPublishDate = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return raw
+  const utc = /(?:GMT|UTC|Z)$/i.test(raw)
+  const part = (utcName, localName) => String(utc ? date[utcName]() : date[localName]()).padStart(2, '0')
+  const year = utc ? date.getUTCFullYear() : date.getFullYear()
+  const month = String((utc ? date.getUTCMonth() : date.getMonth()) + 1).padStart(2, '0')
+  return `${year}-${month}-${part('getUTCDate', 'getDate')} ${part('getUTCHours', 'getHours')}:${part('getUTCMinutes', 'getMinutes')}:${part('getUTCSeconds', 'getSeconds')}`
+}
+
+const openRetryDialog = (task) => {
+  retryTask.value = task
+  retryDialogVisible.value = true
+}
+
+const refreshPublishTasks = async () => {
+  const response = await materialApi.getPublishTasks({ limit: 20 })
+  appStore.setPublishTasks(response.data || [])
+  appStore.invalidatePublishRecords()
 }
 
 const fetchDashboardData = async () => {
@@ -478,8 +490,7 @@ $ink-strong: #172033;
   gap: 4px;
   min-width: 0;
 
-  strong,
-  span {
+  strong {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -490,10 +501,16 @@ $ink-strong: #172033;
     color: $ink-strong;
   }
 
-  span {
-    color: $text-secondary;
-    font-size: 12px;
-  }
+}
+
+.task-title-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: $text-secondary;
+  font-size: 12px;
+
+  .is-failed { color: #dc2626; }
 }
 
 .target-records {
@@ -511,7 +528,7 @@ $ink-strong: #172033;
 
 .target-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) 90px 90px 170px minmax(180px, 1fr) 88px;
+  grid-template-columns: minmax(160px, 1.2fr) 76px 82px 156px minmax(150px, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
@@ -550,6 +567,19 @@ $ink-strong: #172033;
   white-space: nowrap;
 }
 
+.target-actions,
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.target-actions :deep(.el-button),
+.task-actions :deep(.el-button) {
+  margin: 0;
+}
+
 .status-summary {
   display: flex;
   align-items: center;
@@ -572,7 +602,7 @@ $ink-strong: #172033;
   }
 
   .target-row {
-    grid-template-columns: 1fr 90px 80px;
+    grid-template-columns: minmax(180px, 1fr) 76px 80px;
   }
 }
 

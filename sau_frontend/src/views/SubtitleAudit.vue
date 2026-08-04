@@ -3,8 +3,8 @@
     <section class="audit-heading">
       <div>
         <span class="kicker">LOCAL ADMIN</span>
-        <h1>字幕审查与模型诊断</h1>
-        <p>按处理任务查看字幕修订、评论筛选与模型诊断。</p>
+        <h1>内容安全审查与模型诊断</h1>
+        <p>按处理任务查看广告风险裁剪、字幕修订、评论筛选与模型诊断。</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="loadList">刷新</el-button>
     </section>
@@ -18,6 +18,12 @@
         <el-option label="部分回退" value="partial_fallback" />
         <el-option label="LLM 已关闭" value="disabled" />
         <el-option label="LLM 不可用" value="unavailable" />
+      </el-select>
+      <el-select v-model="filters.safetyStatus" clearable placeholder="广告风险" @change="search">
+        <el-option label="等待确认" value="pending" />
+        <el-option label="已确认" value="confirmed" />
+        <el-option label="检测通过" value="clear" />
+        <el-option label="检测不可用" value="unavailable" />
       </el-select>
       <el-select v-model="filters.sort" placeholder="排序方式" @change="search">
         <el-option label="最近保存" value="saved_desc" />
@@ -46,6 +52,7 @@
         </el-table-column>
         <el-table-column label="审查状态" min-width="130"><template #default="{ row }">{{ reviewLabel(row.reviewStatus) }}</template></el-table-column>
         <el-table-column label="评论筛选" width="120"><template #default="{ row }"><el-tag size="small" :type="commentAuditType(row)">{{ commentAuditLabel(row) }}</el-tag></template></el-table-column>
+        <el-table-column label="广告风险" width="130"><template #default="{ row }"><el-tag size="small" :type="safetyTagType(row.contentSafetyStatus)">{{ safetyLabel(row.contentSafetyStatus, row.contentSafetyRiskCount) }}</el-tag></template></el-table-column>
         <el-table-column label="回退段数" width="100"><template #default="{ row }">{{ row.fallbackSegmentCount || 0 }}</template></el-table-column>
         <el-table-column label="保存时间" width="175"><template #default="{ row }">{{ formatTime(row.savedAt) }}</template></el-table-column>
         <el-table-column label="查看" width="74" fixed="right"><template #default="{ row }"><el-button link type="primary" @click.stop="openDetail(row)">详情</el-button></template></el-table-column>
@@ -73,6 +80,26 @@
           <el-button v-if="fallbackBatches.length" size="small" type="danger" plain :icon="CircleCloseFilled" @click="jumpToBatch('fallback')">回退初译 {{ fallbackBatches.length }}</el-button>
         </div>
         <el-tabs v-model="activeTab">
+          <el-tab-pane v-if="detail.contentSafety && Object.keys(detail.contentSafety).length" label="风险裁剪" name="safety">
+            <section class="safety-summary">
+              <div><strong>{{ safetyLabel(detail.contentSafety.status, (detail.contentSafety.risks || []).length) }}</strong><span>{{ detail.contentSafety.decision ? `已决议：${detail.contentSafety.decision === 'trim' ? '裁剪' : '标记安全'}` : '需要管理员确认后继续处理' }}</span></div>
+              <a :href="detail.url" target="_blank" rel="noopener">打开 YouTube 原视频</a>
+            </section>
+            <video v-if="sourcePreviewUrl" ref="previewVideo" class="safety-video" :src="sourcePreviewUrl" crossorigin="use-credentials" controls preload="metadata" />
+            <section v-for="(risk, index) in detail.contentSafety.risks || []" :key="`${risk.start}-${risk.end}`" class="safety-risk">
+              <div><strong>风险片段 {{ index + 1 }}</strong><el-tag size="small" type="warning">{{ formatClock(risk.start) }} - {{ formatClock(risk.end) }}</el-tag><el-button link type="primary" @click="playAt(risk.start)">跳转播放</el-button></div>
+              <p>{{ risk.evidence || '模型未提供证据摘要' }}</p><span>{{ (risk.signals || []).join('、') || '连续推广语境' }}</span>
+            </section>
+            <template v-if="detail.jobStatus === 'waiting_confirmation' && detail.contentSafety.status !== 'confirmed'">
+              <el-input v-model="trimRangeText" type="textarea" :rows="4" placeholder="每行一个裁剪区间，例如 10:04.6-11:12.7" />
+              <div class="safety-actions">
+                <el-button type="primary" :loading="safetySubmitting" @click="confirmSafety('trim', true)">按建议裁剪并继续</el-button>
+                <el-button :loading="safetySubmitting" @click="confirmSafety('trim')">按填写区间继续</el-button>
+              </div>
+              <el-input v-model="safeReason" maxlength="160" show-word-limit placeholder="标记安全原因（必填）" />
+              <el-button type="success" plain :loading="safetySubmitting" @click="confirmSafety('safe')">标记安全并继续</el-button>
+            </template>
+          </el-tab-pane>
           <el-tab-pane v-if="commentReviewItems.length || detail.commentBurnEnabled" label="评论筛选" name="comments">
             <section class="comment-summary">
               <div><strong>已选中 {{ selectedCommentItems.length }} 条</strong><span>展示烧制前的原文与中文结果</span></div>
@@ -129,20 +156,32 @@
 
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCloseFilled, Delete, Download, Loading, Refresh, Search, Top, WarningFilled } from '@element-plus/icons-vue'
 import { subtitleAuditApi } from '@/api/subtitleAudit'
+import { youtubeApi } from '@/api/youtube'
 
 const loading = ref(false); const detailLoading = ref(false); const items = ref([]); const total = ref(0)
-const page = ref(1); const pageSize = 20; const filters = ref({ keyword: '', status: '', sort: 'saved_desc' })
+const route = useRoute()
+const page = ref(1); const pageSize = 20; const filters = ref({ keyword: '', status: '', safetyStatus: '', sort: 'saved_desc' })
 const drawerVisible = ref(false); const detail = ref(null); const detailTop = ref(null); const activeTab = ref('subtitles')
 const auditTable = ref(null); const selectedRows = ref([]); const exporting = ref(false); const deleting = ref(false)
+const trimRangeText = ref(''); const safeReason = ref(''); const safetySubmitting = ref(false); const previewVideo = ref(null)
 const loadList = async () => { loading.value = true; try { const res = await subtitleAuditApi.list({ ...filters.value, page: page.value, pageSize }); const data = res?.data || {}; items.value = data.items || []; total.value = data.total || 0; selectedRows.value = []; auditTable.value?.clearSelection() } catch (error) { ElMessage.error(error?.message || '读取审查记录失败') } finally { loading.value = false } }
 const search = () => { page.value = 1; loadList() }
 const handleSelectionChange = rows => { selectedRows.value = rows }
-const openDetail = async (row, column) => { if (column?.type === 'selection') return; drawerVisible.value = true; detail.value = null; activeTab.value = 'subtitles'; detailLoading.value = true; try { const res = await subtitleAuditApi.detail(row.jobId); detail.value = res?.data || null; activeTab.value = detail.value?.commentReviewItems?.length ? 'comments' : 'subtitles' } catch (error) { ElMessage.error(error?.message || '读取审查详情失败') } finally { detailLoading.value = false } }
+const openDetail = async (row, column) => { if (column?.type === 'selection') return; drawerVisible.value = true; detail.value = null; activeTab.value = 'subtitles'; detailLoading.value = true; try { const res = await subtitleAuditApi.detail(row.jobId); detail.value = res?.data || null; const risks = detail.value?.contentSafety?.risks || []; trimRangeText.value = risks.map(item => `${formatClock(item.start)}-${formatClock(item.end)}`).join('\n'); safeReason.value = ''; activeTab.value = risks.length ? 'safety' : (detail.value?.commentReviewItems?.length ? 'comments' : 'subtitles') } catch (error) { ElMessage.error(error?.message || '读取审查详情失败') } finally { detailLoading.value = false } }
 const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 const formatRange = item => `${Number(item?.start || 0).toFixed(1)}s - ${Number(item?.end || 0).toFixed(1)}s`
+const formatClock = value => { const seconds = Math.max(0, Number(value || 0)); const minutes = Math.floor(seconds / 60); return `${String(minutes).padStart(2, '0')}:${(seconds % 60).toFixed(1).padStart(4, '0')}` }
+const safetyLabel = (status, count = 0) => ({ pending: `待确认 ${count} 段`, confirmed: '已确认', clear: '检测通过', unavailable: '检测不可用', not_enabled: '未启用' }[status] || '未启用')
+const safetyTagType = status => ({ pending: 'warning', confirmed: 'success', clear: 'success', unavailable: 'danger' }[status] || 'info')
+const sourcePreviewUrl = computed(() => detail.value?.jobId ? youtubeApi.getSourcePreviewUrl(detail.value.jobId) : '')
+const parseClock = value => { const match = String(value || '').trim().match(/^(\d{1,3}):(\d{2}(?:\.\d+)?)$/); if (!match) throw new Error('时间格式应为 mm:ss 或 mm:ss.s'); return Number(match[1]) * 60 + Number(match[2]) }
+const parseTrimRanges = () => trimRangeText.value.split(/[\n,]+/).filter(Boolean).map(line => { const parts = line.trim().split(/\s*-\s*/); if (parts.length !== 2) throw new Error('每行裁剪区间应为 mm:ss-mm:ss'); return { start: parseClock(parts[0]), end: parseClock(parts[1]) } })
+const playAt = value => { if (!previewVideo.value) return; previewVideo.value.currentTime = Math.max(0, Number(value || 0) - 4); previewVideo.value.play().catch(() => {}) }
+const confirmSafety = async (decision, useSuggested = false) => { try { const ranges = decision === 'trim' ? (useSuggested ? (detail.value?.contentSafety?.risks || []).map(item => ({ start: item.start, end: item.end })) : parseTrimRanges()) : []; safetySubmitting.value = true; await youtubeApi.confirmContentSafety(detail.value.jobId, { decision, ranges, reason: safeReason.value }); ElMessage.success('视频处理确认已提交'); await openDetail({ jobId: detail.value.jobId }) } catch (error) { ElMessage.error(error?.message || '视频处理确认失败') } finally { safetySubmitting.value = false } }
 const failedAttempts = batch => (batch?.attempts || []).filter(item => ['contract_failed', 'failed'].includes(item?.status))
 const batchState = batch => batch?.status === 'fallback' ? 'fallback' : failedAttempts(batch).length ? 'retried' : 'success'
 const batchTagType = batch => ({ fallback: 'danger', retried: 'warning', success: 'success' }[batchState(batch)])
@@ -229,7 +268,7 @@ const deleteSelected = async () => {
   deleting.value = true
   try { const res = await subtitleAuditApi.remove(selectedJobIds); ElMessage.success(`已删除 ${res?.data?.deletedCount || 0} 条审查记录`); if (drawerVisible.value && detail.value && selectedJobIds.includes(detail.value.jobId)) drawerVisible.value = false; await loadList() } catch (error) { ElMessage.error(error?.message || '删除审查记录失败') } finally { deleting.value = false }
 }
-onMounted(loadList)
+onMounted(async () => { await loadList(); if (route.query.jobId) await openDetail({ jobId: String(route.query.jobId) }) })
 </script>
 
 <style scoped lang="scss">
@@ -242,5 +281,6 @@ onMounted(loadList)
 .review-batch { margin-bottom:12px; border:1px solid $border-light; border-radius:8px; overflow:hidden; } .review-batch.is-retried { border-color:#f0b429; background:#fffdf4; } .review-batch.is-fallback { border-color:#f2b8b5; background:#fffafa; } .batch-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; background:#f5f8fc; } .is-retried .batch-heading { background:#fff7d6; } .is-fallback .batch-heading { background:#fff1f0; } .batch-heading div { display:flex; align-items:baseline; gap:8px; min-width:0; } .batch-heading span { color:$text-secondary; font-size:12px; } .review-batch :deep(.el-alert) { margin:10px 12px 0; } .batch-columns,.batch-segment { display:grid; grid-template-columns:125px minmax(0, 1fr) minmax(0, 1fr); gap:16px; } .batch-columns { padding:10px 12px; color:$text-secondary; font-size:12px; } .batch-columns span:first-child { grid-column:2; } .batch-segment { padding:12px; border-top:1px solid $border-lighter; line-height:1.65; font-size:13px; } .batch-segment time { color:$text-secondary; font-variant-numeric:tabular-nums; } .batch-segment p { margin:0 0 7px; white-space:pre-wrap; } .batch-segment .source { color:$text-regular; }
 .comment-summary { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; margin:0 0 14px; } .comment-summary div { padding:10px 12px; border-left:3px solid #0f9f8f; background:#f5f8fc; } .comment-summary strong,.comment-summary span { display:block; } .comment-summary span,.comment-time { margin-top:4px; color:$text-secondary; font-size:12px; } .comment-review-section { margin-bottom:18px; } .comment-section-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:0 0 8px; } .comment-section-heading span { color:$text-secondary; font-size:12px; } .comment-table { border:1px solid $border-light; } .comment-table strong { display:block; } .comment-table p { margin:6px 0 0; white-space:pre-wrap; line-height:1.55; } .comment-original { color:$text-regular; }
 .diagnostic { padding:14px 0; border-bottom:1px solid $border-lighter; } .diagnostic-meta { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; } .diagnostic-meta span,.diagnostic-stats { color:$text-secondary; font-size:12px; } .violations { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; } pre { max-height:360px; overflow:auto; margin:10px 0 0; padding:12px; border-radius:6px; background:#101828; color:#d0d5dd; font-size:12px; line-height:1.55; white-space:pre-wrap; }
+.safety-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:10px 12px; border-left:3px solid #d8a10d; background:#fff9eb; } .safety-summary strong,.safety-summary span { display:block; } .safety-summary span,.safety-risk span { margin-top:4px; color:$text-secondary; font-size:12px; } .safety-video { display:block; width:100%; max-height:440px; margin:0 0 12px; background:#111; } .safety-risk { margin:10px 0; padding:12px; border:1px solid #f0d59a; border-radius:6px; background:#fffdf6; } .safety-risk div,.safety-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; } .safety-risk p { margin:8px 0 4px; line-height:1.55; } .safety-actions { margin:10px 0; }
 @media (max-width: 760px) { .audit-heading,.audit-filters { align-items:stretch; flex-direction:column; } .audit-filters .el-input,.audit-filters .el-select { max-width:none; width:100%; } .batch-columns { display:none; } .batch-segment { grid-template-columns:1fr; gap:8px; } .comment-summary { grid-template-columns:1fr; } }
 </style>

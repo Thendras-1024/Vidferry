@@ -483,7 +483,9 @@ const handleDelete = (row) => {
 // 下载Cookie文件
 const handleDownloadCookie = (row) => {
   // 从后端获取Cookie文件
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5409'
+  const baseUrl = (import.meta.env.VITE_API_BASE_URL && import.meta.env.VITE_API_BASE_URL !== '/')
+    ? import.meta.env.VITE_API_BASE_URL
+    : (import.meta.env.DEV ? '/api' : '')
   const downloadUrl = `${baseUrl}/downloadCookie?filePath=${encodeURIComponent(row.filePath)}`
 
   // 创建一个隐藏的链接来触发下载

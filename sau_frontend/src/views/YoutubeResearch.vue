@@ -246,12 +246,6 @@
               :value="account.name"
             />
           </el-select>
-          <el-input
-            v-model="workflowForm.tags"
-            class="tag-input"
-            clearable
-            placeholder="可选默认话题，多个话题用逗号分隔"
-          />
         </div>
       </div>
 
@@ -417,7 +411,7 @@
                 </div>
                 <div v-if="activeJobForVideo(row)" class="inline-job">
                   <el-progress :percentage="displayProgress(activeJobForVideo(row))" :stroke-width="6" />
-                  <span>{{ activeJobForVideo(row).message || jobStatusText(activeJobForVideo(row).status) }}</span>
+                  <span>{{ activeJobForVideo(row).message || jobStatusText(activeJobForVideo(row).status, activeJobForVideo(row).step) }}</span>
                 </div>
                 <div v-else-if="analysisHint(row)" class="analysis-hint" :class="analysisHint(row).className">
                   {{ analysisHint(row).label }}
@@ -636,7 +630,7 @@
         <el-table-column prop="account" label="抖音账号" width="110" />
         <el-table-column prop="status" label="状态" width="105">
           <template #default="{ row }">
-            <el-tag :type="jobStatusType(row.status)" effect="light">{{ jobStatusText(row.status) }}</el-tag>
+            <el-tag :type="jobStatusType(row.status)" effect="light">{{ jobStatusText(row.status, row.step) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="step" label="步骤" width="110" />
@@ -771,6 +765,13 @@
                   <span class="setting-hint">关闭后不生成或烧制字幕；版本二仍会为高光和封面执行语音转写</span>
                 </div>
                 <el-switch v-model="workflowForm.translationEnabled" />
+              </div>
+              <div class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">广告风险审查</span>
+                  <span class="setting-hint">ASR 后检测连续站外推广，命中后等待管理员裁剪确认</span>
+                </div>
+                <el-switch v-model="workflowForm.contentSafetyReviewEnabled" />
               </div>
               <div class="watermark-switch-row">
                 <div>
@@ -957,7 +958,7 @@
       <div v-if="currentErrorJob" class="job-error-detail">
         <div class="detail-row">
           <span>任务状态</span>
-          <strong>{{ jobStatusText(currentErrorJob.status) }}</strong>
+          <strong>{{ jobStatusText(currentErrorJob.status, currentErrorJob.step) }}</strong>
         </div>
         <div class="detail-row">
           <span>当前阶段</span>
@@ -1183,7 +1184,7 @@ const manualForm = reactive({
 })
 
 const workflowForm = reactive({
-  publishToDouyin: true,
+  publishToDouyin: false,
   account: 'creator',
   publishToBilibili: false,
   bilibiliAccount: 'creator',
@@ -1194,7 +1195,6 @@ const workflowForm = reactive({
   kuaishouAccount: '',
   publishToTencent: false,
   tencentAccount: '',
-  tags: '',
   processVersion: 'translation_v1',
   subtitleLanguage: 'zh-CN',
   burnProfile: 'stable',
@@ -1208,7 +1208,8 @@ const workflowForm = reactive({
   highlightIntroEnabled: true,
   coverIntroEnabled: true,
   commentBurnEnabled: false,
-  commentTranslationMode: 'google_llm'
+  commentTranslationMode: 'google_llm',
+  contentSafetyReviewEnabled: false
 })
 const commentBurnAvailable = ref(true)
 
@@ -1358,7 +1359,7 @@ const burnProfiles = [
       { name: 'preset', value: 'fast', description: '维持 H.264 快速编码，在画质与处理时间间取得平衡。' },
       { name: 'crf', value: '21', description: '比 1080p 档位保留更多画面细节，文件体积相应增加。' },
       { name: 'fps', value: '最高 30', description: '仍限制为 30fps，避免高帧率增加播放器压力。' },
-      { name: '分辨率', value: '最高 1440p', description: '横屏最高 2560x1440，竖屏最高 1440x2560；低于 2K 的原视频不会被放大。' },
+      { name: '分辨率', value: '最高 1440p', description: '仅支持横屏不低于 2560x1440 或竖屏不低于 1440x2560 的下载视频；不符合时不会创建任务。' },
       { name: '码率峰值', value: '12000k', description: '为 2K 保留更高峰值码率，同时控制移动端播放压力。' },
       { name: 'H.264', value: 'High 5.0', description: '使用 2K 所需的 H.264 级别，兼容较新的播放器和主流平台。' },
       { name: 'audio', value: 'AAC', description: '统一输出 AAC，保证平台和本地播放器兼容性。' }
@@ -1370,17 +1371,17 @@ const subtitleSizes = [
   {
     value: 'standard',
     label: '标准',
-    description: '适合横屏长视频留白较少的情况，字号相对克制。'
+    description: '适合横屏长视频留白较少的情况；仅控制中英字幕的基准字号。'
   },
   {
     value: 'large',
     label: '大号（抖音推荐）',
-    description: '比标准字号更醒目，适合大多数手机端播放场景。'
+    description: '比标准字号更醒目，适合大多数手机端播放场景；其他烧制元素不受此设置影响。'
   },
   {
     value: 'douyin',
     label: '超大号',
-    description: '适合手机竖屏和国内平台预览，中文、英文和左上角说明都会明显放大。'
+    description: '适合手机竖屏和国内平台预览；仅控制中英字幕的基准字号，所有烧制元素会随输出画布等比缩放。'
   }
 ]
 
@@ -1478,7 +1479,8 @@ const currentWorkflowSettingsPayload = () => ({
   highlightIntroEnabled: workflowForm.highlightIntroEnabled,
   coverIntroEnabled: workflowForm.coverIntroEnabled,
   commentBurnEnabled: workflowForm.commentBurnEnabled,
-  commentTranslationMode: workflowForm.commentTranslationMode
+  commentTranslationMode: workflowForm.commentTranslationMode,
+  contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
 })
 
 const applyStoredWorkflowSettings = (settings) => {
@@ -1668,6 +1670,9 @@ const jobStepText = (step) => {
     download: '下载',
     subtitle: '处理',
     analysis: '分析',
+    content_safety_detect: '风险检测',
+    content_safety_confirm: '处理确认',
+    content_trim: '风险裁剪',
     publish: '发布',
     publish_confirmation: '发布确认',
     done: '收尾'
@@ -1771,8 +1776,6 @@ const cleanTopicList = (topics = []) => {
   ))
 }
 
-const defaultWorkflowTopics = computed(() => cleanTopicList(workflowForm.tags))
-
 const buildAnalysisDraft = (draft = {}, result = {}) => {
   const llmTitleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
   const draftTitleOptions = Array.isArray(draft.title_options) ? draft.title_options.filter(Boolean) : []
@@ -1783,7 +1786,7 @@ const buildAnalysisDraft = (draft = {}, result = {}) => {
   const draftTags = cleanTopicList(draft.tags)
   const resultTags = cleanTopicList(result.tags)
   const selectedTags = draftTags.length ? draftTags : resultTags
-  const tagOptions = Array.from(new Set([...selectedTags, ...resultTags, ...defaultWorkflowTopics.value]))
+  const tagOptions = Array.from(new Set([...selectedTags, ...resultTags]))
   return {
     titleOptions,
     selectedTitle,
@@ -2525,7 +2528,6 @@ const createJob = async (row) => {
       publishedAt: row.publishedAt,
       title: row.title || 'YouTube 视频',
       description: '',
-      tags: workflowForm.tags,
       schedule: '',
       processVersion: workflowForm.processVersion,
       subtitleLanguage: workflowForm.subtitleLanguage,
@@ -2540,7 +2542,8 @@ const createJob = async (row) => {
       highlightIntroEnabled: workflowForm.highlightIntroEnabled,
       coverIntroEnabled: workflowForm.coverIntroEnabled,
       commentBurnEnabled: workflowForm.commentBurnEnabled,
-      commentTranslationMode: workflowForm.commentTranslationMode
+      commentTranslationMode: workflowForm.commentTranslationMode,
+      contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
     })
     jobs.value.unshift(res.data)
     ElMessage.success('一键发布任务已创建')
@@ -2767,7 +2770,6 @@ const createAnalysisJob = async (row, force = false) => {
       subscribers: row.subscribers,
       publishedAt: row.publishedAt,
       title: row.title || 'YouTube 视频',
-      tags: workflowForm.tags,
       processVersion: 'editing_v1',
       subtitleLanguage: workflowForm.subtitleLanguage,
       burnProfile: workflowForm.burnProfile,
@@ -2875,7 +2877,6 @@ const processVideo = async (row) => {
       subscribers: row.subscribers,
       publishedAt: row.publishedAt,
       title: row.title || 'YouTube 视频',
-      tags: workflowForm.tags,
       processVersion: workflowForm.processVersion,
       subtitleLanguage: workflowForm.subtitleLanguage,
       burnProfile: workflowForm.burnProfile,
@@ -2890,7 +2891,8 @@ const processVideo = async (row) => {
       highlightIntroEnabled: workflowForm.highlightIntroEnabled,
       coverIntroEnabled: workflowForm.coverIntroEnabled,
       commentBurnEnabled: workflowForm.commentBurnEnabled,
-      commentTranslationMode: workflowForm.commentTranslationMode
+      commentTranslationMode: workflowForm.commentTranslationMode,
+      contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
     }
     const res = await youtubeApi.createTranslateJob(payload)
     jobs.value.unshift(res.data)
@@ -2900,6 +2902,13 @@ const processVideo = async (row) => {
       const changedVideoIds = await loadJobs({ silent: true, recentOnly: true })
       refreshVideosByIds([...changedVideoIds, row.id])
     }, 1500)
+  } catch (error) {
+    const message = error?.message || '创建处理任务失败'
+    if (message.includes('2K 高清仅支持')) {
+      await ElMessageBox.alert(message, '无法创建 2K 处理任务', { type: 'warning', confirmButtonText: '知道了' })
+    } else {
+      ElMessage.error(message)
+    }
   } finally {
     translatingId.value = ''
   }
@@ -2956,11 +2965,11 @@ const highlightSelection = (candidate) => {
   }
 }
 
-const jobStatusText = (status) => {
+const jobStatusText = (status, step = '') => {
   const map = {
     queued: '排队中',
     running: '执行中',
-    waiting_confirmation: '等待发布确认',
+    waiting_confirmation: step === 'content_safety_confirm' ? '等待视频处理确认' : '等待发布确认',
     success: '成功',
     failed: '失败',
     abnormal: '异常'
@@ -3519,10 +3528,6 @@ $ink-strong: #172033;
 
 .tid-input {
   width: 220px;
-}
-
-.tag-input {
-  width: 260px;
 }
 
 .query-meta {
@@ -4608,7 +4613,6 @@ $ink-strong: #172033;
   }
 
   .compact-input,
-  .tag-input,
   .tid-input {
     width: 100%;
   }

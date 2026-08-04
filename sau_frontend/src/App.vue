@@ -70,12 +70,12 @@
               <el-icon class="toggle-sidebar" @click="toggleSidebar"><Fold /></el-icon>
             </div>
             <div class="header-right">
-              <el-tooltip content="打开字幕审查与模型诊断" placement="bottom">
+              <el-tooltip content="打开内容安全审查与模型诊断" placement="bottom">
                 <el-button
                   class="audit-open-button"
                   circle
                   :icon="DocumentChecked"
-                  aria-label="打开字幕审查与模型诊断"
+                  aria-label="打开内容安全审查与模型诊断"
                   @click="router.push('/subtitle-audit')"
                 />
               </el-tooltip>
@@ -92,6 +92,12 @@
                     class="agent-status-dot"
                     :class="{ 'is-warning': agentConfigWarning }"
                   />
+                </div>
+              </el-tooltip>
+              <el-tooltip :content="feishuRobotStatus.message" placement="bottom">
+                <div class="feishu-robot-entry" :aria-label="feishuRobotStatus.message" role="status">
+                  <el-icon><Cpu /></el-icon>
+                  <span class="feishu-robot-status-dot" :class="`is-${feishuRobotStatus.status}`" />
                 </div>
               </el-tooltip>
               <el-popover
@@ -407,7 +413,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis, ArrowDown,
-  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete, DocumentChecked
+  Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete, DocumentChecked, Cpu
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { agentApi } from '@/api/agent'
@@ -425,11 +431,14 @@ const isAdmin = computed(() => userStore.userInfo?.role === 'admin')
 const userInitial = computed(() => String(userStore.userInfo?.displayName || userStore.userInfo?.username || 'U').slice(0, 1).toUpperCase())
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
 const NOTIFICATION_SYNC_INTERVAL_MS = 10 * 1000
+const FEISHU_STATUS_POLL_INTERVAL_MS = 10 * 1000
 const AGENT_MESSAGE_PAGE_SIZE = 12
 let accountCheckTimer = null
 let notificationSyncTimer = null
+let feishuRobotStatusTimer = null
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
+const feishuRobotStatus = ref({ status: 'connecting', message: '正在读取飞书机器人状态。', updatedAt: '' })
 const showNotificationHistory = ref(false)
 const notificationMessages = computed(() => (
   showNotificationHistory.value ? notificationStore.historyMessages : notificationStore.visibleMessages
@@ -815,6 +824,20 @@ const refreshRuntimeConfigStatus = async () => {
   }
 }
 
+const refreshFeishuRobotStatus = async () => {
+  try {
+    const status = (await commonApi.getFeishuRobotStatus())?.data
+    if (!['disabled', 'connecting', 'connected', 'error'].includes(status?.status)) throw new Error('invalid status')
+    feishuRobotStatus.value = status
+  } catch (_) {
+    feishuRobotStatus.value = {
+      status: 'error',
+      message: '无法读取飞书机器人状态，请检查后端是否可用。',
+      updatedAt: ''
+    }
+  }
+}
+
 const formatMessageTime = (timestamp) => {
   if (!timestamp) return ''
 
@@ -867,13 +890,16 @@ onMounted(() => {
   mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
   if (!userStore.isLoggedIn) return
   refreshRuntimeConfigStatus()
+  refreshFeishuRobotStatus()
   refreshGlobalAccountMessages()
   refreshNotifications()
   accountCheckTimer = window.setInterval(() => {
     refreshGlobalAccountMessages()
   }, ACCOUNT_CHECK_INTERVAL_MS)
   notificationSyncTimer = window.setInterval(refreshNotifications, NOTIFICATION_SYNC_INTERVAL_MS)
+  feishuRobotStatusTimer = window.setInterval(refreshFeishuRobotStatus, FEISHU_STATUS_POLL_INTERVAL_MS)
   window.addEventListener('focus', refreshNotifications)
+  window.addEventListener('focus', refreshFeishuRobotStatus)
 })
 
 onBeforeUnmount(() => {
@@ -885,8 +911,13 @@ onBeforeUnmount(() => {
     window.clearInterval(notificationSyncTimer)
     notificationSyncTimer = null
   }
+  if (feishuRobotStatusTimer) {
+    window.clearInterval(feishuRobotStatusTimer)
+    feishuRobotStatusTimer = null
+  }
   window.removeEventListener('focus', refreshNotifications)
   window.removeEventListener('vidferry:ask-agent', handleAskAgentEvent)
+  window.removeEventListener('focus', refreshFeishuRobotStatus)
   mobileSidebarQuery.removeEventListener('change', syncMobileSidebar)
 })
 </script>
@@ -1109,6 +1140,34 @@ onBeforeUnmount(() => {
   &.is-warning {
     background: $warning-color;
   }
+}
+
+.feishu-robot-entry {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: $text-regular;
+
+  .el-icon {
+    font-size: 19px;
+  }
+}
+
+.feishu-robot-status-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #909399;
+
+  &.is-connecting { background: #409eff; }
+  &.is-connected { background: $success-color; }
+  &.is-error { background: $danger-color; }
 }
 
 :global(.agent-drawer) {
