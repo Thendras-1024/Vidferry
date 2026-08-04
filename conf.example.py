@@ -8,7 +8,9 @@ DEBUG_MODE = True  # 默认调试行为
 
 # YouTube -> 字幕 -> 抖音 的工作流配置。
 # 视频由 yt-dlp 下载到 YOUTUBE_DOWNLOAD_DIR。
-SAU_COMMAND = str(BASE_DIR / ".venv" / "Scripts" / "sau.exe")
+# sau 控制台脚本。`pip install -e .` 装好后,激活环境即可直接用 "sau"(走 PATH);
+# 也可填绝对路径,例如 "C:/Users/<user>/miniconda3/envs/vidferry/Scripts/sau.exe"。
+SAU_COMMAND = "sau"
 FFMPEG_COMMAND = "ffmpeg"
 YOUTUBE_DOWNLOAD_DIR = BASE_DIR.parent / "video"
 YOUTUBE_PROCESSED_DIR = BASE_DIR / "videos" / "processed"
