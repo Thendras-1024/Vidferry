@@ -17,7 +17,7 @@ _CONTEXT_RECENT_MESSAGES = max(2, int(globals().get("AGENT_CONTEXT_RECENT_MESSAG
 _CONTEXT_COMPACT_AFTER_MESSAGES = max(4, int(globals().get("AGENT_CONTEXT_COMPACT_AFTER_MESSAGES", 12) or 12))
 _CONTEXT_COMPACT_AFTER_CHARS = max(4000, int(globals().get("AGENT_CONTEXT_COMPACT_AFTER_CHARS", 16000) or 16000))
 _CONTEXT_SUMMARY_MAX_CHARS = max(500, int(globals().get("AGENT_CONTEXT_SUMMARY_MAX_CHARS", 4000) or 4000))
-_AGENT_SESSION_LOCK_LEASE_SECONDS = max(300, int(globals().get("LLM_TIMEOUT", 90) or 90) * 2 + 60)
+_AGENT_SESSION_LOCK_LEASE_SECONDS = max(300, int(globals().get("LLM_TIMEOUT", 180) or 180) * 2 + 60)
 _AGENT_SESSION_LOCK_WAIT_SECONDS = 30
 _AGENT_SESSION_LOCKS = _weakref.WeakValueDictionary()
 _AGENT_SESSION_LOCKS_GUARD = _threading.Lock()
@@ -145,11 +145,18 @@ def _agent_current_user_id():
         return None
 
 
+def _agent_owner_filter(owner_user_id, column="owner_user_id"):
+    if owner_user_id is None:
+        return "", ()
+    return f" AND {column} = ?", (owner_user_id,)
+
+
 def _active_session_row(cursor, session_id):
     owner_user_id = _agent_current_user_id()
+    owner_filter, owner_values = _agent_owner_filter(owner_user_id)
     cursor.execute(
-        "SELECT * FROM agent_sessions WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)",
-        (str(session_id or "").strip(), owner_user_id, owner_user_id),
+        f"SELECT * FROM agent_sessions WHERE id = ? AND deleted_at IS NULL{owner_filter}",
+        (str(session_id or "").strip(),) + owner_values,
     )
     return cursor.fetchone()
 
@@ -204,12 +211,13 @@ def ensure_agent_session(session_id="", title="", context=None):
 
 def _insert_agent_message(cursor, session_id, role, content, context=None):
     owner_user_id = _agent_current_user_id()
+    owner_filter, owner_values = _agent_owner_filter(owner_user_id)
     cursor.execute(
-        """
+        f"""
         INSERT INTO agent_messages (session_id, role, content, context, created_at)
         SELECT ?, ?, ?, ?, ?
         WHERE EXISTS (
-            SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)
+            SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL{owner_filter}
         )
         RETURNING id
         """,
@@ -220,15 +228,13 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
             _agent_json_dumps(context),
             _agent_now_iso(),
             session_id,
-            owner_user_id,
-            owner_user_id,
-        ),
+        ) + owner_values,
     )
     if cursor.rowcount != 1:
         raise ValueError("Agent 会话不存在或已删除。")
     message_id = cursor.fetchone()[0]
     cursor.execute(
-        """
+        f"""
         UPDATE agent_sessions
         SET title = CASE
                 WHEN COALESCE(message_count, 0) = 0 AND ? = 'user' THEN substr(?, 1, 64)
@@ -236,9 +242,9 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
             END,
             message_count = COALESCE(message_count, 0) + 1,
             updated_at = ?
-        WHERE id = ? AND deleted_at IS NULL AND (? IS NULL OR owner_user_id = ?)
+        WHERE id = ? AND deleted_at IS NULL{owner_filter}
         """,
-        (role, _agent_text(content, 64) or "Vidferry Agent", _agent_now_iso(), session_id, owner_user_id, owner_user_id),
+        (role, _agent_text(content, 64) or "Vidferry Agent", _agent_now_iso(), session_id) + owner_values,
     )
     if cursor.rowcount != 1:
         raise ValueError("Agent 会话在消息保存期间被删除。")
@@ -302,7 +308,8 @@ def start_agent_turn(session_id="", message="", context=None):
 def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
     limit = max(1, min(int(limit or 12), 100))
     owner_user_id = _agent_current_user_id()
-    values = [str(session_id or "").strip(), owner_user_id, owner_user_id]
+    owner_filter, owner_values = _agent_owner_filter(owner_user_id, "s.owner_user_id")
+    values = [str(session_id or "").strip(), *owner_values]
     before_sql = ""
     after_sql = ""
     if before_id:
@@ -326,7 +333,7 @@ def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
             FROM agent_messages AS m
             JOIN agent_sessions AS s ON s.id = m.session_id
             WHERE m.session_id = ? AND s.deleted_at IS NULL
-              AND (? IS NULL OR s.owner_user_id = ?) {before_sql} {after_sql}
+              {owner_filter} {before_sql} {after_sql}
             ORDER BY m.id DESC
             LIMIT ?
             """,
@@ -372,8 +379,11 @@ def list_agent_sessions(*, from_date="", to_date="", page=1, page_size=20):
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 20), 50))
     owner_user_id = _agent_current_user_id()
-    where = ["s.deleted_at IS NULL", "(? IS NULL OR s.owner_user_id = ?)"]
-    values = [owner_user_id, owner_user_id]
+    where = ["s.deleted_at IS NULL"]
+    values = []
+    if owner_user_id is not None:
+        where.append("s.owner_user_id = ?")
+        values.append(owner_user_id)
     if from_date:
         value = str(from_date).strip()
         where.append("s.updated_at >= ?")
@@ -429,7 +439,11 @@ def delete_agent_session(session_id):
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             owner_user_id = _agent_current_user_id()
-            cursor.execute("SELECT id FROM agent_sessions WHERE id = ? AND (? IS NULL OR owner_user_id = ?)", (session_id, owner_user_id, owner_user_id))
+            owner_filter, owner_values = _agent_owner_filter(owner_user_id)
+            cursor.execute(
+                f"SELECT id FROM agent_sessions WHERE id = ?{owner_filter}",
+                (session_id,) + owner_values,
+            )
             if not cursor.fetchone():
                 return False
             cursor.execute("DELETE FROM agent_messages WHERE session_id = ?", (session_id,))
@@ -525,7 +539,7 @@ def _llm_session_summary(previous, messages, session_id=""):
             model=model,
             api_key=api_key,
             base_url=base_url,
-            timeout=globals().get("LLM_TIMEOUT", 90),
+            timeout=globals().get("LLM_TIMEOUT", 180),
             temperature=0,
             max_tokens=min(int(globals().get("AGENT_CHAT_MAX_TOKENS", 1000) or 1000), 1600),
             prompt_version=globals().get("AGENT_PROMPT_VERSION", "agent-session-summary-v1"),
@@ -826,11 +840,16 @@ def get_agent_run(run_id):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         owner_user_id = _agent_current_user_id()
+        owner_filter = ""
+        owner_values = ()
+        if owner_user_id is not None:
+            owner_filter = " AND (r.run_type != 'chat' OR s.owner_user_id = ?)"
+            owner_values = (owner_user_id,)
         cursor.execute(
-            """SELECT r.* FROM agent_runs AS r
+            f"""SELECT r.* FROM agent_runs AS r
                LEFT JOIN agent_sessions AS s ON s.id = r.session_id
-               WHERE r.id = ? AND (r.run_type != 'chat' OR ? IS NULL OR s.owner_user_id = ?)""",
-            (run_id, owner_user_id, owner_user_id),
+               WHERE r.id = ?{owner_filter}""",
+            (run_id,) + owner_values,
         )
         row = cursor.fetchone()
         if not row:
@@ -872,6 +891,77 @@ def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_p
             if any(str(item or "").strip() == legacy_file_path for item in (file_list or [])):
                 return _agent_run_from_row(row)
     return None
+
+
+def _agent_run_observability_payload(rows, limit):
+    """仅保留诊断所需的运行元数据，避免把历史对话正文带回模型上下文。"""
+    items = []
+    metrics = {
+        "total": len(rows),
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "toolErrors": 0,
+        "totalDurationMs": 0,
+    }
+    for row in rows:
+        output = _agent_json_loads(row["output"])
+        safety = output.get("safetyDecision") if isinstance(output, dict) else {}
+        safety = safety if isinstance(safety, dict) else {}
+        tool_results = output.get("toolResults") if isinstance(output, dict) else []
+        tool_results = tool_results if isinstance(tool_results, list) else []
+        tool_names = [str(item.get("tool") or "") for item in tool_results if isinstance(item, dict) and item.get("tool")]
+        tool_error_count = sum(1 for item in tool_results if isinstance(item, dict) and item.get("error"))
+        duration_ms = int(row["duration_ms"] or 0)
+        status = str(row["status"] or "success")
+        metrics["succeeded" if status == "success" else "failed"] += 1
+        metrics["blocked"] += int(safety.get("allowed") is False)
+        metrics["toolErrors"] += tool_error_count
+        metrics["totalDurationMs"] += duration_ms
+        items.append({
+            "id": row["id"],
+            "type": row["run_type"],
+            "status": status,
+            "durationMs": duration_ms,
+            "toolNames": tool_names,
+            "toolErrorCount": tool_error_count,
+            "blocked": safety.get("allowed") is False,
+            "createdAt": row["created_at"] or "",
+        })
+    total = metrics.pop("total")
+    total_duration_ms = metrics.pop("totalDurationMs")
+    return {
+        "sampleSize": total,
+        "successRate": round(metrics["succeeded"] / total, 3) if total else None,
+        "averageDurationMs": round(total_duration_ms / total) if total else 0,
+        "blockedCount": metrics["blocked"],
+        "toolErrorCount": metrics["toolErrors"],
+        "items": items[:limit],
+    }
+
+
+def get_agent_run_overview(limit=8):
+    """查询当前用户可见的 Agent 运行健康度和最近轨迹。"""
+    limit = max(1, min(int(limit or 8), 20))
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        owner_user_id = _agent_current_user_id()
+        owner_filter = ""
+        owner_values = ()
+        if owner_user_id is not None:
+            owner_filter = "WHERE r.run_type != 'chat' OR s.owner_user_id = ?"
+            owner_values = (owner_user_id,)
+        cursor.execute(
+            f"""
+            SELECT r.* FROM agent_runs AS r
+            LEFT JOIN agent_sessions AS s ON s.id = r.session_id
+            {owner_filter}
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT ?
+            """,
+            owner_values + (limit,),
+        )
+        return _agent_run_observability_payload(cursor.fetchall(), limit)
 
 
 def list_agent_memory(memory_type="", limit=8):

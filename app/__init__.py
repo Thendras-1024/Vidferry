@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from importlib import import_module
 
+from app.config import FEISHU_ROBOT_ENABLED
+from app.feishu_robot import start_embedded_feishu_robot
 from app.utils.text_util import ensure_utf8_stdio
 
 
@@ -35,3 +37,9 @@ def initialize_runtime() -> None:
     backend.normalize_existing_youtube_subscribers()
     backend.start_scheduled_publish_scheduler()
     backend.install_workflow_shutdown_handlers()
+    start_embedded_feishu_robot(
+        FEISHU_ROBOT_ENABLED,
+        backend.run_agent_chat,
+        image_roots=(backend.BASE_DIR,),
+        sanitize=backend.sanitize_agent_output,
+    )

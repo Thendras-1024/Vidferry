@@ -167,6 +167,8 @@ def _select_agent_tools(message):
         tools.append(("list_failed_jobs", {}))
     if "账号" in text:
         tools.append(("get_account_status", {}))
+    if "agent" in text and any(word in text for word in ["运行", "诊断", "耗时", "工具", "失败", "效果", "质量", "评估", "监控", "trace"]):
+        tools.append(("get_agent_run_overview", {}))
     if "平台" in text or "哪" in text and "发" in text:
         tools.append(("get_video_detail", {"query": message}))
     if any(word in text for word in ["文案", "怎么改", "拦截", "质检"]):
@@ -201,6 +203,8 @@ def _run_agent_tool(name, args):
         return list_failed_jobs(args.get("limit"))
     if name == "get_account_status":
         return get_account_status()
+    if name == "get_agent_run_overview":
+        return get_agent_observability(args.get("limit"))
     if name == "explain_vidferry_pipeline":
         return explain_vidferry_pipeline()
     raise ValueError(f"Agent 工具不在白名单中: {name}")
@@ -324,6 +328,14 @@ def _agent_fallback_answer(message, tool_results):
             accounts = result.get("items") or []
             bad = [item for item in accounts if item.get("status") != "valid"]
             lines.append(f"账号共 {len(accounts)} 个，异常 {len(bad)} 个。")
+        elif name == "get_agent_run_overview":
+            success_rate = result.get("successRate")
+            rate_text = "暂无运行记录" if success_rate is None else f"{success_rate * 100:.1f}%"
+            lines.append(
+                f"Agent 最近 {result.get('sampleSize', 0)} 次运行成功率 {rate_text}，"
+                f"平均耗时 {result.get('averageDurationMs', 0)} ms，"
+                f"安全拦截 {result.get('blockedCount', 0)} 次，工具错误 {result.get('toolErrorCount', 0)} 次。"
+            )
     lines.append("我目前只读查询和建议，不会直接执行发布、删除或登录。")
     return "\n".join(lines)
 

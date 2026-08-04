@@ -7,8 +7,9 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from threading import Semaphore, Thread
+from threading import Lock, Semaphore, Thread
 
 from app.feishu_presenter import result_card, tool_sections
 from app.project_butler import butler_result, card_action_result
@@ -17,6 +18,38 @@ from app.project_butler import butler_result, card_action_result
 logger = logging.getLogger("vidferry.backend")
 MAX_REPLY_CHARS = 3000
 IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+_embedded_robot_start_lock = Lock()
+_embedded_robot_thread = None
+_robot_status_lock = Lock()
+_robot_status = {
+    "status": "disabled",
+    "message": "飞书机器人已关闭。",
+    "updatedAt": "",
+}
+
+
+def _set_robot_status(status, message):
+    with _robot_status_lock:
+        _robot_status.update({
+            "status": status,
+            "message": message,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+
+
+def get_feishu_robot_status():
+    with _robot_status_lock:
+        return dict(_robot_status)
+
+
+def _robot_error_message(exc):
+    message = str(exc).lower()
+    error_type = type(exc).__name__.lower()
+    if "app_id" in message or "app_secret" in message or "auth" in message or "credential" in message or "clientexception" in error_type:
+        return "飞书鉴权失败，请检查 App ID、App Secret 与应用配置。"
+    if "connect" in message or "network" in message or "timeout" in message:
+        return "无法连接飞书，请检查网络与飞书长连接配置。"
+    return "飞书机器人启动失败，请检查后端日志。"
 
 
 def _value(source, name, default=""):
@@ -139,7 +172,15 @@ class FeishuRobot:
                 )
             tools = tool_sections(result.get("toolResults"), self.sanitize)
             answer = self.sanitize(result.get("answer"))[:4000]
-            self.reply_card(message_id, result_card(answer, result.get("toolResults"), self.sanitize))
+            try:
+                self.reply_card(message_id, result_card(answer, result.get("toolResults"), self.sanitize))
+            except Exception as exc:
+                logger.warning(
+                    "Feishu card reply failed : request_id = %s error_type = %s ; falling back to text",
+                    request_id,
+                    type(exc).__name__,
+                )
+                self.reply(message_id, answer or "我暂时没有查到结果。")
             if self.send_image:
                 for path in image_paths(result.get("toolResults"), self.image_roots):
                     self.send_image(message_id, path)
@@ -175,6 +216,11 @@ def run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_root
     from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
     from lark_oapi.api.im.v1.model.create_image_request import CreateImageRequest
     from lark_oapi.api.im.v1.model.create_image_request_body import CreateImageRequestBody
+
+    class StatusClient(lark.ws.Client):
+        async def _connect(self):
+            await super()._connect()
+            _set_robot_status("connected", "飞书机器人已连接。")
 
     client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
 
@@ -251,7 +297,10 @@ def run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_root
     if not allowed_open_ids:
         logger.warning("No allowed Feishu users configured; all incoming messages will be rejected.")
     logger.info("Starting Feishu robot with %d allowed user(s)", len(allowed_open_ids))
-    lark.ws.Client(app_id, app_secret, event_handler=handler, log_level=lark.LogLevel.WARNING).start()
+    ws_client = StatusClient(app_id, app_secret, event_handler=handler, log_level=lark.LogLevel.WARNING)
+    ws_client.on_reconnecting = lambda: _set_robot_status("error", "飞书连接已中断，正在重连。")
+    ws_client.on_reconnected = lambda: _set_robot_status("connected", "飞书机器人已重新连接。")
+    ws_client.start()
 
 
 def env_settings():
@@ -263,3 +312,28 @@ def env_settings():
         if value.strip()
     }
     return app_id.strip(), app_secret.strip(), allowed
+
+
+def start_embedded_feishu_robot(enabled, run_agent, image_roots=(), sanitize=str):
+    """在后端进程中启动飞书长连接，异常不影响主服务。"""
+    global _embedded_robot_thread
+    if not enabled:
+        _set_robot_status("disabled", "飞书机器人已关闭。")
+        return False
+    with _embedded_robot_start_lock:
+        if _embedded_robot_thread and _embedded_robot_thread.is_alive():
+            return True
+
+        def run():
+            app_id, app_secret, allowed_open_ids = env_settings()
+            try:
+                _set_robot_status("connecting", "正在连接飞书机器人。")
+                logger.info("Feishu robot startup requested : allowed_user_count = %s", len(allowed_open_ids))
+                run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_roots=image_roots, sanitize=sanitize)
+            except Exception as exc:
+                _set_robot_status("error", _robot_error_message(exc))
+                logger.exception("Feishu robot stopped : error_type = %s", type(exc).__name__)
+
+        _embedded_robot_thread = Thread(target=run, name="vidferry-feishu-robot", daemon=True)
+        _embedded_robot_thread.start()
+        return True

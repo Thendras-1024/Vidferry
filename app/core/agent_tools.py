@@ -93,6 +93,16 @@ AGENT_TOOL_SPECS = [
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         "readOnly": True,
     },
+    {
+        "name": "get_agent_run_overview",
+        "description": "查询 Agent 最近运行的成功率、平均耗时、安全拦截、工具错误和脱敏后的调用轨迹。",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 20}},
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
 ]
 
 AGENT_TOOL_SPEC_MAP = {item["name"]: item for item in AGENT_TOOL_SPECS}
@@ -319,3 +329,7 @@ def get_account_status():
             for row in rows
         ]
     }
+
+
+def get_agent_observability(limit=None):
+    return get_agent_run_overview(_agent_limit(limit))

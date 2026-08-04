@@ -22,6 +22,7 @@ from app.config import (
     get_llm_config_status,
 )
 from app.core.runtime_config import get_runtime_config_status
+from app.feishu_robot import get_feishu_robot_status
 
 
 def _agent_status_payload():
@@ -55,3 +56,8 @@ def runtime_config_status():
             "agent": _agent_status_payload(),
         },
     })
+
+
+@app.route("/feishu/robot-status", methods=["GET"])
+def feishu_robot_status():
+    return jsonify({"code": 200, "data": get_feishu_robot_status()})

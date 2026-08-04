@@ -102,6 +102,8 @@ from app.config import (
     WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS,
     WORKFLOW_MAX_PROCESSING_JOBS,
     WORKFLOW_MAX_PROCESSING_QUEUED_JOBS,
+    WORKFLOW_MAX_PUBLISH_JOBS,
+    WORKFLOW_MAX_PUBLISH_QUEUED_JOBS,
     WORKFLOW_MAX_SEARCH_JOBS,
     WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
     WORKFLOW_ERROR_BOOT_INTERRUPTED,
@@ -146,19 +148,6 @@ active_queues = {}
 app = Flask(__name__)
 
 
-def _bootstrap_local_tool_path():
-    scripts_dir = Path(BASE_DIR / ".venv" / "Scripts")
-    if not scripts_dir.is_dir():
-        return
-    current_path = os.environ.get("PATH", "")
-    paths = [item for item in current_path.split(os.pathsep) if item]
-    scripts_text = str(scripts_dir)
-    if not any(Path(item).resolve() == scripts_dir.resolve() for item in paths if Path(item).exists()):
-        os.environ["PATH"] = scripts_text + os.pathsep + current_path
-
-
-_bootstrap_local_tool_path()
-
 # 默认仅允许本地前端访问，避免局域网/网页跨源调用本机敏感接口。
 CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}}, supports_credentials=True)
 
@@ -176,6 +165,10 @@ def _request_origin_allowed():
             return True
         parsed = urllib.parse.urlparse(referer)
         origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+    # 本机优先、单机部署：允许本机回环地址上任意端口的前端跨源写
+    # （dev 下前端与后端端口不同，如 5273 ↔ 5409）；局域网/公网来源仍需命中白名单。
+    if urllib.parse.urlparse(origin).hostname in {"127.0.0.1", "localhost", "::1"}:
+        return True
     return origin in allowed
 
 

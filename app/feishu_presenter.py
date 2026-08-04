@@ -72,22 +72,23 @@ def _action_buttons():
         ("项目概览", "overview"),
         ("账号状态", "accounts"),
     )
-    return {
-        "tag": "action",
-        "actions": [
-            {
-                "tag": "button",
-                "type": "default",
-                "text": {"tag": "plain_text", "content": label},
-                "value": {"butlerAction": action},
-            }
-            for label, action in buttons
-        ] + [{
+    actions = [
+        {
             "tag": "button",
-            "type": "primary",
-            "text": {"tag": "plain_text", "content": "打开控制台"},
-            "url": FEISHU_BUTLER_CONSOLE_URL,
-        }],
+            "type": "default",
+            "text": {"tag": "plain_text", "content": label},
+            "value": {"butlerAction": action},
+        }
+        for label, action in buttons
+    ] + [{
+        "tag": "button",
+        "type": "primary",
+        "text": {"tag": "plain_text", "content": "打开控制台"},
+        "url": FEISHU_BUTLER_CONSOLE_URL,
+    }]
+    return {
+        "tag": "column_set",
+        "columns": [{"tag": "column", "elements": [button]} for button in actions],
     }
 
 
