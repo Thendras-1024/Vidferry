@@ -25,10 +25,10 @@ npm run build
 npm run preview
 ```
 
-构建结果输出到 `dist/`，仅用于部署静态控制台。生产环境应通过 HTTPS 反向代理访问后端，并遵循根目录 [认证与部署说明](../docs/用户认证与部署.md)。
+构建结果输出到 `dist/`，仅用于部署静态控制台。生产环境应通过 HTTPS 反向代理访问后端，并遵循根目录 [认证与部署说明](../docs/deployment/用户认证与部署.md)。
 
 ## 相关文档
 
 - [项目说明](../README.md)
-- [快速部署](../QUICK_DEPLOYMENT.md)
-- [配置参考](../CONFIGURATION.md)
+- [快速部署](../docs/deployment/QUICK_DEPLOYMENT.md)
+- [配置参考](../docs/deployment/CONFIGURATION.md)

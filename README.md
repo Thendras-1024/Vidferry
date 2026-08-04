@@ -23,7 +23,7 @@ Vidferry 是本地优先的视频采集、处理、素材管理与多平台发�
 
 ## 快速开始
 
-首次部署请按 [快速部署](QUICK_DEPLOYMENT.md) 执行。配置项说明见 [配置参考](CONFIGURATION.md)。
+首次部署请按 [快速部署](docs/deployment/QUICK_DEPLOYMENT.md) 执行。配置项说明见 [配置参考](docs/deployment/CONFIGURATION.md)。
 
 本地环境准备完成后，分别启动后端和前端：
 
@@ -77,11 +77,13 @@ docs/                      中文功能与运维文档
 
 ## 文档索引
 
-- [快速部署](QUICK_DEPLOYMENT.md)
-- [配置参考](CONFIGURATION.md)
-- [用户认证与部署](docs/用户认证与部署.md)
-- [SQLite 迁移至 PostgreSQL](docs/SQLite迁移至PostgreSQL.md)
-- [处理版本二评论烧制功能说明](docs/处理版本二评论烧制功能需求.md)
+- [快速部署](docs/deployment/QUICK_DEPLOYMENT.md)
+- [配置参考](docs/deployment/CONFIGURATION.md)
+- [用户认证与部署](docs/deployment/用户认证与部署.md)
+- [SQLite 迁移至 PostgreSQL](docs/deployment/SQLite迁移至PostgreSQL.md)
+- [处理版本二评论烧制功能说明](docs/development/处理版本二评论烧制功能需求.md)
+- [Agent 开发路线](docs/development/agent-capability-roadmap.md)
+- [优化问题清单](docs/todos/优化问题清单.md)
 - [前端控制台说明](sau_frontend/README.md)
 
 ## 本地数据与安全

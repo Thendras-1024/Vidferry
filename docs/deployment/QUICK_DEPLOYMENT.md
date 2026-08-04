@@ -133,4 +133,4 @@ conda run -n vidferry python -m pip install -U yt-dlp
 
 ## 生产部署提示
 
-生产环境使用 HTTPS 反向代理，让后端只监听内网或 `127.0.0.1`，设置 `VIDFERRY_AUTH_COOKIE_SECURE=true` 与强随机 `VIDFERRY_AUTH_SECRET`，并保持单个后端进程运行。详情见 [用户认证与部署](docs/用户认证与部署.md)。
+生产环境使用 HTTPS 反向代理，让后端只监听内网或 `127.0.0.1`，设置 `VIDFERRY_AUTH_COOKIE_SECURE=true` 与强随机 `VIDFERRY_AUTH_SECRET`，并保持单个后端进程运行。详情见 [用户认证与部署](用户认证与部署.md)。

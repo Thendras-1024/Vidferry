@@ -75,4 +75,4 @@ MULTIMODAL_LLM_MODEL=qwen-vl-max
 | `VIDFERRY_AUTH_REMEMBER_HOURS` | `168` | 勾选记住登录后的最长有效期。 |
 | `VIDFERRY_AUTH_ALLOW_COOKIE_EXPORT` | `false` | 默认禁止导出平台 Cookie。 |
 
-完整部署边界见 [用户认证与部署](docs/用户认证与部署.md)。
+完整部署边界见 [用户认证与部署](用户认证与部署.md)。
