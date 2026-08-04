@@ -27,6 +27,31 @@ def publish_tasks():
         return jsonify({"code": 500, "msg": f"获取发布任务失败: {str(e)}", "data": None}), 500
 
 
+@app.route('/publish/tasks/<task_id>/retry-failed', methods=['POST'])
+def retry_failed_publish(task_id):
+    try:
+        result = prepare_failed_publish_retry(task_id)
+        try:
+            _submit_background_task("publish", run_failed_publish_retry, result["tasks"])
+        except Exception:
+            fail_failed_publish_retry_submission(result["tasks"], "重发任务提交失败")
+            raise
+        return jsonify({
+            "code": 202,
+            "msg": "失败平台已开始重发",
+            "data": {key: value for key, value in result.items() if key != "tasks"},
+        }), 202
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
+    except WorkflowConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        backend_logger.exception("publish retry failed : task_id = %s | error_type = %s", task_id, type(exc).__name__)
+        return jsonify({"code": 500, "msg": f"重发失败: {exc}", "data": None}), 500
+
+
 @app.route('/publish/target-records/<int:record_id>', methods=['DELETE'])
 def delete_publish_target(record_id):
     try:

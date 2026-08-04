@@ -1,4 +1,4 @@
-﻿"""多平台发布执行:发布任务构建、隔离子进程调用与账号失效处理。"""
+"""多平台发布执行:发布任务构建、隔离子进程调用与账号失效处理。"""
 
 
 from app.utils.time_util import _build_publish_datetimes, _format_publish_schedule, _parse_publish_schedule
@@ -335,7 +335,17 @@ def _run_workflow_publish_command(command, platform_type, account_file, timeout=
     output = "\n".join(part for part in [(result.stderr or "").strip(), (result.stdout or "").strip()] if part)
     if _is_cookie_invalid_error(output):
         _mark_account_abnormal(platform_type, account_file, output)
-    raise RuntimeError(output or f"{platform_name(platform_type)} 发布失败")
+    raise RuntimeError(_publish_command_failure(output, f"{platform_name(platform_type)} 发布失败"))
+
+
+def _publish_command_failure(output, fallback="发布失败"):
+    """保留明确发布错误码；未知故障仅返回最后一条原始输出。"""
+    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        marker = line.find("VF-PUBLISH-")
+        if marker >= 0:
+            return line[marker:]
+    return lines[-1] if lines else fallback
 
 
 def _execute_publish_target(task):
@@ -364,6 +374,9 @@ def _execute_publish_target(task):
             status="running",
             message="发布中",
             account_name=task.get("accountName") or "",
+            retry_of_task_id=task.get("retryOfTaskId") or "",
+            retry_of_record_id=task.get("retryOfRecordId"),
+            retry_source=task.get("retrySource") or "",
         )
         if not platform_slug:
             raise RuntimeError(f"{task['platformName']} 暂未接入发布适配器")
@@ -374,7 +387,7 @@ def _execute_publish_target(task):
                 process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
                 if process_result.returncode != 0:
                     output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
-                    raise RuntimeError(output or f"{task['platformName']} 发布失败")
+                    raise RuntimeError(_publish_command_failure(output, f"{task['platformName']} 发布失败"))
 
         published_ids = _mark_published_materials(
             task["fileList"],
@@ -387,6 +400,9 @@ def _execute_publish_target(task):
             message="发布成功",
             duration_ms=int((time.time() - start_time) * 1000),
             account_name=task.get("accountName") or "",
+            retry_of_task_id=task.get("retryOfTaskId") or "",
+            retry_of_record_id=task.get("retryOfRecordId"),
+            retry_source=task.get("retrySource") or "",
         )
         result.update({
             "publishedVideoIds": published_ids,
@@ -419,6 +435,9 @@ def _execute_publish_target(task):
                 message=result["message"],
                 duration_ms=result["durationMs"],
                 account_name=task.get("accountName") or "",
+                retry_of_task_id=task.get("retryOfTaskId") or "",
+                retry_of_record_id=task.get("retryOfRecordId"),
+                retry_source=task.get("retrySource") or "",
             )
     return result
 
@@ -471,6 +490,9 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
             "timeoutSeconds": int(data.get("publishTimeoutSeconds") or 3600),
             "headless": bool(data.get("headless", False)),
             "debug": bool(data.get("debug", True)),
+            "retryOfTaskId": _safe_text(data.get("retryOfTaskId")),
+            "retryOfRecordId": target.get("retryOfRecordId"),
+            "retrySource": _safe_text(data.get("retrySource")),
         })
     return tasks
 
@@ -500,6 +522,9 @@ def _mark_publish_tasks_pending(tasks):
             status="pending",
             message="等待发布",
             account_name=task.get("accountName") or "",
+            retry_of_task_id=task.get("retryOfTaskId") or "",
+            retry_of_record_id=task.get("retryOfRecordId"),
+            retry_source=task.get("retrySource") or "",
         )
 
 

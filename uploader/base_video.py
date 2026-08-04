@@ -24,6 +24,34 @@ class BaseVideoUploader:
     }
     MIN_SCHEDULE_LEAD_TIME = timedelta(hours=2)
 
+    @staticmethod
+    async def set_upload_files(file_input, files, platform_name: str, asset_name: str) -> None:
+        """仅将已明确的浏览器上传控件超时转为稳定发布错误。"""
+        try:
+            await file_input.set_input_files(files)
+        except Exception as exc:
+            if exc.__class__.__name__ != "TimeoutError":
+                raise
+            raise RuntimeError(
+                f"VF-PUBLISH-UPLOAD-INPUT-MISSING : {platform_name}{asset_name}上传控件在等待期间未出现或不可用。"
+                "请确认账号仍停留在发布页面，或平台页面结构未变更后重试。"
+            ) from exc
+
+    @staticmethod
+    async def choose_upload_files(page, upload_button, files, platform_name: str, asset_name: str) -> None:
+        try:
+            async with page.expect_file_chooser() as file_chooser_info:
+                await upload_button.click()
+            file_chooser = await file_chooser_info.value
+            await file_chooser.set_files(files)
+        except Exception as exc:
+            if exc.__class__.__name__ != "TimeoutError":
+                raise
+            raise RuntimeError(
+                f"VF-PUBLISH-UPLOAD-INPUT-MISSING : {platform_name}点击上传后未打开{asset_name}文件选择器。"
+                "请确认账号仍停留在发布页面，或平台页面结构未变更后重试。"
+            ) from exc
+
     @classmethod
     def validate_video_file(cls, file_path: str | Path) -> Path:
         path = Path(file_path).expanduser().resolve()

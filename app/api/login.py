@@ -1,4 +1,4 @@
-﻿def _safe_account_name(value):
+def _safe_account_name(value):
     return re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", "_", str(value or "").strip()).strip("_") or uuid.uuid4().hex
 
 

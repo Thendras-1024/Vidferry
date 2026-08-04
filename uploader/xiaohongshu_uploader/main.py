@@ -482,7 +482,7 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
 
     async def handle_upload_error(self, page: Page):
         xiaohongshu_logger.warning(_msg("😵", "视频上传摔了一跤，小人马上重新上传"))
-        await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
+        await self.set_upload_files(page.locator('div.progress-div [class^="upload-btn-input"]'), self.file_path, "小红书", "视频")
 
     async def set_thumbnail(self, page: Page, thumbnail_path: str):
         if not thumbnail_path:
@@ -502,8 +502,7 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
         await modal.wait_for(state="visible", timeout=30000)
 
         file_input = modal.locator('input[type="file"][accept*="image"]').first
-        await file_input.wait_for(state="attached", timeout=10000)
-        await file_input.set_input_files(thumbnail_path)
+        await self.set_upload_files(file_input, thumbnail_path, "小红书", "封面")
         await page.wait_for_timeout(2000)
 
         confirm_button = modal.locator("button.mojito-button").filter(has_text="确定").first
@@ -524,7 +523,7 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
             raise
         await self.ensure_publish_session(page)
         await human_delay(1, 3)
-        await page.locator("div[class^='upload-content'] input[class='upload-input']").set_input_files(self.file_path)
+        await self.set_upload_files(page.locator("div[class^='upload-content'] input[class='upload-input']"), self.file_path, "小红书", "视频")
 
         upload_deadline = time.monotonic() + XHS_UPLOAD_WAIT_TIMEOUT
         while True:
@@ -685,9 +684,8 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
         if not await upload_input.count():
             upload_input = page.locator("div[class^='upload-content'] input[class='upload-input']").first
 
-        await upload_input.wait_for(state="attached", timeout=30000)
         xiaohongshu_logger.info(_msg("📤", "小人正在上传图片"))
-        await upload_input.set_input_files(self.image_paths)
+        await self.set_upload_files(upload_input, self.image_paths, "小红书", "图文图片")
 
         upload_deadline = time.monotonic() + XHS_UPLOAD_WAIT_TIMEOUT
         while True:

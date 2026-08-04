@@ -574,7 +574,7 @@ class DouYinVideo(DouYinBaseUploader):
             try:
                 upload_input = page.locator(selector).first
                 await upload_input.wait_for(state="attached", timeout=8000)
-                await upload_input.set_input_files(self.file_path)
+                await self.set_upload_files(upload_input, self.file_path, "抖音", "视频")
                 douyin_logger.info(_msg("🥳", "已把视频文件交给抖音上传控件"))
                 return
             except Exception as exc:
@@ -582,7 +582,7 @@ class DouYinVideo(DouYinBaseUploader):
         raise RuntimeError(
             "VF-PUBLISH-UPLOAD-INPUT-MISSING: 未找到可用的抖音视频上传控件，"
             "可能是平台页面结构变化、Cookie 跳转异常，或页面未正常加载。"
-            f"最后错误: {last_error}"
+            "请确认账号仍停留在发布页面，或平台页面结构未变更后重试。"
         )
 
     async def wait_for_publish_editor_page(self, page: Page):
@@ -664,14 +664,14 @@ class DouYinVideo(DouYinBaseUploader):
 
         if self.thumbnail_landscape_path:
             await page.wait_for_timeout(1000)
-            await upload_input.set_input_files(self.thumbnail_landscape_path)
+            await self.set_upload_files(upload_input, self.thumbnail_landscape_path, "抖音", "横版封面")
             await page.wait_for_timeout(2000)
             douyin_logger.info(_msg("🖼️", "横版封面上传完成"))
 
         if self.thumbnail_portrait_path:
             await cover_locator.locator("div[class*='steps'] div").nth(1).click()
             await page.wait_for_timeout(1000)
-            await upload_input.set_input_files(self.thumbnail_portrait_path)
+            await self.set_upload_files(upload_input, self.thumbnail_portrait_path, "抖音", "竖版封面")
             await page.wait_for_timeout(2000)
             douyin_logger.info(_msg("🖼️", "竖版封面上传完成"))
 
@@ -881,7 +881,7 @@ class DouYinNote(DouYinBaseUploader):
         await human_delay(0.8, 1.5)
 
         douyin_logger.info(_msg("📤", "小人正在上传图片"))
-        await page.locator("div[class^='container'] input[accept*='image']").set_input_files(self.image_paths)
+        await self.set_upload_files(page.locator("div[class^='container'] input[accept*='image']"), self.image_paths, "抖音", "图文图片")
 
         while True:
             try:

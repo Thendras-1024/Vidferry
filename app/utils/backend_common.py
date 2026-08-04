@@ -6,10 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 from app.config import (
     WORKFLOW_MAX_ANALYSIS_JOBS,
     WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS,
+    WORKFLOW_MAX_COMMENT_JOBS,
+    WORKFLOW_MAX_COMMENT_QUEUED_JOBS,
     WORKFLOW_MAX_DOWNLOAD_JOBS,
     WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS,
     WORKFLOW_MAX_PROCESSING_JOBS,
     WORKFLOW_MAX_PROCESSING_QUEUED_JOBS,
+    WORKFLOW_MAX_PUBLISH_JOBS,
+    WORKFLOW_MAX_PUBLISH_QUEUED_JOBS,
     WORKFLOW_MAX_SEARCH_JOBS,
     WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
 )
@@ -47,6 +51,7 @@ from app.utils.request_util import (
     _split_request_values,
     _sql_placeholders,
 )
+from app.utils.render_layout import _render_layout_scales
 from app.core.errors import NoSpeechDetectedError, WorkflowConflictError
 
 
@@ -56,7 +61,9 @@ _workflow_executor_limits = {
     "search": (WORKFLOW_MAX_SEARCH_JOBS, WORKFLOW_MAX_SEARCH_QUEUED_JOBS),
     "download": (WORKFLOW_MAX_DOWNLOAD_JOBS, WORKFLOW_MAX_DOWNLOAD_QUEUED_JOBS),
     "processing": (WORKFLOW_MAX_PROCESSING_JOBS, WORKFLOW_MAX_PROCESSING_QUEUED_JOBS),
+    "publish": (WORKFLOW_MAX_PUBLISH_JOBS, WORKFLOW_MAX_PUBLISH_QUEUED_JOBS),
     "analysis": (WORKFLOW_MAX_ANALYSIS_JOBS, WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS),
+    "comment": (WORKFLOW_MAX_COMMENT_JOBS, WORKFLOW_MAX_COMMENT_QUEUED_JOBS),
 }
 _workflow_executors = {
     resource: ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"vidferry-{resource}")
@@ -84,7 +91,8 @@ def _run_background_task(resource, target, args):
 
 
 def _submit_background_task(resource, target, *args):
-    resource = resource if resource in _workflow_executors else "processing"
+    if resource not in _workflow_executors:
+        raise ValueError(f"未知后台任务资源 : {resource}")
     slots = _workflow_submit_slots[resource]
     if not slots.acquire(blocking=False):
         workers, queued = _workflow_executor_limits[resource]

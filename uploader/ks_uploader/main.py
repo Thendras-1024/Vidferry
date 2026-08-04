@@ -462,7 +462,7 @@ class KSVideo(KSBaseUploader):
 
     async def handle_upload_error(self, page: Page):
         kuaishou_logger.warning(_msg("😵", "视频上传摔了一跤，小人马上重新上传"))
-        await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
+        await self.set_upload_files(page.locator('div.progress-div [class^="upload-btn-input"]'), self.file_path, "快手", "视频")
 
     async def set_thumbnail(self, page: Page):
         if not self.thumbnail_path:
@@ -482,8 +482,7 @@ class KSVideo(KSBaseUploader):
         await upload_cover_tab.click()
 
         file_input = modal.locator('input[type="file"]')
-        await file_input.wait_for(state="attached", timeout=30000)
-        await file_input.set_input_files(self.thumbnail_path)
+        await self.set_upload_files(file_input, self.thumbnail_path, "快手", "封面")
         await asyncio.sleep(1)
 
         confirm_button = modal.get_by_role("button", name="确认", exact=True)
@@ -528,10 +527,7 @@ class KSVideo(KSBaseUploader):
             upload_button = page.locator("button[class^='_upload-btn']")
             await upload_button.wait_for(state="visible", timeout=10000)
 
-            async with page.expect_file_chooser() as fc_info:
-                await upload_button.click()
-            file_chooser = await fc_info.value
-            await file_chooser.set_files(self.file_path)
+            await self.choose_upload_files(page, upload_button, self.file_path, "快手", "视频")
 
             await human_delay(0.8, 2.5)
 
@@ -660,10 +656,7 @@ class KSNote(KSBaseUploader):
         upload_button = page.locator("button[class^='_upload-btn']").filter(has_text="上传图片")
         await upload_button.wait_for(state="visible", timeout=10000)
 
-        async with page.expect_file_chooser() as fc_info:
-            await upload_button.click()
-        file_chooser = await fc_info.value
-        await file_chooser.set_files(self.image_paths)
+        await self.choose_upload_files(page, upload_button, self.image_paths, "快手", "图文图片")
 
         know_button = page.locator('button[type="button"] span:text("我知道了")').first
         try:
@@ -691,7 +684,7 @@ class KSNote(KSBaseUploader):
 
                 if await page.locator("text=上传失败").count():
                     kuaishou_logger.warning(_msg("😵", "图文素材上传摔了一跤，小人马上重新上传"))
-                    await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.image_paths)
+                    await self.set_upload_files(page.locator('div.progress-div [class^="upload-btn-input"]'), self.image_paths, "快手", "图文图片")
 
                 await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
             except Exception as exc:

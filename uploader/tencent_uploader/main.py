@@ -117,21 +117,12 @@ async def cookie_auth(account_file):
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
             page = await context.new_page()
-            await page.goto(TENCENT_UPLOAD_URL)
-            await page.wait_for_url(TENCENT_UPLOAD_URL, timeout=5000)
-            await page.wait_for_timeout(2000)
-
-            login_markers = [
-                page.get_by_text("扫码登录", exact=True).first,
-                page.locator('[src*="login-for-iframe"]').first,
-            ]
-            for marker in login_markers:
-                try:
-                    if await marker.count() and await marker.is_visible():
-                        tencent_logger.info(_msg("🥹", "cookie 已失效，得重新登录一下"))
-                        return False
-                except Exception:
-                    continue
+            await page.goto(TENCENT_UPLOAD_URL, wait_until="domcontentloaded")
+            # 视频号会先短暂保留发布 URL，再异步跳转到登录页。
+            await page.wait_for_timeout(5000)
+            if not await _is_tencent_login_completed(page):
+                tencent_logger.info(_msg("🥹", "cookie 已失效，得重新登录一下"))
+                return False
 
             tencent_logger.success(_msg("🥳", "cookie 有效"))
             return True
@@ -541,7 +532,7 @@ class TencentBaseUploader(BaseVideoUploader):
 
     async def upload_video_file(self, page: Page, file_path: str) -> None:
         file_input = page.locator('input[type="file"]')
-        await file_input.set_input_files(file_path)
+        await self.set_upload_files(file_input, file_path, "视频号", "视频")
 
     async def set_short_title(self, page: Page, title: str, short_title: str | None = None) -> None:
         short_title_element = (
@@ -772,8 +763,7 @@ class TencentVideo(TencentBaseUploader):
             return
 
         file_input = cover_dialog.locator('.single-cover-uploader-wrap input[type="file"]').first
-        await file_input.wait_for(state="attached", timeout=10000)
-        await file_input.set_input_files(self.thumbnail_path)
+        await self.set_upload_files(file_input, self.thumbnail_path, "视频号", "封面")
         await page.wait_for_timeout(1000)
 
         crop_dialog = page.locator("div.weui-desktop-dialog").filter(has_text="裁剪封面图").first

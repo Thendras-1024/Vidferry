@@ -11,14 +11,15 @@ def _account_row_to_list(row):
     return [row["id"], row["type"], row["filePath"], row["userName"], row["status"]]
 
 
-def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, message="", retry_after_seconds=0):
+def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, message="", retry_after_seconds=0, status_override=None):
+    status_value = status_override if status_override is not None else row["status"]
     return {
         "id": row["id"],
         "type": row["type"],
         "platform": platform_name(row["type"]),
         "filePath": row["filePath"],
         "name": row["userName"],
-        "status": int(row["status"] if row["status"] is not None else 0),
+        "status": int(status_value if status_value is not None else 0),
         "checked": bool(checked),
         "skipped": bool(skipped),
         "blocked": bool(blocked),
@@ -171,14 +172,13 @@ def _check_account_cookie_row(cursor, row, *, force=False):
         "blocked_until": now + cooldown_seconds,
     }
 
-    checked_row = dict(row)
-    checked_row["status"] = next_status
     return _account_check_payload(
-        checked_row,
+        row,
         checked=True,
         valid=valid,
         message="Cookie 有效" if valid else "Cookie 已过期或不可用",
         retry_after_seconds=cooldown_seconds,
+        status_override=next_status,
     )
 
 
@@ -367,8 +367,6 @@ def delete_account():
                     "msg": "account not found",
                     "data": None
                 }), 404
-
-            record = dict(record)
 
             # 删除关联的cookie文件
             if record.get('filePath'):
