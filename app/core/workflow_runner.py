@@ -373,7 +373,9 @@ def _run_comment_burn_preparation(job):
         snapshot = {
             "status": "ready" if comments else "skipped",
             "reason": "" if comments else (
-                "评论翻译失败，未生成可烧制评论"
+                "评论初筛模型输出格式错误，请重试"
+                if generation_meta.get("failureCode") == "LLM_OUTPUT_FORMAT_ERROR"
+                else "评论翻译失败，未生成可烧制评论"
                 if int(generation_meta.get("selectedCount") or 0) and int((generation_meta.get("translation") or {}).get("googleFailedCount") or 0)
                 else "LLM 未选出合格评论"
             ),

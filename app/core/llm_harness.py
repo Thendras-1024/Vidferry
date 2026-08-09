@@ -125,10 +125,14 @@ def extract_json_object(value):
     if fenced:
         text = fenced.group(1)
     else:
-        start, end = text.find("{"), text.rfind("}")
-        if start >= 0 and end > start:
-            text = text[start:end + 1]
-    parsed = json.loads(_clean_json_text(text))
+        start = text.find("{")
+        if start >= 0:
+            text = text[start:]
+    cleaned = _clean_json_text(text)
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(cleaned)
+    except json.JSONDecodeError:
+        parsed = json.loads(cleaned)
     if not isinstance(parsed, dict):
         raise ValueError("顶层必须是 JSON 对象")
     return parsed

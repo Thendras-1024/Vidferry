@@ -229,7 +229,24 @@ def _legacy_comment_selection_system_prompt():
 
 
 def build_comment_selection_prompt(job, candidates):
-    return build_comment_screen_prompt(job, candidates)
+    metadata = {
+        "title": (job or {}).get("title") or "",
+        "channel": (job or {}).get("channel") or "",
+        "url": (job or {}).get("url") or "",
+    }
+    compact = [
+        {"no": index + 1, "text": item.get("text"), "author": item.get("author"), "likeCount": item.get("likeCount", 0)}
+        for index, item in enumerate(candidates or [])
+    ]
+    return (
+        "只删除语义与其他评论过度相似、无法同时烧制的评论。不要删除仅仅主题相同但观点不同的评论。\n"
+        "<video_metadata>\n"
+        f"{json.dumps(metadata, ensure_ascii=False)}\n"
+        "</video_metadata>\n"
+        "<comment_candidates>\n"
+        f"{json.dumps(compact, ensure_ascii=False)}\n"
+        "</comment_candidates>"
+    )
 
 
 # Keep the review contract compact: the model returns the input ordinal, not a repeated comment id.
@@ -238,22 +255,24 @@ COMMENT_LLM_FILTER_CODES = ("OFF_TOPIC", "LOW_QUALITY", "PROMOTION", "UNSAFE", "
 
 def comment_screen_system_prompt():
     return (
-        "逐条审核评论，完整返回每条输入的 no、keep、reasonCode。"
-        "no 必须使用输入序号；keep=true 时 reasonCode 为空；keep=false 时只能使用 "
-        "OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE、SIMILAR。不得遗漏、翻译或重写评论。"
+        "从输入评论中选择适合后续语义去重和视频烧制的评论。"
+        "只返回一个 JSON 对象，且只能包含 keep 字段；keep 是需要保留的输入序号数组。"
+        "未列入 keep 的评论由程序标记为初筛未保留，不要返回过滤原因、评论原文或任何解释。"
+        "序号必须来自输入，不能重复；没有合适评论时返回 {\"keep\":[]}。"
         + _UNTRUSTED_INPUT_RULE
-        + "过滤编码只能使用: " + ", ".join(COMMENT_LLM_FILTER_CODES) + "。"
+        + "正确示例：{\"keep\":[1,3,7]}；空结果示例：{\"keep\":[]}。"
         + _JSON_RULE
     )
 
 
 def comment_selection_system_prompt():
     return (
-        "对输入评论做跨批次语义去重和质量复核，完整返回每条输入的 no、keep、reasonCode。"
-        "no 必须使用输入序号；keep=true 时 reasonCode 为空；keep=false 时只能使用 "
-        "OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE、SIMILAR。不得遗漏、翻译或重写评论。"
+        "对已经通过本地规则和评论初筛的输入做跨批次语义去重。"
+        "只返回一个 JSON 对象，且只能包含 remove 字段；remove 只列出需要删除的输入序号及原因码。"
+        "当前语义重复使用 SIMILAR；其他原因码可使用 OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE。"
+        "未列入 remove 的评论由程序保留；没有重复评论时返回 {\"remove\":[]}。"
         + _UNTRUSTED_INPUT_RULE
-        + "过滤编码只能使用: " + ", ".join(COMMENT_LLM_FILTER_CODES) + "。"
+        + "正确示例：{\"remove\":[{\"no\":7,\"reasonCode\":\"SIMILAR\"}]}；空结果示例：{\"remove\":[]}。"
         + _JSON_RULE
     )
 
