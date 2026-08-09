@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os as _os
 import re as _re
+import datetime as _datetime
 
 
 AGENT_VIDEO_STATUSES = {
@@ -103,6 +104,36 @@ AGENT_TOOL_SPECS = [
         },
         "readOnly": True,
     },
+    {
+        "name": "search_youtube_candidates",
+        "description": "按关键词检索 YouTube 候选视频。该工具只返回候选线索，不会导入、下载或修改任何数据。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS},
+                "publishedAfter": {"type": "string"},
+                "minViews": {"type": "integer", "minimum": 0},
+                "maxViews": {"type": "integer", "minimum": 0},
+                "minDurationSeconds": {"type": "integer", "minimum": 0},
+                "maxDurationSeconds": {"type": "integer", "minimum": 0},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "inspect_youtube_url",
+        "description": "读取一个 YouTube 视频链接的元数据，用于生成待确认的导入线索；不会导入或下载视频。",
+        "parameters": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
 ]
 
 AGENT_TOOL_SPEC_MAP = {item["name"]: item for item in AGENT_TOOL_SPECS}
@@ -110,6 +141,47 @@ AGENT_TOOL_SPEC_MAP = {item["name"]: item for item in AGENT_TOOL_SPECS}
 
 def _agent_limit(limit=None):
     return max(1, min(int(limit or AGENT_MAX_TOOL_ROWS), AGENT_MAX_TOOL_ROWS))
+
+
+def search_youtube_candidates(query, limit=None, published_after="", min_views=None, max_views=None, min_duration_seconds=None, max_duration_seconds=None):
+    query = str(query or "").strip()
+    if not query:
+        raise ValueError("请提供要检索的 YouTube 主题")
+    requested = _agent_limit(limit)
+    videos = _search_youtube_with_ytdlp(query, min(50, max(requested * 8, 20)))
+    candidate_ids = [str(item.get("id") or "").strip() for item in videos if str(item.get("id") or "").strip()]
+    existing_ids = set()
+    if candidate_ids:
+        init_youtube_video_table()
+        placeholders = ",".join("?" for _ in candidate_ids)
+        with _db_connect(row_factory=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
+            existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
+    cutoff = str(published_after or "").strip()
+    def matches(item):
+        views = int(item.get("viewCount") or 0)
+        duration = float(item.get("durationSeconds") or 0)
+        published = str(item.get("publishedAt") or "")
+        if cutoff and (not published or published < cutoff): return False
+        if min_views is not None and views < int(min_views): return False
+        if max_views is not None and views > int(max_views): return False
+        if min_duration_seconds is not None and duration < int(min_duration_seconds): return False
+        if max_duration_seconds is not None and duration > int(max_duration_seconds): return False
+        return True
+    filtered = [item for item in videos if matches(item)]
+    items = [item for item in filtered if str(item.get("id") or "") not in existing_ids][:requested]
+    return {"query": query, "items": items, "filters": {
+        "publishedAfter": cutoff, "minViews": min_views, "maxViews": max_views,
+        "minDurationSeconds": min_duration_seconds, "maxDurationSeconds": max_duration_seconds,
+    }, "searched": len(videos), "excludedExisting": len(filtered) - len([item for item in filtered if str(item.get("id") or "") not in existing_ids])}
+
+
+def inspect_youtube_url(url):
+    url = str(url or "").strip()
+    if not url:
+        raise ValueError("请提供 YouTube 视频链接")
+    return {"item": _import_youtube_video_by_url(url)}
 
 
 def _agent_public_path(value):

@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import json as _json
 import logging as _logging
+import re as _re
+import secrets as _secrets
+import threading as _threading
 import time as _time
+import datetime as _datetime
 from contextlib import contextmanager as _contextmanager
 from typing import TypedDict
 
-from app.core.llm_harness import call_json_contract, validate_agent_action, validate_agent_reply
+from app.core.llm_harness import call_json_contract, validate_agent_action, validate_agent_reply, validate_agent_search_translation
 from app.core import llm_prompts
 from app.core.errors import AgentSessionLeaseLostError
 
@@ -26,6 +30,14 @@ class _AgentState(TypedDict, total=False):
     safety_decision: dict
     actions: list
     answer: str
+
+
+_AGENT_IMPORT_PROPOSAL_TTL_SECONDS = 15 * 60
+_AGENT_IMPORT_PROPOSALS = {}
+_AGENT_IMPORT_PROPOSALS_LOCK = _threading.Lock()
+_AGENT_EXECUTION_PROPOSALS = {}
+_AGENT_EXECUTION_PROPOSALS_LOCK = _threading.Lock()
+_AGENT_CHINESE_COUNTS = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
 
 def _agent_llm_available():
@@ -147,12 +159,92 @@ def _normalize_agent_tool_args(name, args):
     if name == "list_videos_by_status":
         status = str(normalized.get("status") or "initial").strip()
         normalized["status"] = status if status in AGENT_VIDEO_STATUSES else "initial"
+    if name in {"search_youtube_candidates", "inspect_youtube_url"}:
+        key = "query" if name == "search_youtube_candidates" else "url"
+        normalized[key] = str(normalized.get(key) or "").strip()
+    if name == "search_youtube_candidates":
+        for key in ("minViews", "maxViews", "minDurationSeconds", "maxDurationSeconds"):
+            if normalized.get(key) not in (None, ""):
+                normalized[key] = max(0, int(float(normalized[key])))
+        normalized["publishedAfter"] = str(normalized.get("publishedAfter") or "").strip()
     return normalized
+
+
+def _agent_youtube_url(message):
+    match = _re.search(r"https?://[^\s<>\"']*(?:youtube\.com|youtu\.be)[^\s<>\"']*", str(message or ""), _re.I)
+    return match.group(0).rstrip("，。,.!！?)）]}") if match else ""
+
+
+def _agent_quantity_value(value):
+    match = _re.search(r"(\d+(?:\.\d+)?|[一二两三四五六七八九十])\s*(万|w)?", str(value or ""), _re.I)
+    if not match:
+        return None
+    raw_number = match.group(1)
+    number = float(raw_number) if raw_number[0].isdigit() else float(_AGENT_CHINESE_COUNTS.get(raw_number, 0))
+    return int(number * 10000) if match.group(2) else int(number)
+
+
+def _agent_search_filters(text):
+    source = str(text or "")
+    filters = {}
+    periods = ((r"近(?:一|1)周", 7), (r"近(?:一个|1个|一)月", 30), (r"近(?:三|3)个月", 90))
+    for pattern, days in periods:
+        if _re.search(pattern, source):
+            filters["publishedAfter"] = (_datetime.date.today() - _datetime.timedelta(days=days)).isoformat()
+            break
+    views = _re.search(r"(?:播放量|观看量|views?)?\s*(?:大于|超过|高于|不少于|至少|>=|>)\s*((?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?)", source, _re.I)
+    if views:
+        filters["minViews"] = _agent_quantity_value(views.group(1))
+    duration = _re.search(r"(?:时长)?\s*(?:不超过|小于|少于|最多|以内|<=|<)\s*(\d+(?:\.\d+)?)\s*(?:分钟|分|min(?:ute)?s?)", source, _re.I)
+    if duration:
+        filters["maxDurationSeconds"] = int(float(duration.group(1)) * 60)
+    return {key: value for key, value in filters.items() if value is not None}
+
+
+def _agent_search_request(message):
+    text = str(message or "").strip()
+    if _agent_youtube_url(text):
+        return None
+    if not _re.search(r"(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*", text, _re.I):
+        return None
+    limit_match = _re.search(r"\b([1-9]|1[0-9]|20)\s*(?:个|条|部|项|videos?|results?)\b", text, _re.I)
+    chinese_count_match = _re.search(r"([一两二三四五六七八九十])\s*(?:个|条|部|项)", text)
+    if not limit_match:
+        limit_match = _re.search(r"\b([1-9]|1[0-9]|20)\b(?=.*\b(?:videos?|results?)\b)", text, _re.I)
+    limit = int(limit_match.group(1)) if limit_match else _AGENT_CHINESE_COUNTS.get(chinese_count_match.group(1), 5) if chinese_count_match else 5
+    query = _re.sub(r"(?:请|帮我|帮忙|给我|麻烦)?\s*(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*(?:一下|一些|几个|[一两二三四五六七八九十]\s*(?:个|条|部|项)|\d+\s*(?:个|条|部|项|videos?|results?))?", "", text, flags=_re.I)
+    query = _re.sub(r"^\d+\s+", "", query)
+    filters = _agent_search_filters(query)
+    query = _re.sub(r"近(?:一|1)周|近(?:一个|1个|一)月|近(?:三|3)个月", "", query)
+    query = _re.sub(r"(?:播放量|观看量|views?)?\s*(?:大于|超过|高于|不少于|至少|>=|>)\s*(?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?", "", query, flags=_re.I)
+    query = _re.sub(r"(?:时长)?\s*(?:不超过|小于|少于|最多|以内|<=|<)\s*\d+(?:\.\d+)?\s*(?:分钟|分|min(?:ute)?s?)", "", query, flags=_re.I)
+    query = _re.sub(r"(?:时长)?\s*(?:不超过|小于|少于|最多|以内|<=|<)\s*[^，,。！？!]*?(?:分钟|分)", "", query)
+    query = _re.sub(r"[,，、]\s*(?:发布|分布)(?:的)?$", "", query)
+    query = _re.sub(r"(?:相关)?(?:的)?(?:YouTube)?(?:视频|影片|video|videos)?\s*(?:并|然后|并且)?\s*(?:帮我|替我)?\s*(?:(?:导入|加入|存入|放入)(?:线索列表|线索库|列表)?(?:中|里)?|下载|处理|转写|剪辑|发布|分发)(?:到[^，,。！？!]*?)?[。！？!?,，]*$", "", query, flags=_re.I).strip(" ：:，,。.!！？")
+    return {"query": query, "limit": limit, **filters} if query else {"query": "", "limit": limit, **filters}
+
+
+def _agent_requested_import_action(message):
+    text = str(message or "").lower()
+    has_publish = any(word in text for word in ("发布", "分发", "publish"))
+    has_process = any(word in text for word in ("处理", "转写", "字幕", "剪辑", "process"))
+    if has_publish:
+        return "workflow_publish"
+    if has_process:
+        return "workflow_process"
+    return "download" if "下载" in text or _re.search(r"\bdownload\b", text, _re.I) else ""
 
 
 def _select_agent_tools(message):
     text = str(message or "").lower()
     tools = []
+    youtube_url = _agent_youtube_url(message)
+    if youtube_url:
+        tools.append(("inspect_youtube_url", {"url": youtube_url}))
+    else:
+        search_request = _agent_search_request(message)
+        if search_request and search_request.get("query"):
+            tools.append(("search_youtube_candidates", search_request))
     if any(word in text for word in ["流程", "步骤", "怎么运转", "完整"]):
         tools.extend([("explain_vidferry_pipeline", {}), ("get_workflow_overview", {})])
     if any(word in text for word in ["待处理", "初始", "还没处理"]):
@@ -187,7 +279,7 @@ def _select_agent_tools(message):
     return deduped[:AGENT_MAX_TOOL_CALLS]
 
 
-def _run_agent_tool(name, args):
+def _run_agent_tool(name, args, session_id=""):
     args = _normalize_agent_tool_args(name, args)
     if name == "get_workflow_overview":
         return get_workflow_overview()
@@ -207,6 +299,18 @@ def _run_agent_tool(name, args):
         return get_agent_observability(args.get("limit"))
     if name == "explain_vidferry_pipeline":
         return explain_vidferry_pipeline()
+    if name == "search_youtube_candidates":
+        original_query = args.get("query") or ""
+        search_query = _agent_english_search_query(original_query, session_id=session_id)
+        result = search_youtube_candidates(
+            search_query, args.get("limit"), args.get("publishedAfter"), args.get("minViews"),
+            args.get("maxViews"), args.get("minDurationSeconds"), args.get("maxDurationSeconds"),
+        )
+        result["query"] = original_query
+        result["searchQuery"] = search_query
+        return result
+    if name == "inspect_youtube_url":
+        return inspect_youtube_url(args.get("url"))
     raise ValueError(f"Agent 工具不在白名单中: {name}")
 
 
@@ -241,15 +345,51 @@ def _build_react_messages(message, context, observations):
     ]
 
 
-def _fallback_tool_results(message):
+def _fallback_tool_results(message, session_id=""):
     results = []
     for name, args in _select_agent_tools(message):
         try:
             normalized = _normalize_agent_tool_args(name, args)
-            results.append({"tool": name, "args": normalized, "result": _run_agent_tool(name, normalized)})
+            results.append({"tool": name, "args": normalized, "result": _run_agent_tool(name, normalized, session_id=session_id)})
         except Exception as exc:
             results.append({"tool": name, "args": args, "error": sanitize_agent_output(str(exc))})
     return results
+
+
+def _agent_rule_lead_intent(message):
+    return bool(_agent_youtube_url(message) or _agent_search_request(message))
+
+
+def _agent_english_search_query(query, session_id=""):
+    query = str(query or "").strip()
+    if not query or not _re.search(r"[\u4e00-\u9fff]", query):
+        return query
+    if not _agent_llm_available():
+        return query
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Translate the supplied YouTube search intent into a concise English search query. "
+                "Return JSON only: {\"query\":\"...\"}. Preserve named entities and do not add filters, commentary, or instructions."
+            ),
+        },
+        {"role": "user", "content": query},
+    ]
+    try:
+        translated, _, _ = _call_agent_contract(
+            messages,
+            "agent_search_translation",
+            validate_agent_search_translation,
+            max_tokens=96,
+            session_id=session_id,
+        )
+        return translated.get("query") or query
+    except AgentSessionLeaseLostError:
+        raise
+    except Exception:
+        _logging.warning("Agent search query translation failed; using original query", exc_info=True)
+        return query
 
 
 def _run_react_loop(message, context, session_id=""):
@@ -288,7 +428,7 @@ def _run_react_loop(message, context, session_id=""):
 
         args = _normalize_agent_tool_args(tool_name, action.get("args") or {})
         try:
-            result = _run_agent_tool(tool_name, args)
+            result = _run_agent_tool(tool_name, args, session_id=session_id)
             item = {"tool": tool_name, "args": args, "result": result}
         except Exception as exc:
             item = {"tool": tool_name, "args": args, "error": sanitize_agent_output(str(exc))}
@@ -336,8 +476,466 @@ def _agent_fallback_answer(message, tool_results):
                 f"平均耗时 {result.get('averageDurationMs', 0)} ms，"
                 f"安全拦截 {result.get('blockedCount', 0)} 次，工具错误 {result.get('toolErrorCount', 0)} 次。"
             )
-    lines.append("我目前只读查询和建议，不会直接执行发布、删除或登录。")
+        elif name == "search_youtube_candidates":
+            items = result.get("items") or []
+            excluded = int(result.get("excludedExisting") or 0)
+            if not items and excluded:
+                lines.append(f"符合条件的候选中有 {excluded} 个已在你的线索列表中，因此没有重复展示。")
+            else:
+                lines.append(f"已找到 {len(items)} 个与“{result.get('query') or ''}”相关的候选视频。请在下方选择后确认导入线索列表。")
+        elif name == "inspect_youtube_url":
+            item = result.get("item") or {}
+            lines.append(f"已读取视频“{item.get('title') or '未命名视频'}”。请在下方确认是否导入线索列表。")
+    requested_action = _agent_requested_import_action(message)
+    if requested_action == "workflow_publish":
+        lines.append("请在下方选择候选视频和发布账号；确认后才会创建导入、下载、处理和发布工作流。")
+    elif requested_action == "workflow_process":
+        lines.append("确认后才会创建导入、下载和处理工作流；不会自动发布、删除或登录。")
+    elif requested_action == "download":
+        lines.append("导入和下载会在你确认后创建任务；不会自动开始处理、发布、删除或登录。")
+    else:
+        lines.append("导入会在你确认后执行；不会自动开始下载、处理、发布、删除或登录。")
     return "\n".join(lines)
+
+
+def _agent_compact_candidate(item):
+    item = item if isinstance(item, dict) else {}
+    try:
+        duration_seconds = float(item.get("durationSeconds") or 0)
+    except (TypeError, ValueError):
+        duration_seconds = 0
+    return {
+        "id": str(item.get("id") or ""),
+        "title": str(item.get("title") or ""),
+        "channel": str(item.get("channel") or ""),
+        "duration": str(item.get("duration") or ""),
+        "publishedAt": str(item.get("publishedAt") or ""),
+        "url": str(item.get("url") or ""),
+        "thumbnail": str(item.get("thumbnail") or ""),
+        "subscribers": str(item.get("subscribers") or ""),
+        "durationSeconds": duration_seconds,
+        "viewCount": int(item.get("viewCount") or 0),
+    }
+
+
+def _cleanup_agent_import_proposals(now=None):
+    now = float(now or _time.time())
+    expired = [key for key, proposal in _AGENT_IMPORT_PROPOSALS.items() if float(proposal.get("expiresAt") or 0) <= now]
+    for key in expired:
+        _AGENT_IMPORT_PROPOSALS.pop(key, None)
+
+
+def _create_agent_import_proposal(session_id, tool_results, page_context, message=""):
+    candidates = []
+    query = ""
+    source = "search"
+    for entry in tool_results or []:
+        result = entry.get("result") or {}
+        if entry.get("tool") == "search_youtube_candidates":
+            query = str(result.get("query") or "").strip()
+            candidates.extend(result.get("items") or [])
+        elif entry.get("tool") == "inspect_youtube_url":
+            source = "url"
+            item = result.get("item") or {}
+            if item:
+                candidates.append(item)
+                query = str(item.get("url") or "").strip()
+    compacted = []
+    seen = set()
+    for item in candidates:
+        candidate = _agent_compact_candidate(item)
+        key = candidate["id"] or candidate["url"]
+        title_key = _re.sub(r"\s+", " ", candidate["title"].strip().lower())
+        channel_key = _re.sub(r"\s+", " ", candidate["channel"].strip().lower())
+        duplicate_key = (title_key, channel_key)
+        if not key or key in seen or duplicate_key in seen:
+            continue
+        seen.add(key)
+        seen.add(duplicate_key)
+        compacted.append(candidate)
+    if not compacted:
+        return None
+    group_id = (page_context or {}).get("groupId")
+    try:
+        group_id = int(group_id) if group_id not in (None, "") else None
+    except (TypeError, ValueError):
+        group_id = None
+    now = _time.time()
+    proposal_id = _secrets.token_urlsafe(24)
+    requested_action = _agent_requested_import_action(message)
+    proposal = {
+        "proposalId": proposal_id,
+        "sessionId": session_id,
+        "query": query or "Agent 检索",
+        "source": source,
+        "groupId": group_id,
+        "requestedAction": requested_action,
+        "actionLabel": {
+            "download": "导入并下载",
+            "workflow_process": "导入、下载并处理",
+            "workflow_publish": "导入、下载、处理并发布",
+        }.get(requested_action, "导入线索"),
+        "platformHints": _agent_execution_platform_hints(message) if requested_action == "workflow_publish" else [],
+        "availableAccounts": _agent_available_publish_accounts() if requested_action == "workflow_publish" else [],
+        "requiresTargets": requested_action == "workflow_publish",
+        "items": compacted,
+        "expiresAt": now + _AGENT_IMPORT_PROPOSAL_TTL_SECONDS,
+    }
+    with _AGENT_IMPORT_PROPOSALS_LOCK:
+        _cleanup_agent_import_proposals(now)
+        _AGENT_IMPORT_PROPOSALS[proposal_id] = proposal
+    return {key: value for key, value in proposal.items() if key != "sessionId"}
+
+
+def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, targets=None):
+    proposal_id = str(proposal_id or "").strip()
+    session_id = str(session_id or "").strip()
+    with _AGENT_IMPORT_PROPOSALS_LOCK:
+        _cleanup_agent_import_proposals()
+        proposal = _AGENT_IMPORT_PROPOSALS.get(proposal_id)
+        if not proposal or proposal.get("sessionId") != session_id:
+            raise ValueError("该导入确认已失效，请重新让 Agent 检索")
+        _AGENT_IMPORT_PROPOSALS.pop(proposal_id, None)
+    if selected_ids is None:
+        raise ValueError("请重新选择要导入的候选视频")
+    requested = {str(item).strip() for item in selected_ids if str(item).strip()}
+    candidates = proposal.get("items") or []
+    selected = [item for item in candidates if item.get("id") in requested]
+    if not selected:
+        raise ValueError("请至少选择一个候选视频")
+    requested_action = proposal.get("requestedAction") or ""
+    resolved_targets = _agent_execution_targets(targets) if requested_action == "workflow_publish" else []
+    created = []
+    duplicate = []
+    failed = []
+    download_jobs = []
+    workflow_jobs = []
+    for item in selected:
+        try:
+            saved = save_one_youtube_video(item, proposal.get("query") or "Agent 检索", group_id=proposal.get("groupId"))
+            target = created if saved.get("decision") == "created" else duplicate
+            saved_item = saved.get("item") or item
+            target.append(saved_item)
+            if requested_action == "download" and int(saved_item.get("downloadStatus") or 0) != 1:
+                job = create_youtube_workflow_job({
+                    "videoId": saved_item.get("id") or item.get("id"),
+                    "url": saved_item.get("url") or item.get("url"),
+                    "channel": saved_item.get("channel") or item.get("channel") or "",
+                    "subscribers": saved_item.get("subscribers") or item.get("subscribers") or "",
+                    "publishedAt": saved_item.get("publishedAt") or item.get("publishedAt") or "",
+                    "title": saved_item.get("title") or item.get("title") or "YouTube 视频",
+                    "account": "",
+                    "publishToDouyin": False,
+                    "publishToBilibili": False,
+                    "publishToXiaohongshu": False,
+                    "publishToKuaishou": False,
+                    "publishToTencent": False,
+                    "description": "",
+                    "tags": [],
+                    "schedule": "",
+                    "processVersion": PROCESS_VERSION_TRANSLATION,
+                    "translationEnabled": False,
+                    "highlightIntroEnabled": False,
+                    "coverIntroEnabled": False,
+                    "commentBurnEnabled": False,
+                    "watermarkEnabled": False,
+                    "watermarkText": "",
+                    "contentSafetyReviewEnabled": False,
+                })
+                _submit_background_task("download", run_youtube_download_job, job["id"])
+                download_jobs.append(job)
+            elif requested_action in {"workflow_process", "workflow_publish"}:
+                job = create_youtube_workflow_job(_agent_execution_workflow_payload(
+                    saved_item,
+                    resolved_targets if requested_action == "workflow_publish" else [],
+                ))
+                _submit_background_task(workflow_job_resource(job), run_youtube_workflow, job["id"])
+                workflow_jobs.append(job)
+        except Exception as exc:
+            _logging.exception("Agent 线索导入失败 proposal=%s video=%s", proposal_id, item.get("id"))
+            failed.append({"id": item.get("id") or "", "title": item.get("title") or "", "message": sanitize_agent_output(str(exc))[:200]})
+    return {
+        "proposalId": proposal_id,
+        "created": created,
+        "duplicate": duplicate,
+        "failed": failed,
+        "createdCount": len(created),
+        "duplicateCount": len(duplicate),
+        "failedCount": len(failed),
+        "downloadJobs": download_jobs,
+        "downloadJobCount": len(download_jobs),
+        "workflowJobs": workflow_jobs,
+        "workflowJobCount": len(workflow_jobs),
+    }
+
+
+_AGENT_EXECUTION_ACTIONS = {
+    "download": "下载视频",
+    "process": "处理视频",
+    "workflow_publish": "处理并立即发布",
+    "publish_now": "立即发布",
+    "publish_scheduled": "创建定时发布",
+}
+
+
+def _agent_execution_intent(message, page_context):
+    """Recognize only bounded commands for the video currently selected in the UI."""
+    context = page_context if isinstance(page_context, dict) else {}
+    video_context = context.get("videoContext") if isinstance(context.get("videoContext"), dict) else {}
+    if not str(video_context.get("videoId") or video_context.get("url") or "").strip():
+        return ""
+    text = str(message or "").lower()
+    has_publish = any(word in text for word in ("发布", "分发", "publish"))
+    has_process = any(word in text for word in ("处理", "转写", "字幕", "剪辑", "process"))
+    if has_publish and any(word in text for word in ("定时", "预约", "scheduled", "schedule")):
+        return "publish_scheduled"
+    if has_publish and has_process:
+        return "workflow_publish"
+    if has_publish:
+        return "publish_now"
+    if any(word in text for word in ("下载", "download")):
+        return "download"
+    if has_process:
+        return "process"
+    return ""
+
+
+def _agent_execution_platform_hints(message):
+    text = str(message or "").lower()
+    aliases = {
+        1: ("小红书", "xiaohongshu"),
+        2: ("视频号", "微信视频号", "tencent"),
+        3: ("抖音", "douyin", "tiktok"),
+        4: ("快手", "kuaishou"),
+        5: ("b站", "哔哩哔哩", "bilibili"),
+    }
+    return [platform_type for platform_type, words in aliases.items() if any(word in text for word in words)]
+
+
+def _agent_available_publish_accounts():
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, type, userName FROM user_info WHERE COALESCE(status, 0) = 1 ORDER BY type, id")
+        rows = cursor.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "platformType": int(row["type"] or 0),
+            "platformName": platform_name(row["type"]),
+            "name": row["userName"] or "",
+        }
+        for row in rows
+    ]
+
+
+def _agent_execution_video(video_context):
+    video_context = video_context if isinstance(video_context, dict) else {}
+    video_id = str(video_context.get("videoId") or "").strip()
+    url = str(video_context.get("url") or "").strip()
+    if not video_id and not url:
+        raise ValueError("请先在视频详情中选择要执行操作的视频")
+    init_youtube_video_table()
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        if video_id:
+            cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        else:
+            cursor.execute("SELECT * FROM youtube_videos WHERE url = ?", (url,))
+        row = cursor.fetchone()
+    if not row:
+        raise ValueError("当前视频不在本地线索列表中，请先导入后再执行")
+    return _row_to_youtube_video(row)
+
+
+def _agent_execution_video_summary(video):
+    return {
+        "id": video.get("id") or "",
+        "title": video.get("title") or "未命名视频",
+        "channel": video.get("channel") or "",
+        "duration": video.get("duration") or "",
+        "downloadStatus": int(video.get("downloadStatus") or 0),
+        "translateStatus": int(video.get("translateStatus") or 0),
+        "publishStatus": int(video.get("publishStatus") or 0),
+    }
+
+
+def _cleanup_agent_execution_proposals(now=None):
+    now = float(now or _time.time())
+    expired = [key for key, proposal in _AGENT_EXECUTION_PROPOSALS.items() if float(proposal.get("expiresAt") or 0) <= now]
+    for key in expired:
+        _AGENT_EXECUTION_PROPOSALS.pop(key, None)
+
+
+def _create_agent_execution_proposal(session_id, message, page_context):
+    action = _agent_execution_intent(message, page_context)
+    if not action:
+        return None
+    video = _agent_execution_video((page_context or {}).get("videoContext"))
+    now = _time.time()
+    proposal_id = _secrets.token_urlsafe(24)
+    proposal = {
+        "proposalId": proposal_id,
+        "sessionId": session_id,
+        "action": action,
+        "actionLabel": _AGENT_EXECUTION_ACTIONS[action],
+        "videoId": video.get("id") or "",
+        "video": _agent_execution_video_summary(video),
+        "platformHints": _agent_execution_platform_hints(message),
+        "availableAccounts": _agent_available_publish_accounts() if action in {"workflow_publish", "publish_now", "publish_scheduled"} else [],
+        "requiresTargets": action in {"workflow_publish", "publish_now", "publish_scheduled"},
+        "requiresSchedule": action == "publish_scheduled",
+        "expiresAt": now + _AGENT_IMPORT_PROPOSAL_TTL_SECONDS,
+    }
+    with _AGENT_EXECUTION_PROPOSALS_LOCK:
+        _cleanup_agent_execution_proposals(now)
+        _AGENT_EXECUTION_PROPOSALS[proposal_id] = proposal
+    return {key: value for key, value in proposal.items() if key != "sessionId"}
+
+
+def _agent_execution_targets(targets):
+    if not isinstance(targets, list) or not targets:
+        raise ValueError("请至少选择一个发布平台和账号")
+    requested = []
+    seen_platforms = set()
+    for target in targets:
+        if not isinstance(target, dict):
+            raise ValueError("发布目标格式不正确")
+        try:
+            account_id = int(target.get("accountId"))
+            platform_type = int(target.get("platformType"))
+        except (TypeError, ValueError):
+            raise ValueError("发布目标缺少平台或账号")
+        if platform_type in seen_platforms:
+            raise ValueError("每个平台只能选择一个账号")
+        seen_platforms.add(platform_type)
+        requested.append((platform_type, account_id))
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        resolved = []
+        for platform_type, account_id in requested:
+            cursor.execute("SELECT id, type, filePath, userName, status FROM user_info WHERE id = ?", (account_id,))
+            row = cursor.fetchone()
+            if not row or int(row["type"] or 0) != platform_type:
+                raise ValueError(f"{platform_name(platform_type)}账号不存在，请重新选择")
+            if int(row["status"] or 0) != 1:
+                raise ValueError(f"{platform_name(platform_type)}账号“{row['userName']}”当前状态异常，请重新连接")
+            resolved.append({
+                "platformType": platform_type,
+                "platformName": platform_name(platform_type),
+                "accountId": int(row["id"]),
+                "accountFile": row["filePath"] or "",
+                "accountName": row["userName"] or "",
+            })
+    return resolved
+
+
+def _agent_execution_workflow_payload(video, targets=None):
+    targets = targets or []
+    draft = video.get("publishDraft") if isinstance(video.get("publishDraft"), dict) else {}
+    payload = {
+        "videoId": video.get("id") or "",
+        "url": video.get("url") or "",
+        "channel": video.get("channel") or "",
+        "subscribers": video.get("subscribers") or "",
+        "publishedAt": video.get("publishedAt") or "",
+        "title": draft.get("title") or video.get("title") or "YouTube 视频",
+        "description": draft.get("description") or "",
+        "tags": draft.get("tags") or [],
+        "schedule": "",
+        "publishToDouyin": False,
+        "publishToBilibili": False,
+        "publishToXiaohongshu": False,
+        "publishToKuaishou": False,
+        "publishToTencent": False,
+    }
+    account_fields = {
+        1: ("publishToXiaohongshu", "xiaohongshuAccount"),
+        2: ("publishToTencent", "tencentAccount"),
+        3: ("publishToDouyin", "account"),
+        4: ("publishToKuaishou", "kuaishouAccount"),
+        5: ("publishToBilibili", "bilibiliAccount"),
+    }
+    for target in targets:
+        enabled_key, account_key = account_fields[target["platformType"]]
+        payload[enabled_key] = True
+        payload[account_key] = target["accountName"]
+    return payload
+
+
+def _agent_latest_processed_material(video_id):
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        material = _find_latest_youtube_material(cursor, video_id, "youtube_processed")
+    material = dict(material) if material else {}
+    if not material or not str(material.get("file_path") or "").strip():
+        raise ValueError("该视频尚未有可发布的处理后成片，请先完成处理")
+    return material
+
+
+def _complete_agent_execution_proposal(proposal_id, session_id, result):
+    with _AGENT_EXECUTION_PROPOSALS_LOCK:
+        proposal = _AGENT_EXECUTION_PROPOSALS.get(proposal_id)
+        if proposal and proposal.get("sessionId") == session_id:
+            _AGENT_EXECUTION_PROPOSALS.pop(proposal_id, None)
+    return result
+
+
+def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, scheduled_at=""):
+    proposal_id = str(proposal_id or "").strip()
+    session_id = str(session_id or "").strip()
+    with _AGENT_EXECUTION_PROPOSALS_LOCK:
+        _cleanup_agent_execution_proposals()
+        proposal = _AGENT_EXECUTION_PROPOSALS.get(proposal_id)
+        if not proposal or proposal.get("sessionId") != session_id:
+            raise ValueError("该执行确认已失效，请重新让 Agent 生成提案")
+
+    action = proposal["action"]
+    video = _agent_execution_video({"videoId": proposal.get("videoId")})
+    resolved_targets = _agent_execution_targets(targets) if proposal.get("requiresTargets") else []
+    if action == "download":
+        if int(video.get("downloadStatus") or 0) == 1:
+            raise ValueError("该视频已下载，无需重复创建下载任务")
+        job = create_youtube_workflow_job({
+            **_agent_execution_workflow_payload(video),
+            "processVersion": PROCESS_VERSION_TRANSLATION,
+            "translationEnabled": False,
+            "highlightIntroEnabled": False,
+            "coverIntroEnabled": False,
+            "commentBurnEnabled": False,
+            "watermarkEnabled": False,
+            "watermarkText": "",
+            "contentSafetyReviewEnabled": False,
+        })
+        _submit_background_task("download", run_youtube_download_job, job["id"])
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "下载任务已创建"})
+    if action == "process":
+        if int(video.get("downloadStatus") or 0) != 1:
+            raise ValueError("该视频尚未下载，无法直接处理；请先让 Agent 创建下载任务")
+        job = create_youtube_workflow_job(_agent_execution_workflow_payload(video))
+        _submit_background_task("processing", run_youtube_translate_job, job["id"])
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理任务已创建"})
+    if action == "workflow_publish":
+        job = create_youtube_workflow_job(_agent_execution_workflow_payload(video, resolved_targets))
+        _submit_background_task(workflow_job_resource(job), run_youtube_workflow, job["id"])
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理并发布任务已创建"})
+    material = _agent_latest_processed_material(video.get("id") or "")
+    publish_payload = {
+        "title": (video.get("publishDraft") or {}).get("title") or video.get("title") or "YouTube 视频",
+        "description": (video.get("publishDraft") or {}).get("description") or "",
+        "tags": (video.get("publishDraft") or {}).get("tags") or [],
+        "fileList": [material.get("file_path")],
+        "targets": resolved_targets,
+    }
+    if action == "publish_scheduled":
+        publish_payload["scheduledAt"] = str(scheduled_at or "").strip()
+        task = create_scheduled_publish_task(publish_payload)
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "scheduledTask": task, "message": "定时发布任务已创建"})
+    result = _publish_payload(publish_payload)
+    return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "publish": result, "message": "发布任务已提交"})
 
 
 def _agent_result_cards(tool_results):
@@ -454,7 +1052,10 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
         iterations = int(state.get("iterations") or 0)
 
     yield _agent_sse_event("status", {"phase": "writing", "message": "正在整理回答"})
-    if tool_results and _agent_llm_available():
+    # Rule-recognized YouTube collection requests have a deterministic response
+    # and confirmation proposal. Do not let the general read-only reply model
+    # overwrite that response with an unrelated refusal.
+    if tool_results and _agent_llm_available() and not _agent_rule_lead_intent(message) and not _agent_execution_intent(message, page_context):
         try:
             reply, _, _ = _call_agent_contract(
                 _agent_stream_reply_messages(message, tool_results),
@@ -469,6 +1070,8 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
             _logging.exception("Agent 流式回答整理失败 session=%s，将使用降级回答", session_id)
     answer = answer.strip() or "我暂时没有查到结果。"
     cards, actions = _agent_result_cards(tool_results)
+    import_proposal = _create_agent_import_proposal(session_id, tool_results, page_context, message)
+    execution_proposal = _create_agent_execution_proposal(session_id, message, page_context) if not import_proposal else None
     actions = (state.get("safety_decision") or {}).get("actions") or actions
     safety_decision = state.get("safety_decision") or {"allowed": True, "category": "normal", "reason": ""}
     input_summary = {"message": message, "context": page_context, "session": {
@@ -479,6 +1082,8 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
         "answer": answer,
         "cards": cards,
         "actions": actions,
+        "importProposal": import_proposal,
+        "executionProposal": execution_proposal,
         "safetyDecision": safety_decision,
         "iterations": iterations,
     }
@@ -486,7 +1091,7 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
         finalized = _finalize_agent_chat_turn(
             session_id,
             answer,
-            {"cards": cards, "actions": actions, "safetyDecision": safety_decision, "iterations": iterations},
+            {"cards": cards, "actions": actions, "importProposal": import_proposal, "executionProposal": execution_proposal, "safetyDecision": safety_decision, "iterations": iterations},
             input_summary=input_summary,
             output=output,
             started_at=started_at,
@@ -505,6 +1110,8 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
         "answer": answer,
         "cards": cards,
         "actions": actions,
+        "importProposal": import_proposal,
+        "executionProposal": execution_proposal,
         "iterations": iterations,
         "safetyDecision": safety_decision,
         "sessionContext": {
@@ -525,7 +1132,7 @@ def _node_run_tools(state):
     results = []
     for name, args in state.get("selected_tools") or []:
         try:
-            results.append({"tool": name, "args": args, "result": _run_agent_tool(name, args)})
+            results.append({"tool": name, "args": args, "result": _run_agent_tool(name, args, session_id=state.get("session_id") or "")})
         except Exception as exc:
             results.append({"tool": name, "args": args, "error": str(exc)})
     state["tool_results"] = results
@@ -569,6 +1176,22 @@ def _node_react_loop(state):
         return state
     message = state.get("message") or ""
     context = state.get("context") or {}
+    execution_intent = _agent_execution_intent(message, context)
+    if execution_intent:
+        state["tool_results"] = []
+        state["observations"] = []
+        state["iterations"] = 0
+        state["answer"] = f"已为当前视频准备“{_AGENT_EXECUTION_ACTIONS[execution_intent]}”提案。请在下方核对视频、账号和时间后确认执行。"
+        return state
+    # Known YouTube discovery intents use local rules first. This keeps simple
+    # collection requests fast and prevents an LLM from being the write path.
+    if _agent_rule_lead_intent(message):
+        tool_results = _fallback_tool_results(message, state.get("session_id") or "")
+        state["tool_results"] = tool_results
+        state["observations"] = tool_results
+        state["iterations"] = 0
+        state["answer"] = sanitize_agent_output(_agent_fallback_answer(message, tool_results))
+        return state
     if _agent_llm_available():
         try:
             answer, tool_results, observations, iterations = _run_react_loop(
@@ -586,7 +1209,7 @@ def _node_react_loop(state):
         except Exception as exc:
             state["llmError"] = sanitize_agent_output(str(exc))
 
-    tool_results = _fallback_tool_results(message)
+    tool_results = _fallback_tool_results(message, state.get("session_id") or "")
     state["tool_results"] = tool_results
     state["observations"] = tool_results
     state["iterations"] = 0
@@ -642,17 +1265,21 @@ def _run_agent_chat_locked(message, session_id="", context=None):
         "messageCount": session_memory.get("messageCount", 0),
         "summaryThroughId": session_memory.get("summaryThroughId", 0),
     }}
+    import_proposal = _create_agent_import_proposal(session_id, tool_results, page_context, message)
+    execution_proposal = _create_agent_execution_proposal(session_id, message, page_context) if not import_proposal else None
     output = {
         "answer": answer,
         "toolResults": tool_results,
         "actions": (state.get("safety_decision") or {}).get("actions") or [],
+        "importProposal": import_proposal,
+        "executionProposal": execution_proposal,
         "safetyDecision": safety_decision,
         "iterations": iterations,
     }
     finalized = _finalize_agent_chat_turn(
         session_id,
         answer,
-        {"toolResults": tool_results, "actions": output["actions"], "safetyDecision": safety_decision, "iterations": iterations},
+        {"toolResults": tool_results, "actions": output["actions"], "importProposal": import_proposal, "executionProposal": execution_proposal, "safetyDecision": safety_decision, "iterations": iterations},
         input_summary=input_summary,
         output=output,
         started_at=started_at,
@@ -664,6 +1291,8 @@ def _run_agent_chat_locked(message, session_id="", context=None):
         "answer": answer,
         "toolResults": tool_results,
         "actions": output["actions"],
+        "importProposal": import_proposal,
+        "executionProposal": execution_proposal,
         "iterations": iterations,
         "safetyDecision": safety_decision,
         "sessionContext": {

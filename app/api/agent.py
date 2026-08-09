@@ -48,6 +48,57 @@ def agent_chat_stream():
     return response
 
 
+@app.route('/agents/import-proposals/<proposal_id>/confirm', methods=['POST'])
+def confirm_agent_import_proposal_route(proposal_id):
+    payload = request.get_json(silent=True) or {}
+    session_id = str(payload.get("sessionId") or "").strip()
+    selected_ids = payload.get("selectedIds")
+    targets = payload.get("targets")
+    if not session_id:
+        return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
+    if selected_ids is not None and not isinstance(selected_ids, list):
+        return jsonify({"code": 400, "msg": "候选视频格式不正确", "data": None}), 400
+    if targets is not None and not isinstance(targets, list):
+        return jsonify({"code": 400, "msg": "发布目标格式不正确", "data": None}), 400
+    try:
+        result = confirm_agent_import_proposal(proposal_id, session_id, selected_ids, targets)
+        backend_logger.info(
+            "Agent 线索导入完成 proposal_id=%s session_id=%s created=%s duplicate=%s failed=%s",
+            proposal_id, session_id, result.get("createdCount"), result.get("duplicateCount"), result.get("failedCount"),
+        )
+        return jsonify({"code": 200, "msg": "线索导入完成", "data": result}), 200
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        backend_logger.exception("Agent 线索导入失败 proposal_id=%s", proposal_id)
+        return jsonify({"code": 500, "msg": f"线索导入失败: {str(exc)}", "data": None}), 500
+
+
+@app.route('/agents/execution-proposals/<proposal_id>/confirm', methods=['POST'])
+def confirm_agent_execution_proposal_route(proposal_id):
+    payload = request.get_json(silent=True) or {}
+    session_id = str(payload.get("sessionId") or "").strip()
+    targets = payload.get("targets")
+    scheduled_at = str(payload.get("scheduledAt") or "").strip()
+    if not session_id:
+        return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
+    if targets is not None and not isinstance(targets, list):
+        return jsonify({"code": 400, "msg": "发布目标格式不正确", "data": None}), 400
+    try:
+        result = confirm_agent_execution_proposal(proposal_id, session_id, targets, scheduled_at)
+        backend_logger.info(
+            "Agent 执行提案已确认 proposal_id=%s session_id=%s action=%s",
+            proposal_id, session_id, result.get("action"),
+        )
+        return jsonify({"code": 200, "msg": result.get("message") or "任务已创建", "data": result}), 200
+    except (ValueError, WorkflowConflictError, AgentGuardError) as exc:
+        status = 409 if isinstance(exc, WorkflowConflictError) else getattr(exc, "status_code", 400)
+        return jsonify({"code": status, "msg": str(exc), "data": None}), status
+    except Exception as exc:
+        backend_logger.exception("Agent 执行提案确认失败 proposal_id=%s", proposal_id)
+        return jsonify({"code": 500, "msg": f"执行提案确认失败: {str(exc)}", "data": None}), 500
+
+
 @app.route('/agents/sessions', methods=['GET'])
 def agent_sessions():
     try:

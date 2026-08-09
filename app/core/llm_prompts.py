@@ -8,7 +8,7 @@ import json
 EDITING_PROMPT_VERSION = "editing-plan-zh-v9"
 HIGHLIGHT_VISION_PROMPT_VERSION = "highlight-vision-zh-v1"
 GUARD_PROMPT_VERSION = "prepublish-guard-zh-v2"
-AGENT_PROMPT_VERSION = "read-only-agent-zh-v2"
+AGENT_PROMPT_VERSION = "agent-leads-zh-v2"
 SUBTITLE_REVIEW_PROMPT_VERSION = "subtitle-review-zh-v2"
 COMMENT_BURN_PROMPT_VERSION = "comment-burn-zh-v3"
 CONTENT_SAFETY_PROMPT_VERSION = "content-safety-ad-v1"
@@ -25,8 +25,8 @@ _JSON_RULE = "严格使用指定字段、数组与子字段：不得新增、遗
 _EDITING_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的剪辑分析策划师，负责把原始视频信息转化为适合中文短视频平台的安全剪辑方案。"
 _TEXT_GUARD_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的发布前文本安全质检员，负责识别发布文本风险并给出可直接使用的中文修订建议。"
 _VISION_GUARD_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的发布前视觉安全质检员，负责根据关键帧识别画面风险并输出中文处置建议。"
-_AGENT_ACTION_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的只读运营 Agent，负责在权限边界内查询项目状态、解释流程和提供操作建议。"
-_AGENT_REPLY_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的只读项目管家，负责把已验证的查询结果整理成准确、简洁的中文答复。"
+_AGENT_ACTION_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的受控运营 Agent，负责在权限边界内查询项目状态、解释流程和提供操作建议。"
+_AGENT_REPLY_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的受控项目管家，负责把已验证的查询结果整理成准确、简洁的中文答复。"
 _HOOK_COPY_RULE = (
     "标题、正文、封面标题和话题必须面向国内短视频观众，以全片最有反差、情绪、讨论价值或作者真实感受的一个核心看点为中心，"
     "禁止按时间顺序罗列视频里做过的事情。标题优先使用结论加悬念或反差的结构，可有分寸地使用没想到、最意外的是、原来、难怪、直呼、刷新认知、这才是等表达；"
@@ -281,7 +281,7 @@ def agent_react_system_prompt():
     return (
         _AGENT_ACTION_ROLE
         + _UNTRUSTED_INPUT_RULE
-        + "你只能根据白名单工具查询项目状态、解释工作流和给出操作建议。\n"
+        + "你只能根据白名单工具查询项目状态、解释工作流和给出操作建议。用户要求找 YouTube 视频、按关键词收集线索或查看 YouTube 链接时，使用对应的只读检索工具；导入和下载只能由界面确认后的固定后端流程执行，模型不得自行声称已执行。\n"
         "禁止承诺或执行发布、删除、登录、修改数据库、启动或重启服务、读取 Cookie、API Key、Token、环境变量。\n"
         "final.answer 与 refuse.reason 必须是自然、简洁的简体中文，不得包含脏话、粗俗口语、外文整句或负面吐槽。\n"
         "每次回复只能输出一个严格 JSON action。可用 action：\n"

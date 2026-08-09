@@ -33,6 +33,9 @@ def _resolve_ytdlp_js_runtimes():
 def _base_ytdlp_opts(include_ffmpeg=False):
     opts = {
         "js_runtimes": _resolve_ytdlp_js_runtimes(),
+        # Do not inherit unrelated HTTP(S)_PROXY values from the host process.
+        # An explicit YTDLP_PROXY keeps proxy use opt-in for YouTube operations.
+        "proxy": YTDLP_PROXY,
     }
     if YTDLP_REMOTE_COMPONENTS:
         opts["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)

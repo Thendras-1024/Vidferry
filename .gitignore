@@ -122,6 +122,10 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.uv-cache/
+.npm-cache/
+.postgres-data/
+.runtime/
 env/
 venv/
 ENV/

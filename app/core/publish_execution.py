@@ -1,6 +1,10 @@
 """多平台发布执行:发布任务构建、隔离子进程调用与账号失效处理。"""
 
 
+import re as _re
+import threading
+
+
 from app.utils.time_util import _build_publish_datetimes, _format_publish_schedule, _parse_publish_schedule
 
 
@@ -333,19 +337,53 @@ def _run_workflow_publish_command(command, platform_type, account_file, timeout=
     if result.returncode == 0:
         return result
     output = "\n".join(part for part in [(result.stderr or "").strip(), (result.stdout or "").strip()] if part)
+    backend_logger.error(
+        "workflow platform publish command failed platform_type=%s returncode=%s output=%s",
+        platform_type,
+        result.returncode,
+        _publish_failure_log_text(output),
+    )
     if _is_cookie_invalid_error(output):
         _mark_account_abnormal(platform_type, account_file, output)
     raise RuntimeError(_publish_command_failure(output, f"{platform_name(platform_type)} 发布失败"))
 
 
 def _publish_command_failure(output, fallback="发布失败"):
-    """保留明确发布错误码；未知故障仅返回最后一条原始输出。"""
-    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    """优先返回可操作的发布错误，不将正常的锁释放日志误作失败原因。"""
+    lines = _publish_failure_lines(output)
+    if _is_publish_rate_limited(lines):
+        return "VF-PUBLISH-RATE-LIMIT: 平台限制该账号的上传频率，请稍后重试；无需重新下载或处理视频。"
     for line in reversed(lines):
         marker = line.find("VF-PUBLISH-")
         if marker >= 0:
             return line[marker:]
-    return lines[-1] if lines else fallback
+    for line in reversed(lines):
+        lowered = line.lower()
+        if any(marker in lowered for marker in ("error", "failed", "失败", "拒绝", "invalid", "forbidden", "unauthorized")):
+            return line
+    for line in reversed(lines):
+        if "释放上传锁" not in line and "upload_lock" not in line.lower():
+            return line
+    return fallback
+
+
+def _publish_failure_lines(output):
+    ansi_pattern = _re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    return [
+        ansi_pattern.sub("", line).strip()
+        for line in str(output or "").splitlines()
+        if ansi_pattern.sub("", line).strip()
+    ]
+
+
+def _is_publish_rate_limited(lines):
+    text = "\n".join(lines).lower()
+    return "upload rate limit" in text or "code: 601" in text or "上传视频过快" in text
+
+
+def _publish_failure_log_text(output):
+    text = " | ".join(_publish_failure_lines(output))
+    return text[:1600] if text else "<empty publish runner output>"
 
 
 def _execute_publish_target(task):

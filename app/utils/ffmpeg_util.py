@@ -8,8 +8,12 @@ from app.config import FFMPEG_COMMAND, VIDEO_ENCODER, VIDEO_NVENC_CQ, VIDEO_NVEN
 
 def _resolve_ffmpeg_command():
     configured = str(FFMPEG_COMMAND or "").strip()
-    if configured and (shutil.which(configured) or Path(configured).exists()):
-        return configured
+    if configured:
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+        if Path(configured).exists():
+            return configured
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()

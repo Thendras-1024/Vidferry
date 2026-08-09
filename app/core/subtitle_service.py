@@ -134,7 +134,7 @@ def _get_video_info(media_file):
 
 
 def _asr_failure_kind(exc):
-    text = str(exc or "").lower()
+    text = f"{exc.__class__.__name__}:{exc}".lower() if exc else ""
     if "huggingface" in text or "hfhub" in text or "localentrynotfound" in text:
         return "WHISPER_MODEL_DOWNLOAD_FAILED"
     if "cublas64_12.dll" in text:

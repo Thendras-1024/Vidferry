@@ -67,6 +67,22 @@ YOUTUBE_PROCESSED_DIR = Path(os.environ.get("YOUTUBE_PROCESSED_DIR", str(YOUTUBE
 YOUTUBE_TRANSCRIPT_DIR = Path(os.environ.get("YOUTUBE_TRANSCRIPT_DIR", str(BASE_DIR / "videos" / "transcripts")))
 YTDLP_JS_RUNTIME = _env_text("YTDLP_JS_RUNTIME")
 YTDLP_JS_RUNTIME_PATH = _env_text("YTDLP_JS_RUNTIME_PATH")
+YTDLP_PROXY = _env_text("YTDLP_PROXY")
+HF_PROXY = _env_text("HF_PROXY")
+# Keep the backend independent from stale host-level proxy variables. A real
+# YouTube proxy must be declared explicitly through YTDLP_PROXY.
+if not YTDLP_PROXY:
+    for _proxy_env_name in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ):
+        os.environ.pop(_proxy_env_name, None)
+if HF_PROXY:
+    for _proxy_env_name in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ):
+        os.environ[_proxy_env_name] = HF_PROXY
 YTDLP_REMOTE_COMPONENTS = [
     item.strip()
     for item in _env_text("YTDLP_REMOTE_COMPONENTS", "ejs:github").split(",")

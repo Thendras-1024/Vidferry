@@ -736,6 +736,29 @@ def validate_agent_reply(value):
     if not isinstance(value, dict):
         _fail(["顶层必须是对象"])
     _fixed_fields(value, {"answer"}, "Agent 回答", violations)
-    result = {"answer": _chinese_text(value.get("answer"), "answer", violations)}
+    # Agent replies may retain proper nouns such as YouTube, product names,
+    # video titles, and platform names returned by read-only tools.
+    answer = _chinese_text(value.get("answer"), "answer", violations, validate_text=False)
+    if answer and len(_HAN_RE.findall(answer)) < 2:
+        violations.append("answer 必须以简体中文为主")
+    if answer and contains_disallowed_text(answer):
+        violations.append("answer 不得包含粗俗、攻击或负面吐槽表达")
+    result = {"answer": answer}
     _fail(violations)
     return result
+
+
+def validate_agent_search_translation(value):
+    violations = []
+    if not isinstance(value, dict):
+        _fail(["top-level value must be an object"])
+    _fixed_fields(value, {"query"}, "agent search translation", violations)
+    query = str(value.get("query") or "").strip()
+    if not 2 <= len(query) <= 180:
+        violations.append("query length must be between 2 and 180")
+    if _HAN_RE.search(query):
+        violations.append("query must be English")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .,'&()!?:+/_-]*", query or ""):
+        violations.append("query contains unsupported characters")
+    _fail(violations)
+    return {"query": query}

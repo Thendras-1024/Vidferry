@@ -240,7 +240,7 @@
             <strong>Vidferry Agent</strong>
           </div>
           <el-tag size="small" effect="plain" :type="agentConfigWarning ? 'warning' : 'success'">
-            只读
+            操作需确认
           </el-tag>
           <el-tooltip content="历史会话" placement="bottom">
             <el-button text circle title="历史会话" aria-label="历史会话" @click="openAgentHistory">
@@ -258,7 +258,7 @@
             <el-icon><ChatDotRound /></el-icon>
           </div>
           <div class="agent-context-copy">
-            <strong>只读项目管家</strong>
+            <strong>视频工作流助手</strong>
             <span>{{ agentContextLabel }} · {{ agentConfigWarning ? '等待视觉模型' : '在线' }}</span>
           </div>
         </div>
@@ -300,6 +300,98 @@
               <div v-for="item in card.items || []" :key="`${item.title}-${item.detail || item.status}`" class="agent-card-item">
                 <strong>{{ item.title }}</strong>
                 <span>{{ item.detail || item.channel || item.status }}</span>
+              </div>
+            </div>
+            <div v-if="message.importProposal" class="agent-import-proposal">
+              <div class="agent-card-title">
+                <span>待导入线索</span>
+                <strong>{{ message.importProposal.items?.length || 0 }}</strong>
+              </div>
+              <el-checkbox-group v-model="message.selectedCandidateIds" class="agent-import-candidates">
+                <div
+                  v-for="item in message.importProposal.items || []"
+                  :key="`${message.id}-${item.id}`"
+                  class="agent-import-candidate"
+                >
+                  <el-checkbox
+                    :label="item.id"
+                    :disabled="message.imported || message.importing"
+                    :aria-label="`选择 ${item.title || '视频'}`"
+                  ><span class="agent-import-checkbox-label" aria-hidden="true"></span></el-checkbox>
+                  <div class="agent-import-copy">
+                  <span class="agent-import-title">{{ item.title || '未命名视频' }}</span>
+                  <span class="agent-import-meta">{{ [item.channel, item.duration, item.publishedAt].filter(Boolean).join(' · ') }}</span>
+                  </div>
+                </div>
+              </el-checkbox-group>
+              <el-select
+                v-if="message.importProposal.requiresTargets"
+                v-model="message.selectedImportAccountIds"
+                class="agent-execution-accounts"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择发布账号"
+                :disabled="message.imported || message.importing"
+                @change="normalizeImportAccountSelection(message)"
+              >
+                <el-option
+                  v-for="account in message.importProposal.availableAccounts || []"
+                  :key="`${message.id}-import-${account.id}`"
+                  :label="`${account.platformName} · ${account.name}`"
+                  :value="account.id"
+                />
+              </el-select>
+              <div v-if="message.imported" class="agent-import-result">{{ message.importResult }}</div>
+              <div v-else class="agent-import-actions">
+                <el-button size="small" :disabled="message.importing" @click="message.selectedCandidateIds = []">取消选择</el-button>
+                <el-button type="primary" size="small" :loading="message.importing" :disabled="!canConfirmAgentImport(message)" @click="confirmAgentImport(message)">
+                  确认{{ message.importProposal.actionLabel || '导入' }} {{ (message.selectedCandidateIds || []).length }} 个线索
+                </el-button>
+              </div>
+            </div>
+            <div v-if="message.executionProposal" class="agent-execution-proposal">
+              <div class="agent-card-title">
+                <span>待执行操作</span>
+                <strong>{{ message.executionProposal.actionLabel }}</strong>
+              </div>
+              <div class="agent-execution-video">
+                <strong>{{ message.executionProposal.video?.title || '未命名视频' }}</strong>
+                <span>{{ [message.executionProposal.video?.channel, executionVideoStatus(message.executionProposal.video)].filter(Boolean).join(' · ') }}</span>
+              </div>
+              <el-select
+                v-if="message.executionProposal.requiresTargets"
+                v-model="message.selectedExecutionAccountIds"
+                class="agent-execution-accounts"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择发布账号"
+                :disabled="message.executed || message.executing"
+                @change="normalizeExecutionAccountSelection(message)"
+              >
+                <el-option
+                  v-for="account in message.executionProposal.availableAccounts || []"
+                  :key="`${message.id}-${account.id}`"
+                  :label="`${account.platformName} · ${account.name}`"
+                  :value="account.id"
+                />
+              </el-select>
+              <el-date-picker
+                v-if="message.executionProposal.requiresSchedule"
+                v-model="message.executionScheduledAt"
+                class="agent-execution-schedule"
+                type="datetime"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                format="YYYY-MM-DD HH:mm"
+                placeholder="选择发布时间"
+                :disabled="message.executed || message.executing"
+              />
+              <div v-if="message.executed" class="agent-execution-result">{{ message.executionResult }}</div>
+              <div v-else class="agent-import-actions">
+                <el-button type="primary" size="small" :loading="message.executing" :disabled="!canConfirmAgentExecution(message)" @click="confirmAgentExecution(message)">
+                  确认{{ message.executionProposal.actionLabel }}
+                </el-button>
               </div>
             </div>
             <div v-if="message.actions?.length" class="agent-actions">
@@ -467,12 +559,8 @@ let restoringAgentSessionId = ''
 let agentRestoreRequestId = 0
 
 const agentQuickQuestions = [
-  '完整流程现在有哪些步骤？',
-  '现在待处理的视频有哪些？',
-  '已处理但还没发布的视频有哪些？',
-  '已发布的视频有哪些？',
-  '最近失败的任务是什么原因？',
-  '账号状态怎么样？'
+  '找 5 个关于 AI 效率工具的 YouTube 视频，放入线索列表',
+  '现在待处理的视频有哪些？'
 ]
 
 const agentRouteLabels = {
@@ -546,7 +634,13 @@ const mapAgentHistoryMessage = item => ({
   content: item.content || '',
   context: item.context || {},
   cards: item.context?.cards || [],
-  actions: item.context?.actions || []
+  actions: item.context?.actions || [],
+  importProposal: item.context?.importProposal || null,
+  selectedCandidateIds: (item.context?.importProposal?.items || []).map(candidate => candidate.id),
+  selectedImportAccountIds: defaultImportAccountIds(item.context?.importProposal),
+  executionProposal: item.context?.executionProposal || null,
+  selectedExecutionAccountIds: [],
+  executionScheduledAt: ''
 })
 
 const pushAgentMessage = (role, content, extra = {}) => {
@@ -680,6 +774,12 @@ const sendAgentMessage = async (presetMessage = '', extraContext = {}) => {
         pending.content = data.answer || pending.content || '我暂时没有查到结果。'
         pending.cards = data.cards || []
         pending.actions = data.actions || []
+        pending.importProposal = data.importProposal || null
+        pending.selectedCandidateIds = (data.importProposal?.items || []).map(candidate => candidate.id)
+        pending.selectedImportAccountIds = defaultImportAccountIds(data.importProposal)
+        pending.executionProposal = data.executionProposal || null
+        pending.selectedExecutionAccountIds = defaultExecutionAccountIds(data.executionProposal)
+        pending.executionScheduledAt = ''
         saveAgentSessionId(data.sessionId)
       } else if (event === 'error') {
         throw new Error(data.message || 'Agent 暂时不可用')
@@ -792,6 +892,174 @@ const confirmAgentAction = async (action) => {
     agentDrawerVisible.value = false
   } catch (_) {
     // 用户取消导航不需要提示。
+  }
+}
+
+const defaultImportAccountIds = (proposal) => {
+  const hints = new Set(proposal?.platformHints || [])
+  if (hints.size === 0) return []
+  const selectedPlatforms = new Set()
+  return (proposal?.availableAccounts || []).reduce((ids, account) => {
+    if (!hints.has(account.platformType) || selectedPlatforms.has(account.platformType)) return ids
+    selectedPlatforms.add(account.platformType)
+    ids.push(account.id)
+    return ids
+  }, [])
+}
+
+const importTargets = (message) => {
+  const selectedIds = new Set((message?.selectedImportAccountIds || []).map(value => Number(value)))
+  return (message?.importProposal?.availableAccounts || [])
+    .filter(account => selectedIds.has(Number(account.id)))
+    .map(account => ({ platformType: account.platformType, accountId: account.id }))
+}
+
+const normalizeImportAccountSelection = (message) => {
+  const accounts = new Map((message?.importProposal?.availableAccounts || []).map(account => [Number(account.id), account]))
+  const selectedPlatforms = new Set()
+  message.selectedImportAccountIds = (message.selectedImportAccountIds || [])
+    .slice()
+    .reverse()
+    .filter(accountId => {
+      const account = accounts.get(Number(accountId))
+      if (!account || selectedPlatforms.has(account.platformType)) return false
+      selectedPlatforms.add(account.platformType)
+      return true
+    })
+    .reverse()
+}
+
+const canConfirmAgentImport = (message) => {
+  const proposal = message?.importProposal
+  if (!proposal?.proposalId || message.importing || message.imported || !(message.selectedCandidateIds || []).length) return false
+  return !proposal.requiresTargets || importTargets(message).length > 0
+}
+
+const importConfirmationText = (proposal, count, targetCount) => {
+  if (proposal?.requestedAction === 'workflow_publish') {
+    return `将 ${count} 个候选视频存入线索列表，并创建下载、处理和发布任务，目标为 ${targetCount} 个平台账号。`
+  }
+  if (proposal?.requestedAction === 'workflow_process') {
+    return `将 ${count} 个候选视频存入线索列表，并创建下载和处理任务。不会自动发布。`
+  }
+  if (proposal?.requestedAction === 'download') {
+    return `将 ${count} 个候选视频存入线索列表，并创建下载任务。不会开始处理或发布。`
+  }
+  return `将 ${count} 个候选视频存入线索列表。不会开始下载、处理或发布。`
+}
+
+const confirmAgentImport = async (message) => {
+  const proposal = message?.importProposal
+  const selectedIds = message?.selectedCandidateIds || []
+  const targets = importTargets(message)
+  if (!canConfirmAgentImport(message) || !agentSessionId.value) return
+  try {
+    await ElMessageBox.confirm(
+      importConfirmationText(proposal, selectedIds.length, targets.length),
+      '确认导入线索',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (_) {
+    return
+  }
+  message.importing = true
+  try {
+    const res = await agentApi.confirmImportProposal(proposal.proposalId, {
+      sessionId: agentSessionId.value,
+      selectedIds,
+      targets
+    })
+    const data = res?.data || {}
+    message.imported = true
+    message.importResult = `已导入 ${data.createdCount || 0} 个线索，重复 ${data.duplicateCount || 0} 个${data.downloadJobCount ? `，已创建 ${data.downloadJobCount} 个下载任务` : ''}${data.workflowJobCount ? `，已创建 ${data.workflowJobCount} 个${proposal.requestedAction === 'workflow_publish' ? '处理发布' : '处理'}任务` : ''}${data.failedCount ? `，失败 ${data.failedCount} 个` : ''}。`
+    ElMessage.success(message.importResult)
+    window.dispatchEvent(new CustomEvent('vidferry:youtube-leads-imported'))
+  } catch (error) {
+    ElMessage.error(error?.message || '导入线索失败')
+  } finally {
+    message.importing = false
+  }
+}
+
+const executionVideoStatus = (video = {}) => {
+  if (Number(video.publishStatus) === 1) return '已发布'
+  if (Number(video.translateStatus) === 1) return '已处理'
+  if (Number(video.downloadStatus) === 1) return '已下载'
+  return '待下载'
+}
+
+const defaultExecutionAccountIds = (proposal) => {
+  const hints = new Set(proposal?.platformHints || [])
+  if (hints.size === 0) return []
+  const selectedPlatforms = new Set()
+  return (proposal?.availableAccounts || []).reduce((ids, account) => {
+    if (!hints.has(account.platformType) || selectedPlatforms.has(account.platformType)) return ids
+    selectedPlatforms.add(account.platformType)
+    ids.push(account.id)
+    return ids
+  }, [])
+}
+
+const executionTargets = (message) => {
+  const selectedIds = new Set((message?.selectedExecutionAccountIds || []).map(value => Number(value)))
+  return (message?.executionProposal?.availableAccounts || [])
+    .filter(account => selectedIds.has(Number(account.id)))
+    .map(account => ({ platformType: account.platformType, accountId: account.id }))
+}
+
+const normalizeExecutionAccountSelection = (message) => {
+  const accounts = new Map((message?.executionProposal?.availableAccounts || []).map(account => [Number(account.id), account]))
+  const selectedPlatforms = new Set()
+  message.selectedExecutionAccountIds = (message.selectedExecutionAccountIds || [])
+    .slice()
+    .reverse()
+    .filter(accountId => {
+      const account = accounts.get(Number(accountId))
+      if (!account || selectedPlatforms.has(account.platformType)) return false
+      selectedPlatforms.add(account.platformType)
+      return true
+    })
+    .reverse()
+}
+
+const canConfirmAgentExecution = (message) => {
+  const proposal = message?.executionProposal
+  if (!proposal?.proposalId || message.executing || message.executed) return false
+  if (proposal.requiresTargets && executionTargets(message).length === 0) return false
+  return !proposal.requiresSchedule || Boolean(message.executionScheduledAt)
+}
+
+const confirmAgentExecution = async (message) => {
+  const proposal = message?.executionProposal
+  if (!canConfirmAgentExecution(message) || !agentSessionId.value) return
+  const targets = executionTargets(message)
+  const targetText = targets.length ? `，发布到 ${targets.length} 个平台账号` : ''
+  const scheduleText = proposal.requiresSchedule ? `，计划时间为 ${message.executionScheduledAt}` : ''
+  try {
+    await ElMessageBox.confirm(
+      `将对“${proposal.video?.title || '当前视频'}”执行“${proposal.actionLabel}”${targetText}${scheduleText}。确认后会创建实际任务。`,
+      '确认执行提案',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (_) {
+    return
+  }
+  message.executing = true
+  try {
+    const res = await agentApi.confirmExecutionProposal(proposal.proposalId, {
+      sessionId: agentSessionId.value,
+      targets,
+      scheduledAt: message.executionScheduledAt || ''
+    })
+    const data = res?.data || {}
+    message.executed = true
+    message.executionResult = data.message || `${proposal.actionLabel}任务已创建。`
+    ElMessage.success(message.executionResult)
+    window.dispatchEvent(new CustomEvent('vidferry:youtube-leads-imported'))
+  } catch (error) {
+    ElMessage.error(error?.message || '执行提案失败')
+  } finally {
+    message.executing = false
   }
 }
 
@@ -1484,6 +1752,121 @@ onBeforeUnmount(() => {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+.agent-import-proposal {
+  overflow: hidden;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.agent-import-candidates {
+  display: grid;
+}
+
+.agent-import-candidate {
+  display: flex;
+  width: 100%;
+  min-height: 54px;
+  align-items: center;
+  padding: 9px 10px;
+  border-top: 1px solid $border-lighter;
+}
+
+.agent-import-candidate :deep(.el-checkbox) {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.agent-import-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+  padding-left: 10px;
+  line-height: 1.35;
+}
+
+.agent-import-title,
+.agent-import-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-import-title {
+  color: $text-primary;
+  font-size: 12px;
+}
+
+.agent-import-meta,
+.agent-import-result {
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.agent-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid $border-lighter;
+}
+
+.agent-import-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
+.agent-import-result {
+  padding: 10px;
+  border-top: 1px solid $border-lighter;
+}
+
+.agent-execution-proposal {
+  overflow: hidden;
+  border: 1px solid #f6c977;
+  border-radius: 6px;
+  background: #fffdf7;
+}
+
+.agent-execution-video {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-top: 1px solid #f7dfad;
+}
+
+.agent-execution-video strong,
+.agent-execution-video span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-execution-video strong {
+  color: $text-primary;
+  font-size: 12px;
+}
+
+.agent-execution-video span,
+.agent-execution-result {
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.agent-execution-accounts,
+.agent-execution-schedule {
+  width: calc(100% - 20px);
+  margin: 10px 10px 0;
+}
+
+.agent-execution-result {
+  padding: 10px;
+  border-top: 1px solid #f7dfad;
 }
 
 .agent-actions {

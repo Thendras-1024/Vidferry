@@ -922,6 +922,7 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
     skipped_platforms = []
     published_platform_types = _published_platform_types_for_video(latest_job.get("videoId"))
     publish_event_id = start_workflow_event(publish_job, "publish", "开始发布", input_file_path=processed_file)
+    publishing_platform_type = 0
     publish_specs = [
         (3, latest_job.get("account") or "", _publish_to_douyin),
         (5, latest_job.get("bilibiliAccount") or "", _publish_to_bilibili),
@@ -931,6 +932,7 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
     ]
     try:
         for platform_type, account_name, command_factory in publish_specs:
+            publishing_platform_type = platform_type
             if platform_type in published_platform_types:
                 skipped_platforms.append(platform_name(platform_type))
                 backend_logger.info(
@@ -943,8 +945,10 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             if command:
                 publish_commands.append(command)
     except Exception as exc:
-        finish_workflow_event(publish_event_id, "failed", _workflow_error_fields(exc)["error_reason"])
-        raise
+        platform_label = platform_name(publishing_platform_type) if publishing_platform_type else "目标平台"
+        publish_error = RuntimeError(f"PUBLISH_FAILED:{platform_label}:{str(exc)}")
+        finish_workflow_event(publish_event_id, "failed", _workflow_error_fields(publish_error)["error_reason"])
+        raise publish_error from exc
 
     final_message = "任务完成"
     if not publish_commands:
@@ -1203,7 +1207,9 @@ def run_youtube_workflow(job_id):
     except Exception as exc:
         _settle_background_futures(intro_future, analysis_future, comment_future)
         error_fields = _log_workflow_failure("完整工作流", job_id, exc)
-        finish_workflow_event(editing_event_id or analysis_event_id or burn_event_id or subtitle_event_id or transcript_event_id or download_event_id or workflow_event_id, "failed", error_fields["error_reason"])
+        latest_job = get_youtube_workflow_job(job_id)
+        failure_event_id = workflow_event_id if latest_job.get("step") == "publish" else (editing_event_id or analysis_event_id or burn_event_id or subtitle_event_id or transcript_event_id or download_event_id or workflow_event_id)
+        finish_workflow_event(failure_event_id, "failed", error_fields["error_reason"])
         if workflow_event_id:
             finish_workflow_event(workflow_event_id, "failed", error_fields["error_reason"])
         finish_open_workflow_events(job_id, "failed", error_fields["error_reason"])

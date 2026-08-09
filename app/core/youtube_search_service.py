@@ -94,6 +94,7 @@ def _search_youtube_with_ytdlp(query, limit):
             "thumbnail": (item.get("thumbnail") or ""),
             "duration": item.get("duration_string") or "",
             "durationSeconds": float(item.get("duration") or 0),
+            "viewCount": int(item.get("view_count") or 0),
         })
     return results
 
@@ -173,6 +174,7 @@ def _video_from_ytdlp_info(item, fallback_url=""):
         "thumbnail": item.get("thumbnail") or "",
         "duration": item.get("duration_string") or "",
         "durationSeconds": float(item.get("duration") or 0),
+        "viewCount": int(item.get("view_count") or 0),
     }
 
 

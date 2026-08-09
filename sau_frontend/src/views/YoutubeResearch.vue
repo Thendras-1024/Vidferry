@@ -555,6 +555,10 @@
                 </el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
+                    <el-dropdown-item @click="askAgentAboutVideo(row)">
+                      <el-icon><ChatDotRound /></el-icon>
+                      <span>交给 Agent</span>
+                    </el-dropdown-item>
                     <el-dropdown-item @click="copyUrl(row.url)">
                       <el-icon><DocumentCopy /></el-icon>
                       <span>复制链接</span>
@@ -1027,7 +1031,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { ChatDotRound, Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
@@ -3019,6 +3023,28 @@ const statusChipClass = (type, status) => {
   return translateStatusType(status) === 'success' ? 'is-success' : 'is-muted'
 }
 
+const askAgentAboutVideo = (row) => {
+  window.dispatchEvent(new CustomEvent('vidferry:ask-agent', {
+    detail: {
+      videoContext: {
+        source: 'youtube-research',
+        videoId: String(row?.id || ''),
+        title: row?.title || '',
+        url: row?.url || '',
+        channel: row?.channel || '',
+        subscribers: row?.subscribers || '',
+        sourcePublishedAt: row?.publishedAt || '',
+        duration: row?.duration || '',
+        processVersion: row?.processVersion || '',
+        downloadStatus: Number(row?.downloadStatus || 0),
+        translateStatus: Number(row?.translateStatus || 0),
+        publishStatus: Number(row?.publishStatus || 0),
+        publishedPlatforms: (row?.publishedPlatforms || []).map(platform => platform.name || '')
+      }
+    }
+  }))
+}
+
 const copyUrl = async (url) => {
   if (!url) return
   try {
@@ -3042,6 +3068,10 @@ const copyText = async (text) => {
   }
 }
 
+const handleAgentLeadsImported = () => {
+  loadVideos(false, { force: true })
+}
+
 onMounted(async () => {
   loadingWorkflowSettings = true
   await Promise.all([loadBilibiliCategories(), loadAccounts(), videoGroupStore.load()])
@@ -3060,6 +3090,7 @@ onMounted(async () => {
   await consumeFocusJobQuery()
   consumeAgentStatusQuery()
   window.addEventListener('beforeunload', handleBeforeUnload)
+  window.addEventListener('vidferry:youtube-leads-imported', handleAgentLeadsImported)
 })
 
 watch(() => route.query.openSettings, () => {
@@ -3085,6 +3116,7 @@ onBeforeUnmount(() => {
     delete window.__VIDFERRY_OPEN_PROCESS_SETTINGS__
   }
   window.removeEventListener('beforeunload', handleBeforeUnload)
+  window.removeEventListener('vidferry:youtube-leads-imported', handleAgentLeadsImported)
   if (jobsTimer) {
     window.clearTimeout(jobsTimer)
     jobsTimer = null
