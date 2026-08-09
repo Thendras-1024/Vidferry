@@ -8,7 +8,9 @@ from app.core.subtitle_review import review_translated_segments
 
 
 # 词级时间戳仅用于把较长转写段拆为可读的短语，不暴露为用户配置。
-CUE_SOFT_PAUSE_SECONDS = 0.45
+# 轻微停顿不应单独触发字幕切换，否则一句短话会被词级时间戳拆成多条。
+# 只有接近目标显示时长时才利用轻微停顿切分；明显停顿仍由硬停顿规则处理。
+CUE_SOFT_PAUSE_SECONDS = 0.55
 CUE_HARD_PAUSE_SECONDS = 0.8
 CUE_MIN_DURATION_SECONDS = 1.2
 CUE_TARGET_DURATION_SECONDS = 3.8
@@ -600,8 +602,8 @@ def _build_subtitle_cues(segments, language):
                 or _visible_text_length(current_text) >= max_chars
                 or (
                     len(current) >= CUE_MIN_VISIBLE_WORDS
-                    and duration >= CUE_MIN_DURATION_SECONDS
-                    and (gap >= CUE_SOFT_PAUSE_SECONDS or duration >= CUE_TARGET_DURATION_SECONDS)
+                    and duration >= CUE_TARGET_DURATION_SECONDS
+                    and gap >= CUE_SOFT_PAUSE_SECONDS
                 )
             )
             if should_break:
@@ -742,6 +744,43 @@ def _split_rendered_cue(cue, subtitles, language):
     return rendered
 
 
+def _merge_rendered_fragment_cues(cues, language, max_visible_chars):
+    """合并跨 Whisper segment 的短碎片，保留明显句末和屏幕长度边界。"""
+    merged = []
+    sentence_endings = ".!?。！？"
+    for cue in cues or []:
+        if not merged:
+            merged.append(cue)
+            continue
+        previous = merged[-1]
+        gap = float(cue.get("start") or 0) - float(previous.get("end") or 0)
+        previous_display = str(previous.get("subtitle") or previous.get("text") or "").strip()
+        current_display = str(cue.get("subtitle") or cue.get("text") or "").strip()
+        subtitle_parts = [part for part in (previous_display, current_display) if part]
+        combined_text = ("" if _is_cjk_language(language) else " ").join(subtitle_parts)
+        combined_duration = float(cue.get("end") or 0) - float(previous.get("start") or 0)
+        source_text = str(previous.get("text") or "").rstrip()
+        can_merge = (
+            gap >= 0
+            and gap < CUE_SOFT_PAUSE_SECONDS
+            and not source_text.endswith(tuple(sentence_endings))
+            and combined_duration <= CUE_MAX_DURATION_SECONDS
+            and _visible_text_length(combined_text) <= max_visible_chars
+            and (
+                _visible_text_length(previous_display) <= max_visible_chars // 2
+                or _visible_text_length(current_display) <= max_visible_chars // 2
+            )
+        )
+        if not can_merge:
+            merged.append(cue)
+            continue
+        previous["end"] = cue.get("end")
+        previous["subtitle"] = combined_text
+        previous["text"] = " ".join(part for part in (source_text, str(cue.get("text") or "").strip()) if part)
+        previous["words"] = list(previous.get("words") or []) + list(cue.get("words") or [])
+    return merged
+
+
 def _assign_translated_cues(cues, translated_segments, language, max_single_line_chars=0):
     """把按原段落翻译的结果可靠地映射回短语 cue。"""
     by_source = {}
@@ -767,6 +806,8 @@ def _assign_translated_cues(cues, translated_segments, language, max_single_line
         for cue, subtitle in zip(active_cues, allocated):
             subtitles = _split_translated_subtitle(subtitle, max_single_line_chars) if max_single_line_chars else [subtitle]
             rendered.extend(_split_rendered_cue(cue, subtitles, language))
+    if max_single_line_chars:
+        rendered = _merge_rendered_fragment_cues(rendered, language, max_single_line_chars)
     return rendered
 
 
@@ -819,7 +860,7 @@ def _comment_burn_layout(video_info):
         "y": max(8, round(80 * vertical_scale)),
         "avatarSize": avatar_size,
         "textX": max(8, round(24 * horizontal_scale)),
-        "textWidth": max(80, width - max(8, round(24 * horizontal_scale)) - margin),
+        "textWidth": max(80, round(width * 4 / 7)),
         "metaFontSize": meta_font_size,
         "textFontSize": text_font_size,
         "translationFontSize": translation_font_size,
@@ -876,7 +917,7 @@ def _append_comment_burn_ass(dialogue_lines, comments, video_info):
     for comment in comments:
         start = _format_ass_timestamp(comment.get("displayStart"))
         end = _format_ass_timestamp(comment.get("displayEnd"))
-        motion = r"\fad(600,360)\fscx94\fscy94\t(0,300,\fscx102\fscy102)\t(300,540,\fscx100\fscy100)\t(1600,2150,\fscx101\fscy101)\t(2150,2700,\fscx100\fscy100)\t(4200,4750,\fscx101\fscy101)\t(4750,5300,\fscx100\fscy100)"
+        motion = r"\fad(2000,1000)\fscx94\fscy94\t(0,1000,\fscx102\fscy102)\t(1000,2000,\fscx100\fscy100)\t(4000,5000,\fscx101\fscy101)\t(5000,6000,\fscx100\fscy100)"
         author = _escape_ass_text(comment.get("author") or "")
         time_text = _escape_ass_text(comment.get("timeText") or "")
         meta = author + (f"  {time_text}" if time_text else "") + f"  👍 {_comment_like_count(comment.get('likeCount'))}"
@@ -899,7 +940,7 @@ def _resolve_comment_burn_snapshot(job, comment_future, duration):
         snapshot = comment_future.result() if comment_future else {"status": "skipped", "comments": [], "reason": "评论任务未启动"}
     except Exception as exc:
         snapshot = {"status": "failed", "comments": [], "reason": f"评论任务异常：{str(exc)[:160]}"}
-    scheduled = schedule_comment_burn(snapshot, duration)
+    scheduled = schedule_comment_burn(snapshot, duration, job.get("commentBurnCount"))
     signature = comment_burn_signature(job)
     save_youtube_comment_burn_snapshot(job.get("videoId"), scheduled, signature, scheduled.get("status"))
     return scheduled
@@ -993,10 +1034,10 @@ def _comment_avatar_filter_complex(ass_file, video_filters, avatar_assets, video
         output = f"comment_video_{index}"
         display_duration = end - start
         avatar_y = _comment_avatar_y(layout, asset)
-        entrance_end = start + 0.48
+        entrance_end = start + 2
         chain.append(
             f"movie='{_ffmpeg_subtitle_path(path)}':loop=1,scale={layout['avatarSize']}:{layout['avatarSize']},"
-            f"format=rgba,fade=t=in:st=0:d=0.48:alpha=1,fade=t=out:st={display_duration - 0.28:.2f}:d=0.28:alpha=1,"
+            f"format=rgba,fade=t=in:st=0:d=2:alpha=1,fade=t=out:st={max(0, display_duration - 1):.2f}:d=1:alpha=1,"
             f"setpts=PTS-STARTPTS+{start:.2f}/TB[{avatar}]"
         )
         entrance_offset = max(1, round(37.5 * layout["scalarScale"]))
@@ -1304,7 +1345,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
             try:
                 result = _burn_subtitles_to_mp4(
                     source_file, ass_file, output_file, duration=duration, job_id=job_id,
-                    progress_label="评论", comment_avatar_assets=prepare_comment_avatar_assets(comment_snapshot, work_dir),
+                    progress_label="评论",
                 )
             except Exception as exc:
                 finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(exc)[:160]}")
@@ -1364,7 +1405,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
             try:
                 result = _burn_subtitles_to_mp4(
                     source_file, ass_file, output_file, duration=duration, job_id=job_id,
-                    progress_label="评论", comment_avatar_assets=prepare_comment_avatar_assets(comment_snapshot, work_dir),
+                    progress_label="评论",
                 )
             except Exception as burn_exc:
                 finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(burn_exc)[:160]}")
@@ -1408,7 +1449,11 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
     translated_segments = _strip_periods_after_review(translated_segments, target_language)
     translated_segments = _redact_generated_subtitles(translated_segments, target_language)
     if target_language == "en":
-        rendered_segments = cues
+        rendered_segments = _merge_rendered_fragment_cues(
+            cues,
+            language,
+            _subtitle_render_layout(job, output_video_info)["singleLineCapacity"],
+        )
     else:
         rendered_segments = _assign_translated_cues(
             cues,
@@ -1430,7 +1475,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
     try:
         result = _burn_subtitles_to_mp4(
             source_file, ass_file, output_file, duration=duration, job_id=job_id,
-            comment_avatar_assets=prepare_comment_avatar_assets(comment_snapshot, work_dir),
+            comment_avatar_assets=None,
         )
     except Exception as exc:
         finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(exc)[:160]}")

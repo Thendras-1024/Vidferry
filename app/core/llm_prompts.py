@@ -173,7 +173,12 @@ def build_highlight_vision_prompt(candidate, window_start, window_end, cues):
     )
 
 
-def comment_screen_system_prompt():
+def _legacy_comment_screen_system_prompt():
+    return (
+        "逐条审核输入评论，必须完整返回每条评论的 id、keep、reasonCode。keep=true 表示保留，reasonCode 必须为空；keep=false 表示过滤，reasonCode 只能是 OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE、SIMILAR。不得遗漏、翻译或重写评论。"
+        + _JSON_RULE
+    )
+
     return (
         "角色与职责（最高优先级）：你是 Vidferry 的短视频评论安全编辑，负责从候选 YouTube 评论中挑选可烧制到中文短视频的优质评论。"
         + _UNTRUSTED_INPUT_RULE
@@ -192,18 +197,28 @@ def build_comment_screen_prompt(job, candidates):
         "channel": (job or {}).get("channel") or "",
         "url": (job or {}).get("url") or "",
     }
+    compact = [
+        {"no": index + 1, "text": item.get("text"), "author": item.get("author"), "likeCount": item.get("likeCount", 0)}
+        for index, item in enumerate(candidates or [])
+    ]
     return (
         "按质量由高到低选择评论。不要复写候选评论原文，也不要选择不合规内容。\n"
         "<video_metadata>\n"
         f"{json.dumps(metadata, ensure_ascii=False)}\n"
         "</video_metadata>\n"
         "<comment_candidates>\n"
-        f"{json.dumps(candidates, ensure_ascii=False)}\n"
+        f"{json.dumps(compact, ensure_ascii=False)}\n"
         "</comment_candidates>"
     )
 
 
-def comment_selection_system_prompt():
+def _legacy_comment_selection_system_prompt():
+    return (
+        "对输入评论做跨批次语义去重和质量复核，必须完整返回每条评论的 id、keep、reasonCode。"
+        "keep=true 表示保留，reasonCode 必须为空；keep=false 时只能使用 OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE、SIMILAR。"
+        "不得遗漏、翻译或重写评论。"
+        + _JSON_RULE
+    )
     return (
         "角色：你是 Vidferry 的短视频评论安全编辑，负责从已通过初筛的评论中确定最终烧制列表。"
         + _UNTRUSTED_INPUT_RULE
@@ -215,6 +230,32 @@ def comment_selection_system_prompt():
 
 def build_comment_selection_prompt(job, candidates):
     return build_comment_screen_prompt(job, candidates)
+
+
+# Keep the review contract compact: the model returns the input ordinal, not a repeated comment id.
+COMMENT_LLM_FILTER_CODES = ("OFF_TOPIC", "LOW_QUALITY", "PROMOTION", "UNSAFE", "SIMILAR")
+
+
+def comment_screen_system_prompt():
+    return (
+        "逐条审核评论，完整返回每条输入的 no、keep、reasonCode。"
+        "no 必须使用输入序号；keep=true 时 reasonCode 为空；keep=false 时只能使用 "
+        "OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE、SIMILAR。不得遗漏、翻译或重写评论。"
+        + _UNTRUSTED_INPUT_RULE
+        + "过滤编码只能使用: " + ", ".join(COMMENT_LLM_FILTER_CODES) + "。"
+        + _JSON_RULE
+    )
+
+
+def comment_selection_system_prompt():
+    return (
+        "对输入评论做跨批次语义去重和质量复核，完整返回每条输入的 no、keep、reasonCode。"
+        "no 必须使用输入序号；keep=true 时 reasonCode 为空；keep=false 时只能使用 "
+        "OFF_TOPIC、LOW_QUALITY、PROMOTION、UNSAFE、SIMILAR。不得遗漏、翻译或重写评论。"
+        + _UNTRUSTED_INPUT_RULE
+        + "过滤编码只能使用: " + ", ".join(COMMENT_LLM_FILTER_CODES) + "。"
+        + _JSON_RULE
+    )
 
 
 def prepublish_text_guard_messages(summary):

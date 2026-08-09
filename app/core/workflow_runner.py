@@ -72,6 +72,50 @@ def _subtitle_skip_reason(subtitle_result):
     return "已按设置跳过字幕翻译和烧录" if subtitle_result.get("skippedBySetting") else "未检测到可识别人声，已跳过字幕处理"
 
 
+def _source_title_translation_from_events(video_id):
+    if not video_id:
+        return ""
+    with _db_connect() as conn:
+        conn.row_factory = True
+        rows = conn.execute('''
+        SELECT metadata FROM youtube_workflow_events
+        WHERE video_id = ? AND stage = 'source_title_translation' AND status = 'success'
+        ORDER BY ended_at DESC, id DESC
+        LIMIT 10
+        ''', (video_id,)).fetchall()
+    for row in rows:
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        title = str(metadata.get("sourceTitleZh") or "").strip()
+        if title:
+            return title
+    return ""
+
+
+def _ensure_source_title_translation(job):
+    source_title = str(job.get("title") or "").strip()
+    if not source_title:
+        return ""
+    cached = _source_title_translation_from_events(job.get("videoId") or "")
+    event_id = start_workflow_event(job, "source_title_translation", "正在翻译原视频标题")
+    if cached:
+        finish_workflow_event(event_id, "success", "已复用原视频标题翻译", metadata={"sourceTitleZh": cached, "sourceTitleTranslationStatus": "success", "cached": True})
+        return cached
+    try:
+        translated = _translate_segments([{"text": source_title}], "zh-CN")
+        title = str((translated[0] if translated else {}).get("subtitle") or "").strip()
+        if not title:
+            raise RuntimeError("原视频标题翻译结果为空")
+        finish_workflow_event(event_id, "success", "原视频标题翻译完成", metadata={"sourceTitleZh": title, "sourceTitleTranslationStatus": "success"})
+        return title
+    except Exception as exc:
+        finish_workflow_event(event_id, "failed", f"原视频标题翻译未生成: {exc}", metadata={"sourceTitleTranslationStatus": "failed"})
+        backend_logger.warning("原视频标题翻译失败 job_id=%s video_id=%s", job.get("id") or "", job.get("videoId") or "", exc_info=True)
+        return ""
+
+
 def _editing_plan_usage(usage):
     return {
         "provider": usage.get("provider") or "openai-compatible",
@@ -320,7 +364,7 @@ def _run_comment_burn_preparation(job):
 
     review_event_id = start_workflow_event(job, "comment_review", "正在筛选并翻译评论", metadata={"candidateCount": len(candidates), "reviewItems": review_items})
     try:
-        comments, usage, generation_meta = review_youtube_comment_candidates(
+        comments, usage, generation_meta = review_youtube_comment_candidates_v2(
             job,
             candidates,
             build_workflow_llm_telemetry(job, review_event_id, "comment_review"),
@@ -638,6 +682,7 @@ def run_youtube_translate_job(job_id):
             initial_job.get("videoId", ""),
             initial_job.get("processVersion", ""),
         )
+        _ensure_source_title_translation(initial_job)
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
         process_version = _normalize_process_version(initial_job.get("processVersion"))
         job = initial_job
@@ -1051,6 +1096,7 @@ def run_youtube_workflow(job_id):
             initial_job.get("videoId", ""),
             initial_job.get("processVersion", ""),
         )
+        _ensure_source_title_translation(initial_job)
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
         process_version = _normalize_process_version(initial_job.get("processVersion"))
         video_record = _get_youtube_video_record(initial_job.get("videoId")) or {}

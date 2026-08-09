@@ -68,6 +68,7 @@ def _row_to_workflow_job(row):
         "highlightIntroEnabled": bool(item.get("highlight_intro_enabled") if item.get("highlight_intro_enabled") is not None else 1),
         "coverIntroEnabled": bool(item.get("cover_intro_enabled") if item.get("cover_intro_enabled") is not None else 1),
         "commentBurnEnabled": bool(item.get("comment_burn_enabled") or 0),
+        "commentBurnCount": _normalize_comment_burn_count(item.get("comment_burn_count")),
         "commentTranslationMode": _normalize_comment_translation_mode(item.get("comment_translation_mode")),
         "coverTitle": normalize_cover_title(item.get("cover_title")),
         "coverSignature": normalize_cover_signature(item.get("cover_brand_name")),
@@ -97,6 +98,31 @@ def _row_to_workflow_job(row):
         "createdAt": item.get("created_at") or "",
         "startedAt": item.get("started_at") or "",
         "updatedAt": item.get("updated_at") or "",
+    }
+
+
+def _processing_settings_snapshot(job):
+    """返回成片可追溯的处理参数，不包含发布账号和平台选择。"""
+    if not job:
+        return {}
+    return {
+        "processVersion": job.get("processVersion") or PROCESS_VERSION_TRANSLATION,
+        "subtitleLanguage": job.get("subtitleLanguage") or DEFAULT_SUBTITLE_LANGUAGE,
+        "burnProfile": job.get("burnProfile") or DEFAULT_BURN_PROFILE,
+        "subtitleSize": job.get("subtitleSize") or DEFAULT_SUBTITLE_SIZE,
+        "translatorLabel": job.get("translatorLabel") or "",
+        "translationEnabled": bool(job.get("translationEnabled", True)),
+        "watermarkEnabled": bool(job.get("watermarkEnabled")),
+        "watermarkText": job.get("watermarkText") or "",
+        "highlightIntroEnabled": bool(job.get("highlightIntroEnabled", True)),
+        "highlightCount": int(job.get("highlightCount") or 0),
+        "coverIntroEnabled": bool(job.get("coverIntroEnabled", True)),
+        "coverTitle": job.get("coverTitle") or "",
+        "coverSignature": job.get("coverSignature") or "",
+        "commentBurnEnabled": bool(job.get("commentBurnEnabled")),
+        "commentBurnCount": int(job.get("commentBurnCount") or 0),
+        "commentTranslationMode": job.get("commentTranslationMode") or "",
+        "contentSafetyReviewEnabled": bool(job.get("contentSafetyReviewEnabled")),
     }
 
 
@@ -193,6 +219,14 @@ def _normalize_comment_translation_mode(value):
     return mode if mode in {"google_llm", "google"} else "google_llm"
 
 
+def _normalize_comment_burn_count(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 30
+    return count if count in {20, 25, 30, 35, 40, 45, 50} else 30
+
+
 def _workflow_watermark_settings(payload):
     saved_settings = get_workflow_settings()
     watermark_enabled = bool(
@@ -221,6 +255,12 @@ def _workflow_highlight_count(payload):
     return _normalize_highlight_count(value)
 
 
+def _workflow_comment_burn_count(payload):
+    saved_settings = get_workflow_settings()
+    value = payload.get("commentBurnCount") if "commentBurnCount" in payload else saved_settings.get("commentBurnCount")
+    return _normalize_comment_burn_count(value)
+
+
 def _workflow_processing_options(payload):
     saved_settings = get_workflow_settings()
     defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False}
@@ -243,6 +283,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
     watermark_enabled, watermark_text = _workflow_watermark_settings(payload)
     highlight_count = _workflow_highlight_count(payload)
+    comment_burn_count = _workflow_comment_burn_count(payload)
     comment_translation_mode = _normalize_comment_translation_mode(payload.get("commentTranslationMode"))
     translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled = _workflow_processing_options(payload)
     cover_title, cover_signature = _workflow_cover_settings(payload)
@@ -294,11 +335,14 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_translation_mode,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_burn_count, comment_translation_mode,
             cover_title, cover_context, cover_brand_name, cover_brand_platform, operation,
             title, description, tags, schedule, status, step, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         ''', (
             job_id,
             video_id,
@@ -329,6 +373,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             int(highlight_intro_enabled),
             int(cover_intro_enabled),
             int(comment_burn_enabled),
+            comment_burn_count,
             comment_translation_mode,
             cover_title,
             "",
@@ -583,6 +628,7 @@ def _attach_workflow_job_to_material(material, workflow_job):
     material["workflowSubtitleLanguage"] = workflow_job.get("subtitleLanguage") or ""
     material["workflowUpdatedAt"] = workflow_job.get("updatedAt") or ""
     material["workflowJobId"] = workflow_job.get("id") or ""
+    material["processingSettings"] = _processing_settings_snapshot(workflow_job)
     material["workflowSameProcessVersion"] = bool(
         material.get("processVersion") and workflow_job.get("processVersion") == material.get("processVersion")
     )

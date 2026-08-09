@@ -42,7 +42,7 @@ async def safe_goto(page, url):
 
 
 async def send_qr_from_locator(locator, status_queue):
-    await locator.wait_for(state="visible", timeout=30000)
+    await locator.wait_for(state="visible", timeout=60000)
     try:
         src = await locator.get_attribute("src")
         if src and src.startswith("data:image"):

@@ -29,6 +29,22 @@ TENCENT_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("TENCENT_UPLOAD_WAIT_TIMEOUT", 
 TENCENT_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("TENCENT_PUBLISH_CONFIRM_TIMEOUT", "300") or 300)
 
 
+class TencentCookieCheckError(RuntimeError):
+    """视频号页面无法可靠判断登录状态时使用的可分类异常。"""
+
+    def __init__(self, user_message: str):
+        super().__init__(user_message)
+        self.user_message = user_message
+
+
+class TencentPublishPermissionError(RuntimeError):
+    """登录账号缺少目标视频号发布权限。"""
+
+    def __init__(self):
+        super().__init__("当前登录微信没有目标视频号的管理员或运营者权限，请使用已授权账号重新登录。")
+        self.user_message = str(self)
+
+
 def _msg(emoji: str, text: str) -> str:
     return f"{emoji} {text}"
 
@@ -126,9 +142,13 @@ async def cookie_auth(account_file):
 
             tencent_logger.success(_msg("🥳", "cookie 有效"))
             return True
+        except TencentPublishPermissionError:
+            raise
         except Exception as exc:
-            tencent_logger.warning(_msg("😵", f"cookie 校验时出错，按失效处理: {exc}"))
-            return False
+            tencent_logger.exception(_msg("😵", "cookie 校验异常，保留原账号状态"))
+            if "timeout" in type(exc).__name__.lower():
+                raise TencentCookieCheckError("视频号页面访问超时，请检查网络后重试检测。") from exc
+            raise TencentCookieCheckError("视频号登录状态检测异常，请稍后重试。") from exc
         finally:
             await browser.close()
 
@@ -213,6 +233,7 @@ async def _save_tencent_qrcode(page: Page, account_file: str, previous_qrcode_pa
 
 
 async def _is_tencent_login_completed(page: Page) -> bool:
+    await _raise_if_tencent_publish_permission_denied(page)
     publish_markers = [
         page.locator('div:has-text("发表视频")').first,
         page.locator('button:has-text("发表")').first,
@@ -242,6 +263,21 @@ async def _is_tencent_login_completed(page: Page) -> bool:
             continue
 
     return True
+
+
+async def _raise_if_tencent_publish_permission_denied(page: Page) -> None:
+    for selector in (
+        "div.no-permission-title",
+        'div.no-permission-content:has-text("管理员或运营者")',
+    ):
+        try:
+            marker = page.locator(selector).first
+            if await marker.count() and await marker.is_visible():
+                raise TencentPublishPermissionError()
+        except TencentPublishPermissionError:
+            raise
+        except Exception:
+            continue
 
 
 async def _is_tencent_qrcode_expired(page: Page) -> bool:
@@ -518,6 +554,7 @@ class TencentBaseUploader(BaseVideoUploader):
         await self.ensure_publish_session(page)
 
     async def ensure_publish_session(self, page: Page) -> None:
+        await _raise_if_tencent_publish_permission_denied(page)
         if "login" in page.url:
             raise RuntimeError("VF-PUBLISH-COOKIE-INVALID: 视频号 Cookie 已失效，请重新连接账号。")
         for selector in ('span:has-text("微信扫码登录 视频号助手")', 'text="扫码登录"'):
