@@ -6,6 +6,7 @@ from __future__ import annotations
 import os as _os
 import re as _re
 import datetime as _datetime
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
 
 
 AGENT_VIDEO_STATUSES = {
@@ -158,6 +159,16 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
             cursor = conn.cursor()
             cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
             existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
+    # yt-dlp 的搜索摘要通常没有订阅数和精确发布日期。先剔除已有线索，
+    # 再对有限候选取详情，避免为不会展示的视频建立大量额外请求。
+    candidates = [item for item in videos if str(item.get("id") or "") not in existing_ids]
+    detail_limit = min(len(candidates), max(6, min(requested * 2, 12)))
+    detail_candidates = candidates[:detail_limit]
+    if len(detail_candidates) > 1:
+        with _ThreadPoolExecutor(max_workers=min(3, len(detail_candidates)), thread_name_prefix="vidferry-agent-metadata") as executor:
+            enriched_candidates = list(executor.map(lambda item: _enrich_video_metadata(item, "agent-search", quick_metadata=True), detail_candidates))
+    else:
+        enriched_candidates = [_enrich_video_metadata(item, "agent-search", quick_metadata=True) for item in detail_candidates]
     cutoff = str(published_after or "").strip()
     def matches(item):
         views = int(item.get("viewCount") or 0)
@@ -169,12 +180,12 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
         if min_duration_seconds is not None and duration < int(min_duration_seconds): return False
         if max_duration_seconds is not None and duration > int(max_duration_seconds): return False
         return True
-    filtered = [item for item in videos if matches(item)]
-    items = [item for item in filtered if str(item.get("id") or "") not in existing_ids][:requested]
+    filtered = [item for item in enriched_candidates if matches(item)]
+    items = filtered[:requested]
     return {"query": query, "items": items, "filters": {
         "publishedAfter": cutoff, "minViews": min_views, "maxViews": max_views,
         "minDurationSeconds": min_duration_seconds, "maxDurationSeconds": max_duration_seconds,
-    }, "searched": len(videos), "excludedExisting": len(filtered) - len([item for item in filtered if str(item.get("id") or "") not in existing_ids])}
+    }, "searched": len(videos), "excludedExisting": len(videos) - len(candidates)}
 
 
 def inspect_youtube_url(url):

@@ -461,8 +461,10 @@ def list_youtube_workflow_jobs(limit=50, params=None):
                 status IN ('queued', 'running', 'waiting_confirmation')
                 OR COALESCE(updated_at, created_at) >= ?
             )""")
-        if str(params.get("status") or "") == "recent":
             values.append((datetime.datetime.now() - datetime.timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"))
+        if str(params.get("hasSchedule") or "").lower() in {"1", "true", "yes"}:
+            where.append("COALESCE(schedule, '') <> '' AND schedule > ?")
+            values.append(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         video_ids = _split_request_values(params.get("videoIds") or params.get("ids"))
         if video_ids:
             where.append(f"video_id IN ({_sql_placeholders(video_ids)})")

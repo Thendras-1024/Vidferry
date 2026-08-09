@@ -1,5 +1,6 @@
 """YouTube 工作流执行编排:下载/转写/分析/剪辑/发布各阶段的串联与状态流转。"""
 
+import datetime as _datetime
 
 from app.core.error_catalog import classify_workflow_exception
 from app.core.highlight_review_service import refine_highlight_segments
@@ -53,6 +54,29 @@ def _log_workflow_failure(stage, job_id, exc):
         stage, job_id, error_fields["error_code"], error_fields["error_type"], exc.__class__.__name__, detail,
     )
     return error_fields
+
+
+def _ensure_workflow_publish_schedule(job_id, job):
+    """Keep a platform-scheduled publish far enough in the future after processing."""
+    raw_schedule = str((job or {}).get("schedule") or "").strip()
+    if not raw_schedule:
+        return job, ""
+    scheduled = None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            scheduled = _datetime.datetime.strptime(raw_schedule, fmt)
+            break
+        except ValueError:
+            continue
+    if not scheduled:
+        return job, ""
+    minimum = (_datetime.datetime.now() + _datetime.timedelta(minutes=125)).replace(second=0, microsecond=0)
+    if scheduled >= minimum:
+        return job, ""
+    adjusted = minimum.strftime("%Y-%m-%d %H:%M:%S")
+    notice = f"处理完成时原定发布时间已不足平台要求的 2 小时，已自动顺延至 {adjusted}。"
+    update_youtube_workflow_job(job_id, schedule=adjusted, message=notice)
+    return {**job, "schedule": adjusted}, notice
 
 
 def _editing_result_message(editing_result):
@@ -963,6 +987,7 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             )
         return []
 
+    publish_job, schedule_notice = _ensure_workflow_publish_schedule(job_id, publish_job)
     publish_commands = []
     skipped_platforms = []
     published_platform_types = _published_platform_types_for_video(latest_job.get("videoId"))
@@ -1005,6 +1030,8 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         final_message = f"{final_message}；{_editing_result_message(editing_result)}"
     if skipped_subtitles:
         final_message = f"{final_message}；{_subtitle_skip_reason({'skippedBySetting': not latest_job.get('translationEnabled', True)})}"
+    if schedule_notice:
+        final_message = f"{final_message}；{schedule_notice}"
 
     finish_workflow_event(publish_event_id, "success", final_message, output_file_path=processed_file)
     if workflow_event_id:

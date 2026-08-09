@@ -68,30 +68,59 @@
                     <div class="agent-proposal-title">
                       <span>待确认线索</span><strong>{{ message.importProposal.items?.length || 0 }}</strong>
                     </div>
-                    <el-checkbox-group v-model="message.selectedCandidateIds" class="agent-proposal-list">
+                    <el-checkbox-group v-if="message.importProposal.status === 'pending'" v-model="message.selectedCandidateIds" class="agent-proposal-list">
                       <el-checkbox v-for="item in message.importProposal.items || []" :key="item.id" :value="item.id" class="agent-proposal-item">
                         <span class="agent-proposal-copy"><strong>{{ item.title }}</strong><small>{{ [item.channel, item.duration].filter(Boolean).join(' · ') }}</small></span>
                       </el-checkbox>
                     </el-checkbox-group>
-                    <el-checkbox-group v-if="message.importProposal.requiresTargets" v-model="message.selectedImportAccountIds" class="agent-proposal-targets" @change="normalizeImportAccountSelection(message)">
+                    <el-checkbox-group v-else-if="message.importProposal.status === 'confirmed'" v-model="message.selectedCandidateIds" class="agent-proposal-list is-readonly">
+                      <el-checkbox v-for="item in message.importProposal.items || []" :key="item.id" :value="item.id" disabled class="agent-proposal-item">
+                        <span class="agent-proposal-copy"><strong>{{ item.title }}</strong><small>{{ [item.channel, item.duration].filter(Boolean).join(' · ') }}</small></span>
+                      </el-checkbox>
+                    </el-checkbox-group>
+                    <el-checkbox-group v-if="message.importProposal.status === 'pending' && message.importProposal.requiresTargets" v-model="message.selectedImportAccountIds" class="agent-proposal-targets" @change="normalizeImportAccountSelection(message)">
                       <el-checkbox v-for="account in message.importProposal.availableAccounts || []" :key="account.id" :value="account.id">{{ account.platformName }} · {{ account.name }}</el-checkbox>
                     </el-checkbox-group>
-                    <el-button type="primary" size="small" :loading="message.importing" :disabled="!canConfirmAgentImport(message)" @click="confirmAgentImport(message)">
-                      确认{{ message.importProposal.actionLabel || '导入' }} {{ (message.selectedCandidateIds || []).length }} 个线索
-                    </el-button>
+                    <el-checkbox-group v-else-if="message.importProposal.status === 'confirmed' && message.importProposal.requiresTargets" v-model="message.selectedImportAccountIds" class="agent-proposal-targets is-readonly">
+                      <el-checkbox v-for="account in message.importProposal.availableAccounts || []" :key="account.id" :value="account.id" disabled>{{ account.platformName }} · {{ account.name }}</el-checkbox>
+                    </el-checkbox-group>
+                    <el-date-picker v-if="message.importProposal.status === 'pending' && message.importProposal.requiresSchedule" v-model="message.importScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择定时发布时间" class="agent-proposal-schedule" />
+                    <el-date-picker v-else-if="message.importProposal.status === 'confirmed' && message.importProposal.requiresSchedule" v-model="message.importScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
+                    <p v-if="message.importProposal.status === 'pending' && message.importProposal.scheduleNotice" class="agent-proposal-result">{{ message.importProposal.scheduleNotice }}</p>
+                    <div v-if="message.importProposal.status === 'pending'" class="agent-proposal-action">
+                      <el-button type="primary" size="small" :loading="message.importing" :disabled="!canConfirmAgentImport(message)" @click="confirmAgentImport(message)">
+                        确认{{ message.importProposal.actionLabel || '导入' }} {{ (message.selectedCandidateIds || []).length }} 个线索
+                      </el-button>
+                    </div>
+                    <p v-else-if="message.importProposal.status === 'expired'" class="agent-proposal-result">该确认已失效，请重新让 Agent 检索。</p>
                     <p v-if="message.importResult" class="agent-proposal-result">{{ message.importResult }}</p>
                   </section>
                   <section v-if="message.executionProposal" class="agent-proposal">
                     <div class="agent-proposal-title"><span>待确认操作</span><strong>{{ message.executionProposal.actionLabel }}</strong></div>
                     <p class="agent-proposal-description">{{ message.executionProposal.video?.title || '当前视频' }}</p>
-                    <el-checkbox-group v-if="message.executionProposal.requiresTargets" v-model="message.selectedExecutionAccountIds" class="agent-proposal-targets" @change="normalizeExecutionAccountSelection(message)">
+                    <el-checkbox-group v-if="message.executionProposal.status === 'pending' && message.executionProposal.requiresTargets" v-model="message.selectedExecutionAccountIds" class="agent-proposal-targets" @change="normalizeExecutionAccountSelection(message)">
                       <el-checkbox v-for="account in message.executionProposal.availableAccounts || []" :key="account.id" :value="account.id">{{ account.platformName }} · {{ account.name }}</el-checkbox>
                     </el-checkbox-group>
-                    <el-date-picker v-if="message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择发布时间" class="agent-proposal-schedule" />
-                    <el-button type="primary" size="small" :loading="message.executing" :disabled="!canConfirmAgentExecution(message)" @click="confirmAgentExecution(message)">
-                      确认{{ message.executionProposal.actionLabel }}
-                    </el-button>
+                    <el-checkbox-group v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresTargets" v-model="message.selectedExecutionAccountIds" class="agent-proposal-targets is-readonly">
+                      <el-checkbox v-for="account in message.executionProposal.availableAccounts || []" :key="account.id" :value="account.id" disabled>{{ account.platformName }} · {{ account.name }}</el-checkbox>
+                    </el-checkbox-group>
+                    <el-date-picker v-if="message.executionProposal.status === 'pending' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择发布时间" class="agent-proposal-schedule" />
+                    <el-date-picker v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
+                    <div v-if="message.executionProposal.status === 'pending'" class="agent-proposal-action">
+                      <el-button type="primary" size="small" :loading="message.executing" :disabled="!canConfirmAgentExecution(message)" @click="confirmAgentExecution(message)">
+                        确认{{ message.executionProposal.actionLabel }}
+                      </el-button>
+                    </div>
+                    <p v-else-if="message.executionProposal.status === 'expired'" class="agent-proposal-result">该确认已失效，请重新让 Agent 生成提案。</p>
                     <p v-if="message.executionResult" class="agent-proposal-result">{{ message.executionResult }}</p>
+                  </section>
+                  <section v-if="message.agentTasks?.length" class="agent-task-progress">
+                    <div class="agent-proposal-title"><span>任务进度</span><strong>{{ message.agentTasks.length }}</strong></div>
+                    <div v-for="task in message.agentTasks" :key="task.id" class="agent-task-progress-item">
+                      <div><strong>{{ task.title || task.videoId || '视频任务' }}</strong><span>{{ agentWorkflowStageLabel(task) }} · {{ agentWorkflowStatusLabel(task) }}</span></div>
+                      <el-progress :percentage="Math.max(0, Math.min(100, task.progress || 0))" :status="task.status === 'failed' || task.status === 'abnormal' ? 'exception' : task.status === 'success' ? 'success' : ''" :stroke-width="5" />
+                      <p :class="{ 'is-error': task.errorReason || task.status === 'failed' || task.status === 'abnormal' }">{{ task.errorReason || task.message }}</p>
+                    </div>
                   </section>
                   <div v-if="message.actions?.length" class="agent-actions">
                     <el-button v-for="action in message.actions" :key="`${message.id}-${action.label}`" size="small" plain @click="confirmAgentAction(action)">{{ action.label }}</el-button>
@@ -420,7 +449,8 @@ const {
   selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
   confirmAgentAction, handleAskAgentEvent,
   normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport,
-  normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution
+  normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
+  agentWorkflowStatusLabel, agentWorkflowStageLabel
 } = toRefs(reactive(props.workspace))
 </script>
 
@@ -481,5 +511,54 @@ const {
 .agent-proposal-schedule {
   width: 100%;
   margin: 0 0 8px;
+}
+
+.is-readonly {
+  opacity: 0.7;
+}
+
+.agent-proposal-action {
+  display: flex;
+  width: 100%;
+}
+
+.agent-task-progress {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+}
+
+.agent-task-progress-item {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-task-progress-item > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.agent-task-progress-item strong,
+.agent-task-progress-item span,
+.agent-task-progress-item p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-task-progress-item span,
+.agent-task-progress-item p {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+}
+
+.agent-task-progress-item p.is-error {
+  color: var(--el-color-danger);
 }
 </style>

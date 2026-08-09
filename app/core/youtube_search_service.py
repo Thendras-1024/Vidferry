@@ -84,16 +84,17 @@ def _search_youtube_with_ytdlp(query, limit):
         url = item.get("webpage_url") or item.get("url")
         if video_id and (not url or not url.startswith("http")):
             url = f"https://www.youtube.com/watch?v={video_id}"
+        duration_seconds = _duration_seconds(item.get("duration"))
         results.append({
             "id": video_id or "",
             "title": item.get("title") or "",
             "channel": item.get("channel") or item.get("uploader") or "",
-            "subscribers": _format_count(item.get("channel_follower_count")),
-            "publishedAt": _parse_upload_date(item.get("upload_date")),
+            "subscribers": _format_subscribers_w(item.get("channel_follower_count") or item.get("uploader_follower_count")),
+            "publishedAt": _ytdlp_published_at(item),
             "url": url or "",
             "thumbnail": (item.get("thumbnail") or ""),
-            "duration": item.get("duration_string") or "",
-            "durationSeconds": float(item.get("duration") or 0),
+            "duration": item.get("duration_string") or _format_duration_seconds(duration_seconds),
+            "durationSeconds": duration_seconds,
             "viewCount": int(item.get("view_count") or 0),
         })
     return results
@@ -118,6 +119,37 @@ def _canonical_youtube_url(url, video_id=""):
     if normalized_video_id:
         return f"https://www.youtube.com/watch?v={normalized_video_id}"
     return (url or "").strip()
+
+
+def _duration_seconds(value):
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _format_duration_seconds(value):
+    seconds = int(round(_duration_seconds(value)))
+    if seconds <= 0:
+        return ""
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def _ytdlp_published_at(item):
+    for key in ("upload_date", "release_date"):
+        value = _parse_upload_date(item.get(key))
+        if value:
+            return value
+    for key in ("timestamp", "release_timestamp"):
+        try:
+            value = float(item.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return _datetime.datetime.fromtimestamp(value, tz=_datetime.timezone.utc).date().isoformat()
+    return ""
 
 
 def _channel_subscribers(channel_url):
@@ -158,7 +190,7 @@ def _video_from_ytdlp_info(item, fallback_url=""):
     url = item.get("webpage_url") or item.get("original_url") or fallback_url
     if video_id and (not url or not str(url).startswith("http")):
         url = f"https://www.youtube.com/watch?v={video_id}"
-    subscribers = _format_subscribers_w(item.get("channel_follower_count"))
+    subscribers = _format_subscribers_w(item.get("channel_follower_count") or item.get("uploader_follower_count"))
     creators = _co_creators(item)
     if not subscribers:
         subscribers = _channel_subscribers(item.get("channel_url") or item.get("uploader_url"))
@@ -169,16 +201,16 @@ def _video_from_ytdlp_info(item, fallback_url=""):
         "title": item.get("title") or "",
         "channel": item.get("channel") or item.get("uploader") or "",
         "subscribers": subscribers,
-        "publishedAt": _parse_upload_date(item.get("upload_date")) or _format_iso_date(item.get("release_date") or ""),
+        "publishedAt": _ytdlp_published_at(item),
         "url": url or "",
         "thumbnail": item.get("thumbnail") or "",
-        "duration": item.get("duration_string") or "",
-        "durationSeconds": float(item.get("duration") or 0),
+        "duration": item.get("duration_string") or _format_duration_seconds(item.get("duration")),
+        "durationSeconds": _duration_seconds(item.get("duration")),
         "viewCount": int(item.get("view_count") or 0),
     }
 
 
-def _import_youtube_video_by_url(url):
+def _import_youtube_video_by_url(url, *, quick_metadata=False):
     try:
         import yt_dlp
     except ImportError as exc:
@@ -191,6 +223,8 @@ def _import_youtube_video_by_url(url):
         "noplaylist": True,
         "ignoreerrors": False,
     }
+    if quick_metadata:
+        ydl_opts.update({"socket_timeout": 8, "retries": 0, "extractor_retries": 0})
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
     video = _video_from_ytdlp_info(info or {}, url)
@@ -294,7 +328,7 @@ def _enrich_video_from_watch_page(video):
     return video
 
 
-def _enrich_video_metadata(video, job_id=""):
+def _enrich_video_metadata(video, job_id="", *, quick_metadata=False):
     """复用单链接导入的完整 yt-dlp 提取，网页解析仅作为降级。"""
     video_id = video.get("id") or _extract_youtube_video_id(video.get("url") or "")
     backend_logger.info(
@@ -303,7 +337,7 @@ def _enrich_video_metadata(video, job_id=""):
         video_id,
     )
     try:
-        enriched = _import_youtube_video_by_url(video.get("url") or "")
+        enriched = _import_youtube_video_by_url(video.get("url") or "", quick_metadata=quick_metadata)
         backend_logger.info(
             "YouTube metadata extraction completed : jobId = %s | videoId = %s | subscribers = %s | publishedAt = %s | duration = %s",
             job_id,
@@ -312,7 +346,7 @@ def _enrich_video_metadata(video, job_id=""):
             bool(enriched.get("publishedAt")),
             bool(enriched.get("duration")),
         )
-        return enriched
+        return _merge_video_metadata(video, enriched)
     except Exception:
         backend_logger.exception(
             "YouTube metadata extraction failed : jobId = %s | videoId = %s | fallback = watch-page",
@@ -320,6 +354,21 @@ def _enrich_video_metadata(video, job_id=""):
             video_id,
         )
         return _enrich_video_from_watch_page(video)
+
+
+def _merge_video_metadata(search_item, detail_item):
+    """详情接口偶尔缺少搜索摘要字段，按字段保留两者中可用的数据。"""
+    merged = dict(search_item or {})
+    for key, value in (detail_item or {}).items():
+        if value not in (None, "", 0, 0.0, []):
+            merged[key] = value
+    duration_seconds = _duration_seconds(merged.get("durationSeconds") or merged.get("duration"))
+    merged["durationSeconds"] = duration_seconds
+    if not merged.get("duration"):
+        merged["duration"] = _format_duration_seconds(duration_seconds)
+    if not merged.get("publishedAt"):
+        merged["publishedAt"] = _ytdlp_published_at(detail_item or search_item or {})
+    return merged
 
 
 def _dedupe_videos(videos, limit):

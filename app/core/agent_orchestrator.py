@@ -39,6 +39,7 @@ _AGENT_IMPORT_PROPOSALS_LOCK = _threading.Lock()
 _AGENT_EXECUTION_PROPOSALS = {}
 _AGENT_EXECUTION_PROPOSALS_LOCK = _threading.Lock()
 _AGENT_CHINESE_COUNTS = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_AGENT_PUBLISH_MIN_LEAD_MINUTES = 125
 _AGENT_REQUEST_USAGE = _ContextVar("agent_request_usage", default=None)
 
 
@@ -198,9 +199,13 @@ def _agent_search_filters(text):
         if _re.search(pattern, source):
             filters["publishedAfter"] = (_datetime.date.today() - _datetime.timedelta(days=days)).isoformat()
             break
-    views = _re.search(r"(?:播放量|观看量|views?)?\s*(?:大于|超过|高于|不少于|至少|>=|>)\s*((?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?)", source, _re.I)
+    views = _re.search(
+        r"(?:(?:播放量|观看量|views?)\s*(?:大于|超过|高于|不少于|至少|>=|>)\s*(?P<prefix>(?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?)|(?:大于|超过|高于|不少于|至少|>=|>)\s*(?P<suffix>(?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?)\s*(?:播放量|观看量|views?))",
+        source,
+        _re.I,
+    )
     if views:
-        filters["minViews"] = _agent_quantity_value(views.group(1))
+        filters["minViews"] = _agent_quantity_value(views.group("prefix") or views.group("suffix"))
     duration = _re.search(r"(?:时长)?\s*(?:不超过|小于|少于|最多|以内|<=|<)\s*(\d+(?:\.\d+)?)\s*(?:分钟|分|min(?:ute)?s?)", source, _re.I)
     if duration:
         filters["maxDurationSeconds"] = int(float(duration.group(1)) * 60)
@@ -222,12 +227,99 @@ def _agent_search_request(message):
     query = _re.sub(r"^\d+\s+", "", query)
     filters = _agent_search_filters(query)
     query = _re.sub(r"近(?:一|1)周|近(?:一个|1个|一)月|近(?:三|3)个月", "", query)
-    query = _re.sub(r"(?:播放量|观看量|views?)?\s*(?:大于|超过|高于|不少于|至少|>=|>)\s*(?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?", "", query, flags=_re.I)
+    query = _re.sub(
+        r"(?:(?:播放量|观看量|views?)\s*(?:大于|超过|高于|不少于|至少|>=|>)\s*(?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?|(?:大于|超过|高于|不少于|至少|>=|>)\s*(?:[\d.]+|[一二两三四五六七八九十])\s*(?:万|w)?\s*(?:播放量|观看量|views?))",
+        "",
+        query,
+        flags=_re.I,
+    )
     query = _re.sub(r"(?:时长)?\s*(?:不超过|小于|少于|最多|以内|<=|<)\s*\d+(?:\.\d+)?\s*(?:分钟|分|min(?:ute)?s?)", "", query, flags=_re.I)
-    query = _re.sub(r"(?:时长)?\s*(?:不超过|小于|少于|最多|以内|<=|<)\s*[^，,。！？!]*?(?:分钟|分)", "", query)
+    query = _re.sub(
+        r"(?:(?:今天|明天|后天)\s*)?(?:(?:凌晨|早上|上午|中午|下午|晚上)\s*)?(?:\d{1,2}|[一二两三四五六七八九十]+)\s*(?:点|时)(?:\s*(?:\d{1,2}分?|半))?\s*(?:发布|分发)",
+        "",
+        query,
+        flags=_re.I,
+    )
     query = _re.sub(r"[,，、]\s*(?:发布|分布)(?:的)?$", "", query)
     query = _re.sub(r"(?:相关)?(?:的)?(?:YouTube)?(?:视频|影片|video|videos)?\s*(?:并|然后|并且)?\s*(?:帮我|替我)?\s*(?:(?:导入|加入|存入|放入)(?:线索列表|线索库|列表)?(?:中|里)?|下载|处理|转写|剪辑|发布|分发)(?:到[^，,。！？!]*?)?[。！？!?,，]*$", "", query, flags=_re.I).strip(" ：:，,。.!！？")
     return {"query": query, "limit": limit, **filters} if query else {"query": "", "limit": limit, **filters}
+
+
+def _agent_chinese_hour(value):
+    value = str(value or "").strip()
+    if value.isdigit():
+        return int(value)
+    numbers = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    if value == "十":
+        return 10
+    if len(value) == 2 and value[0] == "十" and value[1] in numbers:
+        return 10 + numbers[value[1]]
+    if len(value) == 2 and value[1] == "十" and value[0] in numbers:
+        return numbers[value[0]] * 10
+    if len(value) == 3 and value[1] == "十" and value[0] in numbers and value[2] in numbers:
+        return numbers[value[0]] * 10 + numbers[value[2]]
+    return numbers.get(value)
+
+
+def _agent_requested_schedule(message):
+    match = _re.search(
+        r"(?P<day>今天|明天|后天)?\s*(?P<period>凌晨|早上|上午|中午|下午|晚上)?\s*(?P<hour>\d{1,2}|[一二两三四五六七八九十]+)\s*(?:点|时)(?:\s*(?P<minute>\d{1,2})分?)?(?P<half>半)?\s*(?:发布|分发)",
+        str(message or ""),
+        _re.I,
+    )
+    if not match:
+        return ""
+    hour = _agent_chinese_hour(match.group("hour"))
+    minute = 30 if match.group("half") else int(match.group("minute") or 0)
+    period = match.group("period") or ""
+    if hour is None or hour > 23 or minute > 59:
+        return ""
+    if period in {"下午", "晚上"} and hour < 12:
+        hour += 12
+    elif period == "中午" and hour < 11:
+        hour += 12
+    now = _datetime.datetime.now()
+    day_offset = {"今天": 0, "明天": 1, "后天": 2}.get(match.group("day"), 0)
+    scheduled = (now + _datetime.timedelta(days=day_offset)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if not match.group("day") and scheduled <= now:
+        scheduled += _datetime.timedelta(days=1)
+    return scheduled.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _agent_parse_scheduled_at(value):
+    value = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return _datetime.datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _agent_minimum_scheduled_at(now=None):
+    now = now or _datetime.datetime.now()
+    return (now + _datetime.timedelta(minutes=_AGENT_PUBLISH_MIN_LEAD_MINUTES)).replace(second=0, microsecond=0)
+
+
+def _agent_schedule_with_minimum_lead(value):
+    scheduled = _agent_parse_scheduled_at(value)
+    if not scheduled:
+        return ""
+    return max(scheduled, _agent_minimum_scheduled_at()).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _agent_valid_scheduled_at(value, *, required=False):
+    value = str(value or "").strip()
+    if not value and not required:
+        return ""
+    if not value:
+        raise ValueError("请选择定时发布时间")
+    scheduled = _agent_parse_scheduled_at(value)
+    if not scheduled:
+        raise ValueError("定时发布时间格式不正确")
+    if scheduled < _agent_minimum_scheduled_at():
+        raise ValueError("定时发布时间至少需要晚于当前时间 2 小时，请选择更晚的时间")
+    return scheduled.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _agent_requested_import_action(message):
@@ -235,7 +327,7 @@ def _agent_requested_import_action(message):
     has_publish = any(word in text for word in ("发布", "分发", "publish"))
     has_process = any(word in text for word in ("处理", "转写", "字幕", "剪辑", "process"))
     if has_publish:
-        return "workflow_publish"
+        return "workflow_publish_scheduled" if _agent_requested_schedule(message) else "workflow_publish"
     if has_process:
         return "workflow_process"
     return "download" if "下载" in text or _re.search(r"\bdownload\b", text, _re.I) else ""
@@ -493,7 +585,9 @@ def _agent_fallback_answer(message, tool_results):
             item = result.get("item") or {}
             lines.append(f"已读取视频“{item.get('title') or '未命名视频'}”。请在下方确认是否导入线索列表。")
     requested_action = _agent_requested_import_action(message)
-    if requested_action == "workflow_publish":
+    if requested_action == "workflow_publish_scheduled":
+        lines.append("请在下方选择候选视频和发布账号，并确认定时发布时间；确认后才会创建导入、下载、处理和定时发布工作流。")
+    elif requested_action == "workflow_publish":
         lines.append("请在下方选择候选视频和发布账号；确认后才会创建导入、下载、处理和发布工作流。")
     elif requested_action == "workflow_process":
         lines.append("确认后才会创建导入、下载和处理工作流；不会自动发布、删除或登录。")
@@ -569,6 +663,8 @@ def _create_agent_import_proposal(session_id, tool_results, page_context, messag
     now = _time.time()
     proposal_id = _secrets.token_urlsafe(24)
     requested_action = _agent_requested_import_action(message)
+    requested_schedule = _agent_requested_schedule(message)
+    scheduled_at = _agent_schedule_with_minimum_lead(requested_schedule) if requested_action == "workflow_publish_scheduled" else ""
     proposal = {
         "proposalId": proposal_id,
         "sessionId": session_id,
@@ -580,10 +676,15 @@ def _create_agent_import_proposal(session_id, tool_results, page_context, messag
             "download": "导入并下载",
             "workflow_process": "导入、下载并处理",
             "workflow_publish": "导入、下载、处理并发布",
+            "workflow_publish_scheduled": "导入、下载、处理并定时发布",
         }.get(requested_action, "导入线索"),
-        "platformHints": _agent_execution_platform_hints(message) if requested_action == "workflow_publish" else [],
-        "availableAccounts": _agent_available_publish_accounts() if requested_action == "workflow_publish" else [],
-        "requiresTargets": requested_action == "workflow_publish",
+        "platformHints": _agent_execution_platform_hints(message) if requested_action in {"workflow_publish", "workflow_publish_scheduled"} else [],
+        "availableAccounts": _agent_available_publish_accounts() if requested_action in {"workflow_publish", "workflow_publish_scheduled"} else [],
+        "requiresTargets": requested_action in {"workflow_publish", "workflow_publish_scheduled"},
+        "requiresSchedule": requested_action == "workflow_publish_scheduled",
+        "scheduledAt": scheduled_at,
+        "scheduleNotice": "所选平台要求定时发布时间至少提前 2 小时，已调整为最早可用时间。" if requested_schedule and scheduled_at != requested_schedule else "",
+        "status": "pending",
         "items": compacted,
         "expiresAt": now + _AGENT_IMPORT_PROPOSAL_TTL_SECONDS,
     }
@@ -593,7 +694,7 @@ def _create_agent_import_proposal(session_id, tool_results, page_context, messag
     return {key: value for key, value in proposal.items() if key != "sessionId"}
 
 
-def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, targets=None):
+def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, targets=None, scheduled_at=""):
     proposal_id = str(proposal_id or "").strip()
     session_id = str(session_id or "").strip()
     with _AGENT_IMPORT_PROPOSALS_LOCK:
@@ -601,7 +702,6 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
         proposal = _AGENT_IMPORT_PROPOSALS.get(proposal_id)
         if not proposal or proposal.get("sessionId") != session_id:
             raise ValueError("该导入确认已失效，请重新让 Agent 检索")
-        _AGENT_IMPORT_PROPOSALS.pop(proposal_id, None)
     if selected_ids is None:
         raise ValueError("请重新选择要导入的候选视频")
     requested = {str(item).strip() for item in selected_ids if str(item).strip()}
@@ -610,7 +710,9 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
     if not selected:
         raise ValueError("请至少选择一个候选视频")
     requested_action = proposal.get("requestedAction") or ""
-    resolved_targets = _agent_execution_targets(targets) if requested_action == "workflow_publish" else []
+    is_publish_workflow = requested_action in {"workflow_publish", "workflow_publish_scheduled"}
+    resolved_targets = _agent_execution_targets(targets) if is_publish_workflow else []
+    schedule = _agent_valid_scheduled_at(scheduled_at, required=requested_action == "workflow_publish_scheduled")
     created = []
     duplicate = []
     failed = []
@@ -650,17 +752,18 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
                 })
                 _submit_background_task("download", run_youtube_download_job, job["id"])
                 download_jobs.append(job)
-            elif requested_action in {"workflow_process", "workflow_publish"}:
+            elif requested_action in {"workflow_process", "workflow_publish", "workflow_publish_scheduled"}:
                 job = create_youtube_workflow_job(_agent_execution_workflow_payload(
                     saved_item,
-                    resolved_targets if requested_action == "workflow_publish" else [],
+                    resolved_targets if is_publish_workflow else [],
+                    schedule=schedule,
                 ))
                 _submit_background_task(workflow_job_resource(job), run_youtube_workflow, job["id"])
                 workflow_jobs.append(job)
         except Exception as exc:
             _logging.exception("Agent 线索导入失败 proposal=%s video=%s", proposal_id, item.get("id"))
             failed.append({"id": item.get("id") or "", "title": item.get("title") or "", "message": sanitize_agent_output(str(exc))[:200]})
-    return {
+    result = {
         "proposalId": proposal_id,
         "created": created,
         "duplicate": duplicate,
@@ -673,6 +776,20 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
         "workflowJobs": workflow_jobs,
         "workflowJobCount": len(workflow_jobs),
     }
+    update_agent_proposal_state(
+        session_id,
+        proposal_id,
+        "importProposal",
+        "confirmed",
+        selected_ids=[item.get("id") for item in selected],
+        selected_account_ids=[target.get("accountId") for target in resolved_targets],
+        scheduled_at=schedule,
+        result_message=f"已导入 {len(created)} 个线索，重复 {len(duplicate)} 个。",
+        workflow_jobs=[*download_jobs, *workflow_jobs],
+    )
+    with _AGENT_IMPORT_PROPOSALS_LOCK:
+        _AGENT_IMPORT_PROPOSALS.pop(proposal_id, None)
+    return result
 
 
 _AGENT_EXECUTION_ACTIONS = {
@@ -792,6 +909,7 @@ def _create_agent_execution_proposal(session_id, message, page_context):
         "availableAccounts": _agent_available_publish_accounts() if action in {"workflow_publish", "publish_now", "publish_scheduled"} else [],
         "requiresTargets": action in {"workflow_publish", "publish_now", "publish_scheduled"},
         "requiresSchedule": action == "publish_scheduled",
+        "status": "pending",
         "expiresAt": now + _AGENT_IMPORT_PROPOSAL_TTL_SECONDS,
     }
     with _AGENT_EXECUTION_PROPOSALS_LOCK:
@@ -838,7 +956,7 @@ def _agent_execution_targets(targets):
     return resolved
 
 
-def _agent_execution_workflow_payload(video, targets=None):
+def _agent_execution_workflow_payload(video, targets=None, schedule=""):
     targets = targets or []
     draft = video.get("publishDraft") if isinstance(video.get("publishDraft"), dict) else {}
     payload = {
@@ -850,7 +968,7 @@ def _agent_execution_workflow_payload(video, targets=None):
         "title": draft.get("title") or video.get("title") or "YouTube 视频",
         "description": draft.get("description") or "",
         "tags": draft.get("tags") or [],
-        "schedule": "",
+        "schedule": str(schedule or "").strip(),
         "publishToDouyin": False,
         "publishToBilibili": False,
         "publishToXiaohongshu": False,
@@ -882,7 +1000,17 @@ def _agent_latest_processed_material(video_id):
     return material
 
 
-def _complete_agent_execution_proposal(proposal_id, session_id, result):
+def _complete_agent_execution_proposal(proposal_id, session_id, result, selected_account_ids=None, scheduled_at=""):
+    update_agent_proposal_state(
+        session_id,
+        proposal_id,
+        "executionProposal",
+        "confirmed",
+        selected_account_ids=selected_account_ids,
+        scheduled_at=scheduled_at,
+        result_message=result.get("message") or "该确认已完成。",
+        workflow_jobs=[result["job"]] if isinstance(result.get("job"), dict) else [],
+    )
     with _AGENT_EXECUTION_PROPOSALS_LOCK:
         proposal = _AGENT_EXECUTION_PROPOSALS.get(proposal_id)
         if proposal and proposal.get("sessionId") == session_id:
@@ -927,7 +1055,7 @@ def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, sche
     if action == "workflow_publish":
         job = create_youtube_workflow_job(_agent_execution_workflow_payload(video, resolved_targets))
         _submit_background_task(workflow_job_resource(job), run_youtube_workflow, job["id"])
-        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理并发布任务已创建"})
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理并发布任务已创建"}, [target.get("accountId") for target in resolved_targets])
     material = _agent_latest_processed_material(video.get("id") or "")
     publish_payload = {
         "title": (video.get("publishDraft") or {}).get("title") or video.get("title") or "YouTube 视频",
@@ -937,11 +1065,11 @@ def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, sche
         "targets": resolved_targets,
     }
     if action == "publish_scheduled":
-        publish_payload["scheduledAt"] = str(scheduled_at or "").strip()
+        publish_payload["scheduledAt"] = _agent_valid_scheduled_at(scheduled_at, required=True)
         task = create_scheduled_publish_task(publish_payload)
-        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "scheduledTask": task, "message": "定时发布任务已创建"})
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "scheduledTask": task, "message": "定时发布任务已创建"}, [target.get("accountId") for target in resolved_targets], scheduled_at)
     result = _publish_payload(publish_payload)
-    return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "publish": result, "message": "发布任务已提交"})
+    return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "publish": result, "message": "发布任务已提交"}, [target.get("accountId") for target in resolved_targets])
 
 
 def _agent_result_cards(tool_results):
