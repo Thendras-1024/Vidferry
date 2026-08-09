@@ -4,17 +4,6 @@ Vidferry 是本地优先的视频采集、处理、素材管理与多平台发�
 
 项目面向本机或受控内网部署。YouTube、平台登录和自动发布都依赖本机网络、浏览器及第三方平台规则，不适合作为直接暴露公网的多租户服务。
 
-终端启动后端：
-Set-Location E:\python_projec\Vidferry
-.\.venv\Scripts\python.exe run.py
-
-终端启动前端：
-Set-Location E:\python_projec\Vidferry\sau_frontend
-npm run dev
-
-首次使用需要创建管理员，密码会交互输入：
-.\.venv\Scripts\python.exe -m app.auth.cli create-admin --username admin --display-name "管理员"
-
 ## 已发布账号运营效果
 
 <table>
