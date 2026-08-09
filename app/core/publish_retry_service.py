@@ -1,12 +1,35 @@
 """失败发布目标的服务端重发。"""
 
 
-def prepare_failed_publish_retry(publish_task_id):
+def _select_failed_publish_records(failed_records, target_record_ids=None):
+    """Return retry targets selected from the current task's failed records."""
+    failed_records = list(failed_records or [])
+    if target_record_ids is None:
+        return failed_records
+    if not isinstance(target_record_ids, list) or not target_record_ids:
+        raise ValueError("请至少选择一个失败平台重新发布")
+    if any(isinstance(record_id, bool) or not isinstance(record_id, int) for record_id in target_record_ids):
+        raise ValueError("重发平台记录格式无效")
+    if len(set(target_record_ids)) != len(target_record_ids):
+        raise ValueError("重发平台不能重复选择")
+
+    records_by_id = {int(record.get("id") or 0): record for record in failed_records}
+    selected_records = []
+    for record_id in target_record_ids:
+        record = records_by_id.get(record_id)
+        if not record:
+            raise ValueError("所选平台不属于当前任务的可重发失败项")
+        selected_records.append(record)
+    return selected_records
+
+
+def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
     """校验失败目标并登记重发任务，供后台发布队列执行。"""
     task_id = str(publish_task_id or "").strip()
     if not task_id or task_id.startswith("legacy:"):
         raise ValueError("发布任务不存在或不支持重发")
 
+    owner_user_id = _current_account_owner_id()
     init_database_tables()
     with _db_connect() as conn:
         conn.row_factory = True
@@ -33,6 +56,7 @@ def prepare_failed_publish_retry(publish_task_id):
         failed_records = [record for record in records if record.get("status") in {"failed", "timeout"}]
         if not failed_records:
             raise ValueError("原发布任务没有可重发的失败平台")
+        failed_records = _select_failed_publish_records(failed_records, target_record_ids)
 
         source = records[0]
         cursor.execute("SELECT * FROM file_records WHERE id = ?", (source.get("materialId"),))
@@ -45,7 +69,10 @@ def prepare_failed_publish_retry(publish_task_id):
 
         targets = []
         for record in failed_records:
-            cursor.execute("SELECT * FROM user_info WHERE type = ? AND filePath = ?", (record["platformType"], record["accountFile"]))
+            cursor.execute(
+                "SELECT * FROM user_info WHERE type = ? AND filePath = ? AND owner_user_id = ?",
+                (record["platformType"], record["accountFile"], owner_user_id),
+            )
             account = cursor.fetchone()
             if not account or int(account["status"] or 0) != 1:
                 raise ValueError(f"{record['platform']} 原账号不存在或状态异常，无法重发")
@@ -55,6 +82,7 @@ def prepare_failed_publish_retry(publish_task_id):
                 "accountFile": account["filePath"],
                 "accountId": account["id"],
                 "accountName": account["userName"],
+                "ownerUserId": account["owner_user_id"],
                 "retryOfRecordId": record["id"],
             })
 

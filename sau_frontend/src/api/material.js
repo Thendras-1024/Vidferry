@@ -37,8 +37,8 @@ export const materialApi = {
     return http.get('/publish/tasks', params)
   },
 
-  retryFailedPublishTask: (taskId) => {
-    return http.post(`/publish/tasks/${encodeURIComponent(taskId)}/retry-failed`)
+  retryFailedPublishTask: (taskId, targetRecordIds) => {
+    return http.post(`/publish/tasks/${encodeURIComponent(taskId)}/retry-failed`, { targetRecordIds })
   },
 
   getScheduledPublishTasks: (params = {}) => {

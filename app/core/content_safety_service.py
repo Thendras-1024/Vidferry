@@ -175,7 +175,7 @@ def get_content_safety_snapshot(job_id):
         return {}
 
 
-def resolve_content_safety_confirmation(job_id, decision, ranges=None, reason=""):
+def resolve_content_safety_confirmation(job_id, decision, ranges=None, reason="", owner_user_id=None):
     if decision not in {"trim", "safe"}:
         raise ValueError("decision 必须是 trim 或 safe")
     reason = str(reason or "").strip()
@@ -185,7 +185,13 @@ def resolve_content_safety_confirmation(job_id, decision, ranges=None, reason=""
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN")
-        cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ? FOR UPDATE", (job_id,))
+        if owner_user_id is None:
+            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ? FOR UPDATE", (job_id,))
+        else:
+            cursor.execute(
+                "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ? FOR UPDATE",
+                (job_id, int(owner_user_id)),
+            )
         row = cursor.fetchone()
         if not row:
             raise LookupError("任务不存在")

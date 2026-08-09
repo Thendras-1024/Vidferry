@@ -74,8 +74,8 @@ def _task_type_label(scope, job, events):
         return "发布"
     operation = str(job.get("operation") or "").lower()
     stages = {event.get("stage") for event in events}
-    if operation in {"intro_refresh", "editing_intro"}:
-        return "片头更新"
+    if operation in {"intro_refresh", "editing_intro", "cover_reburn"}:
+        return "封面更新" if operation == "cover_reburn" else "片头更新"
     if stages and stages <= {"workflow", "analysis"}:
         return "内容分析"
     return "剪辑处理"
@@ -441,6 +441,29 @@ def _task_acknowledgements(user_id):
         return {str(row["task_key"]): _task_iso(row["acknowledged_at"]) for row in cursor.fetchall()}
 
 
+def _task_publish_retry_data(job, materials):
+    task_id = f"workflow:{job.get('id')}"
+    records = [item for item in materials if str(item.get("publish_task_id") or "") == task_id]
+    retry_records = [item for item in records if str(item.get("status") or "") in {"failed", "timeout"}]
+    has_blocking_status = any(str(item.get("status") or "") in {"pending", "running", "unknown", "canceled"} for item in records)
+    can_retry = bool(retry_records) and not has_blocking_status and not any(item.get("retry_source") for item in records)
+    return {
+        "publishTaskId": task_id if retry_records else "",
+        "canRetry": can_retry,
+        "retryTargets": [
+            {
+                "id": item.get("id"),
+                "platform": platform_name(int(item.get("platform_type") or 0)),
+                "accountName": item.get("account_name") or "",
+                "accountFile": item.get("account_file") or "",
+                "message": item.get("message") or "",
+                "updatedAt": _task_iso(item.get("updated_at") or item.get("published_at")),
+            }
+            for item in retry_records
+        ],
+    }
+
+
 def _task_item(job, events, materials, acknowledged_at=""):
     job_status = _task_status(job.get("status"))
     task_key = f"workflow:{job.get('id')}"
@@ -467,6 +490,7 @@ def _task_item(job, events, materials, acknowledged_at=""):
         "startedAt": _task_iso(job.get("started_at") or job.get("created_at")), "updatedAt": _task_iso(job.get("updated_at") or job.get("created_at")),
         "finishedAt": _task_iso(completion_at) if job_status in _TASK_TERMINAL_STATUSES else "", "expiresAt": _task_iso(expires_at),
         "acknowledged": bool(acknowledged_at), "acknowledgedAt": acknowledged_at,
+        **_task_publish_retry_data(job, materials),
     }
 
 

@@ -7,7 +7,7 @@ from app.utils.time_util import _build_publish_datetimes, _format_publish_schedu
 def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
-    account_info = _check_named_publish_account(3, job["account"])
+    account_info = _check_named_publish_account(3, job["account"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 3, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, 3, account_info["filePath"])
@@ -17,7 +17,7 @@ def _publish_to_douyin(job, processed_file):
 def _publish_to_bilibili(job, processed_file):
     if not job["publishToBilibili"] or not job["bilibiliAccount"]:
         return ""
-    account_info = _check_named_publish_account(5, job["bilibiliAccount"])
+    account_info = _check_named_publish_account(5, job["bilibiliAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 5, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, 5, account_info["filePath"])
@@ -27,7 +27,7 @@ def _publish_to_bilibili(job, processed_file):
 def _publish_to_xiaohongshu(job, processed_file):
     if not job.get("publishToXiaohongshu") or not job.get("xiaohongshuAccount"):
         return ""
-    account_info = _check_named_publish_account(1, job["xiaohongshuAccount"])
+    account_info = _check_named_publish_account(1, job["xiaohongshuAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 1, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, 1, account_info["filePath"])
@@ -37,7 +37,7 @@ def _publish_to_xiaohongshu(job, processed_file):
 def _publish_to_kuaishou(job, processed_file):
     if not job.get("publishToKuaishou") or not job.get("kuaishouAccount"):
         return ""
-    account_info = _check_named_publish_account(4, job["kuaishouAccount"])
+    account_info = _check_named_publish_account(4, job["kuaishouAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 4, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, 4, account_info["filePath"])
@@ -47,35 +47,58 @@ def _publish_to_kuaishou(job, processed_file):
 def _publish_to_tencent(job, processed_file):
     if not job.get("publishToTencent") or not job.get("tencentAccount"):
         return ""
-    account_info = _check_named_publish_account(2, job["tencentAccount"])
+    account_info = _check_named_publish_account(2, job["tencentAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 2, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, 2, account_info["filePath"])
     return " ".join(command)
 
 
-def _publish_platform_account_file(platform_type, account_name):
-    account_info = _check_named_publish_account(platform_type, account_name)
+def _publish_platform_account_file(platform_type, account_name, owner_user_id=None):
+    account_info = _check_named_publish_account(platform_type, account_name, owner_user_id)
     return account_info["filePath"] if account_info else ""
 
 
-def _publish_workflow_platform(job, processed_file, material, platform_type, account_name, command_factory):
+def _publish_workflow_platform(job, processed_file, material, platform_type, account_name):
     if not account_name:
-        return ""
+        return None
     backend_logger.info("发布开始 job_id=%s platform_type=%s", job.get("id", ""), platform_type)
-    command = command_factory(job, processed_file)
-    if not command:
-        return ""
-    _mark_published_materials(
-        [material.get("file_path") or material.get("storage_key")],
-        platform_type=platform_type,
-        title=job.get("title") or "YouTube 视频",
-        account_count=1,
-        account_file=_publish_platform_account_file(platform_type, account_name),
-        account_name=account_name,
-    )
-    backend_logger.info("发布完成 job_id=%s platform_type=%s", job.get("id", ""), platform_type)
-    return command
+    publish_task_id = f"workflow:{job.get('id')}"
+    file_path = material.get("file_path") or material.get("storage_key") or str(processed_file)
+    try:
+        account_info = _check_named_publish_account(platform_type, account_name, job.get("ownerUserId"))
+    except Exception as exc:
+        _mark_published_materials(
+            [file_path],
+            platform_type=platform_type,
+            title=job.get("title") or "YouTube 视频",
+            account_count=1,
+            account_file="",
+            publish_task_id=publish_task_id,
+            status="failed",
+            message=str(exc),
+            account_name=account_name,
+        )
+        return {
+            "platformType": platform_type,
+            "platformName": platform_name(platform_type),
+            "accountName": account_name,
+            "status": "failed",
+            "message": str(exc),
+            "durationMs": 0,
+        }
+
+    task = _workflow_publish_task(job, processed_file, platform_type, account_info)
+    task.update({
+        "publishTaskId": publish_task_id,
+        "accountName": account_name,
+        "fileList": [file_path],
+        "absoluteFiles": [Path(processed_file)],
+        "timeoutSeconds": 3600,
+    })
+    result = _execute_publish_target(task)
+    backend_logger.info("发布完成 job_id=%s platform_type=%s status=%s", job.get("id", ""), platform_type, result.get("status"))
+    return result
 
 
 def _publish_center_to_bilibili(title, description, file_list, tags, account_list, tid=None, enable_timer=False, videos_per_day=1, daily_times=None, start_days=0):
@@ -144,7 +167,7 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
         "platformType": platform_type,
         "platformName": platform_name(platform_type),
         "accountFile": account_info["filePath"],
-        "accountPath": Path(BASE_DIR / "cookiesFile" / account_info["filePath"]),
+        "accountPath": _safe_cookie_path(account_info["filePath"], owner_user_id=account_info.get("ownerUserId")),
         "absoluteFiles": [file_path],
         "fileList": [str(file_path)],
         "title": title,
@@ -485,6 +508,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
     tasks = []
     for target in targets:
         account_file = _safe_text(target.get("accountFile"))
+        owner_user_id = target.get("ownerUserId")
         platform_type = int(target.get("platformType") or 0)
         target_tags = _normalize_publish_tags(target.get("tags")) if "tags" in target else fallback_tags
         if platform_type == 3:
@@ -499,7 +523,8 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
             "platformName": target.get("platformName") or platform_name(platform_type),
             "accountName": target.get("accountName") or "",
             "accountFile": account_file,
-            "accountPath": Path(BASE_DIR / "cookiesFile" / account_file),
+            "accountPath": _safe_cookie_path(account_file, owner_user_id=owner_user_id),
+            "ownerUserId": owner_user_id,
             "fileList": file_list,
             "absoluteFiles": absolute_files,
             "title": title,
@@ -564,6 +589,7 @@ def _publish_payload(data):
     if not _safe_text(data.get("title")):
         raise ValueError("标题不能为空")
     targets = normalize_publish_targets(data)
+    _check_accounts_for_publish(targets)
     file_list, publish_materials = _validate_publish_processed_files(file_list)
     publish_material = publish_materials[0]
     _assert_publish_targets_available(publish_material, targets)

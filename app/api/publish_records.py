@@ -30,7 +30,11 @@ def publish_tasks():
 @app.route('/publish/tasks/<task_id>/retry-failed', methods=['POST'])
 def retry_failed_publish(task_id):
     try:
-        result = prepare_failed_publish_retry(task_id)
+        payload = request.get_json(silent=True)
+        if payload is not None and not isinstance(payload, dict):
+            raise ValueError("重发请求格式无效")
+        target_record_ids = payload.get("targetRecordIds") if payload and "targetRecordIds" in payload else None
+        result = prepare_failed_publish_retry(task_id, target_record_ids)
         try:
             _submit_background_task("publish", run_failed_publish_retry, result["tasks"])
         except Exception:

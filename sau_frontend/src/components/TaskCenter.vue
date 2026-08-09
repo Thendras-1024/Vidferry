@@ -43,6 +43,7 @@
                 </div>
                 <div class="task-item-actions">
                   <el-button text type="primary" size="small" @click="openDetail(item)">详情</el-button>
+                  <el-button v-if="item.canRetry" text type="primary" size="small" @click="openRetryDialog(item)">重新发布</el-button>
                   <el-button v-if="['failed', 'abnormal'].includes(item.status)" text type="danger" size="small" @click="acknowledge(item)">我知道了</el-button>
                 </div>
               </article>
@@ -54,6 +55,7 @@
   </el-tooltip>
 
   <TaskFlowDialog v-model:visible="detailVisible" :detail="detail" />
+  <PublishRetryDialog v-model="retryDialogVisible" :task="retryTask" @completed="refresh" />
 </template>
 
 <script setup>
@@ -62,11 +64,14 @@ import { ElMessage } from 'element-plus'
 import { List, Loading, RefreshRight } from '@element-plus/icons-vue'
 import { taskCenterApi } from '@/api/taskCenter'
 import TaskFlowDialog from './TaskFlowDialog.vue'
+import PublishRetryDialog from './PublishRetryDialog.vue'
 
 const panelVisible = ref(false)
 const detailVisible = ref(false)
 const loading = ref(false)
 const detail = ref(null)
+const retryDialogVisible = ref(false)
+const retryTask = ref(null)
 const items = ref([])
 const summary = ref({ activeCount: 0, waitingCount: 0, completedCount: 0, abnormalCount: 0, badgeCount: 0 })
 let pollTimer = null
@@ -130,6 +135,14 @@ const openDetail = async item => {
   } catch (error) {
     ElMessage.error(error.message || '读取任务详情失败')
   }
+}
+
+const openRetryDialog = item => {
+  retryTask.value = {
+    ...item,
+    taskId: item.publishTaskId,
+  }
+  retryDialogVisible.value = true
 }
 
 const acknowledge = async item => {

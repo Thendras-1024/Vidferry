@@ -328,7 +328,7 @@ def youtube_workflow_jobs():
     try:
         limit = int(request.args.get("limit", request.args.get("pageSize", 50)))
         limit = max(1, min(limit, 100))
-        return _json_response(data=list_youtube_workflow_jobs(limit, request.args))
+        return _json_response(data=list_youtube_workflow_jobs(limit, request.args, _current_account_owner_id()))
     except Exception as e:
         return _json_response(500, f"获取工作流任务失败: {str(e)}", None, 500)
 
@@ -336,7 +336,7 @@ def youtube_workflow_jobs():
 @app.route('/youtube/workflow/jobs/<job_id>', methods=['GET'])
 def youtube_workflow_job_detail(job_id):
     try:
-        return _json_response(data=get_youtube_workflow_job(job_id))
+        return _json_response(data=get_youtube_workflow_job(job_id, _current_account_owner_id()))
     except LookupError as e:
         return _json_response(404, str(e), None, 404)
     except Exception as e:
@@ -350,7 +350,7 @@ def confirm_youtube_workflow_publish(job_id):
         confirmed = payload.get("confirmed")
         if not isinstance(confirmed, bool):
             return _json_response(400, "confirmed 必须是 true 或 false", None, 400)
-        job = resolve_youtube_workflow_publish_confirmation(job_id, confirmed)
+        job = resolve_youtube_workflow_publish_confirmation(job_id, confirmed, _current_account_owner_id())
         if confirmed:
             _submit_workflow_job(workflow_job_resource(job), run_youtube_workflow, job, "发布确认后的后台任务提交失败")
             return _json_response(data=job, status=202)
@@ -373,6 +373,7 @@ def confirm_youtube_workflow_content_safety(job_id):
             payload.get("decision"),
             payload.get("ranges"),
             payload.get("reason"),
+            _current_account_owner_id(),
         )
         target = run_youtube_workflow if any(job.get(key) for key in ("publishToDouyin", "publishToBilibili", "publishToXiaohongshu", "publishToKuaishou", "publishToTencent")) else run_youtube_translate_job
         _submit_workflow_job("processing", target, job, "视频处理确认后的后台任务提交失败")
@@ -390,7 +391,7 @@ def confirm_youtube_workflow_content_safety(job_id):
 @app.route('/youtube/workflow/jobs/<job_id>/source-preview', methods=['GET'])
 def youtube_workflow_source_preview(job_id):
     try:
-        job = get_youtube_workflow_job(job_id)
+        job = get_youtube_workflow_job(job_id, _current_account_owner_id())
         source_file = Path(job.get("sourceFilePath") or "")
         if not source_file.is_file():
             return _json_response(404, "未找到本地源视频", None, 404)
@@ -463,6 +464,7 @@ def create_youtube_workflow():
             _check_named_publish_account(4, payload.get("kuaishouAccount"))
         if payload.get("publishToTencent") and payload.get("tencentAccount"):
             _check_named_publish_account(2, payload.get("tencentAccount"))
+        payload["ownerUserId"] = _current_account_owner_id()
         job = create_youtube_workflow_job(payload)
         resource = workflow_job_resource(job)
         _submit_workflow_job(resource, run_youtube_workflow, job, "完整工作流提交失败")
@@ -493,6 +495,7 @@ def create_youtube_download():
 
         job = create_youtube_workflow_job({
             **payload,
+            "ownerUserId": _current_account_owner_id(),
             "account": "",
             "publishToDouyin": False,
             "publishToBilibili": False,
@@ -533,6 +536,7 @@ def create_youtube_translate():
 
         job = create_youtube_workflow_job({
             **payload,
+            "ownerUserId": _current_account_owner_id(),
             "account": "",
             "publishToDouyin": False,
             "publishToBilibili": False,
@@ -576,6 +580,7 @@ def create_youtube_analysis():
         force = force_requested or int(existing.get("status") or 0) == 3
         job = maybe_start_youtube_analysis_job({
             **payload,
+            "ownerUserId": _current_account_owner_id(),
             "processVersion": PROCESS_VERSION_EDITING,
         }, force=force)
         if not job:
@@ -602,13 +607,15 @@ def create_youtube_editing_intro_job():
             return _json_response(400, "videoId 和 url 不能为空", None, 400)
         job = create_youtube_workflow_job({
             **payload,
-            "operation": "intro_refresh",
+            "ownerUserId": _current_account_owner_id(),
+            "operation": "cover_reburn" if payload.get("operation") == "cover_reburn" else "intro_refresh",
             "account": "", "publishToDouyin": False, "publishToBilibili": False,
             "publishToXiaohongshu": False, "publishToKuaishou": False, "publishToTencent": False,
             "description": "", "tags": payload.get("tags") or [], "schedule": "",
         })
-        _submit_workflow_job("processing", run_youtube_update_editing_intro_job, job, "更新片头高光任务提交失败")
-        backend_logger.info("片头高光更新任务已提交 : job_id = %s | video_id = %s", job["id"], job.get("videoId", ""))
+        task_label = "封面重烧" if job.get("operation") == "cover_reburn" else "片头高光更新"
+        _submit_workflow_job("processing", run_youtube_update_editing_intro_job, job, f"{task_label}任务提交失败")
+        backend_logger.info("%s任务已提交 : job_id = %s | video_id = %s", task_label, job["id"], job.get("videoId", ""))
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
         return _error_response(409, str(e), e.error_code, e.error_type, e.data)
@@ -623,7 +630,7 @@ def youtube_analysis_jobs():
         limit = int(request.args.get("limit", 50))
         limit = max(1, min(limit, 100))
         items = [
-            item for item in list_youtube_workflow_jobs(limit).get("items", [])
+            item for item in list_youtube_workflow_jobs(limit, owner_user_id=_current_account_owner_id()).get("items", [])
             if item.get("processVersion") == PROCESS_VERSION_EDITING
         ]
         return _json_response(data={"total": len(items), "items": items})

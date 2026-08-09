@@ -327,6 +327,7 @@ def run_scheduled_publish_task(task_id):
             publish_target = {
                 "platformType": target["platformType"], "platformName": target["platformName"],
                 "accountFile": account["filePath"], "accountId": account["id"], "accountName": account["userName"],
+                "ownerUserId": account["owner_user_id"],
                 "tags": content["tags"], **settings,
             }
             data = {**content, "fileList": [task["file_path"]], "targets": [publish_target], "enableTimer": False, **settings}

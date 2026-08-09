@@ -38,6 +38,7 @@ def _validate_workflow_job_changes(changes):
 
 def _row_to_workflow_job(row):
     item = dict(row)
+    content_risk = _workflow_content_risk(item.get("content_risk"))
     return {
         "id": item.get("id"),
         "videoId": item.get("video_id") or "",
@@ -51,6 +52,7 @@ def _row_to_workflow_job(row):
         "xiaohongshuAccount": item.get("xiaohongshu_account") or "",
         "kuaishouAccount": item.get("kuaishou_account") or "",
         "tencentAccount": item.get("tencent_account") or "",
+        "publishAccountGroupId": item.get("publish_account_group_id"),
         "publishToDouyin": int(item.get("publish_to_douyin") or 0),
         "publishToBilibili": int(item.get("publish_to_bilibili") or 0),
         "publishToXiaohongshu": int(item.get("publish_to_xiaohongshu") or 0),
@@ -85,7 +87,8 @@ def _row_to_workflow_job(row):
         "publishCommand": item.get("publish_command") or "",
         "publishConfirmationRequired": bool(item.get("publish_confirmation_required") or 0),
         "publishConfirmationStatus": item.get("publish_confirmation_status") or "",
-        "contentRisk": _workflow_content_risk(item.get("content_risk")),
+        "contentRisk": content_risk,
+        "ownerUserId": item.get("owner_user_id"),
         "contentSafetyReviewEnabled": _content_safety_enabled(item),
         "progress": round(float(item.get("progress") or 0), 1),
         "speed": item.get("speed") or "",
@@ -276,6 +279,19 @@ def _normalize_process_version(value):
 
 def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="media"):
     init_youtube_workflow_table()
+    payload = dict(payload or {})
+    account_group = resolve_publish_account_group(payload.get("publishAccountGroupId"))
+    if account_group:
+        group_accounts = {int(item["platformType"]): item["name"] for item in account_group["accounts"]}
+        platform_fields = {1: "xiaohongshuAccount", 2: "tencentAccount", 3: "account", 4: "kuaishouAccount", 5: "bilibiliAccount"}
+        platform_flags = {1: "publishToXiaohongshu", 2: "publishToTencent", 3: "publishToDouyin", 4: "publishToKuaishou", 5: "publishToBilibili"}
+        for platform_type, account_name in group_accounts.items():
+            payload[platform_fields[platform_type]] = account_name
+            payload[platform_flags[platform_type]] = True
+        for platform_type, field in platform_fields.items():
+            if platform_type not in group_accounts:
+                payload[field] = ""
+                payload[platform_flags[platform_type]] = False
     job_id = str(uuid.uuid4())
     subtitle_language = _normalize_subtitle_language(payload.get("subtitleLanguage"))
     burn_profile = _normalize_burn_profile(payload.get("burnProfile"))
@@ -335,13 +351,13 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_burn_count, comment_translation_mode,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_burn_count, comment_translation_mode, publish_account_group_id, owner_user_id,
             cover_title, cover_context, cover_brand_name, cover_brand_platform, operation,
             title, description, tags, schedule, status, step, message
         )
         VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         ''', (
             job_id,
@@ -375,6 +391,8 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             int(comment_burn_enabled),
             comment_burn_count,
             comment_translation_mode,
+            account_group.get("id") if account_group else None,
+            payload.get("ownerUserId"),
             cover_title,
             "",
             cover_signature,
@@ -419,12 +437,18 @@ def claim_youtube_workflow_job(job_id, **changes):
     return get_youtube_workflow_job(job_id)
 
 
-def get_youtube_workflow_job(job_id):
+def get_youtube_workflow_job(job_id, owner_user_id=None):
     init_youtube_workflow_table()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        if owner_user_id is None:
+            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        else:
+            cursor.execute(
+                "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ?",
+                (job_id, int(owner_user_id)),
+            )
         row = cursor.fetchone()
         if not row:
             raise LookupError("任务不存在")
@@ -441,7 +465,7 @@ def _workflow_status_clause(status):
     return "", []
 
 
-def list_youtube_workflow_jobs(limit=50, params=None):
+def list_youtube_workflow_jobs(limit=50, params=None, owner_user_id=None):
     init_youtube_workflow_table()
     params = params or {}
     page = _parse_positive_int(params.get("page"), 1, 1, 100000)
@@ -452,6 +476,9 @@ def list_youtube_workflow_jobs(limit=50, params=None):
         cursor = conn.cursor()
         where = []
         values = []
+        if owner_user_id is not None:
+            where.append("owner_user_id = ?")
+            values.append(int(owner_user_id))
         status_clause, status_values = _workflow_status_clause(str(params.get("status") or "all"))
         if status_clause:
             where.append(status_clause)
@@ -689,7 +716,7 @@ def update_youtube_workflow_job(job_id, **changes):
     return get_youtube_workflow_job(job_id)
 
 
-def resolve_youtube_workflow_publish_confirmation(job_id, confirmed):
+def resolve_youtube_workflow_publish_confirmation(job_id, confirmed, owner_user_id=None):
     """原子地处理发布确认，避免并发确认重复提交同一工作流。"""
     init_youtube_workflow_table()
     if not isinstance(confirmed, bool):
@@ -699,7 +726,13 @@ def resolve_youtube_workflow_publish_confirmation(job_id, confirmed):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        if owner_user_id is None:
+            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        else:
+            cursor.execute(
+                "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ?",
+                (job_id, int(owner_user_id)),
+            )
         row = cursor.fetchone()
         if not row:
             raise LookupError("任务不存在")

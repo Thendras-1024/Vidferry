@@ -182,6 +182,24 @@ def _editing_intro_requested(job):
     return bool(job.get("highlightIntroEnabled", True) or job.get("coverIntroEnabled", True))
 
 
+def _is_cover_reburn(job):
+    return str((job or {}).get("operation") or "") == "cover_reburn"
+
+
+def _replace_cover_intro(output_file, cover_assets, work_dir):
+    cover = (cover_assets or {}).get("cover") or {}
+    cover_duration = float(cover.get("durationSeconds") or 0)
+    cover_clips = list((cover_assets or {}).get("clips") or [])
+    if not cover_clips or cover_duration <= 0:
+        raise RuntimeError("未生成新封面片头，请检查封面图片和标题")
+    preserved_intro = Path(work_dir) / "preserved_intro_and_body.mp4"
+    _run_command([
+        _resolve_ffmpeg_command(), "-y", "-ss", f"{cover_duration:.3f}", "-i", str(output_file),
+        "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", str(preserved_intro),
+    ], cwd=BASE_DIR)
+    return concat_editing_intro_assets(preserved_intro, cover_assets, output_file, work_dir)
+
+
 def _editing_analysis_required(job):
     if job.get("highlightIntroEnabled", True):
         return True
@@ -869,9 +887,10 @@ def run_youtube_update_editing_intro_job(job_id):
     editing_event_id = None
     work_dir = None
     try:
-        job = claim_youtube_workflow_job(job_id, step="editing", message="正在更新封面片头与高光", progress=10, speed="", eta="")
+        job = claim_youtube_workflow_job(job_id, step="editing", message="正在重新烧制封面" if _is_cover_reburn(get_youtube_workflow_job(job_id)) else "正在更新封面片头与高光", progress=10, speed="", eta="")
         if not job:
             return
+        cover_only = _is_cover_reburn(job)
         record = _get_youtube_video_record(job.get("videoId")) or {}
         body_file = Path(record.get("editingBodyPath") or "")
         ass_path = record.get("editingAssPath") or ""
@@ -892,18 +911,25 @@ def run_youtube_update_editing_intro_job(job_id):
             raise RuntimeError("未找到编辑版成片输出路径，请执行完整处理")
         source_file = _resolve_downloaded_source_file(job)
         analysis_result = (get_youtube_video_analysis(job.get("videoId")) or {}).get("result") or {}
-        editing_event_id = start_workflow_event(job, "editing", "开始更新封面片头与高光", input_file_path=body_file)
+        editing_event_id = start_workflow_event(job, "editing", "开始重新烧制封面" if cover_only else "开始更新封面片头与高光", input_file_path=body_file)
         work_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{job['id']}_editing_intro")
-        assets = render_editing_intro_assets(job, source_file, ass_file, analysis_result, work_dir)
-        _validate_requested_highlights(job, assets)
-        final_file = concat_editing_intro_assets(body_file, assets, output_file, work_dir) if assets.get("clips") else body_file
+        if cover_only:
+            assets = render_editing_intro_assets({**job, "highlightIntroEnabled": False}, source_file, None, {}, work_dir)
+            final_file = _replace_cover_intro(output_file, assets, work_dir)
+            assets["segments"] = record.get("editingHighlightSnapshot") or []
+        else:
+            assets = render_editing_intro_assets(job, source_file, ass_file, analysis_result, work_dir)
+            _validate_requested_highlights(job, assets)
+            final_file = concat_editing_intro_assets(body_file, assets, output_file, work_dir) if assets.get("clips") else body_file
         intro_signature = editing_intro_signature(job, analysis_result, record["editingBodySignature"])
         result = {"path": str(final_file), "segments": assets.get("segments") or [], "cover": assets.get("cover")}
         _save_processed_video_to_material(final_file, {**job, "coverIntro": result.get("cover") or {}})
-        _save_final_highlight_selection(job, analysis_result, result)
+        if not cover_only:
+            _save_final_highlight_selection(job, analysis_result, result)
         update_youtube_video_artifacts(job["videoId"], editingIntroSignature=intro_signature, editingHighlightSnapshot=json.dumps(result["segments"], ensure_ascii=False), editingIntroStatus="synced")
-        finish_workflow_event(editing_event_id, "success", f"已更新 {len(result['segments'])} 个高光片段", output_file_path=final_file)
-        update_youtube_workflow_job(job_id, status="success", step="done", message="封面片头与高光已更新", processed_file_path=str(final_file), progress=100, speed="", eta="")
+        message = "封面片头已重新烧制" if cover_only else f"已更新 {len(result['segments'])} 个高光片段"
+        finish_workflow_event(editing_event_id, "success", message, output_file_path=final_file)
+        update_youtube_workflow_job(job_id, status="success", step="done", message=message, processed_file_path=str(final_file), progress=100, speed="", eta="")
     except Exception as exc:
         error_fields = _log_workflow_failure("更新片头高光任务", job_id, exc)
         finish_workflow_event(editing_event_id, "failed", error_fields["error_reason"])
@@ -913,6 +939,17 @@ def run_youtube_update_editing_intro_job(job_id):
         # 清理本次片头渲染临时目录(封面/高光短片中间产物与 concat 中转文件)。
         if work_dir:
             safe_rmtree(work_dir)
+
+
+def _workflow_publish_summary(results):
+    results = list(results or [])
+    successful_platforms = [item.get("platformName") for item in results if item.get("status") == "success"]
+    failed_platforms = [item.get("platformName") for item in results if item.get("status") != "success"]
+    return {
+        "successfulPlatforms": successful_platforms,
+        "failedPlatforms": failed_platforms,
+        "failed": bool(failed_platforms),
+    }
 
 
 def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_event_id=None, skipped_subtitles=False, editing_result=None):
@@ -965,19 +1002,21 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             )
         return []
 
-    publish_commands = []
+    publish_results = []
     skipped_platforms = []
     published_platform_types = _published_platform_types_for_video(latest_job.get("videoId"))
     publish_event_id = start_workflow_event(publish_job, "publish", "开始发布", input_file_path=processed_file)
     publish_specs = [
-        (3, latest_job.get("account") or "", _publish_to_douyin),
-        (5, latest_job.get("bilibiliAccount") or "", _publish_to_bilibili),
-        (1, latest_job.get("xiaohongshuAccount") or "", _publish_to_xiaohongshu),
-        (4, latest_job.get("kuaishouAccount") or "", _publish_to_kuaishou),
-        (2, latest_job.get("tencentAccount") or "", _publish_to_tencent),
+        (3, latest_job.get("account") or ""),
+        (5, latest_job.get("bilibiliAccount") or ""),
+        (1, latest_job.get("xiaohongshuAccount") or ""),
+        (4, latest_job.get("kuaishouAccount") or ""),
+        (2, latest_job.get("tencentAccount") or ""),
     ]
     try:
-        for platform_type, account_name, command_factory in publish_specs:
+        for platform_type, account_name in publish_specs:
+            if not account_name:
+                continue
             if platform_type in published_platform_types:
                 skipped_platforms.append(platform_name(platform_type))
                 backend_logger.info(
@@ -986,16 +1025,21 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
                     platform_type,
                 )
                 continue
-            command = _publish_workflow_platform(publish_job, processed_file, material, platform_type, account_name, command_factory)
-            if command:
-                publish_commands.append(command)
+            result = _publish_workflow_platform(publish_job, processed_file, material, platform_type, account_name)
+            if result:
+                publish_results.append(result)
     except Exception as exc:
         finish_workflow_event(publish_event_id, "failed", _workflow_error_fields(exc)["error_reason"])
         raise
 
+    summary = _workflow_publish_summary(publish_results)
     final_message = "任务完成"
-    if not publish_commands:
+    if not publish_results:
         final_message = "任务完成，已保存到素材库，未配置发布平台账号所以未发布"
+    elif summary["failed"]:
+        success_text = "、".join(summary["successfulPlatforms"])
+        failed_text = "、".join(summary["failedPlatforms"])
+        final_message = f"发布完成，失败平台：{failed_text}" + (f"；成功平台：{success_text}" if success_text else "")
     if skipped_platforms:
         final_message = f"{final_message}；已跳过已发布平台：{'、'.join(skipped_platforms)}"
     process_version = _normalize_process_version(latest_job.get("processVersion"))
@@ -1004,22 +1048,23 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
     if skipped_subtitles:
         final_message = f"{final_message}；{_subtitle_skip_reason({'skippedBySetting': not latest_job.get('translationEnabled', True)})}"
 
-    finish_workflow_event(publish_event_id, "success", final_message, output_file_path=processed_file)
+    final_status = "failed" if summary["failed"] else "success"
+    finish_workflow_event(publish_event_id, final_status, final_message, output_file_path=processed_file)
     if workflow_event_id:
-        finish_workflow_event(workflow_event_id, "success", final_message, output_file_path=processed_file)
+        finish_workflow_event(workflow_event_id, final_status, final_message, output_file_path=processed_file)
     update_youtube_workflow_job(
         job_id,
-        status="success",
-        step="done",
+        status=final_status,
+        step="done" if final_status == "success" else "publish",
         message=final_message,
-        publish_command="\n".join(publish_commands),
+        publish_command="\n".join(summary["successfulPlatforms"]),
         progress=100,
         speed="",
         eta="",
     )
-    if publish_commands:
+    if summary["successfulPlatforms"]:
         update_youtube_video_artifacts(job["videoId"], publish_status=1)
-    return publish_commands
+    return publish_results
 
 
 def _processed_material_for_workflow(job):

@@ -128,8 +128,15 @@
 
       <div class="workflow-config">
         <div class="config-title">
-          <span class="panel-kicker">任务默认配置</span>
-          <span>用于下载后创建处理任务</span>
+          <span class="panel-kicker">处理任务发布配置</span>
+          <span>一键处理任务时选择发布平台和账号</span>
+        </div>
+        <div class="config-items account-group-config">
+          <el-select v-model="workflowForm.publishAccountGroupId" clearable filterable placeholder="选择发布账号组" @change="applyPublishAccountGroup">
+            <el-option v-for="group in publishAccountGroups" :key="group.id" :label="group.complete ? group.name : `${group.name}（配置不完整）`" :value="group.id" :disabled="!group.complete" />
+          </el-select>
+          <el-button size="small" @click="router.push('/account-management')">管理账号组</el-button>
+          <span v-if="workflowForm.publishAccountGroupId" class="config-group-hint">已按账号组填充；修改平台或账号后将使用自定义配置。</span>
         </div>
         <div class="config-items">
           <label class="config-item">
@@ -256,7 +263,7 @@
       </div>
     </el-card>
 
-    <el-card class="result-card data-panel" shadow="never">
+    <el-card ref="videoListSectionRef" class="result-card data-panel" shadow="never">
       <template #header>
         <div class="panel-header">
           <div>
@@ -607,6 +614,10 @@
                       <el-icon><VideoPlay /></el-icon>
                       <span v-if="analyzingId === row.id">生成中</span>
                       <span v-else>{{ analysisActionText(row) }}</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="row.processedVersions?.length" :disabled="analyzingId === row.id || Number(row.analysisStatus) === 2" @click="regenerateAnalysis(row)">
+                      <el-icon><Refresh /></el-icon>
+                      <span>重新生成文案</span>
                     </el-dropdown-item>
                     <el-dropdown-item
                       v-if="Number(row.translateStatus) === 1 || Number(row.translateStatus) === 2"
@@ -1064,6 +1075,7 @@ const currentAnalysisRow = ref(null)
 const jobErrorDialogVisible = ref(false)
 const currentErrorJob = ref(null)
 const videoTableRef = ref(null)
+const videoListSectionRef = ref(null)
 const items = ref([])
 const jobs = ref([])
 const videoTotal = ref(0)
@@ -1185,6 +1197,7 @@ const manualForm = reactive({
 })
 
 const workflowForm = reactive({
+  publishAccountGroupId: null,
   publishToDouyin: false,
   account: 'creator',
   publishToBilibili: false,
@@ -1273,6 +1286,40 @@ const workflowPublishPlatforms = [
   { key: 'tencent', label: '视频号', platform: '视频号', enabledKey: 'publishToTencent', accountKey: 'tencentAccount' }
 ]
 
+const publishAccountGroups = ref([])
+let applyingAccountGroup = false
+
+const loadPublishAccountGroups = async () => {
+  try {
+    const response = await accountApi.getPublishAccountGroups()
+    publishAccountGroups.value = response.data || []
+  } catch (error) {
+    publishAccountGroups.value = []
+    console.warn('加载发布账号组失败', error)
+  }
+}
+
+const applyPublishAccountGroup = (groupId) => {
+  if (!groupId) return
+  const group = publishAccountGroups.value.find(item => Number(item.id) === Number(groupId))
+  if (!group?.complete) {
+    workflowForm.publishAccountGroupId = null
+    ElMessage.warning('该账号组配置不完整，不能用于创建任务')
+    return
+  }
+  const fields = {
+    1: ['publishToXiaohongshu', 'xiaohongshuAccount'], 2: ['publishToTencent', 'tencentAccount'],
+    3: ['publishToDouyin', 'account'], 4: ['publishToKuaishou', 'kuaishouAccount'], 5: ['publishToBilibili', 'bilibiliAccount']
+  }
+  const accounts = new Map(group.accounts.map(account => [Number(account.platformType), account.name]))
+  applyingAccountGroup = true
+  Object.entries(fields).forEach(([platformType, [enabledKey, accountKey]]) => {
+    workflowForm[enabledKey] = accounts.has(Number(platformType))
+    workflowForm[accountKey] = accounts.get(Number(platformType)) || ''
+  })
+  nextTick(() => { applyingAccountGroup = false })
+}
+
 const syncWorkflowAccountSelections = () => {
   workflowPublishPlatforms.forEach(item => {
     if (workflowForm[item.accountKey] && !isNormalAccountName(item.platform, workflowForm[item.accountKey])) {
@@ -1280,6 +1327,13 @@ const syncWorkflowAccountSelections = () => {
     }
   })
 }
+
+watch(
+  () => [workflowForm.publishToDouyin, workflowForm.account, workflowForm.publishToBilibili, workflowForm.bilibiliAccount, workflowForm.publishToXiaohongshu, workflowForm.xiaohongshuAccount, workflowForm.publishToKuaishou, workflowForm.kuaishouAccount, workflowForm.publishToTencent, workflowForm.tencentAccount],
+  () => {
+    if (!applyingAccountGroup) workflowForm.publishAccountGroupId = null
+  }
+)
 
 const loadAccounts = async () => {
   try {
@@ -1513,7 +1567,8 @@ const consumeAgentStatusQuery = async () => {
   const status = String(route.query.status || '')
   if (!['initial', 'downloaded', 'processed', 'published', 'running', 'failed', 'abnormal'].includes(status)) return
   videoFilter.status = status
-  await router.replace({ path: route.path, query: { ...route.query, status: undefined } })
+  await nextTick()
+  videoListSectionRef.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 const loadWorkflowSettings = async () => {
@@ -2186,7 +2241,9 @@ const handleSearch = async () => {
 }
 
 const setStatusFilter = (filter) => {
-  videoFilter.status = videoFilter.status === filter ? 'all' : filter
+  videoFilter.status = filter
+  router.replace({ path: route.path, query: { ...route.query, status: filter === 'all' ? undefined : filter } })
+  nextTick(() => videoListSectionRef.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 }
 
 const handleVideoSelectionChange = (rows) => {
@@ -2572,6 +2629,7 @@ const createJob = async (row) => {
     const res = await youtubeApi.createWorkflowJob({
       videoId: row.id,
       url: row.url,
+      publishAccountGroupId: workflowForm.publishAccountGroupId || undefined,
       account: workflowForm.account.trim(),
       publishToDouyin: pendingPlatforms.has('douyin'),
       publishToBilibili: pendingPlatforms.has('bilibili'),
@@ -3000,11 +3058,13 @@ const formatSegmentRange = (segment) => {
 }
 
 const updateEditingIntro = async (row) => {
+  const coverOnly = needsCoverReburn(row)
   translatingId.value = row.id
   try {
     const res = await youtubeApi.createEditingIntroJob({
       videoId: row.id, url: row.url, channel: row.channel, subscribers: row.subscribers,
       publishedAt: row.publishedAt, title: row.title || 'YouTube 视频', processVersion: 'editing_v1',
+      operation: coverOnly ? 'cover_reburn' : 'intro_refresh',
       subtitleLanguage: workflowForm.subtitleLanguage, burnProfile: workflowForm.burnProfile,
       subtitleSize: workflowForm.subtitleSize, translatorLabel: workflowForm.translatorLabel,
       coverTitle: row.analysisDraft?.coverTitle || '', coverSignature: workflowForm.coverSignature,
@@ -3016,7 +3076,7 @@ const updateEditingIntro = async (row) => {
       commentTranslationMode: workflowForm.commentTranslationMode
     })
     jobs.value.unshift(res.data)
-    ElMessage.success('片头高光更新任务已创建')
+    ElMessage.success(coverOnly ? '封面重烧任务已创建' : '片头高光更新任务已创建')
     startJobsPolling()
   } finally {
     translatingId.value = ''
@@ -3120,7 +3180,7 @@ const copyText = async (text) => {
 
 onMounted(async () => {
   loadingWorkflowSettings = true
-  await Promise.all([loadBilibiliCategories(), loadAccounts(), videoGroupStore.load()])
+  await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishAccountGroups(), videoGroupStore.load()])
   form.groupId = videoGroupStore.defaultGroupId || ''
   manualForm.groupId = videoGroupStore.defaultGroupId || ''
   await loadWorkflowSettings()
@@ -3657,7 +3717,7 @@ $ink-strong: var(--vf-text-primary);
 
 .video-cell {
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr);
+  grid-template-columns: 116px minmax(220px, 0.9fr) minmax(260px, 1.2fr);
   align-items: center;
   gap: 12px;
   min-width: 0;
@@ -4405,8 +4465,10 @@ $ink-strong: var(--vf-text-primary);
 }
 
 .publish-draft-card {
-  grid-column: 2;
+  grid-column: 3;
+  grid-row: 1;
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 8px;
   width: 100%;
   max-width: none;
@@ -4418,6 +4480,8 @@ $ink-strong: var(--vf-text-primary);
 }
 
 .publish-draft-card.is-editing {
+  grid-column: 1 / -1;
+  grid-row: 2;
   width: 100%;
   max-width: none;
   min-width: 0;
@@ -4516,9 +4580,9 @@ $ink-strong: var(--vf-text-primary);
 }
 
 .draft-readonly-compact {
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.7fr);
-  align-items: center;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 6px;
   padding: 2px 0;
 
   .draft-summary {
@@ -4544,6 +4608,11 @@ $ink-strong: var(--vf-text-primary);
   .draft-summary-copy {
     color: $text-secondary;
     font-size: 12px;
+    line-height: 1.55;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
   }
 }
 
@@ -4809,6 +4878,7 @@ $ink-strong: var(--vf-text-primary);
 
   .publish-draft-card {
     grid-column: 1 / -1;
+    grid-row: auto;
   }
 
   .video-url {
