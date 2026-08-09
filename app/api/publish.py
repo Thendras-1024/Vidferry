@@ -10,17 +10,22 @@ def postVideo():
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as e:
-        print(f"发布视频时出错: {str(e)}")
+        backend_logger.exception("publish video failed")
         return jsonify({
             "code": 500,
             "msg": f"发布失败: {str(e)}",
             "data": None,
         }), 500
     failed_count = result.get("failedCount", 0)
+    unknown_count = result.get("unknownCount", 0)
     success_count = result.get("successCount", 0)
     return jsonify({
         "code": 200,
-        "msg": "所有平台发布失败" if failed_count and success_count == 0 else ("部分平台发布失败" if failed_count else "发布任务已提交"),
+        "msg": (
+            "存在待核验的平台发布结果"
+            if unknown_count
+            else ("所有平台发布失败" if failed_count and success_count == 0 else ("部分平台发布失败" if failed_count else "发布任务已提交"))
+        ),
         "data": result,
     }), 200
 

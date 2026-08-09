@@ -59,6 +59,7 @@ def _scheduled_task_payload(cursor, row):
     targets = _scheduled_task_targets(cursor, item["id"])
     success_count = sum(target["status"] == "success" for target in targets)
     failed_count = sum(target["status"] in {"failed", "timeout"} for target in targets)
+    unknown_count = sum(target["status"] == "unknown" for target in targets)
     cursor.execute("SELECT title, thumbnail, publish_draft FROM youtube_videos WHERE video_id = ?", (item["video_id"],))
     video = cursor.fetchone()
     title = video["title"] if video else ""
@@ -79,7 +80,7 @@ def _scheduled_task_payload(cursor, row):
         "status": item.get("status") or "pending",
         "overdue": bool(item.get("overdue") or 0),
         "message": clean_display_text(item.get("message")),
-        "summary": {"success": success_count, "failed": failed_count, "total": len(targets)},
+        "summary": {"success": success_count, "failed": failed_count, "unknown": unknown_count, "total": len(targets)},
         "targets": targets,
         "createdAt": item.get("created_at") or "",
         "startedAt": item.get("started_at") or "",
@@ -251,8 +252,9 @@ def _aggregate_scheduled_task_status(cursor, task_id):
         return None
     success_count = statuses.count("success")
     failed_count = sum(status in {"failed", "timeout"} for status in statuses)
-    status = "success" if success_count == len(statuses) else ("partial" if success_count else "failed")
-    return status, success_count, failed_count
+    unknown_count = statuses.count("unknown")
+    status = "unknown" if unknown_count else ("success" if success_count == len(statuses) else ("partial" if success_count else "failed"))
+    return status, success_count, failed_count, unknown_count
 
 
 def _load_scheduled_task_payload(task_id):
@@ -351,10 +353,10 @@ def run_scheduled_publish_task(task_id):
         cursor = conn.cursor()
         aggregated = _aggregate_scheduled_task_status(cursor, task_id)
         if aggregated is None:
-            status, success_count, failed_count = "failed", 0, 0
+            status, success_count, failed_count, unknown_count = "failed", 0, 0, 0
         else:
-            status, success_count, failed_count = aggregated
-        message = f"执行完成：成功 {success_count} 个平台，失败 {failed_count} 个平台"
+            status, success_count, failed_count, unknown_count = aggregated
+        message = f"执行完成：成功 {success_count} 个平台，失败 {failed_count} 个平台，待核验 {unknown_count} 个平台"
         now = _now_iso()
         cursor.execute("UPDATE scheduled_publish_tasks SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?", (status, message, now, now, task_id))
         cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ?", (task_id,))

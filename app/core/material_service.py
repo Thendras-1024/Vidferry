@@ -865,23 +865,46 @@ def _archive_published_material(
         "archivedFrom": "publish_record",
         "publishTaskId": publish_task_id or "",
     }
+
+    def _assert_record_claimable(existing):
+        # Lightweight archive fakes and very old rows may omit the status field;
+        # the database schema supplies the normal success default for real rows.
+        if "status" not in existing:
+            return
+        existing_task_id = str(existing.get("publish_task_id") or "")
+        existing_status = str(existing.get("status") or "success")
+        same_task = bool(publish_task_id) and existing_task_id == str(publish_task_id)
+        retry_context = bool(retry_source or retry_of_record_id or retry_of_task_id)
+        retryable_existing = existing_status in {"failed", "timeout"} and retry_context
+        if same_task or retryable_existing:
+            return
+        raise WorkflowConflictError(
+            f"璇ヨ棰戝凡鍙戝竷鎴栨鍦ㄥ彂甯冨埌{platform_name or platform_type}，涓嶈兘閲嶅鍙戝竷",
+            "VF-PUBLISH-DUPLICATE-PLATFORM",
+            "PUBLISH_DUPLICATE_PLATFORM",
+            {
+                "videoId": video_id,
+                "platformType": int(platform_type or 0),
+                "recordId": existing.get("id"),
+                "publishTaskId": existing_task_id,
+                "status": existing_status,
+            },
+        )
+
     cursor.execute(
         """
-        SELECT id FROM published_youtube_materials
+        SELECT id, publish_task_id, status FROM published_youtube_materials
         WHERE video_id = ?
           AND platform_type = ?
           AND deleted_at IS NULL
-          AND (
-              (publish_task_id = ? AND ? != '')
-              OR COALESCE(NULLIF(status, ''), 'success') IN ('pending', 'running', 'success')
-          )
         ORDER BY CASE WHEN publish_task_id = ? THEN 0 ELSE 1 END, id DESC
         LIMIT 1
         """,
-        (video_id, int(platform_type or 0), publish_task_id or "", publish_task_id or "", publish_task_id or ""),
+        (video_id, int(platform_type or 0), publish_task_id or ""),
     )
     existing = cursor.fetchone()
     if existing:
+        _assert_record_claimable(existing)
         cursor.execute('''
         UPDATE published_youtube_materials
         SET source_url = ?,
@@ -949,7 +972,8 @@ def _archive_published_material(
         publish_task_id, status, message, duration_ms, account_name, updated_at,
         retry_of_task_id, retry_of_record_id, retry_source
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT DO NOTHING RETURNING id
     ''', (
         video_id,
         source_url,
@@ -979,7 +1003,26 @@ def _archive_published_material(
         retry_of_record_id,
         retry_source or "",
     ))
-    return cursor.fetchone()[0]
+    inserted = cursor.fetchone()
+    if inserted:
+        return inserted[0]
+    cursor.execute(
+        """
+        SELECT id, publish_task_id, status FROM published_youtube_materials
+        WHERE video_id = ? AND platform_type = ? AND deleted_at IS NULL
+        ORDER BY id DESC LIMIT 1
+        """,
+        (video_id, int(platform_type or 0)),
+    )
+    existing = cursor.fetchone()
+    if not existing:
+        raise RuntimeError("发布记录占位失败：唯一键冲突后未找到占用记录")
+    _assert_record_claimable(existing)
+    cursor.execute(
+        "UPDATE published_youtube_materials SET updated_at = ? WHERE id = ?",
+        (published_at, existing["id"]),
+    )
+    return existing["id"]
 
 
 def _list_processed_versions_for_video(cursor, video_id):
@@ -1195,20 +1238,27 @@ def _assert_publish_targets_available(material, targets):
             platform_type = int(target.get("platformType") or 0)
             cursor.execute(
                 """
-                SELECT id FROM published_youtube_materials
+                SELECT id, publish_task_id, status FROM published_youtube_materials
                 WHERE video_id = ? AND platform_type = ?
                   AND deleted_at IS NULL
-                  AND COALESCE(NULLIF(status, ''), 'success') IN ('pending', 'running', 'success')
+                  AND COALESCE(NULLIF(status, ''), 'success') IN ('pending', 'running', 'success', 'unknown')
                 LIMIT 1
                 """,
                 (video_id, platform_type),
             )
-            if cursor.fetchone():
+            existing = cursor.fetchone()
+            if existing:
                 raise WorkflowConflictError(
                     f"该视频已发布或正在发布到{platform_name(platform_type)}，不能重复发布到同一平台。",
                     "VF-PUBLISH-DUPLICATE-PLATFORM",
                     "PUBLISH_DUPLICATE_PLATFORM",
-                    {"videoId": video_id, "platformType": platform_type},
+                    {
+                        "videoId": video_id,
+                        "platformType": platform_type,
+                        "recordId": existing.get("id") if existing else None,
+                        "publishTaskId": (existing.get("publish_task_id") or "") if existing else "",
+                        "status": (existing.get("status") or "success") if existing else "success",
+                    },
                 )
     return video_id
 
@@ -1302,6 +1352,57 @@ def _mark_published_materials(
     return updated
 
 
+def reserve_publish_tasks_pending(tasks):
+    """Atomically reserve every target in a publish request before platform calls."""
+    if not tasks:
+        return []
+
+    init_database_tables()
+    published_at = _now_iso()
+    updated = []
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        for task in tasks:
+            file_list = task.get("fileList") or []
+            platform_type = task.get("platformType")
+            platform_name_value = platform_name(platform_type)
+            for file_path in file_list:
+                cursor.execute(
+                    "SELECT * FROM file_records WHERE file_path = ? OR storage_key = ?",
+                    (file_path, file_path),
+                )
+                record = cursor.fetchone()
+                if not record:
+                    continue
+                material = _row_to_material(record)
+                video_id = material.get("source_video_id") or _material_source_video_id(material)
+                if not video_id:
+                    continue
+                video = _get_youtube_video_record(video_id) or {}
+                record_id = _archive_published_material(
+                    cursor,
+                    material,
+                    video,
+                    platform_name_value,
+                    published_at,
+                    publish_title=task.get("title") or "",
+                    account_count=task.get("accountCount") or 0,
+                    platform_type=platform_type,
+                    account_file=task.get("accountFile") or "",
+                    publish_task_id=task.get("publishTaskId") or "",
+                    status="pending",
+                    message="等待发布",
+                    account_name=task.get("accountName") or "",
+                    retry_of_task_id=task.get("retryOfTaskId") or "",
+                    retry_of_record_id=task.get("retryOfRecordId"),
+                    retry_source=task.get("retrySource") or "",
+                )
+                updated.append({"videoId": video_id, "recordId": record_id, "platformType": platform_type})
+        conn.commit()
+    return updated
+
+
 def _active_success_publish_count(cursor, video_id):
     if not video_id:
         return 0
@@ -1322,7 +1423,7 @@ def _published_platform_types_for_video(video_id, include_inflight=True):
     init_database_tables()
     # 默认把 pending/running 也算作「已占用」：定时任务一旦创建（pending）或正在执行（running），
     # 就应当挡住工作流的自动重复发布；仅 success 的旧语义保留给 include_inflight=False 的展示场景。
-    statuses = ("pending", "running", "success") if include_inflight else ("success",)
+    statuses = ("pending", "running", "success", "unknown") if include_inflight else ("success",)
     placeholders = ",".join("?" for _ in statuses)
     with _db_connect() as conn:
         cursor = conn.cursor()
@@ -1362,6 +1463,8 @@ def _publish_task_status(targets):
         return "running"
     if any(status == "pending" for status in statuses):
         return "pending"
+    if any(status == "unknown" for status in statuses):
+        return "unknown"
     success_count = sum(1 for status in statuses if status == "success")
     failed_count = sum(1 for status in statuses if status in {"failed", "timeout"})
     if success_count and failed_count:
@@ -1374,7 +1477,7 @@ def _publish_task_status(targets):
 
 
 def _publish_task_summary(targets):
-    summary = {"success": 0, "failed": 0, "timeout": 0, "running": 0, "pending": 0, "total": len(targets)}
+    summary = {"success": 0, "failed": 0, "timeout": 0, "unknown": 0, "running": 0, "pending": 0, "total": len(targets)}
     for target in targets:
         status = str(target.get("status") or "success")
         if status in summary:
@@ -1398,7 +1501,8 @@ def _row_to_publish_task(task_id, targets):
     english_title = first.get("title") or first.get("filename") or first.get("sourceUrl") or "暂无英文标题"
     overall_status = _publish_task_status(targets)
     retry_targets = [item for item in targets if item.get("status") in {"failed", "timeout"}]
-    can_retry = bool(retry_targets) and overall_status not in {"pending", "running", "canceled"} and not first.get("retrySource")
+    has_unknown = any(item.get("status") == "unknown" for item in targets)
+    can_retry = bool(retry_targets) and not has_unknown and overall_status not in {"pending", "running", "canceled", "unknown"} and not first.get("retrySource")
     for target in retry_targets:
         target["retryable"] = can_retry
     return {
