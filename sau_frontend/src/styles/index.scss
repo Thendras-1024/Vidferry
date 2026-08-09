@@ -140,6 +140,44 @@ html[data-theme='dark'] .el-textarea__inner::placeholder {
   color: var(--vf-text-placeholder);
 }
 
+/* Dark-mode states use a shared dark substrate so semantic color remains a signal, not a bright surface. */
+html[data-theme='dark'] .el-tag {
+  color: #F0F6FF !important;
+  background: #0D1117 !important;
+  border-color: #484F58 !important;
+}
+
+html[data-theme='dark'] .el-tag--primary { border-color: #4080FF !important; }
+html[data-theme='dark'] .el-tag--success { border-color: #36D399 !important; }
+html[data-theme='dark'] .el-tag--warning { border-color: #FBBD23 !important; }
+html[data-theme='dark'] .el-tag--danger { border-color: #F87272 !important; }
+html[data-theme='dark'] .el-tag--info { border-color: #8B949E !important; }
+
+html[data-theme='dark'] .el-button.is-plain {
+  color: #F0F6FF;
+  background: #161B22;
+  border-color: #484F58;
+}
+
+html[data-theme='dark'] .el-button--primary.is-plain { border-color: #4080FF; }
+html[data-theme='dark'] .el-button--success.is-plain { border-color: #36D399; }
+html[data-theme='dark'] .el-button--warning.is-plain { border-color: #FBBD23; }
+html[data-theme='dark'] .el-button--danger.is-plain { border-color: #F87272; }
+html[data-theme='dark'] .el-button--info.is-plain { border-color: #8B949E; }
+
+html[data-theme='dark'] .el-button--primary.is-plain:not(.is-disabled):hover { background: rgba(64, 128, 255, 0.16); }
+html[data-theme='dark'] .el-button--success.is-plain:not(.is-disabled):hover { background: rgba(54, 211, 153, 0.14); }
+html[data-theme='dark'] .el-button--warning.is-plain:not(.is-disabled):hover { background: rgba(251, 189, 35, 0.14); }
+html[data-theme='dark'] .el-button--danger.is-plain:not(.is-disabled):hover { background: rgba(248, 114, 114, 0.16); }
+html[data-theme='dark'] .el-button--info.is-plain:not(.is-disabled):hover { background: rgba(139, 148, 158, 0.16); }
+
+html[data-theme='dark'] .el-button.is-plain.is-disabled,
+html[data-theme='dark'] .el-button.is-plain.is-disabled:hover {
+  color: #6E7781;
+  background: #0D1117;
+  border-color: #30363D;
+}
+
 html[data-theme='dark'] :where(
   .workspace-hero,
   .page-hero,

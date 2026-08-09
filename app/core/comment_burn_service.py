@@ -19,7 +19,7 @@ from app.core.llm_harness import call_json_contract, contains_profanity
 
 _logger = logging.getLogger("vidferry.backend")
 
-COMMENT_BURN_VERSION = 5
+COMMENT_BURN_VERSION = 6
 COMMENT_LIMIT = 100
 COMMENT_SELECTED_LIMIT = 30
 COMMENT_SELECTED_LIMIT_MIN = 20
@@ -30,8 +30,8 @@ COMMENT_SCREEN_CONCURRENCY = 2
 COMMENT_SCREEN_TIMEOUT_SECONDS = min(LLM_TIMEOUT, 60)
 COMMENT_AVATAR_DOWNLOAD_CONCURRENCY = 4
 COMMENT_START_SECONDS = 25
-COMMENT_DURATION_SECONDS = 11
-COMMENT_GAP_SECONDS = 3
+COMMENT_DURATION_SECONDS = 18
+COMMENT_GAP_SECONDS = 10
 _URL_ONLY_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.I)
 _LOW_INFORMATION_RE = re.compile(
     r"^(?:wow+|omg+|lol+|lmao+|haha+|ha+|哇+|哇哦+|哇塞+|哈哈+|呵呵+|厉害+|牛+|棒+|大?赞+|대박+|헐+|와+|와우+)[!！?？~*…。.、\s]*$",

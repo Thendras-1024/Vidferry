@@ -98,7 +98,9 @@
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="入库时间" width="170" />
+        <el-table-column label="入库时间" width="170">
+          <template #default="{ row }">{{ formatMaterialTime(row.upload_time) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <div class="table-actions">
@@ -165,7 +167,9 @@
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="入库时间" width="170" />
+        <el-table-column label="入库时间" width="170">
+          <template #default="{ row }">{{ formatMaterialTime(row.upload_time) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <div class="table-actions">
@@ -208,7 +212,9 @@
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="入库时间" width="170" />
+        <el-table-column label="入库时间" width="170">
+          <template #default="{ row }">{{ formatMaterialTime(row.upload_time) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <div class="table-actions">
@@ -310,7 +316,7 @@
           <p>标题: {{ materialTitle(currentMaterial) }}</p>
           <p>视频时长: {{ materialDuration(currentMaterial) }}</p>
           <p>文件大小: {{ currentMaterial.filesize }} MB</p>
-          <p>入库时间: {{ currentMaterial.upload_time }}</p>
+          <p>入库时间: {{ formatMaterialTime(currentMaterial.upload_time) }}</p>
           <el-button type="primary" @click="downloadFile(currentMaterial)">下载文件</el-button>
         </div>
       </div>
@@ -479,6 +485,16 @@ const materialThumbnail = (material) => {
 
 const materialDuration = (material) => {
   return material?.duration || material?.metadata?.duration || '-'
+}
+
+const formatMaterialTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric', month: 'long', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
 }
 
 const cleanTopicList = (topics = []) => {

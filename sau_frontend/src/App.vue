@@ -174,9 +174,6 @@
                   <el-icon><Sunny v-if="isDarkTheme" /><Moon v-else /></el-icon>
                 </el-button>
               </el-tooltip>
-              <el-button v-if="route.path !== '/'" text @click="router.push('/')">
-                <el-icon><ChatDotRound /></el-icon><span>询问 Agent</span>
-              </el-button>
             </div>
             <div v-if="false" class="header-right">
               <el-tooltip content="打开内容安全审查与模型诊断" placement="bottom">

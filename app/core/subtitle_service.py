@@ -905,7 +905,7 @@ def _comment_burn_style_lines(video_info):
 def _comment_avatar_y(layout, comment):
     meta_y = layout["y"]
     text_y = meta_y + int(layout["metaFontSize"] * 1.35)
-    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.68, 1)))
+    max_chars = max(12, int(layout["textWidth"] / max(layout["translationFontSize"] * 0.68, 1)))
     original = _wrap_comment_ass_text((comment or {}).get("text"), max_chars)
     if (comment or {}).get("translationRequired") and _wrap_comment_ass_text((comment or {}).get("translationZh"), max_chars):
         translation_y = text_y + int(layout["textFontSize"] * (2.25 if "\\N" in original else 1.45))
@@ -923,7 +923,7 @@ def _append_comment_burn_ass(dialogue_lines, comments, video_info):
     meta_y = layout["y"]
     text_y = meta_y + int(layout["metaFontSize"] * 1.35)
     motion_offset = max(1, round(18 * layout["scalarScale"]))
-    max_chars = max(12, int(layout["textWidth"] / max(layout["textFontSize"] * 0.68, 1)))
+    max_chars = max(12, int(layout["textWidth"] / max(layout["translationFontSize"] * 0.68, 1)))
     for comment in comments:
         start = _format_ass_timestamp(comment.get("displayStart"))
         end = _format_ass_timestamp(comment.get("displayEnd"))
