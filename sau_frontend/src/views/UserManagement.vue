@@ -121,7 +121,7 @@ onMounted(loadUsers)
 .management-page { min-width: 0; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: 0; }
-p { margin: 0; color: #606266; }
+p { margin: 0; color: var(--vf-text-regular); }
 .toolbar { display: flex; gap: 10px; width: min(100%, 440px); margin-bottom: 14px; }
 .el-pagination { justify-content: flex-end; margin-top: 16px; }
 </style>

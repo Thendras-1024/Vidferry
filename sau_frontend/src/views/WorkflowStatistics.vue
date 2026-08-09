@@ -464,10 +464,10 @@ onBeforeUnmount(() => {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
-$ink: #162235;
-$muted: #64748b;
-$line: #dbe4ee;
-$panel: #ffffff;
+$ink: var(--vf-text-primary);
+$muted: var(--vf-text-secondary);
+$line: var(--vf-border);
+$panel: var(--vf-surface);
 
 .workflow-statistics {
   display: grid;
@@ -480,7 +480,7 @@ $panel: #ffffff;
   border: 1px solid $line;
   border-radius: 8px;
   background: $panel;
-  box-shadow: 0 8px 20px rgba(26, 51, 79, 0.06);
+  box-shadow: var(--vf-shadow-sm);
 }
 
 .statistics-toolbar {
@@ -656,7 +656,7 @@ $panel: #ffffff;
   margin-bottom: 18px;
   border: 1px solid #e6edf5;
   border-radius: 6px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 
 .stage-row {

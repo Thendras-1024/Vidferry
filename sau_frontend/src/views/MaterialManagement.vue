@@ -3,8 +3,8 @@
     <section class="page-header">
       <div>
         <span class="eyebrow">VIDEO MATERIAL LIBRARY</span>
-        <h1>视频素材管理</h1>
-        <p>按视频线索统一管理下载原视频、处理后视频和补充视频素材。</p>
+        <h1>视频素材</h1>
+        <p>统一查看下载原视频、处理后视频和补充素材。</p>
       </div>
       <div class="summary-strip">
         <div class="summary-item">
@@ -549,6 +549,28 @@ const processVersionLabel = (value) => {
   return labelMap[value] || value || '版本未知'
 }
 
+const processingSettingsRows = (material) => {
+  const settings = material?.processingSettings
+  if (!settings || typeof settings !== 'object' || Object.keys(settings).length === 0) {
+    return [['处理设置', '历史素材未记录完整任务设置']]
+  }
+  const enabled = value => value ? '开启' : '关闭'
+  const commentMode = settings.commentTranslationMode === 'google' ? 'Google 翻译' : 'Google 翻译 + LLM 修订'
+  return [
+    ['处理版本', processVersionLabel(settings.processVersion)],
+    ['字幕语言', languageLabel(settings.subtitleLanguage)],
+    ['烧录预设', settings.burnProfile === 'fast' ? '速度优先' : '兼容优先'],
+    ['字幕字号', settings.subtitleSize || '-'],
+    ['字幕翻译', enabled(settings.translationEnabled)],
+    ['翻译署名', settings.translatorLabel || '-'],
+    ['水印', settings.watermarkEnabled ? settings.watermarkText || '已开启' : '关闭'],
+    ['高光片头', settings.highlightIntroEnabled ? `${settings.highlightCount || 0} 条` : '关闭'],
+    ['封面片头', settings.coverIntroEnabled ? settings.coverTitle || '开启' : '关闭'],
+    ['评论烧制', settings.commentBurnEnabled ? `${settings.commentBurnCount || 0} 条，${commentMode}` : '关闭'],
+    ['内容安全审查', enabled(settings.contentSafetyReviewEnabled)]
+  ]
+}
+
 const MaterialIdentity = defineComponent({
   name: 'MaterialIdentity',
   props: {
@@ -566,7 +588,8 @@ const MaterialIdentity = defineComponent({
       ['存储路径', props.material.file_path],
       ['来源类型', props.material.source_type],
       ['状态', props.material.status],
-      ['任务状态', workflowBadge.value ? `${workflowBadge.value.text} ${workflowBadge.value.detail}` : '']
+      ['任务状态', workflowBadge.value ? `${workflowBadge.value.text} ${workflowBadge.value.detail}` : ''],
+      ...processingSettingsRows(props.material)
     ].filter(([, value]) => value !== undefined && value !== null && value !== ''))
     const previewSource = computed(() => {
       if (thumbFailed.value) return ''
@@ -600,19 +623,20 @@ const MaterialIdentity = defineComponent({
           h(ElPopover, {
             placement: 'right',
             width: 420,
-            trigger: 'click'
+            trigger: 'click',
+            popperClass: 'material-identity-popover'
           }, {
             reference: () => h(ElButton, {
               class: 'info-button',
               text: true,
               circle: true,
-              'aria-label': '查看基础信息'
+              'aria-label': '查看素材与处理设置'
             }, { default: () => h(ElIcon, null, { default: () => h(InfoFilled) }) }),
             default: () => h('div', { class: 'technical-popover' }, [
-              h('strong', '基础信息'),
+              h('strong', '素材与处理设置'),
               h('dl', { class: 'technical-list' }, infoRows.value.flatMap(([label, value]) => [
                 h('dt', label),
-                h('dd', String(value))
+                h('dd', { title: String(value) }, String(value))
               ]))
             ])
           }),
@@ -1072,19 +1096,19 @@ onBeforeUnmount(() => {
   }
 }
 
-$panel-border: #dce6f2;
-$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
-$accent-blue: #2563eb;
-$accent-teal: #0f9f8f;
-$ink-strong: #172033;
+$panel-border: var(--vf-border);
+$panel-shadow: var(--vf-shadow-md);
+$accent-blue: var(--vf-primary);
+$accent-teal: var(--vf-success);
+$ink-strong: var(--vf-text-primary);
 
 .material-management {
   display: grid;
   gap: 16px;
 
   :deep(.el-table th.el-table__cell) {
-    background: #f8fbff;
-    color: #5c6678;
+    background: var(--vf-surface-hover);
+    color: var(--vf-text-regular);
     font-weight: 600;
   }
 }
@@ -1097,9 +1121,7 @@ $ink-strong: #172033;
   padding: 18px;
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)),
-    #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 
   h1 {
@@ -1112,7 +1134,7 @@ $ink-strong: #172033;
 
   p {
     margin: 0;
-    color: #5b667a;
+    color: var(--vf-text-regular);
     font-size: 14px;
     line-height: 1.7;
   }
@@ -1138,10 +1160,10 @@ $ink-strong: #172033;
   padding: 14px;
   border: 1px solid rgba(37, 99, 235, 0.12);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--vf-surface-hover);
 
   span {
-    color: #5b667a;
+    color: var(--vf-text-regular);
     font-size: 13px;
   }
 
@@ -1156,7 +1178,7 @@ $ink-strong: #172033;
 .material-section {
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 }
 
@@ -1338,7 +1360,7 @@ $ink-strong: #172033;
   color: #9aa4b5;
 }
 
-:deep(.technical-popover) {
+:global(.material-identity-popover .technical-popover) {
   display: grid;
   gap: 10px;
 
@@ -1348,7 +1370,7 @@ $ink-strong: #172033;
   }
 }
 
-:deep(.technical-list) {
+:global(.material-identity-popover .technical-list) {
   display: grid;
   grid-template-columns: 82px minmax(0, 1fr);
   gap: 8px 10px;
@@ -1358,12 +1380,17 @@ $ink-strong: #172033;
 
   dt {
     color: #7b8798;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   dd {
     min-width: 0;
     margin: 0;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -1418,7 +1445,7 @@ $ink-strong: #172033;
 
   .file-name {
     font-size: 14px;
-    color: #303133;
+    color: var(--vf-text-primary);
     margin-bottom: 8px;
     display: block;
     font-weight: 500;
@@ -1441,7 +1468,7 @@ $ink-strong: #172033;
 }
 
 :deep(.el-progress__text) {
-  color: #303133 !important;
+  color: var(--vf-text-primary) !important;
   font-size: 12px;
 }
 

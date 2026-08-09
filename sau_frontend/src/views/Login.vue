@@ -52,11 +52,11 @@ const submit = async () => {
 </script>
 
 <style scoped lang="scss">
-.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f3f5f7; }
-.login-panel { width: min(100%, 380px); padding: 32px; border: 1px solid #dcdfe6; border-radius: 8px; background: #fff; box-shadow: 0 12px 32px rgba(31, 45, 61, .08); }
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--vf-page-bg); }
+.login-panel { width: min(100%, 380px); padding: 32px; border: 1px solid var(--vf-border); border-radius: 8px; background: var(--vf-surface); box-shadow: var(--vf-shadow-md); }
 .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
 .brand img { width: 44px; height: 44px; }
-.brand h1 { margin: 0; color: #172033; font-size: 24px; letter-spacing: 0; }
-.brand p { margin: 3px 0 0; color: #687386; font-size: 14px; }
+.brand h1 { margin: 0; color: var(--vf-text-primary); font-size: 24px; letter-spacing: 0; }
+.brand p { margin: 3px 0 0; color: var(--vf-text-secondary); font-size: 14px; }
 .login-button { width: 100%; margin-top: 6px; }
 </style>

@@ -4,13 +4,234 @@
 // 导入变量
 @use './variables.scss' as *;
 
-// 全局样式
+// Vidferry design tokens. Keep the light theme as the default so existing
+// operators get a familiar first render; dark mode is toggled on <html>.
+:root {
+  color-scheme: light;
+  --vf-primary: #165DFF;
+  --vf-primary-hover: #4080FF;
+  --vf-primary-deep: #0F3885;
+  --vf-page-bg: #F7FAFF;
+  --vf-surface: #FFFFFF;
+  --vf-surface-elevated: #FFFFFF;
+  --vf-surface-hover: #EFF6FF;
+  --vf-text-primary: #1D2939;
+  --vf-text-regular: #47546B;
+  --vf-text-secondary: #98A2B3;
+  --vf-text-placeholder: #98A2B3;
+  --vf-text-muted: #667085;
+  --vf-border: #E2E8F0;
+  --vf-border-light: #E8EEF6;
+  --vf-success: #36D399;
+  --vf-warning: #FBBD23;
+  --vf-danger: #F87272;
+  --vf-info: #98A2B3;
+  --vf-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --vf-shadow-md: 0 12px 28px rgba(28, 55, 90, 0.08);
+  --el-color-primary: #165DFF;
+  --el-color-primary-light-3: #4080FF;
+  --el-color-success: #36D399;
+  --el-color-warning: #FBBD23;
+  --el-color-danger: #F87272;
+  --el-bg-color-page: #F7FAFF;
+  --el-bg-color: #FFFFFF;
+  --el-bg-color-overlay: #FFFFFF;
+  --el-text-color-primary: #1D2939;
+  --el-text-color-regular: #47546B;
+  --el-text-color-secondary: #98A2B3;
+  --el-border-color: #E2E8F0;
+  --el-border-color-light: #E8EEF6;
+  --el-fill-color-light: #EFF6FF;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --vf-primary: #165DFF;
+  --vf-primary-hover: #4080FF;
+  --vf-primary-deep: #0F3885;
+  --vf-page-bg: #0D1117;
+  --vf-surface: #161B22;
+  --vf-surface-elevated: #21262D;
+  --vf-surface-hover: #21262D;
+  --vf-text-primary: #F0F6FF;
+  --vf-text-regular: #C9D1D9;
+  --vf-text-secondary: #8B949E;
+  --vf-text-placeholder: #484F58;
+  --vf-text-muted: #8B949E;
+  --vf-border: #30363D;
+  --vf-border-light: #30363D;
+  --vf-success: #36D399;
+  --vf-warning: #FBBD23;
+  --vf-danger: #F87272;
+  --vf-info: #8B949E;
+  --vf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --vf-shadow-md: 0 12px 28px rgba(0, 0, 0, 0.28);
+  --el-bg-color-page: #0D1117;
+  --el-bg-color: #161B22;
+  --el-bg-color-overlay: #21262D;
+  --el-text-color-primary: #F0F6FF;
+  --el-text-color-regular: #C9D1D9;
+  --el-text-color-secondary: #8B949E;
+  --el-text-color-placeholder: #484F58;
+  --el-border-color: #30363D;
+  --el-border-color-light: #30363D;
+  --el-border-color-lighter: #30363D;
+  --el-fill-color: #21262D;
+  --el-fill-color-light: #21262D;
+  --el-fill-color-lighter: #1B2129;
+  --el-fill-color-blank: #161B22;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  color: $text-primary;
-  background-color: $bg-color-page;
+  font-family: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  color: var(--vf-text-primary);
+  background-color: var(--vf-page-bg);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+code, pre, .log-output, .workflow-log {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+html[data-theme='dark'] .el-card,
+html[data-theme='dark'] .el-table,
+html[data-theme='dark'] .el-table__inner-wrapper,
+html[data-theme='dark'] .el-dialog,
+html[data-theme='dark'] .el-drawer,
+html[data-theme='dark'] .el-popover,
+html[data-theme='dark'] .el-popper {
+  color: var(--vf-text-regular);
+  background: var(--vf-surface);
+  border-color: var(--vf-border);
+}
+
+html[data-theme='dark'] .el-table tr,
+html[data-theme='dark'] .el-table th.el-table__cell,
+html[data-theme='dark'] .el-table td.el-table__cell,
+html[data-theme='dark'] .el-table__body tr:hover > td.el-table__cell {
+  color: var(--vf-text-regular);
+  background: var(--vf-surface);
+  border-color: var(--vf-border);
+}
+
+html[data-theme='dark'] .el-table th.el-table__cell {
+  background: var(--vf-surface-hover);
+}
+
+html[data-theme='dark'] .el-input__wrapper,
+html[data-theme='dark'] .el-textarea__inner,
+html[data-theme='dark'] .el-select__wrapper,
+html[data-theme='dark'] .el-input-number,
+html[data-theme='dark'] .el-date-editor {
+  color: var(--vf-text-regular);
+  background: var(--vf-surface-elevated);
+  box-shadow: 0 0 0 1px var(--vf-border) inset;
+}
+
+html[data-theme='dark'] .el-input__inner,
+html[data-theme='dark'] .el-textarea__inner,
+html[data-theme='dark'] .el-select__selected-item,
+html[data-theme='dark'] .el-select__placeholder {
+  color: var(--vf-text-regular);
+}
+
+html[data-theme='dark'] .el-input__inner::placeholder,
+html[data-theme='dark'] .el-textarea__inner::placeholder {
+  color: var(--vf-text-placeholder);
+}
+
+html[data-theme='dark'] :where(
+  .workspace-hero,
+  .page-hero,
+  .data-panel,
+  .command-card,
+  .entry-panel,
+  .pipeline-strip,
+  .metric-card,
+  .form-section,
+  .settings-section,
+  .settings-header,
+  .password-panel,
+  .login-panel,
+  .info-panel,
+  .batch-panel,
+  .compose-panel,
+  .task-center-panel,
+  .task-flow-dialog
+) {
+  color: var(--vf-text-regular) !important;
+  background: var(--vf-surface) !important;
+  border-color: var(--vf-border) !important;
+  box-shadow: var(--vf-shadow-sm) !important;
+}
+
+html[data-theme='dark'] :where(
+  .workspace-hero,
+  .page-hero,
+  .data-panel,
+  .command-card,
+  .entry-panel,
+  .pipeline-strip,
+  .metric-card,
+  .form-section,
+  .settings-section,
+  .settings-header,
+  .password-panel,
+  .login-panel,
+  .info-panel,
+  .batch-panel,
+  .compose-panel,
+  .task-center-panel,
+  .task-flow-dialog
+) :where(h1, h2, h3, strong) {
+  color: var(--vf-text-primary) !important;
+}
+
+html[data-theme='dark'] :where(
+  .workspace-hero,
+  .page-hero,
+  .data-panel,
+  .command-card,
+  .entry-panel,
+  .pipeline-strip,
+  .metric-card,
+  .form-section,
+  .settings-section,
+  .settings-header,
+  .password-panel,
+  .login-panel,
+  .info-panel,
+  .batch-panel,
+  .compose-panel,
+  .task-center-panel,
+  .task-flow-dialog
+) :where(p, small, .muted, .setting-hint) {
+  color: var(--vf-text-secondary) !important;
+}
+
+html[data-theme='dark'] .agent-guard-card.is-allow,
+html[data-theme='dark'] .review-batch.is-retried,
+html[data-theme='dark'] .safety-summary,
+html[data-theme='dark'] .safety-risk {
+  background: rgba(251, 189, 35, 0.09) !important;
+}
+
+html[data-theme='dark'] .agent-guard-card.is-warn {
+  background: rgba(251, 189, 35, 0.12) !important;
+}
+
+html[data-theme='dark'] .agent-guard-card.is-failed,
+html[data-theme='dark'] .review-batch.is-fallback {
+  background: rgba(248, 114, 114, 0.1) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 #app {
