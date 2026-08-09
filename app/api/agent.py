@@ -105,6 +105,8 @@ def agent_sessions():
         data = list_agent_sessions(
             from_date=request.args.get("from", ""),
             to_date=request.args.get("to", ""),
+            source=request.args.get("source", ""),
+            q=request.args.get("q", ""),
             page=request.args.get("page", 1),
             page_size=request.args.get("pageSize", 20),
         )
@@ -143,6 +145,22 @@ def compact_agent_session_route(session_id):
         return jsonify({"code": 200, "msg": "Agent 会话已压缩", "data": result}), 200
     except Exception as exc:
         return jsonify({"code": 500, "msg": f"压缩 Agent 会话失败: {str(exc)}", "data": None}), 500
+
+
+@app.route('/agents/sessions/<session_id>/context', methods=['GET'])
+def agent_session_context(session_id):
+    session = get_agent_session(session_id)
+    if not session:
+        return jsonify({"code": 404, "msg": "Agent 会话不存在或已删除", "data": None}), 404
+    return jsonify({"code": 200, "msg": "success", "data": session.get("contextStats") or {}}), 200
+
+
+@app.route('/agents/sessions/<session_id>/compact/stream', methods=['POST'])
+def compact_agent_session_stream_route(session_id):
+    response = Response(stream_with_context(run_agent_session_compaction_stream(session_id)), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @app.route('/agents/sessions/<session_id>/messages', methods=['GET'])

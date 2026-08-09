@@ -15,6 +15,21 @@ npm run dev
 首次使用需要创建管理员，密码会交互输入：
 .\.venv\Scripts\python.exe -m app.auth.cli create-admin --username admin --display-name "管理员"
 
+## 已发布账号运营效果
+
+<table>
+  <tr>
+    <td width="50%"><a href="img/effort/bilibili_data1.png"><img src="img/effort/bilibili_data1.png" alt="Bilibili 账号运营数据 1" width="100%"></a></td>
+    <td width="50%"><a href="img/effort/bilibili_data2.png"><img src="img/effort/bilibili_data2.png" alt="Bilibili 账号运营数据 2" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="img/effort/kuaishou_data1.png"><img src="img/effort/kuaishou_data1.png" alt="快手账号运营数据 1" width="100%"></a></td>
+    <td width="50%"><a href="img/effort/kuaishou_data2.png"><img src="img/effort/kuaishou_data2.png" alt="快手账号运营数据 2" width="100%"></a></td>
+  </tr>
+</table>
+
+[查看完整运营效果页面](docs/运营效果.md)，点击图片可查看原图。
+
 ## 主要能力
 
 - YouTube 关键词检索与链接导入，下载原视频并进入本地素材库。
@@ -35,6 +50,23 @@ npm run dev
 ## 快速开始
 
 首次部署请按 [快速部署](docs/deployment/QUICK_DEPLOYMENT.md) 执行。配置项说明见 [配置参考](docs/deployment/CONFIGURATION.md)。
+
+### 交给部署 Agent 的提示词
+
+将以下提示词发送给你自己的 Agent；它会按本项目既有部署设计完成可自动执行的安装、启动与验证步骤。真实密钥和平台登录凭据必须由你在本机 `.env` 或浏览器中自行配置。
+
+```text
+请在当前 Vidferry 项目目录完成一次 Windows 本地部署。严格以 README.md、docs/deployment/QUICK_DEPLOYMENT.md 和 docs/deployment/CONFIGURATION.md 为准，不要改动业务代码、数据库 schema 或部署设计。
+
+执行要求：
+1. 检查 Conda/Miniforge、Python 3.12、Node.js 20+、npm、FFmpeg、Docker Desktop 和 Chrome 是否可用；缺失项说明具体缺什么及安装方式。
+2. 创建并安装 vidferry Conda 环境、Python 依赖和前端依赖；使用 Docker Compose 启动 PostgreSQL。
+3. 运行 scripts/prepare_local_env.py 生成本机 .env（若不存在）。不要读取、打印、提交或通过聊天索取 .env、Cookie、密码、API Key 和认证密钥的值。
+4. 提示我自行在本机 .env 填写真实 TEXT_LLM_API_KEY（以及按需的视觉模型配置）；在我完成前，可继续验证不依赖这些凭据的服务和页面，但不要伪造或猜测配置。
+5. 启动后端和前端，确认控制台 http://127.0.0.1:55173 可访问、后端运行在 http://127.0.0.1:5409，且前端 API 代理正常。
+6. 空数据库时运行交互式 create-admin 命令创建管理员；密码必须在终端交互输入，不能出现在命令参数、日志或回复中。
+7. 报告每一步的实际结果、服务地址、未完成的人工配置项和原始报错。不要将服务暴露到公网；生产部署需按文档配置 HTTPS、强随机 VIDFERRY_AUTH_SECRET 和 VIDFERRY_AUTH_COOKIE_SECURE=true。
+```
 
 本地环境准备完成后，分别启动后端和前端：
 

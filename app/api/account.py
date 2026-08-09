@@ -11,7 +11,7 @@ def _account_row_to_list(row):
     return [row["id"], row["type"], row["filePath"], row["userName"], row["status"]]
 
 
-def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, message="", retry_after_seconds=0, status_override=None):
+def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, check_status="unknown", message="", retry_after_seconds=0, status_override=None):
     status_value = status_override if status_override is not None else row["status"]
     return {
         "id": row["id"],
@@ -24,6 +24,7 @@ def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, 
         "skipped": bool(skipped),
         "blocked": bool(blocked),
         "valid": bool(valid),
+        "checkStatus": check_status,
         "message": message,
         "retryAfterSeconds": int(max(0, retry_after_seconds or 0)),
     }
@@ -99,6 +100,16 @@ def _run_cookie_check_sync(platform_type, file_path):
     return bool(result["value"])
 
 
+def _cookie_check_error_message(platform_type, exc):
+    message = getattr(exc, "user_message", "")
+    if message:
+        return message
+    platform = platform_name(platform_type)
+    if "timeout" in type(exc).__name__.lower():
+        return f"{platform}页面访问超时，请检查网络后重试检测。"
+    return f"{platform}登录状态检测异常，请稍后重试。"
+
+
 def _check_account_cookie_row(cursor, row, *, force=False):
     now = time.time()
     account_id = int(row["id"])
@@ -123,6 +134,7 @@ def _check_account_cookie_row(cursor, row, *, force=False):
             skipped=True,
             blocked=True,
             valid=current_status == 1,
+            check_status="skipped",
             message=f"为避免短时间频繁访问平台触发风控，请 {retry_after_seconds} 秒后再检测。",
             retry_after_seconds=retry_after_seconds,
         )
@@ -130,7 +142,7 @@ def _check_account_cookie_row(cursor, row, *, force=False):
     try:
         valid = _run_cookie_check_sync(row["type"], row["filePath"])
     except Exception as exc:
-        backend_logger.warning(
+        backend_logger.exception(
             "account cookie check failed : account_id = %s reason = check_exception error_type = %s",
             account_id,
             type(exc).__name__,
@@ -144,8 +156,9 @@ def _check_account_cookie_row(cursor, row, *, force=False):
         return _account_check_payload(
             row,
             checked=True,
-            valid=False,
-            message=f"Cookie 检查异常: {exc}",
+            valid=current_status == 1,
+            check_status="error",
+            message=_cookie_check_error_message(row["type"], exc),
             retry_after_seconds=ACCOUNT_COOKIE_CHECK_ERROR_COOLDOWN_SECONDS,
         )
 
@@ -176,6 +189,7 @@ def _check_account_cookie_row(cursor, row, *, force=False):
         row,
         checked=True,
         valid=valid,
+        check_status="valid" if valid else "invalid",
         message="Cookie 有效" if valid else "Cookie 已过期或不可用",
         retry_after_seconds=cooldown_seconds,
         status_override=next_status,
@@ -312,7 +326,8 @@ def check_account_cookies():
             conn.commit()
             accounts = _list_all_accounts(cursor)
 
-        invalid = [item for item in results if not item.get("valid")]
+        invalid = [item for item in results if item.get("checkStatus") == "invalid"]
+        errors = [item for item in results if item.get("checkStatus") == "error"]
         retry_after_seconds = max((int(item.get("retryAfterSeconds") or 0) for item in results), default=0)
         return jsonify({
             "code": 200,
@@ -322,6 +337,8 @@ def check_account_cookies():
                 "accounts": accounts,
                 "invalid": invalid,
                 "invalidCount": len(invalid),
+                "errors": errors,
+                "errorCount": len(errors),
                 "checkedCount": len([item for item in results if item.get("checked")]),
                 "skippedCount": len([item for item in results if item.get("skipped")]),
                 "blockedCount": len([item for item in results if item.get("blocked")]),
@@ -330,10 +347,11 @@ def check_account_cookies():
                 "retryAfterSeconds": retry_after_seconds,
             }
         }), 200
-    except Exception as e:
+    except Exception:
+        backend_logger.exception("检查账号 Cookie 失败")
         return jsonify({
             "code": 500,
-            "msg": f"检查账号 Cookie 失败: {str(e)}",
+            "msg": "检查账号 Cookie 失败，请稍后重试。",
             "data": None
         }), 500
 

@@ -138,6 +138,15 @@
 
         <div v-if="sseConnecting" class="qrcode-container">
           <div v-if="qrCodeData && !loginStatus" class="qrcode-wrapper">
+            <el-alert
+              v-if="accountForm.platform === '抖音'"
+              class="douyin-sms-warning"
+              type="error"
+              :closable="false"
+              show-icon
+              title="请在弹出的 Google 页面自行完成短信验证"
+              description="验证完成后回到此页面，系统会继续等待抖音登录结果。"
+            />
             <p class="qrcode-tip">请使用对应平台 APP 扫描二维码登录</p>
             <img :src="qrCodeData" alt="登录二维码" class="qrcode-image" />
           </div>
@@ -270,6 +279,7 @@ const handleCheckAllCookies = async () => {
       notificationStore.syncAccountAbnormalMessages(accountStore.accounts)
     }
     const invalid = res.data?.invalid || []
+    const errors = res.data?.errors || []
     const checkedCount = Number(res.data?.checkedCount || 0)
     const skippedCount = Number(res.data?.skippedCount || 0)
     const blockedCount = Number(res.data?.blockedCount || 0)
@@ -277,7 +287,10 @@ const handleCheckAllCookies = async () => {
     if (blockedCount > 0 && checkedCount === 0) {
       ElMessage.warning(`为避免短时间频繁访问平台触发风控，请 ${retryAfterSeconds}s 后再检测 Cookie`)
     } else if (invalid.length > 0) {
-      ElMessage.warning(`检查完成，${invalid.length} 个账号 Cookie 已过期，请重新连接`)
+      const errorHint = errors[0]?.message ? `；${errors[0].message}` : ''
+      ElMessage.warning(`检查完成，${invalid.length} 个账号 Cookie 已过期，请重新连接${errorHint}`)
+    } else if (errors.length > 0) {
+      ElMessage.warning(`检查完成，${errors[0].message || `${errors.length} 个账号检测异常，请稍后重试`}`)
     } else {
       ElMessage.success(`检查完成，当前账号 Cookie 均可用${skippedCount ? `，${skippedCount} 个账号复用最近检查结果` : ''}`)
     }
@@ -764,10 +777,10 @@ onBeforeUnmount(() => {
   to { transform: rotate(360deg); }
 }
 
-$panel-border: #dce6f2;
-$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
-$accent-blue: #2563eb;
-$ink-strong: #172033;
+$panel-border: var(--vf-border);
+$panel-shadow: var(--vf-shadow-md);
+$accent-blue: var(--vf-primary);
+$ink-strong: var(--vf-text-primary);
 
 .account-management {
   display: grid;
@@ -798,7 +811,7 @@ $ink-strong: #172033;
   padding: 18px;
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)), #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 
   h1 {
@@ -811,7 +824,7 @@ $ink-strong: #172033;
 
   p {
     margin: 0;
-    color: #5b667a;
+    color: var(--vf-text-regular);
     font-size: 14px;
     line-height: 1.7;
   }
@@ -846,7 +859,7 @@ $ink-strong: #172033;
   padding: 14px;
   border: 1px solid rgba(37, 99, 235, 0.12);
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
   text-align: left;
   box-shadow: 0 8px 18px rgba(28, 55, 90, 0.05);
   cursor: pointer;
@@ -952,6 +965,12 @@ $ink-strong: #172033;
 .qrcode-tip {
   margin: 0;
   color: $text-secondary;
+}
+
+.douyin-sms-warning {
+  width: min(100%, 360px);
+  margin-bottom: 6px;
+  text-align: left;
 }
 
 .qrcode-image {

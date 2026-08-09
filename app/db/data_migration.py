@@ -12,7 +12,7 @@ LOCK_TABLES = {"agent_session_locks", "youtube_workflow_locks"}
 DEFAULT_VIDEO_GROUP_NAME = "未分类"
 TABLE_ORDER = (
     "app_settings", "app_notifications", "user_info", "file_records", "auth_users",
-    "agent_sessions", "agent_rules", "agent_memory_items", "agent_messages", "agent_runs",
+    "agent_sessions", "agent_session_bindings", "agent_rules", "agent_memory_items", "agent_messages", "agent_runs",
     "youtube_video_groups", "youtube_videos", "youtube_search_jobs", "youtube_search_job_items",
     "youtube_workflow_jobs", "youtube_workflow_events", "youtube_workflow_llm_usage_events",
     "youtube_subtitle_audits", "published_youtube_materials", "scheduled_publish_tasks",

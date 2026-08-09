@@ -19,24 +19,24 @@ from app.core.llm_harness import call_json_contract, contains_profanity
 
 _logger = logging.getLogger("vidferry.backend")
 
-COMMENT_BURN_VERSION = 4
+COMMENT_BURN_VERSION = 5
 COMMENT_LIMIT = 100
-COMMENT_SELECTED_LIMIT = 20
+COMMENT_SELECTED_LIMIT = 30
+COMMENT_SELECTED_LIMIT_MIN = 20
+COMMENT_SELECTED_LIMIT_MAX = 50
+COMMENT_SELECTED_LIMIT_STEP = 5
 COMMENT_SCREEN_BATCH_SIZE = 20
-COMMENT_SCREEN_SELECTED_LIMIT = 5
 COMMENT_SCREEN_CONCURRENCY = 2
 COMMENT_SCREEN_TIMEOUT_SECONDS = min(LLM_TIMEOUT, 60)
 COMMENT_AVATAR_DOWNLOAD_CONCURRENCY = 4
 COMMENT_START_SECONDS = 25
 COMMENT_DURATION_SECONDS = 11
-COMMENT_GAP_SECONDS = 5
+COMMENT_GAP_SECONDS = 3
 _URL_ONLY_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.I)
-_EMOJI_SHORTCODE_RE = re.compile(r":[a-z0-9][a-z0-9_-]*:", re.I)
 _LOW_INFORMATION_RE = re.compile(
     r"^(?:wow+|omg+|lol+|lmao+|haha+|ha+|哇+|哇哦+|哇塞+|哈哈+|呵呵+|厉害+|牛+|棒+|大?赞+|대박+|헐+|와+|와우+)[!！?？~*…。.、\s]*$",
     re.I,
 )
-_TEXT_RE = re.compile(r"[A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0400-\u04ff]")
 _HAN_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _JAPANESE_RE = re.compile(r"[\u3040-\u30ff]")
 _NON_CHINESE_LETTER_RE = re.compile(r"[A-Za-z\uac00-\ud7af\u0400-\u04ff]")
@@ -47,6 +47,18 @@ _COMMENT_PROFANITY_RE = re.compile(
     r"|(?:操你妈|他妈的|傻逼|煞笔|草泥马|妈的|滚开|去死)",
     re.IGNORECASE,
 )
+_EXTRA_COMMENT_PROFANITY_RE = re.compile(
+    r"\b(?:puta|mierda|merde|schei(?:ss|ß)e|verdammt|kurwa|сука|бляд(?:ь)?)\b"
+    r"|(?:\uc528\ubc1c|\uc2dc\ubc1c|\uc88b|\ubcd1\uc2e0|\uac1c\uc0c8\ub07c|\u304f\u305d|\u30af\u30bd|\u6b7b\u306d|\u99ac\u9e7f\u91ce\u90ce)",
+    re.IGNORECASE,
+)
+COMMENT_FILTER_REASON_CODES = {
+    "OFF_TOPIC": "与视频主题无关",
+    "LOW_QUALITY": "内容空泛或信息量过低",
+    "PROMOTION": "广告、引流或营销内容",
+    "UNSAFE": "包含不适合烧制的攻击性或风险内容",
+    "SIMILAR": "与其他保留评论语义重复",
+}
 
 
 def comment_burn_signature(job):
@@ -56,9 +68,19 @@ def comment_burn_signature(job):
         "videoId": str((job or {}).get("videoId") or ""),
         "url": str((job or {}).get("url") or ""),
         "translationMode": str((job or {}).get("commentTranslationMode") or "google_llm"),
+        "selectedLimit": int((job or {}).get("commentBurnCount") or COMMENT_SELECTED_LIMIT),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _normalized_comment_selected_limit(value):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = COMMENT_SELECTED_LIMIT
+    value = max(COMMENT_SELECTED_LIMIT_MIN, min(COMMENT_SELECTED_LIMIT_MAX, value))
+    return value - (value - COMMENT_SELECTED_LIMIT_MIN) % COMMENT_SELECTED_LIMIT_STEP
 
 
 def _comment_text(value):
@@ -89,18 +111,10 @@ def _comment_rejection_reason(item):
         return "缺少评论标识"
     if not author or not text:
         return "评论信息不完整"
-    if len(text) > 500:
-        return "评论内容超过 500 字符"
-    if _URL_ONLY_RE.fullmatch(text):
-        return "纯链接评论"
-    if not _TEXT_RE.search(text):
-        return "无有效文本"
-    if _EMOJI_SHORTCODE_RE.search(text):
-        return "包含未解析 Emoji 短码"
     if _LOW_INFORMATION_RE.fullmatch(text):
-        return "仅包含低信息语气词或感叹词"
-    if _COMMENT_PROFANITY_RE.search(text):
-        return "命中严格脏话规则"
+        return "仅包含简短语气词或感叹词"
+    if _COMMENT_PROFANITY_RE.search(text) or _EXTRA_COMMENT_PROFANITY_RE.search(text):
+        return "包含明确脏话"
     return ""
 
 
@@ -112,9 +126,9 @@ def _comment_candidate(item):
     comment_id = str(item.get("id") or "").strip()
     author = _comment_text(item.get("author"))[:80]
     text = _comment_text(item.get("text"))
-    if not comment_id or not author or not text or len(text) > 500:
+    if not comment_id or not author or not text:
         return None
-    if _URL_ONLY_RE.fullmatch(text) or not _TEXT_RE.search(text) or _COMMENT_PROFANITY_RE.search(text):
+    if _LOW_INFORMATION_RE.fullmatch(text) or _COMMENT_PROFANITY_RE.search(text) or _EXTRA_COMMENT_PROFANITY_RE.search(text):
         return None
     return {
         "id": comment_id,
@@ -122,7 +136,6 @@ def _comment_candidate(item):
         "text": text,
         "likeCount": _comment_like_count(item.get("like_count")),
         "timeText": _comment_time_text(item),
-        "authorThumbnail": str(item.get("author_thumbnail") or "").strip(),
         "authorIsVerified": bool(item.get("author_is_verified")),
         "authorIsUploader": bool(item.get("author_is_uploader")),
         "isFavorited": bool(item.get("is_favorited")),
@@ -135,7 +148,7 @@ def _comment_review_item(raw, index):
     return {
         "id": str(raw.get("id") or f"source-{index + 1}").strip(),
         "author": _comment_text(raw.get("author"))[:80] or "未知用户",
-        "text": text[:500],
+        "text": text,
         "likeCount": _comment_like_count(raw.get("like_count")),
         "timeText": _comment_time_text(raw),
         "status": "pending",
@@ -151,7 +164,7 @@ def normalize_comment_candidates(raw_comments, limit=COMMENT_LIMIT, stats=None, 
     for index, raw in enumerate((raw_comments or [])[:max(1, int(limit or COMMENT_LIMIT))]):
         review_item = _comment_review_item(raw, index)
         rejection_reason = _comment_rejection_reason(raw)
-        if rejection_reason in {"包含未解析 Emoji 短码", "仅包含低信息语气词或感叹词", "命中严格脏话规则"}:
+        if rejection_reason:
             regex_filtered += 1
         candidate = _comment_candidate(raw)
         if not candidate:
@@ -191,7 +204,7 @@ def fetch_youtube_comment_candidates(url, stats=None, review_items=None):
         "extractor_args": {
             "youtube": {
                 "comment_sort": ["top"],
-                "max_comments": [str(COMMENT_LIMIT)],
+                "max_comments": [str(COMMENT_LIMIT), str(COMMENT_LIMIT), "0"],
             },
         },
     })
@@ -208,73 +221,27 @@ def _is_chinese_comment(text):
     return han_count >= 2 and han_count >= len(_NON_CHINESE_LETTER_RE.findall(value))
 
 
-def _validate_comment_review(value, candidates):
-    if not isinstance(value, dict) or set(value) != {"comments"}:
-        raise ValueError("评论筛选结果字段不合法")
-    items = value.get("comments")
-    if not isinstance(items, list) or len(items) > COMMENT_SELECTED_LIMIT:
-        raise ValueError("评论筛选数量不合法")
-    candidates_by_id = {item["id"]: item for item in candidates}
-    selected, seen = [], set()
-    for index, item in enumerate(items):
-        if not isinstance(item, dict) or set(item) != {"id", "translationRequired", "translationZh"}:
-            raise ValueError(f"comments[{index}] 字段不合法")
-        comment_id = str(item.get("id") or "").strip()
-        if comment_id not in candidates_by_id or comment_id in seen:
-            raise ValueError(f"comments[{index}].id 不合法")
-        required = item.get("translationRequired")
-        translation = _comment_text(item.get("translationZh"))
-        if not isinstance(required, bool):
-            raise ValueError(f"comments[{index}].translationRequired 必须是布尔值")
-        original = candidates_by_id[comment_id]
-        if _is_chinese_comment(original["text"]):
-            required, translation = False, ""
-        elif not required or not translation or len(translation) > 280 or contains_profanity(translation):
-            raise ValueError(f"comments[{index}] 翻译不合法")
-        selected.append({
-            **original,
-            "translationRequired": required,
-            "translationZh": translation if required else "",
-        })
-        seen.add(comment_id)
-    return selected
-
-
 def _validate_comment_screen(value, candidates):
     if not isinstance(value, dict) or set(value) != {"comments"}:
         raise ValueError("评论初筛结果字段不合法")
-    known, seen, selected = {item["id"]: item for item in candidates}, set(), []
+    known, seen, selected = {str(index + 1): item for index, item in enumerate(candidates)}, set(), []
     for index, item in enumerate(value.get("comments") or []):
-        if not isinstance(item, dict) or set(item) != {"id", "score"}:
+        if not isinstance(item, dict) or set(item) != {"no", "keep", "reasonCode"}:
             raise ValueError(f"comments[{index}] 字段不合法")
-        comment_id = str(item.get("id") or "").strip()
-        try:
-            score = float(item.get("score"))
-        except (TypeError, ValueError):
-            raise ValueError(f"comments[{index}].score 不合法") from None
-        if comment_id not in known or comment_id in seen or not 0 <= score <= 100:
+        comment_no = str(item.get("no") or "").strip()
+        comment_id = known.get(comment_no, {}).get("id")
+        keep = item.get("keep")
+        reason_code = str(item.get("reasonCode") or "").strip()
+        if not comment_id or comment_id in seen or not isinstance(keep, bool):
             raise ValueError(f"comments[{index}] 不合法")
-        selected.append({**known[comment_id], "_score": round(score, 2)})
+        if keep and reason_code:
+            raise ValueError(f"comments[{index}].reasonCode 不应存在")
+        if not keep and reason_code not in COMMENT_FILTER_REASON_CODES:
+            raise ValueError(f"comments[{index}].reasonCode 不合法")
+        selected.append({**known[comment_no], "_keep": keep, "_filterCode": reason_code})
         seen.add(comment_id)
-    if len(selected) > COMMENT_SCREEN_SELECTED_LIMIT:
-        raise ValueError("评论初筛数量超过限制")
-    return selected
-
-
-def _validate_comment_selection(value, candidates):
-    if not isinstance(value, dict) or set(value) != {"comments"}:
-        raise ValueError("评论最终筛选结果字段不合法")
-    known, seen, selected = {item["id"]: item for item in candidates}, set(), []
-    for index, item in enumerate(value.get("comments") or []):
-        if not isinstance(item, dict) or set(item) != {"id"}:
-            raise ValueError(f"comments[{index}] 字段不合法")
-        comment_id = str(item.get("id") or "").strip()
-        if comment_id not in known or comment_id in seen:
-            raise ValueError(f"comments[{index}].id 不合法")
-        selected.append(dict(known[comment_id]))
-        seen.add(comment_id)
-    if len(selected) > COMMENT_SELECTED_LIMIT:
-        raise ValueError("评论最终筛选数量超过限制")
+    if len(selected) != len(candidates):
+        raise ValueError("评论初筛必须逐条返回所有输入评论")
     return selected
 
 
@@ -288,7 +255,7 @@ def _add_usage(total, usage):
     total["latencyMs"] += float((usage or {}).get("latencyMs") or 0)
 
 
-def _screen_comment_batch(job, candidates, telemetry=None):
+def _review_comment_batch(job, candidates, telemetry=None):
     result, usage, metadata = call_json_contract(
         messages=[
             {"role": "system", "content": llm_prompts.comment_screen_system_prompt()},
@@ -301,7 +268,7 @@ def _screen_comment_batch(job, candidates, telemetry=None):
         base_url=TEXT_LLM_BASE_URL,
         timeout=COMMENT_SCREEN_TIMEOUT_SECONDS,
         temperature=0.1,
-        max_tokens=600,
+        max_tokens=1200,
         prompt_version=llm_prompts.COMMENT_BURN_PROMPT_VERSION,
         telemetry=telemetry,
     )
@@ -370,6 +337,7 @@ def build_comment_review_items(review_items, generation_meta, comments):
     screened_ids = set(generation_meta.get("screenedIds") or [])
     failed_batch_ids = set(generation_meta.get("failedBatchIds") or [])
     google_failed_ids = set((generation_meta.get("translation") or {}).get("googleFailedIds") or [])
+    llm_filter_codes = generation_meta.get("llmFilterCodes") or {}
     burned_by_id = {str(item.get("id") or ""): item for item in comments or []}
     result = []
     for original in review_items or []:
@@ -385,6 +353,8 @@ def build_comment_review_items(review_items, generation_meta, comments):
             item.update(status="rejected", filterReason="Google 初译失败，无法烧制")
         elif comment_id in selected_ids:
             item.update(status="rejected", filterReason="翻译未生成，无法烧制")
+        elif comment_id in llm_filter_codes:
+            item.update(status="rejected", filterReason=COMMENT_FILTER_REASON_CODES.get(llm_filter_codes[comment_id], "LLM 过滤"), filterCode=llm_filter_codes[comment_id])
         elif comment_id in screened_ids:
             item.update(status="rejected", filterReason="最终筛选未入选")
         elif comment_id in failed_batch_ids:
@@ -395,69 +365,74 @@ def build_comment_review_items(review_items, generation_meta, comments):
     return result
 
 
-def review_youtube_comment_candidates(job, candidates, telemetry=None):
+def review_youtube_comment_candidates_v2(job, candidates, telemetry=None):
     candidates = list(candidates or [])[:COMMENT_LIMIT]
     batches = [candidates[index:index + COMMENT_SCREEN_BATCH_SIZE] for index in range(0, len(candidates), COMMENT_SCREEN_BATCH_SIZE)]
     if not batches:
-        raise RuntimeError("没有可筛选评论")
+        raise RuntimeError("no comment candidates")
     usage = _empty_usage()
-    _logger.info("评论初筛开始 job_id=%s candidates=%s batches=%s concurrency=%s", job.get("id") or "", len(candidates), len(batches), min(COMMENT_SCREEN_CONCURRENCY, len(batches)))
-    screened_batches = [[] for _ in batches]
+    reviewed_batches = [[] for _ in batches]
     batch_details = [{} for _ in batches]
     with ThreadPoolExecutor(max_workers=min(COMMENT_SCREEN_CONCURRENCY, len(batches)), thread_name_prefix="comment-screen") as executor:
-        futures = {executor.submit(_screen_comment_batch, job, batch, telemetry): index for index, batch in enumerate(batches)}
+        futures = {executor.submit(_review_comment_batch, job, batch, telemetry): index for index, batch in enumerate(batches)}
         for future in as_completed(futures):
             index = futures[future]
             batch = batches[index]
             try:
-                selected, batch_usage, _ = future.result()
-                screened_batches[index] = selected
+                reviewed, batch_usage, _ = future.result()
+                reviewed_batches[index] = reviewed
                 _add_usage(usage, batch_usage)
-                batch_details[index] = {"status": "success", "candidateCount": len(batch), "selectedCount": len(selected)}
-                _logger.info("评论初筛批次完成 job_id=%s batch=%s/%s candidates=%s selected=%s", job.get("id") or "", index + 1, len(batches), len(batch), len(selected))
+                kept = sum(1 for item in reviewed if item.get("_keep"))
+                batch_details[index] = {"status": "success", "candidateCount": len(batch), "keptCount": kept, "filteredCount": len(batch) - kept}
             except Exception as exc:
                 batch_details[index] = {"status": "failed", "candidateCount": len(batch), "reason": str(exc)[:160]}
-                _logger.warning("评论初筛批次失败 job_id=%s batch=%s/%s candidates=%s error=%s: %s", job.get("id") or "", index + 1, len(batches), len(batch), exc.__class__.__name__, str(exc)[:160])
-    screened = [item for batch in screened_batches for item in batch]
-    if not screened:
-        raise RuntimeError("所有评论初筛批次均失败")
+                _logger.warning("comment batch failed job_id=%s batch=%s error=%s", job.get("id") or "", index + 1, exc.__class__.__name__)
+    reviewed = [item for batch in reviewed_batches for item in batch]
+    if not reviewed:
+        raise RuntimeError("all comment batches failed")
+    kept = [item for item in reviewed if item.get("_keep")]
+    final_reviewed = []
+    final_fallback = False
     try:
-        _logger.info("评论最终筛选开始 job_id=%s screened=%s", job.get("id") or "", len(screened))
         result, final_usage, _ = call_json_contract(
             messages=[
                 {"role": "system", "content": llm_prompts.comment_selection_system_prompt()},
-                {"role": "user", "content": llm_prompts.build_comment_selection_prompt(job, screened)},
+                {"role": "user", "content": llm_prompts.build_comment_selection_prompt(job, kept)},
             ],
             contract_id="comment_selection",
-            validator=lambda value: _validate_comment_selection(value, screened),
+            validator=lambda value: _validate_comment_screen(value, kept),
             model=TEXT_LLM_MODEL, api_key=TEXT_LLM_API_KEY, base_url=TEXT_LLM_BASE_URL,
-            timeout=LLM_TIMEOUT, temperature=0.1, max_tokens=500,
+            timeout=LLM_TIMEOUT, temperature=0.1, max_tokens=1200,
             prompt_version=llm_prompts.COMMENT_BURN_PROMPT_VERSION, telemetry=telemetry,
         )
         _add_usage(usage, final_usage)
-        final_fallback = False
-        _logger.info("评论最终筛选完成 job_id=%s selected=%s", job.get("id") or "", len(result))
+        final_reviewed = result
+        kept = [item for item in result if item.get("_keep")]
     except Exception as exc:
-        result = [dict(item) for item in sorted(screened, key=lambda item: item["_score"], reverse=True)[:COMMENT_SELECTED_LIMIT]]
         final_fallback = True
-        _logger.warning("评论最终筛选失败，按初筛评分回退 job_id=%s selected=%s error=%s: %s", job.get("id") or "", len(result), exc.__class__.__name__, str(exc)[:160])
-    selected = [{key: value for key, value in item.items() if key != "_score"} for item in result]
+        _logger.warning("cross-batch comment review failed job_id=%s error=%s", job.get("id") or "", exc.__class__.__name__)
+    selected_limit = _normalized_comment_selected_limit((job or {}).get("commentBurnCount"))
+    selected = [{key: value for key, value in item.items() if not key.startswith("_")} for item in kept[:selected_limit]]
     comments, translation_meta = _translate_selected_comments(job, selected, telemetry)
-    _logger.info("评论筛选与翻译结束 job_id=%s screened=%s selected=%s translated=%s", job.get("id") or "", len(screened), len(selected), len(comments))
     return comments, usage, {
         "screenBatches": batch_details,
-        "screenedCount": len(screened),
-        "screenedIds": [item["id"] for item in screened],
+        "screenedCount": len(reviewed),
+        "screenedIds": [item["id"] for item in reviewed],
         "failedBatchIds": [item["id"] for index, batch in enumerate(batches) if batch_details[index].get("status") == "failed" for item in batch],
         "selectedIds": [item["id"] for item in selected],
         "selectedCount": len(selected),
         "translatedCount": len(comments),
         "finalSelectionFallback": final_fallback,
+        "llmFilterCodes": {
+            item["id"]: item.get("_filterCode")
+            for item in [*reviewed, *final_reviewed]
+            if not item.get("_keep") and item.get("_filterCode")
+        },
         "translation": translation_meta,
     }
 
 
-def schedule_comment_burn(snapshot, video_duration):
+def schedule_comment_burn(snapshot, video_duration, selected_limit=COMMENT_SELECTED_LIMIT):
     result = dict(snapshot or {})
     selected = list(result.get("comments") or [])
     try:
@@ -472,7 +447,8 @@ def schedule_comment_burn(snapshot, video_duration):
         result["reason"] = result.get("reason") or "未获取到可烧制评论"
         return result
     scheduled = []
-    for index, comment in enumerate(selected[:COMMENT_SELECTED_LIMIT]):
+    selected_limit = _normalized_comment_selected_limit(selected_limit)
+    for index, comment in enumerate(selected[:selected_limit]):
         start = COMMENT_START_SECONDS + index * (COMMENT_DURATION_SECONDS + COMMENT_GAP_SECONDS)
         end = start + COMMENT_DURATION_SECONDS
         if end > duration:
@@ -527,6 +503,7 @@ def _download_comment_avatar(url, target):
 
 
 def prepare_comment_avatar_assets(snapshot, work_dir):
+    return []
     work_dir = Path(work_dir)
     avatar_dir = work_dir / "comment_avatars"
     avatar_dir.mkdir(parents=True, exist_ok=True)

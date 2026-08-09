@@ -50,8 +50,8 @@ const submit = async () => {
 
 <style scoped>
 .password-page { max-width: 560px; margin: 24px auto; }
-.password-panel { padding: 28px; border: 1px solid #dcdfe6; border-radius: 8px; background: #fff; }
+.password-panel { padding: 28px; border: 1px solid var(--vf-border); border-radius: 8px; background: var(--vf-surface); }
 h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0; }
-p { margin: 0 0 24px; color: #606266; }
+p { margin: 0 0 24px; color: var(--vf-text-regular); }
 .actions { display: flex; justify-content: flex-end; gap: 10px; }
 </style>

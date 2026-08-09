@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">ABOUT VIDFERRY</span>
         <h1>Vidferry 自媒体自动化运营系统</h1>
-        <p>围绕 YouTube 线索采集、视频处理、视频素材管理和国内平台发布构建的一体化工作台。</p>
+        <p>围绕 YouTube 线索采集、视频处理、素材管理和国内平台发布构建的一体化工作台。</p>
       </div>
       <div class="version-card">
         <span>当前版本</span>
@@ -106,10 +106,10 @@ const acknowledgementNames = acknowledgements.map(item => item.name).join('、')
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
-$panel-border: #dce6f2;
-$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
-$accent-blue: #2563eb;
-$ink-strong: #172033;
+$panel-border: var(--vf-border);
+$panel-shadow: var(--vf-shadow-md);
+$accent-blue: var(--vf-primary);
+$ink-strong: var(--vf-text-primary);
 
 .about {
   display: grid;
@@ -134,9 +134,7 @@ $ink-strong: #172033;
   padding: 18px;
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)),
-    #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 
   h1 {
@@ -150,7 +148,7 @@ $ink-strong: #172033;
   p {
     max-width: 760px;
     margin: 0;
-    color: #5b667a;
+    color: var(--vf-text-regular);
     font-size: 14px;
     line-height: 1.7;
   }

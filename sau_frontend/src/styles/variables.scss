@@ -1,26 +1,26 @@
 // 颜色变量
-$primary-color: #409eff;
-$success-color: #67c23a;
-$warning-color: #e6a23c;
-$danger-color: #f56c6c;
-$info-color: #909399;
+$primary-color: var(--vf-primary);
+$success-color: var(--vf-success);
+$warning-color: var(--vf-warning);
+$danger-color: var(--vf-danger);
+$info-color: var(--vf-text-muted);
 
 // 文字颜色
-$text-primary: #303133;
-$text-regular: #606266;
-$text-secondary: #909399;
-$text-placeholder: #c0c4cc;
+$text-primary: var(--vf-text-primary);
+$text-regular: var(--vf-text-regular);
+$text-secondary: var(--vf-text-secondary);
+$text-placeholder: var(--vf-text-placeholder);
 
 // 边框颜色
-$border-base: #dcdfe6;
-$border-light: #e4e7ed;
-$border-lighter: #ebeef5;
-$border-extra-light: #f2f6fc;
+$border-base: var(--vf-border);
+$border-light: var(--vf-border-light);
+$border-lighter: var(--vf-border-light);
+$border-extra-light: var(--vf-surface-hover);
 
 // 背景颜色
-$bg-color: #ffffff;
-$bg-color-page: #f2f3f5;
-$bg-color-overlay: #ffffff;
+$bg-color: var(--vf-surface);
+$bg-color-page: var(--vf-page-bg);
+$bg-color-overlay: var(--vf-surface-elevated);
 
 // 字体大小
 $font-size-extra-large: 20px;
@@ -38,8 +38,8 @@ $spacing-lg: 24px;
 $spacing-xl: 32px;
 
 // 圆角
-$border-radius-base: 4px;
-$border-radius-small: 2px;
+$border-radius-base: 8px;
+$border-radius-small: 6px;
 $border-radius-round: 20px;
 $border-radius-circle: 50%;
 

@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">PUBLISH DESK</span>
         <h1>发布中心</h1>
-        <p>按批次准备素材、账号、平台、标题话题和定时发布策略，支持多批次连续发布。</p>
+        <p>按批次组织素材、平台账号、发布内容和执行时间。</p>
       </div>
       <div class="hero-actions">
         <el-button type="primary" @click="addTab">
@@ -118,7 +118,7 @@
               <span class="step-index">3</span>
               <div>
                 <h3>发布内容</h3>
-                <p>发布中心只读取视频采集处理页保存的发布稿，如需修改文案请回到视频采集处理页。</p>
+                <p>读取采集页已保存的发布稿；修改文案请回到来源页。</p>
               </div>
             </div>
             <el-carousel
@@ -504,7 +504,7 @@
             </el-radio>
           </div>
         </div>
-        <el-empty v-else v-loading="materialLibraryLoading" description="暂无可发布的处理后视频，请先在视频采集处理页完成处理。" />
+      <el-empty v-else v-loading="materialLibraryLoading" description="暂无可发布的处理后视频，请先在视频采集与处理页完成处理。" />
       </el-radio-group>
       <template #footer>
         <div class="material-library-footer">
@@ -987,8 +987,8 @@ const ensureLatestPublishDraftConfirmation = async (tab) => {
 
   const scheduled = Boolean(tab.scheduleEnabled)
   const message = scheduled
-    ? '当前批次仍显示选择素材时的旧发布稿。定时任务执行时会读取视频采集处理页最新保存的发布稿，本页预览不会自动同步。'
-    : '当前批次仍使用选择素材时的旧发布稿。立即发布将使用旧稿，不会使用视频采集处理页后来保存的新稿。'
+    ? '当前批次仍显示选择素材时的旧发布稿。定时任务执行时会读取视频采集与处理页最新保存的发布稿，本页预览不会自动同步。'
+    : '当前批次仍使用选择素材时的旧发布稿。立即发布将使用旧稿，不会使用视频采集与处理页后来保存的新稿。'
   try {
     await ElMessageBox.confirm(message, '发布稿已更新', {
       confirmButtonText: scheduled ? '创建定时任务' : '仍使用旧稿发布',
@@ -1163,7 +1163,8 @@ const publishStatusLabel = (status) => {
     running: '发布中',
     success: '成功',
     failed: '失败',
-    timeout: '超时'
+    timeout: '超时',
+    unknown: '待核验'
   }
   return map[status] || status || '待发布'
 }
@@ -1171,6 +1172,7 @@ const publishStatusLabel = (status) => {
 const publishStatusTagType = (status) => {
   if (status === 'success') return 'success'
   if (status === 'failed' || status === 'timeout') return 'danger'
+  if (status === 'unknown') return 'warning'
   if (status === 'running') return 'warning'
   return 'info'
 }
@@ -1189,7 +1191,7 @@ const applyPublishDraftToPublishTab = (tab, drafts = []) => {
   tab.contentLocked = true
 
   if (!firstDraft.fromSavedDraft) {
-    ElMessage.warning('该素材还没有保存发布稿，已用 LLM 原稿临时填充；如需修改请回到视频采集处理页。')
+    ElMessage.warning('该素材还没有保存发布稿，已用 LLM 原稿临时填充；如需修改请回到视频采集与处理页。')
   }
 }
 
@@ -1264,7 +1266,7 @@ const toggleRecommendedTopic = (topic) => {
 // 删除话题
 const removeTopic = (tab, index) => {
   if (tab.contentLocked) {
-    ElMessage.info('发布内容需在视频采集处理页修改并保存')
+    ElMessage.info('发布内容需在视频采集与处理页修改并保存')
     return
   }
   tab.selectedTopics.splice(index, 1)
@@ -1778,7 +1780,7 @@ const confirmPublish = async (tab) => {
     throw new Error('发布中心只支持处理后视频')
   }
   if (!tab.title.trim()) {
-    ElMessage.error('发布标题为空，请回到视频采集处理页保存发布稿')
+    ElMessage.error('发布标题为空，请回到视频采集与处理页保存发布稿')
     tab.publishing = false
     throw new Error('发布标题为空')
   }
@@ -1864,18 +1866,21 @@ const confirmPublish = async (tab) => {
     })
     const resultCount = results.length || targets.length
     const failedCount = tab.publishTargetStatuses.filter(item => item.status === 'failed' || item.status === 'timeout').length
-    const successCount = resultCount - failedCount
+    const unknownCount = tab.publishTargetStatuses.filter(item => item.status === 'unknown').length
+    const successCount = resultCount - failedCount - unknownCount
     tab.publishStatus = {
-      message: failedCount ? `发布完成：${successCount} 个成功，${failedCount} 个失败` : `发布成功，已提交 ${resultCount} 个平台`,
-      type: failedCount === resultCount ? 'error' : (failedCount ? 'warning' : 'success')
+      message: unknownCount
+        ? `发布完成：${successCount} 个成功，${failedCount} 个失败，${unknownCount} 个待核验`
+        : (failedCount ? `发布完成：${successCount} 个成功，${failedCount} 个失败` : `发布成功，已提交 ${resultCount} 个平台`),
+      type: (failedCount + unknownCount) === resultCount ? 'error' : ((failedCount + unknownCount) ? 'warning' : 'success')
     }
-    if (failedCount) {
+    if (failedCount || unknownCount) {
       notificationStore.addDirectPublishFailureMessage({
         publishTaskId: tab.lastPublishTaskId,
         tabName: tab.name,
         title: tab.title,
         failedPlatforms: tab.publishTargetStatuses
-          .filter(item => item.status === 'failed' || item.status === 'timeout')
+          .filter(item => item.status === 'failed' || item.status === 'timeout' || item.status === 'unknown')
           .map(item => item.platformName),
         reason: tab.publishStatus.message,
         createdAt: Date.now()
@@ -2107,10 +2112,10 @@ onBeforeUnmount(() => {
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
-$panel-border: #dce6f2;
-$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
-$accent-blue: #2563eb;
-$ink-strong: #172033;
+$panel-border: var(--vf-border);
+$panel-shadow: var(--vf-shadow-md);
+$accent-blue: var(--vf-primary);
+$ink-strong: var(--vf-text-primary);
 
 .publish-center {
   display: grid;
@@ -2122,7 +2127,7 @@ $ink-strong: #172033;
 .compose-panel {
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 }
 
@@ -2132,10 +2137,10 @@ $ink-strong: #172033;
   justify-content: space-between;
   gap: 16px;
   padding: 18px;
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)), #fff;
+  background: var(--vf-surface);
 
   h1 { margin: 4px 0 8px; color: $ink-strong; font-size: 25px; line-height: 1.25; font-weight: 700; }
-  p { margin: 0; color: #5b667a; font-size: 14px; line-height: 1.7; }
+  p { margin: 0; color: var(--vf-text-regular); font-size: 14px; line-height: 1.7; }
 }
 
 .eyebrow,
@@ -2151,7 +2156,7 @@ $ink-strong: #172033;
   padding: 16px;
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 }
 
@@ -2184,7 +2189,7 @@ $ink-strong: #172033;
   padding: 12px;
   border: 1px solid $border-lighter;
   border-radius: 8px;
-  background: #f8fbff;
+  background: var(--vf-surface-hover);
 
   span { color: $text-secondary; font-size: 12px; }
   strong { color: $ink-strong; font-size: 22px; line-height: 1.1; }
@@ -2207,7 +2212,7 @@ $ink-strong: #172033;
   padding: 12px;
   border: 1px solid $border-lighter;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 
 .published-cover {
@@ -2299,7 +2304,7 @@ $ink-strong: #172033;
 .batch-panel { padding: 14px; position: sticky; top: 12px; }
 .panel-title h2 { margin: 2px 0 12px; color: $ink-strong; font-size: 18px; }
 .batch-list { display: grid; gap: 8px; }
-.batch-item { position: relative; display: grid; gap: 4px; width: 100%; padding: 12px 34px 12px 12px; border: 1px solid $border-lighter; border-radius: 8px; background: #f8fbff; text-align: left; cursor: pointer; }
+.batch-item { position: relative; display: grid; gap: 4px; width: 100%; padding: 12px 34px 12px 12px; border: 1px solid $border-lighter; border-radius: 8px; background: var(--vf-surface-hover); text-align: left; cursor: pointer; }
 .batch-item.active { border-color: rgba(37, 99, 235, 0.42); background: rgba(37, 99, 235, 0.08); }
 .batch-item span { color: $ink-strong; font-weight: 650; }
 .batch-item small { color: $text-secondary; }
@@ -2307,7 +2312,7 @@ $ink-strong: #172033;
 
 .compose-panel { padding: 16px; }
 .compose-content { display: grid; gap: 14px; }
-.form-section { display: grid; gap: 12px; padding: 14px; border: 1px solid $border-lighter; border-radius: 8px; background: #fff; }
+.form-section { display: grid; gap: 12px; padding: 14px; border: 1px solid $border-lighter; border-radius: 8px; background: var(--vf-surface); }
 .publish-receipt {
   display: grid;
   gap: 10px;
@@ -2329,7 +2334,7 @@ $ink-strong: #172033;
   padding: 10px 12px;
   border: 1px solid #d8eadc;
   border-radius: 6px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 .publish-receipt-item > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .publish-receipt-item strong { color: $ink-strong; font-size: 13px; }
@@ -2350,7 +2355,7 @@ $ink-strong: #172033;
 .material-list,
 .account-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
 .file-item,
-.material-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid $border-lighter; border-radius: 8px; background: #f8fbff; }
+.material-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid $border-lighter; border-radius: 8px; background: var(--vf-surface-hover); }
 .selected-video-main { display: grid; gap: 5px; min-width: 0; margin-right: auto; }
 .selected-video-main .el-link { justify-content: flex-start; max-width: 640px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .selected-video-meta,
@@ -2441,7 +2446,7 @@ $ink-strong: #172033;
   padding: 10px;
   border: 1px solid #dbeafe;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 .platform-specific-title {
   color: $text-secondary;
@@ -2463,7 +2468,7 @@ $ink-strong: #172033;
   padding: 10px 12px;
   border: 1px solid $border-lighter;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 .target-status-item > div {
   display: flex;
@@ -2491,7 +2496,7 @@ $ink-strong: #172033;
   padding: 12px;
   border: 1px solid $border-lighter;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 .publish-readonly-card > div {
   display: grid;
@@ -2518,7 +2523,7 @@ $ink-strong: #172033;
   padding: 12px;
   border: 1px solid $border-lighter;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 .agent-guard-card.is-allow { border-color: #b7eb8f; background: #f6ffed; }
 .agent-guard-card.is-warn { border-color: #ffe58f; background: #fffbe6; }
@@ -2558,7 +2563,7 @@ $ink-strong: #172033;
 .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .inline-options { display: flex; gap: 16px; flex-wrap: wrap; }
 .schedule-controls { display: grid; gap: 12px; }
-.schedule-settings { display: grid; gap: 12px; padding: 12px; border-radius: 8px; background: #f8fbff; }
+.schedule-settings { display: grid; gap: 12px; padding: 12px; border-radius: 8px; background: var(--vf-surface-hover); }
 .schedule-item { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; align-items: center; }
 .schedule-item > span { color: $text-secondary; font-size: 13px; }
 .time-list { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -2566,14 +2571,14 @@ $ink-strong: #172033;
 .option-grid { display: grid; gap: 12px; }
 .option-btn { width: 100%; height: 46px; }
 .account-platform-list { display: grid; gap: 12px; max-height: 62vh; overflow: auto; padding-right: 4px; }
-.account-platform-card { display: grid; gap: 10px; padding: 12px; border: 1px solid $border-lighter; border-radius: 8px; background: #f8fbff; }
+.account-platform-card { display: grid; gap: 10px; padding: 12px; border: 1px solid $border-lighter; border-radius: 8px; background: var(--vf-surface-hover); }
 .account-platform-card.disabled { opacity: 0.62; background: #fafafa; }
 .account-platform-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .account-platform-heading > div { display: grid; gap: 3px; }
 .account-platform-heading strong { color: $ink-strong; font-size: 14px; }
 .account-platform-heading span { color: $text-secondary; font-size: 12px; }
 .platform-account-radios { display: grid; gap: 8px; }
-.account-item { padding: 8px 10px; border: 1px solid $border-lighter; border-radius: 8px; background: #fff; }
+.account-item { padding: 8px 10px; border: 1px solid $border-lighter; border-radius: 8px; background: var(--vf-surface); }
 .custom-topic-input { display: flex; gap: 10px; margin-bottom: 18px; }
 .topic-grid { display: flex; flex-wrap: wrap; gap: 10px; }
 :global(.material-library-dialog) {

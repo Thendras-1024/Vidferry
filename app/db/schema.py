@@ -10,12 +10,13 @@ from app.db.base import _db_connect
 _MIGRATION_DIR = Path(__file__).parent / "migrations" / "postgresql"
 _REQUIRED_TABLES = (
     "app_settings", "app_notifications", "user_info", "file_records", "auth_users",
-    "agent_sessions", "agent_session_locks", "agent_rules", "agent_memory_items",
+    "agent_sessions", "agent_session_bindings", "agent_session_locks", "agent_rules", "agent_memory_items",
     "agent_messages", "agent_runs", "youtube_video_groups", "youtube_videos",
     "youtube_search_jobs", "youtube_search_job_items", "youtube_workflow_jobs",
     "youtube_workflow_locks", "youtube_workflow_events", "youtube_workflow_llm_usage_events",
     "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "scheduled_publish_tasks",
     "scheduled_publish_targets", "auth_sessions", "auth_audit_logs",
+    "task_acknowledgements",
 )
 _initialized = False
 _database_init_lock = threading.Lock()

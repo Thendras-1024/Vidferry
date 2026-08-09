@@ -4,12 +4,12 @@
       <div class="hero-copy">
         <span class="eyebrow">VIDFERRY OPS</span>
         <h1>运营工作台</h1>
-        <p>集中查看账号、视频素材和发布入口，快速进入视频采集、处理、视频素材管理与多平台发布流程。</p>
+        <p>集中查看账号、素材和发布状态，快速进入各项工作流。</p>
       </div>
       <div class="hero-actions">
         <el-button type="primary" @click="navigateTo('/youtube-research')">
           <el-icon><Search /></el-icon>
-          <span>视频采集处理</span>
+          <span>视频采集与处理</span>
         </el-button>
         <el-button @click="fetchDashboardData" :loading="loading">
           <el-icon><Refresh /></el-icon>
@@ -157,9 +157,9 @@ const retryDialogVisible = ref(false)
 const retryTask = ref(null)
 
 const quickActions = [
-  { title: '视频采集处理', desc: '查找线索、下载、翻译和烧录', path: '/youtube-research', icon: Search },
+  { title: '视频采集与处理', desc: '查找线索、下载、翻译和烧录', path: '/youtube-research', icon: Search },
   { title: '账号管理', desc: '维护平台账号和 Cookie 状态', path: '/account-management', icon: User },
-  { title: '视频素材管理', desc: '查看原视频与处理后视频', path: '/material-management', icon: Picture },
+  { title: '视频素材', desc: '查看原视频与处理后视频', path: '/material-management', icon: Picture },
   { title: '发布中心', desc: '配置多平台发布任务', path: '/publish-center', icon: Upload },
   { title: '处理统计', desc: '查看阶段耗时与模型成本', path: '/workflow-statistics', icon: DataAnalysis },
   { title: '关于系统', desc: '查看能力和技术栈', path: '/about', icon: Timer }
@@ -344,11 +344,11 @@ watch(() => appStore.publishRecordsRevision, fetchDashboardData)
 <style lang="scss" scoped>
 @use '@/styles/variables.scss' as *;
 
-$panel-border: #dce6f2;
-$panel-shadow: 0 12px 28px rgba(28, 55, 90, 0.08);
-$accent-blue: #2563eb;
-$accent-teal: #0f9f8f;
-$ink-strong: #172033;
+$panel-border: var(--vf-border);
+$panel-shadow: var(--vf-shadow-md);
+$accent-blue: var(--vf-primary);
+$accent-teal: var(--vf-success);
+$ink-strong: var(--vf-text-primary);
 
 .dashboard {
   display: grid;
@@ -365,8 +365,8 @@ $ink-strong: #172033;
   }
 
   :deep(.el-table th.el-table__cell) {
-    background: #f8fbff;
-    color: #5c6678;
+    background: var(--vf-surface-hover);
+    color: var(--vf-text-regular);
     font-weight: 600;
   }
 }
@@ -379,9 +379,7 @@ $ink-strong: #172033;
   padding: 18px;
   border: 1px solid $panel-border;
   border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(15, 159, 143, 0.08) 42%, rgba(255, 255, 255, 0.94)),
-    #fff;
+  background: var(--vf-surface);
   box-shadow: $panel-shadow;
 }
 
@@ -397,7 +395,7 @@ $ink-strong: #172033;
   p {
     max-width: 720px;
     margin: 0;
-    color: #5b667a;
+    color: var(--vf-text-regular);
     font-size: 14px;
     line-height: 1.7;
   }
@@ -430,7 +428,7 @@ $ink-strong: #172033;
   padding: 14px;
   border: 1px solid rgba(37, 99, 235, 0.12);
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
   text-align: left;
   box-shadow: 0 8px 18px rgba(28, 55, 90, 0.05);
   cursor: pointer;
@@ -517,7 +515,7 @@ $ink-strong: #172033;
   display: grid;
   gap: 8px;
   padding: 12px 14px;
-  background: #f8fbff;
+  background: var(--vf-surface-hover);
 }
 
 .target-help {
@@ -534,7 +532,7 @@ $ink-strong: #172033;
   padding: 10px 12px;
   border: 1px solid #dce6f2;
   border-radius: 8px;
-  background: #fff;
+  background: var(--vf-surface);
 }
 
 .target-platform {
@@ -584,7 +582,7 @@ $ink-strong: #172033;
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #64748b;
+  color: var(--vf-text-secondary);
   font-size: 12px;
 
   .success {

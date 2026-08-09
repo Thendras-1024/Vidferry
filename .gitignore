@@ -225,6 +225,8 @@ models/
 # 本地个人记录文档
 /AGENTS.md
 /CLAUDE.md
+!tests/AGENTS.md
+!tests/CLAUDE.md
 /TODO.md
 /code-review-graph使用手册.md
 

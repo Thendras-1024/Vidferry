@@ -401,6 +401,10 @@ def _execute_publish_target(task):
         "message": "发布中",
         "durationMs": 0,
     }
+    running_claimed = False
+    external_started = False
+    external_succeeded = False
+    command_failed = False
     try:
         _mark_published_materials(
             task["fileList"],
@@ -416,17 +420,21 @@ def _execute_publish_target(task):
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",
         )
+        running_claimed = True
         if not platform_slug:
             raise RuntimeError(f"{task['platformName']} 暂未接入发布适配器")
         account_lock = _get_publish_account_lock(platform_type, task["accountFile"])
         with account_lock:
             for index, file_path in enumerate(task["absoluteFiles"]):
                 command = _publish_runner_command(task, file_path, index)
+                external_started = True
                 process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
                 if process_result.returncode != 0:
+                    command_failed = True
                     output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
                     raise RuntimeError(_publish_command_failure(output, f"{task['platformName']} 发布失败"))
 
+        external_succeeded = True
         published_ids = _mark_published_materials(
             task["fileList"],
             platform_type=platform_type,
@@ -448,35 +456,51 @@ def _execute_publish_target(task):
             "message": "发布成功",
         })
     except TimeoutError as exc:
+        backend_logger.exception("publish platform result uncertain after timeout : platform_type=%s", platform_type)
         result.update({
-            "status": "timeout",
-            "message": str(exc),
+            "status": "unknown" if external_started else "timeout",
+            "message": ("平台执行超时，结果待核验：" + str(exc)) if external_started else str(exc),
         })
+    except WorkflowConflictError:
+        # Reservation conflicts happen before platform execution and must not
+        # overwrite the other task's record or enter failure finalization.
+        raise
     except Exception as exc:
         if _is_cookie_invalid_error(str(exc)):
             _mark_account_abnormal(platform_type, task["accountFile"], str(exc))
-        result.update({
-            "status": "failed",
-            "message": str(exc),
-        })
+        if external_succeeded or (external_started and not command_failed):
+            result.update({
+                "status": "unknown",
+                "message": "平台命令已完成，但本地成功状态保存失败，需人工核验：" + str(exc),
+            })
+            backend_logger.exception("publish succeeded but local persistence failed : platform_type=%s", platform_type)
+        else:
+            backend_logger.exception("publish target failed : platform_type=%s", platform_type)
+            result.update({
+                "status": "failed",
+                "message": str(exc),
+            })
     finally:
         result["durationMs"] = int((time.time() - start_time) * 1000)
-        if result["status"] != "success":
-            _mark_published_materials(
-                task["fileList"],
-                platform_type=platform_type,
-                title=publish_title,
-                account_count=1,
-                account_file=task["accountFile"],
-                publish_task_id=task.get("publishTaskId") or "",
-                status=result["status"],
-                message=result["message"],
-                duration_ms=result["durationMs"],
-                account_name=task.get("accountName") or "",
-                retry_of_task_id=task.get("retryOfTaskId") or "",
-                retry_of_record_id=task.get("retryOfRecordId"),
-                retry_source=task.get("retrySource") or "",
-            )
+        if running_claimed and result["status"] != "success":
+            try:
+                _mark_published_materials(
+                    task["fileList"],
+                    platform_type=platform_type,
+                    title=publish_title,
+                    account_count=1,
+                    account_file=task["accountFile"],
+                    publish_task_id=task.get("publishTaskId") or "",
+                    status=result["status"],
+                    message=result["message"],
+                    duration_ms=result["durationMs"],
+                    account_name=task.get("accountName") or "",
+                    retry_of_task_id=task.get("retryOfTaskId") or "",
+                    retry_of_record_id=task.get("retryOfRecordId"),
+                    retry_source=task.get("retrySource") or "",
+                )
+            except Exception:
+                backend_logger.exception("publish final status persistence failed : platform_type=%s", platform_type)
     return result
 
 
@@ -547,23 +571,7 @@ def _run_publish_tasks(tasks):
 
 
 def _mark_publish_tasks_pending(tasks):
-    # 发布中心与定时发布共用：执行前把每个目标登记为 pending（占住平台，供发布前去重）。
-    for task in tasks or []:
-        publish_title = f"{task['title']}; description={task['description']}" if task["description"] else task["title"]
-        _mark_published_materials(
-            task["fileList"],
-            platform_type=task["platformType"],
-            title=publish_title,
-            account_count=1,
-            account_file=task["accountFile"],
-            publish_task_id=task.get("publishTaskId") or "",
-            status="pending",
-            message="等待发布",
-            account_name=task.get("accountName") or "",
-            retry_of_task_id=task.get("retryOfTaskId") or "",
-            retry_of_record_id=task.get("retryOfRecordId"),
-            retry_source=task.get("retrySource") or "",
-        )
+    return reserve_publish_tasks_pending(tasks or [])
 
 
 def _summarize_publish_results(results):
@@ -573,12 +581,15 @@ def _summarize_publish_results(results):
     for item in results:
         published_video_ids.extend(item.get("publishedVideoIds") or [])
     success_count = sum(1 for item in results if item.get("status") == "success")
-    failed_count = len(results) - success_count
+    unknown_count = sum(1 for item in results if item.get("status") == "unknown")
+    failed_count = sum(1 for item in results if item.get("status") in {"failed", "timeout"})
     return {
         "publishedVideoIds": list(dict.fromkeys(published_video_ids)),
         "successCount": success_count,
         "failedCount": failed_count,
-        "hasFailures": failed_count > 0,
+        "unknownCount": unknown_count,
+        "hasFailures": failed_count > 0 or unknown_count > 0,
+        "hasUnknown": unknown_count > 0,
     }
 
 

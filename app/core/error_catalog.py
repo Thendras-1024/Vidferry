@@ -19,6 +19,7 @@ _WORKFLOW_ERROR_CONFIG = (
     (lambda _exc, text: "HIGHLIGHT_SEGMENTS_INSUFFICIENT:" in text, "VF-HIGHLIGHT-INSUFFICIENT", "HIGHLIGHT_SEGMENTS_INSUFFICIENT", "高光片段生成数量不足，任务未输出不完整成片；请重新生成剪辑方案后重试。"),
     (lambda _exc, text: "VF-PUBLISH-RATE-LIMIT" in text or "upload rate limit" in text.lower() or "code: 601" in text.lower(), "VF-PUBLISH-RATE-LIMIT", "PUBLISH_RATE_LIMIT", "平台限制该账号的上传频率；请等待一段时间后仅重发发布步骤，无需重新下载或处理视频。"),
     (lambda _exc, text: "PUBLISH_FAILED:" in text, "VF-PUBLISH-PLATFORM-FAILED", "PUBLISH_PLATFORM_FAILED", "平台发布失败；请检查所选账号状态、平台投稿限制和后端发布日志后重试。"),
+    (lambda _exc, text: "管理员或运营者权限" in text, "VF-PUBLISH-PERMISSION-DENIED", "PUBLISH_PERMISSION_DENIED", "当前登录微信没有该视频号的发布权限，请使用已授权账号重新登录。"),
     (lambda exc, _text: isinstance(exc, TimeoutError), "VF-WORKFLOW-TIMEOUT", "WORKFLOW_TIMEOUT", "任务执行超时，请稍后重试；如持续发生，请检查后端服务状态。"),
     (lambda exc, _text: isinstance(exc, FileNotFoundError), "VF-WORKFLOW-SOURCE-MISSING", "SOURCE_FILE_MISSING", "未找到任务所需文件，请先重新下载视频后再处理。"),
     (lambda exc, _text: isinstance(exc, PermissionError), "VF-WORKFLOW-FILE-PERMISSION", "FILE_PERMISSION_ERROR", "任务文件无法访问，请确认文件未被其他程序占用且目录可写。"),

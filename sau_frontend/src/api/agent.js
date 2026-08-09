@@ -100,6 +100,19 @@ export const agentApi = {
     return request.post(`/agents/sessions/${encodeURIComponent(sessionId)}/compact`, {})
   },
 
+  getSessionContext(sessionId) {
+    return request.get(`/agents/sessions/${encodeURIComponent(sessionId)}/context`)
+  },
+
+  async compactSessionStream(sessionId, onEvent) {
+    const response = await fetch(`${apiBaseUrl}/agents/sessions/${encodeURIComponent(sessionId)}/compact/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-CSRF-Token': getCsrfToken() }
+    })
+    return parseSse(response, onEvent)
+  },
+
   prepublishCheck(data) {
     return request.post('/agents/prepublish-check', data, { silentError: true })
   },

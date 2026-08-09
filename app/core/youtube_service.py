@@ -480,6 +480,14 @@ def _attach_processed_versions_for_videos(cursor, videos):
         process_version = record.get("processVersion") or _material_process_version(record) or "translation_v1"
         if process_version in versions_by_video[video_id]:
             continue
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        applied_cover_title = "\n".join(
+            line.strip() for line in str(metadata.get("coverTitleApplied") or "").replace("\r\n", "\n").splitlines()
+        ).strip()
+        draft = source_video.get("publishDraft") if isinstance(source_video.get("publishDraft"), dict) else {}
+        current_cover_title = "\n".join(
+            line.strip() for line in str(draft.get("coverTitle") or "").replace("\r\n", "\n").splitlines()
+        ).strip()
         versions_by_video[video_id][process_version] = {
             "materialId": record.get("id"),
             "filename": record.get("filename") or "",
@@ -491,6 +499,12 @@ def _attach_processed_versions_for_videos(cursor, videos):
             "duration": record.get("duration") or "",
             "filesize": record.get("filesize") or 0,
             "createdAt": record.get("upload_time") or "",
+            "coverTitleApplied": applied_cover_title,
+            "coverReburnRequired": bool(
+                process_version == "editing_v1"
+                and applied_cover_title
+                and applied_cover_title != current_cover_title
+            ),
         }
 
     for video in videos:

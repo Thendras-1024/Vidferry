@@ -107,7 +107,7 @@ async def _find_xhs_qrcode_locator(page: Page):
 
 async def _extract_xhs_qrcode_src(page: Page) -> str:
     qrcode_img = await _find_xhs_qrcode_locator(page)
-    await qrcode_img.wait_for(state="visible", timeout=30000)
+    await qrcode_img.wait_for(state="visible", timeout=60000)
     qrcode_src = await qrcode_img.get_attribute("src")
     if not qrcode_src:
         raise RuntimeError("未获取到小红书登录二维码地址")

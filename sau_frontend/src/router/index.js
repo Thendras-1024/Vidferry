@@ -11,6 +11,7 @@ import ScheduledPublishTasks from '../views/ScheduledPublishTasks.vue'
 import Login from '../views/Login.vue'
 import ChangePassword from '../views/ChangePassword.vue'
 import UserManagement from '../views/UserManagement.vue'
+import ProcessingSettings from '../views/ProcessingSettings.vue'
 import pinia, { useUserStore } from '../stores'
 
 const routes = [
@@ -66,6 +67,11 @@ const routes = [
     path: '/youtube-research',
     name: 'YoutubeResearch',
     component: YoutubeResearch
+  },
+  {
+    path: '/workflow-settings',
+    name: 'ProcessingSettings',
+    component: ProcessingSettings
   },
   {
     path: '/subtitle-audit',

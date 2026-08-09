@@ -39,6 +39,6 @@ onMounted(() => videoGroupStore.load())
 </script>
 
 <style scoped>
-.group-option-name { font-weight: 600; color: #172033; }
+.group-option-name { font-weight: 600; color: var(--vf-text-primary); }
 .group-option-count { float: right; color: #7b8799; font-size: 12px; }
 </style>

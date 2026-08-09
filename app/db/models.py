@@ -103,6 +103,8 @@ def ensure_agent_tables(cursor):
     CREATE TABLE IF NOT EXISTS agent_sessions (
         id TEXT PRIMARY KEY,
         title TEXT,
+        source TEXT NOT NULL DEFAULT 'web',
+        source_key TEXT DEFAULT '',
         context TEXT DEFAULT '{}',
         summary TEXT DEFAULT '{}',
         summary_through_id INTEGER DEFAULT 0,
@@ -114,12 +116,26 @@ def ensure_agent_tables(cursor):
     ''')
     _add_missing_columns(cursor, "agent_sessions", {
         "owner_user_id": "INTEGER",
+        "source": "TEXT NOT NULL DEFAULT 'web'",
+        "source_key": "TEXT DEFAULT ''",
         "summary": "TEXT DEFAULT '{}'",
         "summary_through_id": "INTEGER DEFAULT 0",
         "message_count": "INTEGER DEFAULT 0",
         "deleted_at": "DATETIME",
     })
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_updated ON agent_sessions(deleted_at, updated_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_source ON agent_sessions(deleted_at, source, updated_at DESC)")
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS agent_session_bindings (
+        source TEXT NOT NULL,
+        source_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        owner_user_id INTEGER NOT NULL,
+        updated_at DATETIME NOT NULL,
+        PRIMARY KEY (source, source_key)
+    )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_agent_session_bindings_session ON agent_session_bindings(session_id)")
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS agent_session_locks (
         session_id TEXT PRIMARY KEY,
@@ -215,6 +231,13 @@ def ensure_auth_tables(cursor):
     )''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, revoked_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_audit_created ON auth_audit_logs(created_at DESC, id DESC)")
+    cursor.execute('''CREATE TABLE IF NOT EXISTS task_acknowledgements (
+        user_id INTEGER NOT NULL,
+        task_key TEXT NOT NULL,
+        acknowledged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, task_key)
+    )''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_acknowledgements_user_time ON task_acknowledgements(user_id, acknowledged_at DESC)")
 
 
 def ensure_scheduled_publish_tables(cursor):
@@ -625,6 +648,7 @@ def ensure_youtube_workflow_job_table(cursor):
         watermark_text TEXT DEFAULT '',
         highlight_count INTEGER DEFAULT 3,
         comment_burn_enabled INTEGER DEFAULT 0,
+        comment_burn_count INTEGER DEFAULT 30,
         comment_translation_mode TEXT DEFAULT 'google_llm',
         cover_title TEXT DEFAULT '',
         cover_context TEXT DEFAULT '',
@@ -677,6 +701,7 @@ def ensure_youtube_workflow_job_table(cursor):
         "watermark_text": "TEXT DEFAULT ''",
         "highlight_count": "INTEGER DEFAULT 3",
         "comment_burn_enabled": "INTEGER DEFAULT 0",
+        "comment_burn_count": "INTEGER DEFAULT 30",
         "comment_translation_mode": "TEXT DEFAULT 'google_llm'",
         "cover_title": "TEXT DEFAULT ''",
         "cover_context": "TEXT DEFAULT ''",

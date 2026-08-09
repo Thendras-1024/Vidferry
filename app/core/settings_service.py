@@ -5,6 +5,7 @@ from app.core.cover_service import DEFAULT_COVER_SIGNATURE, normalize_cover_sign
 
 
 WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
+COMMENT_BURN_COUNT_OPTIONS = {20, 25, 30, 35, 40, 45, 50}
 
 
 def _normalize_highlight_count(value):
@@ -13,6 +14,14 @@ def _normalize_highlight_count(value):
     except (TypeError, ValueError):
         count = 3
     return count if count in {1, 2, 3} else 3
+
+
+def _normalize_comment_burn_count(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 30
+    return count if count in COMMENT_BURN_COUNT_OPTIONS else 30
 
 
 def _default_workflow_settings():
@@ -31,6 +40,7 @@ def _default_workflow_settings():
         "highlightIntroEnabled": True,
         "coverIntroEnabled": True,
         "commentBurnEnabled": False,
+        "commentBurnCount": 30,
         "contentSafetyReviewEnabled": False,
     }
 
@@ -78,6 +88,7 @@ def _normalize_workflow_settings(payload=None):
     settings["highlightIntroEnabled"] = bool(payload.get("highlightIntroEnabled", True))
     settings["coverIntroEnabled"] = bool(payload.get("coverIntroEnabled", True))
     settings["commentBurnEnabled"] = bool(payload.get("commentBurnEnabled", False)) and settings["processVersion"] == PROCESS_VERSION_EDITING and _comment_burn_available()
+    settings["commentBurnCount"] = _normalize_comment_burn_count(payload.get("commentBurnCount", settings["commentBurnCount"]))
     settings["contentSafetyReviewEnabled"] = bool(payload.get("contentSafetyReviewEnabled", False))
 
     return settings
