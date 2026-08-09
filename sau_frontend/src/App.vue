@@ -8,11 +8,8 @@
             <img v-show="isCollapse" src="/vidferry-icon.svg" alt="Vidferry" class="logo-img">
             <div v-show="!isCollapse" class="logo-copy">
               <strong>Vidferry</strong>
-              <span>LOCAL VIDEO WORKSPACE</span>
+              <span>视频采集与发布工作台</span>
             </div>
-            <el-button v-if="!isCollapse" class="sidebar-collapse-button" text circle aria-label="收起侧栏" title="收起侧栏" @click="toggleSidebar">
-              <el-icon><Fold /></el-icon>
-            </el-button>
           </div>
           <section class="workspace-nav" aria-label="业务导航">
             <el-button class="new-conversation-button" :circle="isCollapse" @click="startAgentConversation">
