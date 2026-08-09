@@ -61,6 +61,10 @@ def feishu_session_id(open_id):
     return f"feishu-{digest}"
 
 
+def feishu_source_key(open_id):
+    return hashlib.sha256(str(open_id).encode("utf-8")).hexdigest()[:32]
+
+
 def split_reply(text, limit=MAX_REPLY_CHARS):
     text = str(text or "").strip() or "我暂时没有查到结果。"
     return [text[index:index + limit] for index in range(0, len(text), limit)]
@@ -99,7 +103,19 @@ def event_text(event):
 
 
 class FeishuRobot:
-    def __init__(self, allowed_open_ids, run_agent, reply, reply_card, send_image=None, image_roots=(), sanitize=str, submit=None):
+    def __init__(
+        self,
+        allowed_open_ids,
+        run_agent,
+        reply,
+        reply_card,
+        send_image=None,
+        image_roots=(),
+        sanitize=str,
+        submit=None,
+        session_manager=None,
+        owner_user_id=None,
+    ):
         self.allowed_open_ids = set(allowed_open_ids)
         self.run_agent = run_agent
         self.reply = reply
@@ -108,6 +124,8 @@ class FeishuRobot:
         self.image_roots = tuple(image_roots)
         self.sanitize = sanitize
         self.submit = submit or self._submit
+        self.session_manager = session_manager
+        self.owner_user_id = owner_user_id
         self._inflight = Semaphore(2)
 
     @staticmethod
@@ -154,22 +172,71 @@ class FeishuRobot:
         finally:
             self._inflight.release()
 
+    def _with_owner(self, callback):
+        if not self.session_manager:
+            raise RuntimeError("Feishu Agent session manager is unavailable.")
+        with self.session_manager.agent_actor(self.owner_user_id):
+            return callback()
+
+    def _active_session_id(self, open_id):
+        source_key = feishu_source_key(open_id)
+        return self._with_owner(
+            lambda: self.session_manager.get_or_create_external_agent_session("feishu", source_key)
+        )
+
+    def _command_reply(self, open_id, text):
+        command, _, argument = text.partition(" ")
+        command = command.casefold()
+        argument = argument.strip()
+        source_key = feishu_source_key(open_id)
+        if command == "/help":
+            return "可用命令：/new [标题]、/sessions、/use <编号>、/compact。"
+        if command == "/new":
+            session_id = self._with_owner(
+                lambda: self.session_manager.create_external_agent_session("feishu", source_key, argument)
+            )
+            return f"已创建并切换到新会话：{session_id[-8:]}。"
+        if command == "/sessions":
+            sessions = self._with_owner(
+                lambda: self.session_manager.list_external_agent_sessions("feishu", source_key)
+            )
+            if not sessions:
+                return "暂无手机端会话，发送普通消息即可创建。"
+            lines = ["手机端会话："]
+            for index, session in enumerate(sessions, start=1):
+                title = self.sanitize(session.get("title") or "手机端会话")[:48]
+                lines.append(f"{index}. {title}（{session.get('messageCount') or 0} 条）")
+            lines.append("使用 /use <编号> 切换会话。")
+            return "\n".join(lines)
+        if command == "/use":
+            session = self._with_owner(
+                lambda: self.session_manager.switch_external_agent_session("feishu", source_key, argument)
+            )
+            return f"已切换到会话：{self.sanitize(session.get('title') or '手机端会话')[:48]}。"
+        if command == "/compact":
+            session_id = self._active_session_id(open_id)
+            result = self._with_owner(lambda: self.session_manager.compact_agent_session(session_id, force=True))
+            return "当前会话已汇总，后续对话将使用最新摘要。" if result else "当前会话不存在或已删除。"
+        return None
+
     def _process(self, message_id, open_id, text, request_id):
-        session_id = feishu_session_id(open_id)
         logger.info(
-            "Feishu Agent prompt request_id=%s session_id=%s text=%s",
+            "Feishu Agent prompt request_id=%s source=feishu",
             request_id,
-            session_id,
-            self.sanitize(text)[:2000],
         )
         try:
-            result = butler_result(text)
-            if result is None:
-                result = self.run_agent(
-                    text,
-                    session_id=session_id,
-                    context={"source": "feishu", "requestId": request_id},
-                )
+            if text.startswith("/"):
+                command_reply = self._command_reply(open_id, text)
+                if command_reply is not None:
+                    self.reply(message_id, command_reply)
+                    return
+            session_id = self._active_session_id(open_id)
+            result = self.run_agent(
+                text,
+                session_id=session_id,
+                context={"source": "feishu", "requestId": request_id},
+                owner_user_id=self.owner_user_id,
+            )
             tools = tool_sections(result.get("toolResults"), self.sanitize)
             answer = self.sanitize(result.get("answer"))[:4000]
             try:
@@ -208,9 +275,17 @@ class FeishuRobot:
         return {"card": result_card(result["answer"], result["toolResults"], self.sanitize)}
 
 
-def run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_roots=(), sanitize=str):
+def run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_roots=(), sanitize=str, session_manager=None, owner_user_id=None):
     if not app_id or not app_secret:
         raise RuntimeError("FEISHU_APP_ID and FEISHU_APP_SECRET must be configured.")
+    if not session_manager:
+        raise RuntimeError("Feishu Agent session manager must be configured.")
+    try:
+        owner_user_id = int(owner_user_id)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("FEISHU_AGENT_OWNER_USER_ID must be configured.") from exc
+    if owner_user_id <= 0:
+        raise RuntimeError("FEISHU_AGENT_OWNER_USER_ID must be configured.")
 
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
@@ -281,7 +356,17 @@ def run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_root
         if not response.success():
             raise RuntimeError(f"Feishu image reply failed: code={response.code}, log_id={response.get_log_id()}")
 
-    robot = FeishuRobot(allowed_open_ids, run_agent, reply, reply_card, send_image, image_roots, sanitize)
+    robot = FeishuRobot(
+        allowed_open_ids,
+        run_agent,
+        reply,
+        reply_card,
+        send_image,
+        image_roots,
+        sanitize,
+        session_manager=session_manager,
+        owner_user_id=owner_user_id,
+    )
 
     def card_action(data):
         payload = robot.handle_card_action(data)
@@ -311,25 +396,50 @@ def env_settings():
         for value in os.getenv("FEISHU_ALLOWED_OPEN_IDS", "").split(",")
         if value.strip()
     }
-    return app_id.strip(), app_secret.strip(), allowed
+    try:
+        owner_user_id = int(os.getenv("FEISHU_AGENT_OWNER_USER_ID", "0") or 0)
+    except ValueError:
+        owner_user_id = 0
+    return app_id.strip(), app_secret.strip(), allowed, owner_user_id
 
 
-def start_embedded_feishu_robot(enabled, run_agent, image_roots=(), sanitize=str):
+def start_embedded_feishu_robot(enabled, run_agent, image_roots=(), sanitize=str, session_manager=None):
     """在后端进程中启动飞书长连接，异常不影响主服务。"""
     global _embedded_robot_thread
     if not enabled:
         _set_robot_status("disabled", "飞书机器人已关闭。")
+        return False
+    app_id, app_secret, allowed_open_ids, owner_user_id = env_settings()
+    if not app_id or not app_secret:
+        _set_robot_status("disabled", "飞书机器人未配置 App ID 或 App Secret。")
+        logger.warning("Feishu robot disabled: FEISHU_APP_ID and FEISHU_APP_SECRET are missing")
+        return False
+    if not session_manager:
+        _set_robot_status("disabled", "飞书机器人未配置 Agent 会话管理器。")
+        logger.warning("Feishu robot disabled: session manager is missing")
+        return False
+    if owner_user_id <= 0:
+        _set_robot_status("disabled", "飞书机器人未配置 FEISHU_AGENT_OWNER_USER_ID。")
+        logger.warning("Feishu robot disabled: FEISHU_AGENT_OWNER_USER_ID is missing")
         return False
     with _embedded_robot_start_lock:
         if _embedded_robot_thread and _embedded_robot_thread.is_alive():
             return True
 
         def run():
-            app_id, app_secret, allowed_open_ids = env_settings()
             try:
                 _set_robot_status("connecting", "正在连接飞书机器人。")
                 logger.info("Feishu robot startup requested : allowed_user_count = %s", len(allowed_open_ids))
-                run_feishu_robot(app_id, app_secret, allowed_open_ids, run_agent, image_roots=image_roots, sanitize=sanitize)
+                run_feishu_robot(
+                    app_id,
+                    app_secret,
+                    allowed_open_ids,
+                    run_agent,
+                    image_roots=image_roots,
+                    sanitize=sanitize,
+                    session_manager=session_manager,
+                    owner_user_id=owner_user_id,
+                )
             except Exception as exc:
                 _set_robot_status("error", _robot_error_message(exc))
                 logger.exception("Feishu robot stopped : error_type = %s", type(exc).__name__)

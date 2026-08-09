@@ -42,4 +42,5 @@ def initialize_runtime() -> None:
         backend.run_agent_chat,
         image_roots=(backend.BASE_DIR,),
         sanitize=backend.sanitize_agent_output,
+        session_manager=backend,
     )

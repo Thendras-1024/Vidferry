@@ -7,6 +7,7 @@ import json as _json
 import logging as _logging
 import time as _time
 from contextlib import contextmanager as _contextmanager
+from contextvars import ContextVar as _ContextVar
 from typing import TypedDict
 
 from app.core.llm_harness import call_json_contract, validate_agent_action, validate_agent_reply
@@ -28,6 +29,9 @@ class _AgentState(TypedDict, total=False):
     answer: str
 
 
+_AGENT_REQUEST_USAGE = _ContextVar("agent_request_usage", default=None)
+
+
 def _agent_llm_available():
     return bool(TEXT_LLM_API_KEY and TEXT_LLM_BASE_URL and TEXT_LLM_MODEL)
 
@@ -36,7 +40,7 @@ def _call_agent_contract(messages, contract_id, validator, max_tokens=None, sess
     renewer = globals().get("renew_agent_session_lease")
     if callable(renewer) and not renewer(session_id):
         raise AgentSessionLeaseLostError("Agent 会话租约已失效，请重试。")
-    return call_json_contract(
+    result = call_json_contract(
         messages=messages,
         contract_id=contract_id,
         validator=validator,
@@ -48,6 +52,10 @@ def _call_agent_contract(messages, contract_id, validator, max_tokens=None, sess
         max_tokens=int(max_tokens or AGENT_CHAT_MAX_TOKENS),
         prompt_version=llm_prompts.AGENT_PROMPT_VERSION,
     )
+    collector = _AGENT_REQUEST_USAGE.get()
+    if isinstance(collector, list):
+        collector.append(result[1])
+    return result
 
 
 def _agent_display_text(value, *, trim=True):
@@ -413,14 +421,15 @@ def _agent_sse_event(event, data):
     return f"event: {event}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def run_agent_chat_stream(message, session_id="", context=None):
+def run_agent_chat_stream(message, session_id="", context=None, owner_user_id=None):
     """产生仅含用户可见进度与回答的 SSE 事件。"""
     if not AGENT_ENABLED:
         yield _agent_sse_event("error", {"message": "Agent 未启用。"})
         return
     try:
-        with _agent_session_request_guard(session_id):
-            yield from _run_agent_chat_stream_locked(message, session_id=session_id, context=context)
+        with agent_actor(owner_user_id):
+            with _agent_session_request_guard(session_id):
+                yield from _run_agent_chat_stream_locked(message, session_id=session_id, context=context)
     except TimeoutError as exc:
         yield _agent_sse_event("error", {"message": str(exc)})
     except Exception:
@@ -429,10 +438,31 @@ def run_agent_chat_stream(message, session_id="", context=None):
 
 
 def _run_agent_chat_stream_locked(message, session_id="", context=None):
+    usage_token = _AGENT_REQUEST_USAGE.set([])
+    try:
+        yield from _run_agent_chat_stream_with_usage(message, session_id=session_id, context=context)
+    finally:
+        _AGENT_REQUEST_USAGE.reset(usage_token)
+
+
+def _run_agent_chat_stream_with_usage(message, session_id="", context=None):
     started_at = _time.time()
     page_context = context if isinstance(context, dict) else {}
     yield _agent_sse_event("status", {"phase": "understanding", "message": "正在理解你的问题"})
+    session = get_agent_session(session_id) if session_id else None
+    context_stats = get_agent_session_context_stats(session) if session else {}
+    compact_started_at = None
+    if context_stats.get("needsCompaction"):
+        compact_started_at = _time.time()
+        yield _agent_sse_event("context_compaction", {"state": "running", "message": "正在压缩上下文"})
     session_memory = _prepare_agent_session_memory(session_id)
+    if compact_started_at is not None:
+        yield _agent_sse_event("context_compaction", {
+            "state": "completed" if session_memory.get("compacted") else "skipped",
+            "message": "上下文压缩完毕" if session_memory.get("compacted") else "上下文无需压缩",
+            "durationMs": round((_time.time() - compact_started_at) * 1000),
+            "summaryThroughId": session_memory.get("summaryThroughId", 0),
+        })
     session_id = _start_agent_chat_turn(session_id, message, page_context)["sessionId"]
     model_context = {**page_context, "_sessionMemory": session_memory}
     if session_memory.get("available", True) is False:
@@ -475,12 +505,15 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
         "messageCount": session_memory.get("messageCount", 0),
         "summaryThroughId": session_memory.get("summaryThroughId", 0),
     }}
+    usages = _AGENT_REQUEST_USAGE.get() or []
+    usage = {"promptTokens": sum(int(item.get("promptTokens") or 0) for item in usages if isinstance(item, dict))}
     output = {
         "answer": answer,
         "cards": cards,
         "actions": actions,
         "safetyDecision": safety_decision,
         "iterations": iterations,
+        "usage": usage,
     }
     try:
         finalized = _finalize_agent_chat_turn(
@@ -514,6 +547,26 @@ def _run_agent_chat_stream_locked(message, session_id="", context=None):
             "available": session_memory.get("available", True) is not False,
         },
     })
+
+
+def run_agent_session_compaction_stream(session_id, owner_user_id=None):
+    started_at = _time.time()
+    try:
+        with agent_actor(owner_user_id):
+            yield _agent_sse_event("context_compaction", {"state": "running", "message": "正在压缩上下文"})
+            result = compact_agent_session(session_id, force=True)
+            if not result:
+                yield _agent_sse_event("error", {"message": "Agent 会话不存在或已删除"})
+                return
+            yield _agent_sse_event("context_compaction", {
+                "state": "completed",
+                "message": "上下文压缩完毕",
+                "durationMs": round((_time.time() - started_at) * 1000),
+                **result,
+            })
+    except Exception:
+        _logging.exception("Agent 手动压缩失败 session=%s", session_id)
+        yield _agent_sse_event("error", {"message": "压缩 Agent 会话失败，请重试。"})
 
 
 def _node_select_tools(state):
@@ -612,11 +665,12 @@ def _build_agent_graph():
 _AGENT_GRAPH = None
 
 
-def run_agent_chat(message, session_id="", context=None):
+def run_agent_chat(message, session_id="", context=None, owner_user_id=None):
     if not AGENT_ENABLED:
         raise RuntimeError("Agent 未启用。")
-    with _agent_session_request_guard(session_id):
-        return _run_agent_chat_locked(message, session_id=session_id, context=context)
+    with agent_actor(owner_user_id):
+        with _agent_session_request_guard(session_id):
+            return _run_agent_chat_locked(message, session_id=session_id, context=context)
 
 
 def _run_agent_chat_locked(message, session_id="", context=None):

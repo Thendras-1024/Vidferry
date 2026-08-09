@@ -19,7 +19,7 @@ def main():
         force=True,
     )
     backend.init_database_tables()
-    app_id, app_secret, allowed_open_ids = env_settings()
+    app_id, app_secret, allowed_open_ids, owner_user_id = env_settings()
     run_feishu_robot(
         app_id,
         app_secret,
@@ -27,6 +27,8 @@ def main():
         backend.run_agent_chat,
         image_roots=(backend.BASE_DIR,),
         sanitize=backend.sanitize_agent_output,
+        session_manager=backend,
+        owner_user_id=owner_user_id,
     )
 
 
