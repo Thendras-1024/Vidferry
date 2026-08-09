@@ -1,9 +1,15 @@
+from flask import g
+
+
 def _safe_account_name(value):
     return re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fff]+", "_", str(value or "").strip()).strip("_") or uuid.uuid4().hex
 
 
-def _bilibili_account_file(user_name):
-    return Path(BASE_DIR / "cookiesFile" / f"bilibili_{_safe_account_name(user_name)}.json")
+def _bilibili_account_file(user_name, owner_user_id):
+    return _safe_cookie_path(
+        f"bilibili_{_safe_account_name(user_name)}.json",
+        owner_user_id=owner_user_id,
+    )
 
 
 def _image_file_to_data_url(path):
@@ -73,12 +79,15 @@ def _read_bilibili_pty_output(process, output_queue):
             return
 
 
-def _save_bilibili_login_account(user_name, account_file, status_queue, account_id=None):
+def _save_bilibili_login_account(user_name, account_file, status_queue, account_id=None, owner_user_id=None):
     relative_cookie_file = Path(account_file).name
     with _db_connect() as conn:
         cursor = conn.cursor()
         if account_id is not None:
-            cursor.execute("SELECT type FROM user_info WHERE id = ?", (account_id,))
+            cursor.execute(
+                "SELECT type FROM user_info WHERE id = ? AND owner_user_id = ?",
+                (account_id, owner_user_id),
+            )
             row = cursor.fetchone()
             if row is None or int(row[0]) != 5:
                 status_queue.put("500")
@@ -87,28 +96,28 @@ def _save_bilibili_login_account(user_name, account_file, status_queue, account_
                 '''
                 UPDATE user_info
                 SET type = ?, filePath = ?, userName = ?, status = ?
-                WHERE id = ?
+                WHERE id = ? AND owner_user_id = ?
                 ''',
-                (5, relative_cookie_file, user_name, 1, account_id),
+                (5, relative_cookie_file, user_name, 1, account_id, owner_user_id),
             )
         else:
             cursor.execute(
                 '''
-                INSERT INTO user_info (type, filePath, userName, status)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO user_info (type, filePath, userName, status, owner_user_id)
+                VALUES (?, ?, ?, ?, ?)
                 ''',
-                (5, relative_cookie_file, user_name, 1),
+                (5, relative_cookie_file, user_name, 1, owner_user_id),
             )
         conn.commit()
     return True
 
 
-def bilibili_cookie_gen(user_name, status_queue, account_id=None):
+def bilibili_cookie_gen(user_name, status_queue, account_id=None, owner_user_id=None):
     if ensure_biliup_binary is None:
         _emit_sse_error(status_queue, "后端未加载 B 站 biliup 运行时，请检查依赖。")
         return
 
-    account_file = _bilibili_account_file(user_name)
+    account_file = _bilibili_account_file(user_name, owner_user_id)
     account_file.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -190,7 +199,7 @@ def bilibili_cookie_gen(user_name, status_queue, account_id=None):
 
         exit_status = process.exitstatus
         if exit_status == 0 and account_file.is_file():
-            if _save_bilibili_login_account(user_name, account_file, status_queue, account_id):
+            if _save_bilibili_login_account(user_name, account_file, status_queue, account_id, owner_user_id):
                 status_queue.put("200")
                 backend_logger.info("B站扫码登录成功 account_id=%s", account_id or "new")
             else:
@@ -221,6 +230,7 @@ def login():
     id = (request.args.get('id') or '').strip()
     account_id = request.args.get('accountId')
     account_id = int(account_id) if account_id and account_id.isdigit() else None
+    owner_user_id = int(g.current_user["id"])
 
     if type not in {'1', '2', '3', '4', '5'} or not id:
         return Response("data: 500\n\n", mimetype='text/event-stream')
@@ -229,7 +239,7 @@ def login():
         try:
             with _db_connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT type FROM user_info WHERE id = ?", (account_id,))
+                cursor.execute("SELECT type FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
                 row = cursor.fetchone()
                 if row is None or str(row[0]) != str(type):
                     return Response("data: 500\n\n", mimetype='text/event-stream')
@@ -242,7 +252,7 @@ def login():
     queue_key = f"{type}:{account_id or id}"
     active_queues[queue_key] = status_queue
     # 启动异步任务线程
-    thread = threading.Thread(target=run_async_function, args=(type,id,status_queue,account_id), daemon=True)
+    thread = threading.Thread(target=run_async_function, args=(type,id,status_queue,account_id,owner_user_id), daemon=True)
     thread.start()
     response = Response(sse_stream(status_queue, queue_key), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'

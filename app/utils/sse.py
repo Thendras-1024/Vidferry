@@ -3,9 +3,9 @@
 from app.utils.sse_util import build_sse_stream
 
 
-def run_async_function(type,id,status_queue,account_id=None):
+def run_async_function(type,id,status_queue,account_id=None,owner_user_id=None):
     if type == '5':
-        bilibili_cookie_gen(id, status_queue, account_id)
+        bilibili_cookie_gen(id, status_queue, account_id, owner_user_id)
         return
 
     if not all([xiaohongshu_cookie_gen, get_tencent_cookie, douyin_cookie_gen, get_ks_cookie]):
@@ -17,13 +17,13 @@ def run_async_function(type,id,status_queue,account_id=None):
     try:
         match type:
             case '1':
-                loop.run_until_complete(xiaohongshu_cookie_gen(id, status_queue, account_id))
+                loop.run_until_complete(xiaohongshu_cookie_gen(id, status_queue, account_id, owner_user_id))
             case '2':
-                loop.run_until_complete(get_tencent_cookie(id,status_queue, account_id))
+                loop.run_until_complete(get_tencent_cookie(id,status_queue, account_id, owner_user_id))
             case '3':
-                loop.run_until_complete(douyin_cookie_gen(id,status_queue, account_id))
+                loop.run_until_complete(douyin_cookie_gen(id,status_queue, account_id, owner_user_id))
             case '4':
-                loop.run_until_complete(get_ks_cookie(id,status_queue, account_id))
+                loop.run_until_complete(get_ks_cookie(id,status_queue, account_id, owner_user_id))
             case _:
                 status_queue.put("500")
     except Exception as e:

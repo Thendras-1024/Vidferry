@@ -7,6 +7,7 @@
         <p>集中维护抖音、B站、快手、视频号、小红书账号，异常账号可在当前页面手动重新连接。</p>
       </div>
       <div class="hero-actions">
+        <el-button type="primary" plain :icon="Upload" @click="importDialogVisible = true">导入 Cookie</el-button>
         <el-button type="primary" @click="handleAddAccount">添加账号</el-button>
         <el-button type="warning" plain @click="handleCheckAllCookies" :disabled="checkingCookies">
           <el-icon><Refresh /></el-icon>
@@ -18,6 +19,23 @@
         </el-button>
       </div>
     </section>
+
+    <el-dialog v-model="importDialogVisible" title="导入 Cookie" width="min(480px, calc(100vw - 32px))" :close-on-click-modal="!importing">
+      <el-form label-width="88px">
+        <el-form-item label="Cookie 文件">
+          <input type="file" accept=".json,application/json" @change="selectImportFile" />
+        </el-form-item>
+        <el-form-item v-if="importCandidates.length" label="平台">
+          <el-select v-model="importPlatformType" placeholder="请选择 Cookie 所属平台" style="width: 100%">
+            <el-option v-for="item in importCandidates" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="importing" @click="closeImportDialog">取消</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!importFile" @click="submitCookieImport">导入并校验</el-button>
+      </template>
+    </el-dialog>
 
     <section class="metric-grid">
       <button class="metric-card" type="button" @click="activeTab = 'all'">
@@ -109,6 +127,37 @@
       </el-table>
     </el-card>
 
+    <el-card class="account-panel" shadow="never">
+      <template #header>
+        <div class="panel-header">
+          <div>
+            <span class="panel-kicker">PUBLISH ACCOUNT GROUPS</span>
+            <h2>发布账号组</h2>
+          </div>
+          <el-button type="primary" @click="openAccountGroupDialog()">新建账号组</el-button>
+        </div>
+      </template>
+      <el-table :data="publishAccountGroups" empty-text="暂无账号组">
+        <el-table-column prop="name" label="账号组" min-width="180" />
+        <el-table-column label="账号" min-width="420">
+          <template #default="{ row }">
+            <el-tag v-for="account in row.accounts" :key="account.platformType" size="small" class="group-account-tag" :type="account.valid ? 'success' : 'danger'">
+              {{ account.platform }}：{{ account.name || '账号缺失' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'danger'">{{ row.complete ? '可用' : '配置不完整' }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="操作" width="180">
+          <template #default="{ row }">
+            <el-button size="small" @click="openAccountGroupDialog(row)">编辑</el-button>
+            <el-button size="small" type="danger" plain @click="removeAccountGroup(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <el-dialog
       v-model="dialogVisible"
       :title="dialogType === 'add' ? '添加账号' : (dialogType === 'relogin' ? '重新连接账号' : '编辑账号')"
@@ -173,6 +222,21 @@
         </span>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="accountGroupDialogVisible" :title="accountGroupForm.id ? '编辑发布账号组' : '新建发布账号组'" width="560px">
+      <el-form label-width="90px">
+        <el-form-item label="账号组名称"><el-input v-model="accountGroupForm.name" maxlength="60" /></el-form-item>
+        <el-form-item v-for="platform in accountGroupPlatforms" :key="platform.type" :label="platform.label">
+          <el-select v-model="accountGroupForm.accounts[platform.type]" clearable filterable style="width: 100%" :placeholder="`选择${platform.label}账号`">
+            <el-option v-for="account in normalAccountsForGroup(platform.label)" :key="account.id" :label="account.name" :value="account.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="accountGroupDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="accountGroupSaving" @click="saveAccountGroup">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 <script setup>
@@ -190,6 +254,14 @@ const accountStore = useAccountStore()
 // 获取应用状态管理
 const appStore = useAppStore()
 const notificationStore = useNotificationStore()
+const publishAccountGroups = ref([])
+const accountGroupDialogVisible = ref(false)
+const accountGroupSaving = ref(false)
+const accountGroupPlatforms = [
+  { type: 3, label: '抖音' }, { type: 5, label: 'B站' }, { type: 1, label: '小红书' },
+  { type: 4, label: '快手' }, { type: 2, label: '视频号' }
+]
+const accountGroupForm = reactive({ id: null, name: '', accounts: {} })
 
 // 当前激活的标签页
 const activeTab = ref('all')
@@ -197,8 +269,56 @@ const activeTab = ref('all')
 // 搜索关键词
 const searchKeyword = ref('')
 const checkingCookies = ref(false)
+const importDialogVisible = ref(false)
+const importFile = ref(null)
+const importing = ref(false)
+const importPlatformType = ref(null)
+const importCandidates = ref([])
+const importPlatformLabels = {
+  1: '小红书', 2: '视频号', 3: '抖音', 4: '快手', 5: 'B站'
+}
 const checkCooldownRemaining = ref(0)
 let checkCooldownTimer = null
+
+const selectImportFile = (event) => {
+  importFile.value = event.target.files?.[0] || null
+  importPlatformType.value = null
+  importCandidates.value = []
+}
+
+const closeImportDialog = () => {
+  if (importing.value) return
+  importDialogVisible.value = false
+  importFile.value = null
+  importPlatformType.value = null
+  importCandidates.value = []
+}
+
+const submitCookieImport = async () => {
+  if (!importFile.value) return
+  importing.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', importFile.value)
+    if (importPlatformType.value) formData.append('platformType', String(importPlatformType.value))
+    await accountApi.importCookie(formData)
+    ElMessage.success('Cookie 导入成功')
+    importing.value = false
+    closeImportDialog()
+    await fetchAccountsQuick()
+  } catch (error) {
+    const candidates = error?.response?.data?.data?.candidates || []
+    if (candidates.length || error?.response?.status === 409) {
+      importCandidates.value = (candidates.length ? candidates : [1, 2, 3, 4, 5])
+        .map(value => ({ value, label: importPlatformLabels[value] }))
+      ElMessage.info('请选择 Cookie 所属平台后再次导入')
+    } else {
+      ElMessage.error(error?.response?.data?.msg || error?.message || 'Cookie 导入失败')
+    }
+  } finally {
+    importing.value = false
+  }
+}
 
 const accountFilterOptions = [
   { label: '全部', value: 'all' },
@@ -223,6 +343,47 @@ const fetchAccountsQuick = async () => {
   } catch (error) {
     console.error('快速获取账号数据失败:', error)
   }
+}
+
+const loadPublishAccountGroups = async () => {
+  const response = await accountApi.getPublishAccountGroups()
+  publishAccountGroups.value = response.data || []
+}
+
+const normalAccountsForGroup = (platform) => accountStore.accounts.filter(account => account.platform === platform && account.status === '正常')
+
+const openAccountGroupDialog = (group = null) => {
+  accountGroupForm.id = group?.id || null
+  accountGroupForm.name = group?.name || ''
+  accountGroupForm.accounts = {}
+  ;(group?.accounts || []).forEach(account => { accountGroupForm.accounts[account.platformType] = account.accountId })
+  accountGroupDialogVisible.value = true
+}
+
+const saveAccountGroup = async () => {
+  const name = accountGroupForm.name.trim()
+  if (!name) return ElMessage.warning('请输入账号组名称')
+  const accounts = accountGroupPlatforms
+    .filter(platform => accountGroupForm.accounts[platform.type])
+    .map(platform => ({ platformType: platform.type, accountId: accountGroupForm.accounts[platform.type] }))
+  if (!accounts.length) return ElMessage.warning('请至少选择一个平台账号')
+  accountGroupSaving.value = true
+  try {
+    if (accountGroupForm.id) await accountApi.updatePublishAccountGroup(accountGroupForm.id, { name, accounts })
+    else await accountApi.createPublishAccountGroup({ name, accounts })
+    accountGroupDialogVisible.value = false
+    await loadPublishAccountGroups()
+    ElMessage.success('账号组已保存')
+  } finally {
+    accountGroupSaving.value = false
+  }
+}
+
+const removeAccountGroup = async (group) => {
+  await ElMessageBox.confirm(`确定删除账号组“${group.name}”吗？`, '删除账号组', { type: 'warning' })
+  await accountApi.deletePublishAccountGroup(group.id)
+  await loadPublishAccountGroups()
+  ElMessage.success('账号组已删除')
 }
 
 // 获取账号数据（只刷新当前状态，不验证、不重连）
@@ -308,6 +469,7 @@ const handleCheckAllCookies = async () => {
 // 页面加载时获取账号数据
 onMounted(() => {
   fetchAccountsQuick()
+  loadPublishAccountGroups().catch(error => console.error('加载账号组失败', error))
 })
 
 // 获取平台标签类型
@@ -931,6 +1093,10 @@ $ink-strong: var(--vf-text-primary);
     color: $text-secondary;
     font-size: 12px;
   }
+}
+
+.group-account-tag {
+  margin: 2px 6px 2px 0;
 }
 
 .clickable-status {

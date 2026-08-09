@@ -56,13 +56,21 @@ async def send_qr_from_locator(locator, status_queue):
     status_queue.put(data_url)
     return data_url
 
-def save_login_account(platform_type, cookie_file, user_name, status_queue, account_id=None):
+def _owner_cookies_dir(owner_user_id):
+    path = Path(BASE_DIR / "cookiesFile")
+    if owner_user_id is not None:
+        path /= str(int(owner_user_id))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_login_account(platform_type, cookie_file, user_name, status_queue, account_id=None, owner_user_id=None):
     with _db_connect() as conn:
         cursor = conn.cursor()
         old_cookie_file = None
 
         if account_id is not None:
-            cursor.execute("SELECT type, filePath FROM user_info WHERE id = ?", (account_id,))
+            cursor.execute("SELECT type, filePath FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
             row = cursor.fetchone()
             if row is None:
                 status_queue.put("500")
@@ -78,24 +86,24 @@ def save_login_account(platform_type, cookie_file, user_name, status_queue, acco
                 '''
                 UPDATE user_info
                 SET type = ?, filePath = ?, userName = ?, status = ?
-                WHERE id = ?
+                WHERE id = ? AND owner_user_id = ?
                 ''',
-                (platform_type, cookie_file, user_name, 1, account_id)
+                (platform_type, cookie_file, user_name, 1, account_id, owner_user_id)
             )
         else:
             cursor.execute(
                 '''
-                INSERT INTO user_info (type, filePath, userName, status)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO user_info (type, filePath, userName, status, owner_user_id)
+                VALUES (?, ?, ?, ?, ?)
                 ''',
-                (platform_type, cookie_file, user_name, 1)
+                (platform_type, cookie_file, user_name, 1, owner_user_id)
             )
 
         conn.commit()
         print("✅ 用户状态已记录")
 
         if old_cookie_file and old_cookie_file != cookie_file:
-            old_path = Path(BASE_DIR / "cookiesFile" / old_cookie_file)
+            old_path = _owner_cookies_dir(owner_user_id) / old_cookie_file
             try:
                 if old_path.exists():
                     old_path.unlink()
@@ -107,7 +115,7 @@ def save_login_account(platform_type, cookie_file, user_name, status_queue, acco
 
 
 # 抖音登录
-async def douyin_cookie_gen(id,status_queue,account_id=None):
+async def douyin_cookie_gen(id,status_queue,account_id=None,owner_user_id=None):
     url_changed_event = asyncio.Event()
     async def on_url_change():
         # 检查是否是主框架的变化
@@ -144,10 +152,9 @@ async def douyin_cookie_gen(id,status_queue,account_id=None):
         uuid_v1 = uuid.uuid1()
         print(f"UUID v1: {uuid_v1}")
         # 确保cookiesFile目录存在
-        cookies_dir = Path(BASE_DIR / "cookiesFile")
-        cookies_dir.mkdir(exist_ok=True)
+        cookies_dir = _owner_cookies_dir(owner_user_id)
         await context.storage_state(path=cookies_dir / f"{uuid_v1}.json")
-        result = await check_cookie(3, f"{uuid_v1}.json")
+        result = await check_cookie(3, f"{owner_user_id}/{uuid_v1}.json")
         if not result:
             status_queue.put("500")
             await page.close()
@@ -157,18 +164,17 @@ async def douyin_cookie_gen(id,status_queue,account_id=None):
         await page.close()
         await context.close()
         await browser.close()
-        if save_login_account(3, f"{uuid_v1}.json", id, status_queue, account_id):
+        if save_login_account(3, f"{uuid_v1}.json", id, status_queue, account_id, owner_user_id):
             status_queue.put("200")
 
 
 # 视频号登录
-async def get_tencent_cookie(id,status_queue,account_id=None):
+async def get_tencent_cookie(id,status_queue,account_id=None,owner_user_id=None):
     from uploader.tencent_uploader.main import tencent_setup
 
     uuid_v1 = uuid.uuid1()
     cookie_file = f"tencent_{uuid_v1}.json"
-    cookies_dir = Path(BASE_DIR / "cookiesFile")
-    cookies_dir.mkdir(exist_ok=True)
+    cookies_dir = _owner_cookies_dir(owner_user_id)
     account_file = cookies_dir / cookie_file
 
     def on_qrcode(payload):
@@ -188,11 +194,11 @@ async def get_tencent_cookie(id,status_queue,account_id=None):
         status_queue.put("500")
         return None
 
-    if save_login_account(2, cookie_file, id, status_queue, account_id):
+    if save_login_account(2, cookie_file, id, status_queue, account_id, owner_user_id):
         status_queue.put("200")
 
 # 快手登录
-async def get_ks_cookie(id,status_queue,account_id=None):
+async def get_ks_cookie(id,status_queue,account_id=None,owner_user_id=None):
     url_changed_event = asyncio.Event()
     async def on_url_change():
         # 检查是否是主框架的变化
@@ -234,10 +240,9 @@ async def get_ks_cookie(id,status_queue,account_id=None):
         uuid_v1 = uuid.uuid1()
         print(f"UUID v1: {uuid_v1}")
         # 确保cookiesFile目录存在
-        cookies_dir = Path(BASE_DIR / "cookiesFile")
-        cookies_dir.mkdir(exist_ok=True)
+        cookies_dir = _owner_cookies_dir(owner_user_id)
         await context.storage_state(path=cookies_dir / f"{uuid_v1}.json")
-        result = await check_cookie(4, f"{uuid_v1}.json")
+        result = await check_cookie(4, f"{owner_user_id}/{uuid_v1}.json")
         if not result:
             status_queue.put("500")
             await page.close()
@@ -248,11 +253,11 @@ async def get_ks_cookie(id,status_queue,account_id=None):
         await context.close()
         await browser.close()
 
-        if save_login_account(4, f"{uuid_v1}.json", id, status_queue, account_id):
+        if save_login_account(4, f"{uuid_v1}.json", id, status_queue, account_id, owner_user_id):
             status_queue.put("200")
 
 # 小红书登录
-async def xiaohongshu_cookie_gen(id,status_queue,account_id=None):
+async def xiaohongshu_cookie_gen(id,status_queue,account_id=None,owner_user_id=None):
     url_changed_event = asyncio.Event()
 
     async def on_url_change():
@@ -294,10 +299,9 @@ async def xiaohongshu_cookie_gen(id,status_queue,account_id=None):
         uuid_v1 = uuid.uuid1()
         print(f"UUID v1: {uuid_v1}")
         # 确保cookiesFile目录存在
-        cookies_dir = Path(BASE_DIR / "cookiesFile")
-        cookies_dir.mkdir(exist_ok=True)
+        cookies_dir = _owner_cookies_dir(owner_user_id)
         await context.storage_state(path=cookies_dir / f"{uuid_v1}.json")
-        result = await check_cookie(1, f"{uuid_v1}.json")
+        result = await check_cookie(1, f"{owner_user_id}/{uuid_v1}.json")
         if not result:
             status_queue.put("500")
             await page.close()
@@ -308,7 +312,7 @@ async def xiaohongshu_cookie_gen(id,status_queue,account_id=None):
         await context.close()
         await browser.close()
 
-        if save_login_account(1, f"{uuid_v1}.json", id, status_queue, account_id):
+        if save_login_account(1, f"{uuid_v1}.json", id, status_queue, account_id, owner_user_id):
             status_queue.put("200")
 
 # a = asyncio.run(xiaohongshu_cookie_gen(4,None))

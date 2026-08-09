@@ -12,8 +12,7 @@ from app.config import AUTH_ALLOW_COOKIE_EXPORT, AUTH_COOKIE_NAME
 
 _PUBLIC_PATHS = {"/", "/favicon.ico", "/vite.svg", "/auth/login"}
 _ADMIN_PATHS = {
-    "/account", "/accounts/check-cookies", "/deleteAccount", "/downloadCookie",
-    "/getValidAccounts", "/updateUserinfo", "/uploadCookie", "/login",
+    "/login",
 }
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 

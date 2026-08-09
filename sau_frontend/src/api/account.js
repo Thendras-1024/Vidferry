@@ -16,6 +16,10 @@ export const accountApi = {
     return http.post('/accounts/check-cookies', data)
   },
 
+  importCookie(formData) {
+    return http.upload('/accounts/import-cookie', formData, undefined, { silentError: true })
+  },
+
   // 添加账号
   addAccount(data) {
     return http.post('/account', data)
@@ -29,6 +33,22 @@ export const accountApi = {
   // 删除账号
   deleteAccount(id) {
     return http.delete('/deleteAccount', { id })
+  },
+
+  getPublishAccountGroups() {
+    return http.get('/publish/account-groups')
+  },
+
+  createPublishAccountGroup(data) {
+    return http.post('/publish/account-groups', data)
+  },
+
+  updatePublishAccountGroup(id, data) {
+    return http.patch(`/publish/account-groups/${id}`, data)
+  },
+
+  deletePublishAccountGroup(id) {
+    return http.delete(`/publish/account-groups/${id}`)
   },
 
   loginStream(params, onMessage, signal) {

@@ -25,9 +25,12 @@ def ensure_core_tables(cursor):
         type INTEGER NOT NULL,
         filePath TEXT NOT NULL,
         userName TEXT NOT NULL,
-        status INTEGER DEFAULT 0
+        status INTEGER DEFAULT 0,
+        owner_user_id INTEGER
     )
     ''')
+    _add_missing_columns(cursor, "user_info", {"owner_user_id": "INTEGER"})
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_info_owner_type ON user_info(owner_user_id, type, id)")
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
@@ -35,6 +38,29 @@ def ensure_core_tables(cursor):
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS publish_account_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        owner_user_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    _add_missing_columns(cursor, "publish_account_groups", {"owner_user_id": "INTEGER"})
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_publish_account_groups_owner ON publish_account_groups(owner_user_id, id)")
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS publish_account_group_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        account_id INTEGER NOT NULL,
+        platform_type INTEGER NOT NULL,
+        UNIQUE(group_id, platform_type),
+        UNIQUE(group_id, account_id)
+    )
+    ''')
+    cursor.execute('DROP INDEX IF EXISTS idx_publish_account_groups_name_lower')
+    cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_account_groups_owner_name_lower ON publish_account_groups(owner_user_id, LOWER(name))')
 
 
 def ensure_file_record_tables(cursor):
@@ -715,8 +741,11 @@ def ensure_youtube_workflow_job_table(cursor):
         "started_at": "DATETIME",
         "publish_confirmation_required": "INTEGER DEFAULT 0",
         "publish_confirmation_status": "TEXT DEFAULT ''",
+        "publish_account_group_id": "INTEGER",
+        "owner_user_id": "INTEGER",
         "content_risk": "TEXT DEFAULT '{}'",
     })
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_owner ON youtube_workflow_jobs(owner_user_id, updated_at DESC, created_at DESC)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_video_id ON youtube_workflow_jobs(video_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status ON youtube_workflow_jobs(status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_workflow_jobs_status_updated ON youtube_workflow_jobs(status, updated_at, created_at)')

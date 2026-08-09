@@ -1,9 +1,11 @@
 """PostgreSQL schema initialization."""
 
 import hashlib
+import shutil
 import threading
 from pathlib import Path
 
+from app.config import BASE_DIR
 from app.db.base import _db_connect
 
 
@@ -15,7 +17,7 @@ _REQUIRED_TABLES = (
     "youtube_search_jobs", "youtube_search_job_items", "youtube_workflow_jobs",
     "youtube_workflow_locks", "youtube_workflow_events", "youtube_workflow_llm_usage_events",
     "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "scheduled_publish_tasks",
-    "scheduled_publish_targets", "auth_sessions", "auth_audit_logs",
+    "scheduled_publish_targets", "publish_account_groups", "publish_account_group_members", "auth_sessions", "auth_audit_logs",
     "task_acknowledgements",
 )
 _initialized = False
@@ -55,6 +57,40 @@ def _missing_tables(conn):
     return [table for table in _REQUIRED_TABLES if table not in existing]
 
 
+def _migrate_legacy_account_ownership(conn):
+    cursor = conn.cursor()
+    column = cursor.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'user_info' AND column_name = 'owner_user_id'"
+    ).fetchone()
+    if not column:
+        return
+    legacy_rows = cursor.execute(
+        "SELECT id, filePath FROM user_info WHERE owner_user_id IS NULL ORDER BY id"
+    ).fetchall()
+    groups_need_owner = cursor.execute("SELECT 1 FROM publish_account_groups WHERE owner_user_id IS NULL LIMIT 1").fetchone()
+    jobs_need_owner = cursor.execute("SELECT 1 FROM youtube_workflow_jobs WHERE owner_user_id IS NULL LIMIT 1").fetchone()
+    if not legacy_rows and not groups_need_owner and not jobs_need_owner:
+        return
+    admin = cursor.execute(
+        "SELECT id FROM auth_users WHERE role = 'admin' ORDER BY created_at, id LIMIT 1"
+    ).fetchone()
+    if not admin:
+        raise RuntimeError("无法迁移历史账号：请先创建管理员用户。")
+    owner_user_id = int(admin[0])
+    target_dir = (BASE_DIR / "cookiesFile" / str(owner_user_id)).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    source_dir = (BASE_DIR / "cookiesFile").resolve()
+    for _, file_path in legacy_rows:
+        source = (source_dir / Path(str(file_path or "")).name).resolve()
+        target = (target_dir / source.name).resolve()
+        if source.is_file() and not target.exists():
+            shutil.move(str(source), str(target))
+    cursor.execute("UPDATE user_info SET owner_user_id = ? WHERE owner_user_id IS NULL", (owner_user_id,))
+    cursor.execute("UPDATE publish_account_groups SET owner_user_id = ? WHERE owner_user_id IS NULL", (owner_user_id,))
+    cursor.execute("UPDATE youtube_workflow_jobs SET owner_user_id = ? WHERE owner_user_id IS NULL", (owner_user_id,))
+
+
 def init_database_tables():
     global _initialized
     if _initialized:
@@ -64,6 +100,7 @@ def init_database_tables():
             return
         with _db_connect() as conn:
             _apply_pending_migrations(conn)
+            _migrate_legacy_account_ownership(conn)
             missing = _missing_tables(conn)
             if missing:
                 raise RuntimeError(f"PostgreSQL schema is incomplete: {', '.join(missing)}")

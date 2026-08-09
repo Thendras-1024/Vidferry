@@ -40,6 +40,7 @@ def updateUserinfo():
     type = data.get('type')
     userName = data.get('userName')
     try:
+        owner_user_id = _current_account_owner_id()
         # 获取数据库连接
         with _db_connect() as conn:
             conn.row_factory = True
@@ -50,8 +51,10 @@ def updateUserinfo():
                            UPDATE user_info
                            SET type     = ?,
                                userName = ?
-                           WHERE id = ?;
-                           ''', (type, userName, user_id))
+                           WHERE id = ? AND owner_user_id = ?;
+                           ''', (type, userName, user_id, owner_user_id))
+            if cursor.rowcount != 1:
+                return jsonify({"code": 404, "msg": "账号不存在", "data": None}), 404
             conn.commit()
 
         return jsonify({
