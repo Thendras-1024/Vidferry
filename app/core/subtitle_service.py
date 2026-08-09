@@ -21,6 +21,7 @@ CUE_MAX_KOREAN_CHARS = 28
 CUE_MAX_CJK_CHARS = 18
 AUTHOR_OVERLAY_FONT_SIZE = 50
 _GOOGLE_TRANSLATOR_REQUEST_LOCK = RLock()
+TRANSLATION_REQUEST_RETRIES = 3
 
 
 def _format_ass_timestamp(seconds):
@@ -342,12 +343,21 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
             return original_get(*args, **kwargs)
 
         # deep-translator 通过模块级 requests.get 发起请求，必须串行替换避免并发任务互相还原补丁。
-        with _GOOGLE_TRANSLATOR_REQUEST_LOCK:
-            google_module.requests.get = get_with_timeout
-            try:
-                return translator.translate(text)
-            finally:
-                google_module.requests.get = original_get
+        last_error = None
+        for attempt in range(TRANSLATION_REQUEST_RETRIES):
+            with _GOOGLE_TRANSLATOR_REQUEST_LOCK:
+                google_module.requests.get = get_with_timeout
+                try:
+                    return translator.translate(text)
+                except Exception as exc:
+                    last_error = exc
+                finally:
+                    google_module.requests.get = original_get
+            if attempt + 1 < TRANSLATION_REQUEST_RETRIES:
+                delay = 0.5 * (2 ** attempt)
+                log(f"翻译请求失败，将在 {delay:.1f}s 后重试 {attempt + 1}/{TRANSLATION_REQUEST_RETRIES - 1}: error_type = {last_error.__class__.__name__}")
+                time.sleep(delay)
+        raise last_error
 
     def update_translation_progress(message=""):
         if not job_id or not total_segments:
@@ -382,21 +392,21 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
 
         if batch_failed:
             if len(current_batch) > fallback_line_limit:
-                raise RuntimeError(
-                    f"字幕翻译失败，请检查网络或翻译服务。批次 {batch_number} 请求失败，且超过逐段兜底上限。"
-                )
+                log(f"批次 {batch_number} 批量请求失败，改为每 {fallback_line_limit} 段拆分重试")
             lines = []
-            for offset, text in enumerate(current_batch, start=1):
-                try:
-                    started_at = time.time()
-                    line = str(translate_text(text)).strip()
-                    log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 完成，用时 {time.time() - started_at:.1f}s")
-                    lines.append(line)
-                except Exception as exc:
-                    log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 失败: error_type = {exc.__class__.__name__}")
-                    raise RuntimeError("字幕翻译失败，请检查网络或翻译服务。") from exc
-                translated_count += 1
-                update_translation_progress()
+            for chunk_start in range(0, len(current_batch), fallback_line_limit):
+                chunk = current_batch[chunk_start:chunk_start + fallback_line_limit]
+                for offset, text in enumerate(chunk, start=chunk_start + 1):
+                    try:
+                        started_at = time.time()
+                        line = str(translate_text(text)).strip()
+                        log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 完成，用时 {time.time() - started_at:.1f}s")
+                        lines.append(line)
+                    except Exception as exc:
+                        log(f"批次 {batch_number} 逐段 {offset}/{len(current_batch)} 失败: error_type = {exc.__class__.__name__}")
+                        raise RuntimeError("字幕翻译失败，请检查网络或翻译服务。") from exc
+                    translated_count += 1
+                    update_translation_progress()
         elif len(lines) != len(current_batch):
             log(
                 f"批次 {batch_number} 返回行数不匹配: expected={len(current_batch)}, actual={len(lines)}，改为逐段翻译"
