@@ -241,3 +241,4 @@ tests/*
 !tests/test_comment_burn_service.py
 !tests/test_feishu_robot.py
 !tests/test_agent_observability.py
+!tests/test_multilingual_subtitles.py

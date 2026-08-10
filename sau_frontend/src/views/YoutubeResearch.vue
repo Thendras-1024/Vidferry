@@ -1381,10 +1381,10 @@ const escapeHtml = (value) => {
 const burnProfiles = [
   {
     value: 'stable',
-    label: '兼容优先（推荐）',
-    description: '适合要发布到国内平台或普通播放器预览的视频，优先降低解码压力和播放卡顿。',
+    label: '标准 1080p（推荐）',
+    description: '适合大多数视频处理任务，在 1080p 输出、画质和文件体积之间取得平衡。',
     params: [
-      { name: 'preset', value: 'fast', description: 'H.264 编码使用更轻的兼容档，避免 medium/slow 输出导致普通设备解码压力过高。' },
+      { name: 'preset', value: 'fast', description: 'H.264 标准编码档，在画质与处理时间之间保持平衡。' },
       { name: 'crf', value: '23', description: '通用画质档，文件体积和码率更可控，适合平台二次处理。' },
       { name: 'fps', value: '最高 30', description: '输出固定帧率并限制到 30fps，降低竖屏和高帧率素材的播放压力。' },
       { name: '分辨率', value: '最高 1080p', description: '横屏最高 1920x1080，竖屏最高 1080x1920，超过时自动等比缩放。' },
@@ -1395,11 +1395,11 @@ const burnProfiles = [
   },
   {
     value: 'fast',
-    label: '速度优先',
-    description: '适合短视频或临时预览，烧录更快，画质和码率控制比兼容优先略弱。',
+    label: '快速 1080p',
+    description: '适合短视频或临时预览，烧录更快，画质和码率控制比标准 1080p 略弱。',
     params: [
       { name: 'preset', value: 'veryfast', description: '更快的 H.264 编码档位，处理时间更短。' },
-      { name: 'crf', value: '24', description: '画质略低于兼容优先，文件更小，速度更快。' },
+      { name: 'crf', value: '24', description: '画质略低于标准 1080p，文件更小，速度更快。' },
       { name: 'fps', value: '最高 30', description: '仍保留固定帧率和 30fps 限制，避免明显时间戳卡顿。' },
       { name: '分辨率', value: '最高 1080p', description: '同样限制输出尺寸，保证基础播放兼容性。' },
       { name: '码率峰值', value: '4500k', description: '使用更低峰值码率，减少临时预览文件体积。' },
@@ -1409,8 +1409,8 @@ const burnProfiles = [
   },
   {
     value: '2k',
-    label: '2K 高清',
-    description: '适合原视频本身达到 2K 的场景；保留 H.264/AAC 兼容格式，处理时间和文件体积会增加。',
+    label: '2K 高画质（需 2K 原片）',
+    description: '仅适合原视频本身达到 2K 的场景；保留更多画面细节，处理时间和文件体积会增加。',
     params: [
       { name: 'preset', value: 'fast', description: '维持 H.264 快速编码，在画质与处理时间间取得平衡。' },
       { name: 'crf', value: '21', description: '比 1080p 档位保留更多画面细节，文件体积相应增加。' },
@@ -2444,7 +2444,7 @@ const promptPendingPublishConfirmations = (workflowJobs = []) => {
       void (async () => {
         try {
           await ElMessageBox.confirm(
-            '检测到转写中含明确粗口，中文字幕已打码，但原声及英文字幕可能仍含风险。是否继续发布？',
+            '检测到转写中含明确粗口，中文字幕已打码，但原声及原音识别文本可能仍含风险。是否继续发布？',
             '发布前内容确认',
             {
               confirmButtonText: '继续发布',
@@ -3037,7 +3037,7 @@ const processVideo = async (row) => {
     }, 1500)
   } catch (error) {
     const message = error?.message || '创建处理任务失败'
-    if (message.includes('2K 高清仅支持')) {
+    if (message.includes('2K 高画质（需 2K 原片）仅支持')) {
       await ElMessageBox.alert(message, '无法创建 2K 处理任务', { type: 'warning', confirmButtonText: '知道了' })
     } else {
       ElMessage.error(message)

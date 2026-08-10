@@ -1021,7 +1021,7 @@ const ensureSourceContentRiskConfirmation = async (tab) => {
   if (!risk?.requiresPublishConfirmation || tab.sourceContentConfirmed) return
   try {
     await ElMessageBox.confirm(
-      '检测到转写中含明确粗口，中文字幕已打码，但原声及英文字幕可能仍含风险。是否继续发布？',
+      '检测到转写中含明确粗口，中文字幕已打码，但原声及原音识别文本可能仍含风险。是否继续发布？',
       '发布前内容确认',
       {
         confirmButtonText: '继续发布',

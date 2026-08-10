@@ -557,7 +557,7 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             if text and not item_violations:
                 risk_notes.append(text)
     if blocked_ranges:
-        review_note = "检测到明确粗口，中文字幕将以 * 替换；英文原文字幕与原声保留，请人工审核。"
+        review_note = "检测到明确粗口，中文字幕将以 * 替换；原音识别文本与原声保留，请人工审核。"
         if review_note not in risk_notes:
             risk_notes = risk_notes[:7]
             risk_notes.append(review_note)

@@ -545,7 +545,7 @@ def _generate_editing_plan_impl(job, segments, telemetry=None):
         "excludedHighlightCount": int(highlight_filter_summary.get("blockedByContentRisk") or 0),
         "availableHighlightCount": len(result["highlight_segments"]),
         "message": (
-            "检测到转写中含明确粗口，中文字幕已使用 * 替换；原声及英文字幕可能仍含风险，发布前需要人工确认。"
+            "检测到转写中含明确粗口，中文字幕已使用 * 替换；原声及原音识别文本可能仍含风险，发布前需要人工确认。"
             if has_explicit_profanity else ""
         ),
     }

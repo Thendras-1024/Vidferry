@@ -460,8 +460,14 @@ const materialBurnProfile = (material) => {
   ).toLowerCase()
 }
 
+const BURN_PROFILE_LABELS = {
+  stable: '标准 1080p（推荐）',
+  fast: '快速 1080p',
+  '2k': '2K 高画质（需 2K 原片）'
+}
+
 const burnProfileLabel = (material) => {
-  return materialBurnProfile(material) === 'fast' ? '速度优先' : '兼容优先'
+  return BURN_PROFILE_LABELS[materialBurnProfile(material)] || BURN_PROFILE_LABELS.stable
 }
 
 const burnProfileTagType = (material) => {
@@ -575,7 +581,7 @@ const processingSettingsRows = (material) => {
   return [
     ['处理版本', processVersionLabel(settings.processVersion)],
     ['字幕语言', languageLabel(settings.subtitleLanguage)],
-    ['烧录预设', settings.burnProfile === 'fast' ? '速度优先' : '兼容优先'],
+    ['烧录预设', BURN_PROFILE_LABELS[settings.burnProfile] || BURN_PROFILE_LABELS.stable],
     ['字幕字号', settings.subtitleSize || '-'],
     ['字幕翻译', enabled(settings.translationEnabled)],
     ['翻译署名', settings.translatorLabel || '-'],

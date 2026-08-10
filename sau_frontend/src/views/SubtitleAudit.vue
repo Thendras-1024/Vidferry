@@ -131,7 +131,7 @@
                 <el-tag size="small" :type="batchTagType(batch)">{{ batchLabel(batch) }}</el-tag>
               </div>
               <el-alert v-if="batchState(batch) !== 'success'" :type="batchState(batch) === 'fallback' ? 'error' : 'warning'" :closable="false" :title="batchReason(batch)" />
-              <div class="batch-columns"><span>英文原文 / Google 初译</span><span>LLM 修订结果</span></div>
+              <div class="batch-columns"><span>{{ sourceColumnLabel }}</span><span>LLM 修订结果</span></div>
               <div v-for="item in batch.items" :key="item.key" class="batch-segment">
                 <time>{{ formatRange(item.initial) }}</time>
                 <div><p class="source">{{ item.initial.text || '—' }}</p><p>{{ item.initial.subtitle || '—' }}</p></div>
@@ -175,6 +175,8 @@ const openDetail = async (row, column) => { if (column?.type === 'selection') re
 const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
 const formatRange = item => `${Number(item?.start || 0).toFixed(1)}s - ${Number(item?.end || 0).toFixed(1)}s`
 const formatClock = value => { const seconds = Math.max(0, Number(value || 0)); const minutes = Math.floor(seconds / 60); return `${String(minutes).padStart(2, '0')}:${(seconds % 60).toFixed(1).padStart(4, '0')}` }
+const sourceLanguageLabel = value => ({ 'zh-CN': '中文', en: '英文', ja: '日语', ko: '韩语', es: '西班牙语', fr: '法语', de: '德语', ru: '俄语' }[value] || (value ? `其他语言（${value}）` : '未知'))
+const sourceColumnLabel = computed(() => `原音识别文本（ASR 检测主语言：${sourceLanguageLabel(detail.value?.sourceLanguage)}；混合语种以主语言为准）/ 中文初译`)
 const safetyLabel = (status, count = 0) => ({ pending: `待确认 ${count} 段`, confirmed: '已确认', clear: '检测通过', unavailable: '检测不可用', not_enabled: '未启用' }[status] || '未启用')
 const safetyTagType = status => ({ pending: 'warning', confirmed: 'success', clear: 'success', unavailable: 'danger' }[status] || 'info')
 const sourcePreviewUrl = computed(() => detail.value?.jobId ? youtubeApi.getSourcePreviewUrl(detail.value.jobId) : '')
@@ -247,8 +249,8 @@ const auditMarkdown = audits => [
   '# Vidferry 字幕审查导出', '', `导出时间：${formatTime(new Date().toISOString())}`, `记录数：${audits.length}`, '',
   ...audits.flatMap((audit, auditIndex) => {
     const batches = batchEntries(audit)
-    const header = [`## ${auditIndex + 1}. ${escapeMarkdown(audit.title)}`, '', `- 视频 ID：${escapeMarkdown(audit.videoId)}`, `- 任务 ID：${escapeMarkdown(audit.jobId)}`, `- 任务状态：${escapeMarkdown(jobLabel(audit.jobStatus))}`, `- 审查状态：${escapeMarkdown(reviewLabel(audit.reviewStatus))}`, `- 回退段数：${audit.fallbackSegmentCount || 0}`, `- 保存时间：${formatTime(audit.savedAt)}`, '', '### 修订批次与字幕对照', '']
-    const subtitle = batches.flatMap(batch => [`#### 第 ${batch.number || '—'} 批（${batch.status === 'fallback' ? '修订失败，已回退 Google 初译' : '修订完成'}）`, batch.status === 'fallback' ? `失败原因：${escapeMarkdown(batch.reason || '未返回原因')}` : '', ...batch.items.flatMap(item => [`- 时间：${formatRange(item.initial)}`, `  - 英文：${escapeMarkdown(item.initial.text)}`, `  - Google 初译：${escapeMarkdown(item.initial.subtitle)}`, `  - LLM 修订：${escapeMarkdown(item.reviewed.subtitle || (batch.status === 'fallback' ? item.initial.subtitle : '—'))}`]), ''])
+    const header = [`## ${auditIndex + 1}. ${escapeMarkdown(audit.title)}`, '', `- 视频 ID：${escapeMarkdown(audit.videoId)}`, `- 任务 ID：${escapeMarkdown(audit.jobId)}`, `- ASR 检测主语言：${sourceLanguageLabel(audit.sourceLanguage)}（混合语种以主语言为准）`, `- 任务状态：${escapeMarkdown(jobLabel(audit.jobStatus))}`, `- 审查状态：${escapeMarkdown(reviewLabel(audit.reviewStatus))}`, `- 回退段数：${audit.fallbackSegmentCount || 0}`, `- 保存时间：${formatTime(audit.savedAt)}`, '', '### 修订批次与字幕对照', '']
+    const subtitle = batches.flatMap(batch => [`#### 第 ${batch.number || '—'} 批（${batch.status === 'fallback' ? '修订失败，已回退 Google 初译' : '修订完成'}）`, batch.status === 'fallback' ? `失败原因：${escapeMarkdown(batch.reason || '未返回原因')}` : '', ...batch.items.flatMap(item => [`- 时间：${formatRange(item.initial)}`, `  - 原音识别文本：${escapeMarkdown(item.initial.text)}`, `  - 中文初译：${escapeMarkdown(item.initial.subtitle)}`, `  - LLM 修订：${escapeMarkdown(item.reviewed.subtitle || (batch.status === 'fallback' ? item.initial.subtitle : '—'))}`]), ''])
     const diagnostics = (audit.diagnostics || []).flatMap((item, index) => [`#### 诊断 ${index + 1}`, `- 操作：${escapeMarkdown(item.operation)}`, `- 模型：${escapeMarkdown(item.model)}`, `- 第 ${item.attempt || 1} 次，耗时 ${Math.round(item.latencyMs || 0)} ms，分类：${escapeMarkdown(item.category || 'contract_validation')}`, `- 违反项：${(item.violations || []).map(escapeMarkdown).join('、') || '—'}`, '', '```text', truncate(item.rawOutput), '```', ''])
     return [...header, ...subtitle, ...(diagnostics.length ? ['### 模型诊断', '', ...diagnostics] : []), '---', '']
   })

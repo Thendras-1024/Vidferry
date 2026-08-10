@@ -966,11 +966,11 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     scalar_scale = layout["scalarScale"]
     vertical_scale = layout["verticalScale"]
     subtitle_font_size = layout["subtitleFontSize"]
-    english_font_size = max(12, int(39 * font_scale * scalar_scale))
+    source_font_size = max(12, int(39 * font_scale * scalar_scale))
     info_font_size = max(12, round(AUTHOR_OVERLAY_FONT_SIZE * scalar_scale))
     horizontal_margin = layout["horizontalMargin"]
     subtitle_margin_v = max(16, round(176 * vertical_scale))
-    english_margin_v = max(8, round(99 * vertical_scale))
+    source_margin_v = max(8, round(99 * vertical_scale))
     info_margin_v = max(8, round(54 * vertical_scale))
     subtitle_outline = max(1, round(7 * scalar_scale))
     info_outline = max(1, round(5 * scalar_scale))
@@ -978,7 +978,7 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
     watermark_font_size = max(12, round(48 * scalar_scale))
     watermark_margin = max(8, round(45 * layout["horizontalScale"]))
     watermark_margin_v = max(8, round(134 * vertical_scale))
-    always_show_english_line = True
+    always_show_source_line = True
     has_translated_line = target_language != "en" and bool(job.get("translationEnabled", True))
 
     overlay_text = "\\N".join(_escape_ass_text(line) for line in _author_overlay_lines(job))
@@ -993,7 +993,7 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Subtitle,Microsoft YaHei,{subtitle_font_size},&H0000E6FF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{subtitle_margin_v},1",
-        f"Style: English,Arial,{english_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{english_margin_v},1",
+        f"Style: Source,Arial,{source_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,{subtitle_outline},{subtitle_shadow},2,{horizontal_margin},{horizontal_margin},{source_margin_v},1",
         f"Style: Info,Microsoft YaHei,{info_font_size},&H00FFFFFF,&H000000FF,&H00111111,&H96000000,1,0,0,0,100,100,0,0,1,{info_outline},{subtitle_shadow},7,{horizontal_margin},{horizontal_margin},{info_margin_v},1",
         f"Style: Watermark,Microsoft YaHei,{watermark_font_size},&HD9FFFFFF,&H000000FF,&HE6000000,&H00000000,-1,0,0,0,100,100,0,{round(-15 * scalar_scale, 1)},1,{max(1, round(scalar_scale))},0,9,{watermark_margin},{watermark_margin},{watermark_margin_v},1",
         *(_comment_burn_style_lines(video_info) if (comment_snapshot or {}).get("comments") else []),
@@ -1007,9 +1007,9 @@ def _build_ass_file(job, segments, ass_file, audio_duration, video_info=None, in
         for segment in segments:
             start = _format_ass_timestamp(segment["start"])
             end = _format_ass_timestamp(max(segment["end"], segment["start"] + 0.5))
-            english_text = _escape_ass_text(segment.get("text") or "")
-            if always_show_english_line and english_text:
-                dialogue_lines.append(f"Dialogue: 0,{start},{end},English,,0,0,0,,{english_text}")
+            source_text = _escape_ass_text(segment.get("text") or "")
+            if always_show_source_line and source_text:
+                dialogue_lines.append(f"Dialogue: 0,{start},{end},Source,,0,0,0,,{source_text}")
             if has_translated_line:
                 subtitle_text = " ".join(str(segment.get("subtitle") or "").split())
                 text = _escape_ass_text(subtitle_text)

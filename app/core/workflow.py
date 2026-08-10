@@ -184,7 +184,7 @@ def _validate_burn_profile_source_resolution(video_id, burn_profile):
     if max(width, height) >= 2560 and min(width, height) >= 1440:
         return
     raise ValueError(
-        "2K 高清仅支持原视频不低于 2560x1440（竖屏不低于 1440x2560）。"
+        "2K 高画质（需 2K 原片）仅支持原视频不低于 2560x1440（竖屏不低于 1440x2560）。"
         f"当前下载视频为 {width}x{height}，请改用 1080p 预设后重试。"
     )
 
@@ -849,7 +849,7 @@ def mark_shutdown_interrupted_jobs():
 
 WORKFLOW_STAGE_LABELS = {
     "download": "下载原视频",
-    "transcript": "英文语音转写",
+    "transcript": "语音转写",
     "subtitle": "字幕翻译与修订",
     "subtitle_burn": "字幕烧制",
     "body_burn": "正片字幕烧制",

@@ -136,7 +136,7 @@ const processVersions = [
   { value: 'editing_v1', label: '处理版本二：剪辑', description: '保留字幕链路，并在正片前拼接封面与高光片段。' }
 ]
 const burnProfiles = [
-  { value: 'stable', label: '兼容优先（推荐）' }, { value: 'fast', label: '速度优先' }, { value: '2k', label: '2K 高清' }
+  { value: 'stable', label: '标准 1080p（推荐）' }, { value: 'fast', label: '快速 1080p' }, { value: '2k', label: '2K 高画质（需 2K 原片）' }
 ]
 const subtitleSizes = [
   { value: 'standard', label: '标准' }, { value: 'large', label: '大号（推荐）' }, { value: 'douyin', label: '超大号' }

@@ -436,13 +436,13 @@ def _start_parallel_editing_plan(job, source_file):
         job_id,
         source_file_path=str(source_file),
         step="subtitle",
-        message="处理版本二：正在进行英文语音转写",
+        message="处理版本二：正在进行语音转写",
         progress=10,
         speed="",
         eta="",
     )
     job = {**job, "_highlightIntroEnabled": bool(job.get("highlightIntroEnabled", True))}
-    transcript_event_id = start_workflow_event(job, "transcript", "开始英文语音转写", input_file_path=source_file)
+    transcript_event_id = start_workflow_event(job, "transcript", "开始语音转写", input_file_path=source_file)
     try:
         segments, language, transcript_file = _prepare_editing_transcript(job, source_file)
     except Exception as exc:
@@ -451,7 +451,7 @@ def _start_parallel_editing_plan(job, source_file):
     finish_workflow_event(
         transcript_event_id,
         "success",
-        f"英文语音转写完成，识别到 {len(segments)} 段字幕",
+        f"语音转写完成，识别到 {len(segments)} 段字幕",
         output_file_path=transcript_file,
     )
     analysis_event_id = start_workflow_event(job, "analysis", "开始内容分析与文案生成", input_file_path=transcript_file)
@@ -609,7 +609,7 @@ def _append_translation_cover_intro(job, source_file, subtitle_result):
 
 
 def _prepare_transcript_with_event(job, source_file):
-    transcript_event_id = start_workflow_event(job, "transcript", "开始英文语音转写", input_file_path=source_file)
+    transcript_event_id = start_workflow_event(job, "transcript", "开始语音转写", input_file_path=source_file)
     work_dir = _ensure_dir(YOUTUBE_PROCESSED_DIR / f"{Path(source_file).stem}_work")
     try:
         segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir)
@@ -619,7 +619,7 @@ def _prepare_transcript_with_event(job, source_file):
     finish_workflow_event(
         transcript_event_id,
         "success",
-        f"英文语音转写完成，识别到 {len(segments)} 段字幕",
+        f"语音转写完成，识别到 {len(segments)} 段字幕",
         output_file_path=transcript_file,
     )
     return transcript_event_id
