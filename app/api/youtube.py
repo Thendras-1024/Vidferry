@@ -506,6 +506,7 @@ def create_youtube_download():
             "tags": payload.get("tags") or [],
             "schedule": "",
             "processVersion": PROCESS_VERSION_TRANSLATION,
+            "subtitleMode": "original",
             "translationEnabled": False,
             "highlightIntroEnabled": False,
             "coverIntroEnabled": False,

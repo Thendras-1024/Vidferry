@@ -3,6 +3,7 @@
 
 from app.core.error_catalog import classify_workflow_exception
 from app.core.highlight_review_service import refine_highlight_segments
+from app.core.source_subtitle_service import analyze_source_subtitles
 
 
 def _get_youtube_video_record(video_id):
@@ -53,6 +54,49 @@ def _log_workflow_failure(stage, job_id, exc):
         stage, job_id, error_fields["error_code"], error_fields["error_type"], exc.__class__.__name__, detail,
     )
     return error_fields
+
+
+def _resolve_source_subtitle_processing(job, source_file):
+    mode = str(job.get("subtitleMode") or "legacy")
+    existing = job.get("sourceSubtitleAnalysis") or {}
+    analysis = existing if existing.get("decision") else None
+    usage = {}
+    event_id = start_workflow_event(job, "source_subtitle_analysis", "正在识别原视频字幕", input_file_path=source_file)
+    if analysis is None:
+        video_info = _get_video_info(source_file)
+        analysis, usage = analyze_source_subtitles(
+            job,
+            source_file,
+            video_info.get("duration") or 0,
+            build_workflow_llm_telemetry(job, event_id, "source_subtitle_analysis"),
+        )
+    decision = analysis.get("decision")
+    if mode == "legacy" or not isinstance(decision, dict):
+        translation_enabled = bool(job.get("translationEnabled", True))
+        subtitle_mask_enabled = bool(job.get("subtitleMaskEnabled"))
+    else:
+        translation_enabled = bool(decision.get("translationEnabled"))
+        subtitle_mask_enabled = bool(decision.get("subtitleMaskEnabled"))
+    updated = update_youtube_workflow_job(
+        job["id"],
+        translation_enabled=int(translation_enabled),
+        subtitle_mask_enabled=int(subtitle_mask_enabled),
+        source_subtitle_analysis=analysis,
+    )
+    classification = analysis.get("classification") or "unknown"
+    finish_workflow_event(
+        event_id,
+        "success",
+        "原视频字幕识别完成" if analysis.get("status") == "success" else "原视频字幕识别已按降级策略处理",
+        cloud_usage=_editing_plan_usage(usage) if usage else {},
+        metadata={
+            "status": analysis.get("status") or "unknown",
+            "classification": classification,
+            "effectiveAction": (decision or {}).get("effectiveAction") or "legacy",
+            "region": analysis.get("region"),
+        },
+    )
+    return updated
 
 
 def _editing_result_message(editing_result):
@@ -154,6 +198,7 @@ def _editing_body_signature_compatible(record, job, ass_file):
         return True
     return bool(
         not job.get("translationEnabled", True)
+        and not job.get("subtitleMaskEnabled")
         and not ass_file
         and stored_signature == editing_legacy_body_signature(job)
     )
@@ -718,11 +763,12 @@ def run_youtube_translate_job(job_id):
                 return
             source_file = _apply_content_safety_trim(job, source_file)
 
+        job = _resolve_source_subtitle_processing(job, source_file)
         analysis_result = None
         editing_result = None
         if process_version == PROCESS_VERSION_EDITING:
             job, analysis_future, analysis_event_id, comment_future = _start_parallel_editing_plan(job, source_file)
-        elif initial_job.get("translationEnabled", True):
+        elif job.get("translationEnabled", True):
             transcript_event_id = _prepare_transcript_with_event(job, source_file)
 
         job = update_youtube_workflow_job(
@@ -1215,11 +1261,12 @@ def run_youtube_workflow(job_id):
                 return
             source_file = _apply_content_safety_trim(job, source_file)
 
+        job = _resolve_source_subtitle_processing(job, source_file)
         analysis_result = None
         editing_result = None
         if process_version == PROCESS_VERSION_EDITING:
             job, analysis_future, analysis_event_id, comment_future = _start_parallel_editing_plan(job, source_file)
-        elif initial_job.get("translationEnabled", True):
+        elif job.get("translationEnabled", True):
             transcript_event_id = _prepare_transcript_with_event(job, source_file)
 
         job = update_youtube_workflow_job(

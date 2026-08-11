@@ -15,6 +15,7 @@ _WORKFLOW_JOB_MUTABLE_FIELDS = {
     "publish_command", "progress", "speed", "eta", "error_code", "error_type",
     "error_reason", "error_detail", "interrupted_at", "publish_confirmation_required",
     "publish_confirmation_status", "content_risk",
+    "translation_enabled", "subtitle_mask_enabled", "source_subtitle_analysis",
 }
 
 
@@ -24,6 +25,22 @@ def _workflow_content_risk(value):
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _workflow_source_subtitle_analysis(value):
+    try:
+        parsed = json.loads(value or "{}") if isinstance(value, str) else (value or {})
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_subtitle_mode(value, allow_legacy=True):
+    mode = str(value or "").strip()
+    allowed = {"auto", "force_burn", "original"}
+    if allow_legacy:
+        allowed.add("legacy")
+    return mode if mode in allowed else ("legacy" if allow_legacy else "auto")
 
 
 def _content_safety_enabled(item):
@@ -39,6 +56,7 @@ def _validate_workflow_job_changes(changes):
 def _row_to_workflow_job(row):
     item = dict(row)
     content_risk = _workflow_content_risk(item.get("content_risk"))
+    source_subtitle_analysis = _workflow_source_subtitle_analysis(item.get("source_subtitle_analysis"))
     return {
         "id": item.get("id"),
         "videoId": item.get("video_id") or "",
@@ -70,6 +88,9 @@ def _row_to_workflow_job(row):
         "highlightIntroEnabled": bool(item.get("highlight_intro_enabled") if item.get("highlight_intro_enabled") is not None else 1),
         "coverIntroEnabled": bool(item.get("cover_intro_enabled") if item.get("cover_intro_enabled") is not None else 1),
         "commentBurnEnabled": bool(item.get("comment_burn_enabled") or 0),
+        "subtitleMaskEnabled": bool(item.get("subtitle_mask_enabled") or 0),
+        "subtitleMode": _normalize_subtitle_mode(item.get("subtitle_mode")),
+        "sourceSubtitleAnalysis": source_subtitle_analysis,
         "commentBurnCount": _normalize_comment_burn_count(item.get("comment_burn_count")),
         "commentTranslationMode": _normalize_comment_translation_mode(item.get("comment_translation_mode")),
         "coverTitle": normalize_cover_title(item.get("cover_title")),
@@ -123,6 +144,9 @@ def _processing_settings_snapshot(job):
         "coverTitle": job.get("coverTitle") or "",
         "coverSignature": job.get("coverSignature") or "",
         "commentBurnEnabled": bool(job.get("commentBurnEnabled")),
+        "subtitleMaskEnabled": bool(job.get("subtitleMaskEnabled")),
+        "subtitleMode": _normalize_subtitle_mode(job.get("subtitleMode")),
+        "sourceSubtitleAnalysis": _workflow_source_subtitle_analysis(job.get("sourceSubtitleAnalysis")),
         "commentBurnCount": int(job.get("commentBurnCount") or 0),
         "commentTranslationMode": job.get("commentTranslationMode") or "",
         "contentSafetyReviewEnabled": bool(job.get("contentSafetyReviewEnabled")),
@@ -266,10 +290,16 @@ def _workflow_comment_burn_count(payload):
 
 def _workflow_processing_options(payload):
     saved_settings = get_workflow_settings()
-    defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False}
+    defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False, "subtitleMaskEnabled": False}
     return tuple(bool(payload[key] if key in payload else saved_settings.get(key, defaults[key])) for key in (
-        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled", "commentBurnEnabled",
+        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled", "commentBurnEnabled", "subtitleMaskEnabled",
     ))
+
+
+def _workflow_subtitle_mode(payload):
+    saved_settings = get_workflow_settings()
+    value = payload.get("subtitleMode") if "subtitleMode" in payload else saved_settings.get("subtitleMode")
+    return _normalize_subtitle_mode(value, allow_legacy=False)
 
 
 def _normalize_process_version(value):
@@ -301,13 +331,24 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     highlight_count = _workflow_highlight_count(payload)
     comment_burn_count = _workflow_comment_burn_count(payload)
     comment_translation_mode = _normalize_comment_translation_mode(payload.get("commentTranslationMode"))
-    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled = _workflow_processing_options(payload)
+    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, subtitle_mask_enabled = _workflow_processing_options(payload)
+    subtitle_mode = _workflow_subtitle_mode(payload)
+    if subtitle_mode == "auto":
+        translation_enabled, subtitle_mask_enabled = True, False
+    elif subtitle_mode == "force_burn":
+        translation_enabled = True
+    else:
+        translation_enabled, subtitle_mask_enabled = False, False
     cover_title, cover_signature = _workflow_cover_settings(payload)
     process_version = _normalize_process_version(payload.get("processVersion"))
     if comment_burn_enabled and process_version != PROCESS_VERSION_EDITING:
         raise ValueError("评论烧制仅支持处理版本二")
     if comment_burn_enabled and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
         raise ValueError("启用自定义字幕命令时不支持评论烧制")
+    if subtitle_mask_enabled and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
+        raise ValueError("启用自定义字幕命令时不支持字幕马赛克遮挡")
+    if subtitle_mode == "auto" and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
+        raise ValueError("启用自定义字幕命令时不支持字幕自动适配")
     tags = payload.get("tags") or []
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
@@ -351,13 +392,13 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_burn_count, comment_translation_mode, publish_account_group_id, owner_user_id,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, subtitle_mask_enabled, subtitle_mode, source_subtitle_analysis, comment_burn_count, comment_translation_mode, publish_account_group_id, owner_user_id,
             cover_title, cover_context, cover_brand_name, cover_brand_platform, operation,
             title, description, tags, schedule, status, step, message
         )
         VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         ''', (
             job_id,
@@ -389,6 +430,9 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             int(highlight_intro_enabled),
             int(cover_intro_enabled),
             int(comment_burn_enabled),
+            int(subtitle_mask_enabled),
+            subtitle_mode,
+            "{}",
             comment_burn_count,
             comment_translation_mode,
             account_group.get("id") if account_group else None,
@@ -700,7 +744,7 @@ def update_youtube_workflow_job(job_id, **changes):
     values = []
     for key, value in changes.items():
         fields.append(f"{key} = ?")
-        values.append(json.dumps(value, ensure_ascii=False) if key == "content_risk" else value)
+        values.append(json.dumps(value, ensure_ascii=False) if key in {"content_risk", "source_subtitle_analysis"} else value)
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(job_id)
     with _db_connect() as conn:

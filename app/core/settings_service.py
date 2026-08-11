@@ -6,6 +6,7 @@ from app.core.cover_service import DEFAULT_COVER_SIGNATURE, normalize_cover_sign
 
 WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
 COMMENT_BURN_COUNT_OPTIONS = {20, 25, 30, 35, 40, 45, 50}
+SUBTITLE_MODES = {"auto", "force_burn", "original"}
 
 
 def _normalize_highlight_count(value):
@@ -37,9 +38,11 @@ def _default_workflow_settings():
         "coverSignature": DEFAULT_COVER_SIGNATURE,
         "highlightCount": 3,
         "translationEnabled": True,
+        "subtitleMode": "auto",
         "highlightIntroEnabled": True,
         "coverIntroEnabled": True,
         "commentBurnEnabled": False,
+        "subtitleMaskEnabled": False,
         "commentBurnCount": 30,
         "contentSafetyReviewEnabled": False,
     }
@@ -85,9 +88,15 @@ def _normalize_workflow_settings(payload=None):
     settings["coverSignature"] = normalize_cover_signature(payload.get("coverSignature", payload.get("coverBrandName")))
     settings["highlightCount"] = _normalize_highlight_count(payload.get("highlightCount", settings["highlightCount"]))
     settings["translationEnabled"] = bool(payload.get("translationEnabled", True))
+    subtitle_mode = str(payload.get("subtitleMode") or "auto").strip()
+    settings["subtitleMode"] = subtitle_mode if subtitle_mode in SUBTITLE_MODES else "auto"
     settings["highlightIntroEnabled"] = bool(payload.get("highlightIntroEnabled", True))
     settings["coverIntroEnabled"] = bool(payload.get("coverIntroEnabled", True))
     settings["commentBurnEnabled"] = bool(payload.get("commentBurnEnabled", False)) and settings["processVersion"] == PROCESS_VERSION_EDITING and _comment_burn_available()
+    settings["subtitleMaskEnabled"] = bool(payload.get("subtitleMaskEnabled", False)) and not str(SUBTITLE_COMMAND_TEMPLATE or "").strip()
+    if settings["subtitleMode"] == "original":
+        settings["translationEnabled"] = False
+        settings["subtitleMaskEnabled"] = False
     settings["commentBurnCount"] = _normalize_comment_burn_count(payload.get("commentBurnCount", settings["commentBurnCount"]))
     settings["contentSafetyReviewEnabled"] = bool(payload.get("contentSafetyReviewEnabled", False))
 
@@ -102,12 +111,12 @@ def get_workflow_settings():
         row = cursor.fetchone()
     if not row:
         settings = _default_workflow_settings()
-        return {**settings, "commentBurnAvailable": _comment_burn_available()}
+        return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
     try:
         settings = _normalize_workflow_settings(json.loads(row[0]))
     except Exception:
         settings = _default_workflow_settings()
-    return {**settings, "commentBurnAvailable": _comment_burn_available()}
+    return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
 
 
 def update_workflow_settings(payload):
@@ -127,4 +136,4 @@ def update_workflow_settings(payload):
             (WORKFLOW_SETTINGS_KEY, json.dumps(settings, ensure_ascii=False)),
         )
         conn.commit()
-    return {**settings, "commentBurnAvailable": _comment_burn_available()}
+    return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}

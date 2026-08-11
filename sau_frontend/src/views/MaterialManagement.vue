@@ -578,17 +578,28 @@ const processingSettingsRows = (material) => {
   }
   const enabled = value => value ? '开启' : '关闭'
   const commentMode = settings.commentTranslationMode === 'google' ? 'Google 翻译' : 'Google 翻译 + LLM 修订'
+  const analysis = settings.sourceSubtitleAnalysis || {}
+  const subtitleMode = { auto: '自动适配', force_burn: '强制烧制', original: '原字幕', legacy: '历史模式' }[settings.subtitleMode] || '历史模式'
+  const sourceSubtitle = analysis.status === 'unknown' ? '识别失败' : ({ zh: '中文', non_zh: '非中文', none: '无', unknown: '未识别' }[analysis.classification] || '未识别')
+  const finalAction = { original: '原字幕', original_zh: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
+  const region = analysis.region
+  const regionText = region ? `${Math.round(region.x * 100)}%, ${Math.round(region.y * 100)}%, ${Math.round(region.width * 100)}% × ${Math.round(region.height * 100)}%` : '-'
   return [
     ['处理版本', processVersionLabel(settings.processVersion)],
     ['字幕语言', languageLabel(settings.subtitleLanguage)],
     ['烧录预设', BURN_PROFILE_LABELS[settings.burnProfile] || BURN_PROFILE_LABELS.stable],
     ['字幕字号', settings.subtitleSize || '-'],
     ['字幕翻译', enabled(settings.translationEnabled)],
+    ['字幕模式', subtitleMode],
+    ['原字幕', sourceSubtitle],
+    ['最终处理', finalAction],
+    ['遮挡区域', regionText],
     ['翻译署名', settings.translatorLabel || '-'],
     ['水印', settings.watermarkEnabled ? settings.watermarkText || '已开启' : '关闭'],
     ['高光片头', settings.highlightIntroEnabled ? `${settings.highlightCount || 0} 条` : '关闭'],
     ['封面片头', settings.coverIntroEnabled ? settings.coverTitle || '开启' : '关闭'],
     ['评论烧制', settings.commentBurnEnabled ? `${settings.commentBurnCount || 0} 条，${commentMode}` : '关闭'],
+    ['字幕遮挡', enabled(settings.subtitleMaskEnabled)],
     ['内容安全审查', enabled(settings.contentSafetyReviewEnabled)]
   ]
 }

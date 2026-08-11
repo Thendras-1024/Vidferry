@@ -1028,10 +1028,10 @@ def _ffmpeg_subtitle_path(path):
     return value.replace(":", "\\:").replace("'", "\\'")
 
 
-def _comment_avatar_filter_complex(ass_file, video_filters, avatar_assets, video_info):
+def _comment_avatar_filter_complex(ass_file, video_filters, avatar_assets, video_info, base_graph="", base_label=""):
     layout = _comment_burn_layout(video_info)
-    chain = [f"[0:v]{','.join(video_filters)}[comment_base]"]
-    current = "comment_base"
+    chain = [base_graph] if base_graph else [f"[0:v]{','.join(video_filters)}[comment_base]"]
+    current = base_label or "comment_base"
     for index, asset in enumerate(avatar_assets or [], start=1):
         try:
             start, end = float(asset.get("start")), float(asset.get("end"))
@@ -1101,6 +1101,45 @@ def _ffmpeg_error_summary(lines):
     return " | ".join(tail)[:240] or "FFmpeg 未返回错误摘要"
 
 
+def _subtitle_mask_geometry(width, height, region=None):
+    width = max(2, int(width or 0))
+    height = max(2, int(height or 0))
+    region = region if isinstance(region, dict) else {"x": 0.08, "y": 0.84, "width": 0.84, "height": 0.14}
+    try:
+        normalized_x = max(0.0, min(1.0, float(region.get("x", 0.08))))
+        normalized_y = max(0.0, min(1.0, float(region.get("y", 0.84))))
+        normalized_width = max(0.01, min(1.0 - normalized_x, float(region.get("width", 0.84))))
+        normalized_height = max(0.01, min(1.0 - normalized_y, float(region.get("height", 0.14))))
+    except (TypeError, ValueError):
+        return _subtitle_mask_geometry(width, height)
+    x = min(width - 2, max(0, int(width * normalized_x) // 2 * 2))
+    y = min(height - 2, max(0, int(height * normalized_y) // 2 * 2))
+    mask_width = max(2, min(width - x, int(width * normalized_width)) // 2 * 2)
+    mask_height = max(2, min(height - y, int(height * normalized_height)) // 2 * 2)
+    block = 6 if min(width, height) >= 720 else 4
+    pixel_width = max(2, round(mask_width / block) // 2 * 2)
+    pixel_height = max(2, round(mask_height / block) // 2 * 2)
+    return x, y, mask_width, mask_height, pixel_width, pixel_height
+
+
+def _subtitle_mask_region(job):
+    analysis = (job or {}).get("sourceSubtitleAnalysis") or {}
+    return analysis.get("region") if isinstance(analysis, dict) else None
+
+
+def _subtitle_mask_filter(source_label, output_label, width, height, region=None):
+    x, y, mask_width, mask_height, pixel_width, pixel_height = _subtitle_mask_geometry(width, height, region)
+    blur_sigma = max(6, round(min(int(width or 0), int(height or 0)) * 0.01))
+    return (
+        f"[{source_label}]split=2[subtitle_mask_base][subtitle_mask_area];"
+        f"[subtitle_mask_area]crop={mask_width}:{mask_height}:{x}:{y},"
+        f"gblur=sigma={blur_sigma}:steps=3,"
+        f"scale={pixel_width}:{pixel_height}:flags=neighbor,"
+        f"scale={mask_width}:{mask_height}:flags=neighbor[subtitle_mask_pixels];"
+        f"[subtitle_mask_base][subtitle_mask_pixels]overlay={x}:{y}:format=auto[{output_label}]"
+    )
+
+
 def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_id="", progress_label="字幕", comment_avatar_assets=None):
     ffmpeg = _resolve_ffmpeg_command()
     subtitle_filter = f"subtitles='{_ffmpeg_subtitle_path(ass_file)}'"
@@ -1135,16 +1174,29 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         video_filters.append(f"scale={target_width}:{target_height}:flags=lanczos")
     else:
         target_width, target_height = int(video_info.get("width") or 0), int(video_info.get("height") or 0)
-    video_filters.extend(["setsar=1", subtitle_filter])
-    video_filter = ",".join(video_filters)
-    filter_args = ["-vf", video_filter]
+    video_filters.append("setsar=1")
+    if job.get("subtitleMaskEnabled"):
+        mask_graph = _subtitle_mask_filter(
+            "subtitle_mask_input", "subtitle_masked", target_width, target_height, _subtitle_mask_region(job),
+        )
+        filter_complex = f"[0:v]{','.join(video_filters)}[subtitle_mask_input];{mask_graph};[subtitle_masked]{subtitle_filter}[subtitle_output]"
+        filter_args = ["-filter_complex", filter_complex, "-map", "[subtitle_output]", "-map", "0:a?"]
+    else:
+        video_filters.append(subtitle_filter)
+        filter_args = ["-vf", ",".join(video_filters)]
     if comment_avatar_assets:
         avatar_video_info = {
             **video_info,
             "width": target_width if target_dimensions else video_info.get("width"),
             "height": target_height if target_dimensions else video_info.get("height"),
         }
-        filter_complex, output_label = _comment_avatar_filter_complex(ass_file, video_filters, comment_avatar_assets, avatar_video_info)
+        if job.get("subtitleMaskEnabled"):
+            filter_complex, output_label = _comment_avatar_filter_complex(
+                ass_file, [], comment_avatar_assets, avatar_video_info,
+                base_graph=filter_complex, base_label="subtitle_output",
+            )
+        else:
+            filter_complex, output_label = _comment_avatar_filter_complex(ass_file, video_filters, comment_avatar_assets, avatar_video_info)
         if output_label != "comment_base":
             filter_args = ["-filter_complex", filter_complex, "-map", f"[{output_label}]", "-map", "0:a?"]
     video_id = job.get("videoId") or ""
@@ -1347,7 +1399,8 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
         output_video_info = _burn_output_video_info(video_info, job)
         duration = video_info.get("duration") or 0
         comment_snapshot = _resolve_comment_burn_snapshot(job, comment_future, duration)
-        if comment_snapshot.get("comments"):
+        comment_event_id = None
+        if comment_snapshot.get("comments") or job.get("subtitleMaskEnabled"):
             comment_event_id = start_workflow_event(job, "comment_render", f"正在烧制 {len(comment_snapshot['comments'])} 条评论")
             ass_file = _build_ass_file(job, [], work_dir / f"{Path(source_file).stem}.comments.ass", duration, output_video_info, include_subtitles=False, comment_snapshot=comment_snapshot)
             if before_burn:
@@ -1355,13 +1408,14 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
             try:
                 result = _burn_subtitles_to_mp4(
                     source_file, ass_file, output_file, duration=duration, job_id=job_id,
-                    progress_label="评论",
+                    progress_label="评论" if comment_snapshot.get("comments") else "字幕遮挡",
                 )
             except Exception as exc:
                 finish_workflow_event(comment_event_id, "failed", f"评论烧制失败：{str(exc)[:160]}")
                 raise
-            finish_workflow_event(comment_event_id, "success", f"已烧制 {len(comment_snapshot['comments'])} 条评论", output_file_path=result)
-            _update_translate_progress(job_id, 98, "已按设置跳过字幕翻译，评论烧制完成")
+            if comment_event_id:
+                finish_workflow_event(comment_event_id, "success", f"已烧制 {len(comment_snapshot['comments'])} 条评论", output_file_path=result)
+            _update_translate_progress(job_id, 98, "已按设置跳过字幕翻译，" + ("评论烧制完成" if comment_snapshot.get("comments") else "字幕遮挡完成"))
             return {"path": result, "assPath": str(ass_file), "skipped": False, "skippedBySetting": True}
         _replace_file_with_backup(source_file, output_file)
         _apply_author_overlay_to_mp4(output_file, job)

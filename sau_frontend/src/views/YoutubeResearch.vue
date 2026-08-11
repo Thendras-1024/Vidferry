@@ -679,7 +679,7 @@
                 <span>{{ currentProcessVersion.description }}</span>
               </div>
               <div class="setting-status settings-span-full">
-                当前字幕输出：{{ workflowForm.translationEnabled ? currentSubtitleLanguage.label : '不生成字幕' }}
+                当前字幕输出：{{ workflowForm.subtitleMode === 'auto' ? '自动判断' : (workflowForm.subtitleMode === 'original' ? '保留原字幕' : currentSubtitleLanguage.label) }}
               </div>
               <div v-if="workflowForm.processVersion === 'editing_v1'" class="settings-field">
                 <span class="settings-label">高光片段条数</span>
@@ -708,7 +708,7 @@
               </div>
               <div class="settings-field settings-span-full">
                 <span class="settings-label">翻译署名</span>
-                <el-input v-model="workflowForm.translatorLabel" :disabled="!workflowForm.translationEnabled" maxlength="20" show-word-limit placeholder="例如：AI 中文字幕" />
+                <el-input v-model="workflowForm.translatorLabel" :disabled="workflowForm.subtitleMode === 'original'" maxlength="20" show-word-limit placeholder="例如：AI 中文字幕" />
               </div>
               <div class="version-note settings-span-full">
                 <div class="version-note-title">
@@ -739,10 +739,17 @@
             <div class="settings-section watermark-settings">
               <div class="watermark-switch-row">
                 <div>
-                  <span class="settings-label">进行字幕处理与翻译</span>
-                  <span class="setting-hint">关闭后不生成或烧制字幕；版本二仍会为高光和封面执行语音转写</span>
+                  <span class="settings-label">字幕模式</span>
+                  <span class="setting-hint">自动识别原字幕；识别错误后可用人工模式重新处理</span>
                 </div>
-                <el-switch v-model="workflowForm.translationEnabled" />
+                <el-radio-group v-model="workflowForm.subtitleMode"><el-radio-button value="auto" :disabled="!subtitleMaskAvailable">自动适配</el-radio-button><el-radio-button value="force_burn">强制烧制</el-radio-button><el-radio-button value="original">原字幕</el-radio-button></el-radio-group>
+              </div>
+              <div v-if="workflowForm.subtitleMode === 'force_burn'" class="watermark-switch-row">
+                <div>
+                  <span class="settings-label">遮挡原视频字幕</span>
+                  <span class="setting-hint">{{ subtitleMaskAvailable ? '识别原字幕区域并用强模糊细颗粒马赛克覆盖，新字幕位于上层' : '已启用自定义字幕命令，字幕遮挡不可用' }}</span>
+                </div>
+                <el-switch v-model="workflowForm.subtitleMaskEnabled" :disabled="!subtitleMaskAvailable" />
               </div>
               <div class="watermark-switch-row">
                 <div>
@@ -1218,15 +1225,18 @@ const workflowForm = reactive({
   watermarkEnabled: false,
   watermarkText: '',
   highlightCount: 3,
+  subtitleMode: 'auto',
   translationEnabled: true,
   highlightIntroEnabled: true,
   coverIntroEnabled: true,
   commentBurnEnabled: false,
+  subtitleMaskEnabled: false,
   commentBurnCount: 30,
   commentTranslationMode: 'google_llm',
   contentSafetyReviewEnabled: false
 })
 const commentBurnAvailable = ref(true)
+const subtitleMaskAvailable = ref(true)
 
 const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
 
@@ -1496,7 +1506,10 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
   if ([20, 25, 30, 35, 40, 45, 50].includes(commentBurnCount)) {
     next.commentBurnCount = commentBurnCount
   }
-  for (const key of ['translationEnabled', 'highlightIntroEnabled', 'coverIntroEnabled', 'commentBurnEnabled']) {
+  if (['auto', 'force_burn', 'original'].includes(settings.subtitleMode)) {
+    next.subtitleMode = settings.subtitleMode
+  }
+  for (const key of ['translationEnabled', 'highlightIntroEnabled', 'coverIntroEnabled', 'commentBurnEnabled', 'subtitleMaskEnabled']) {
     if (typeof settings[key] === 'boolean') next[key] = settings[key]
   }
   if (['google_llm', 'google'].includes(settings.commentTranslationMode)) {
@@ -1535,10 +1548,12 @@ const currentWorkflowSettingsPayload = () => ({
   watermarkEnabled: workflowForm.watermarkEnabled,
   watermarkText: workflowForm.watermarkText,
   highlightCount: workflowForm.highlightCount,
+  subtitleMode: workflowForm.subtitleMode,
   translationEnabled: workflowForm.translationEnabled,
   highlightIntroEnabled: workflowForm.highlightIntroEnabled,
   coverIntroEnabled: workflowForm.coverIntroEnabled,
   commentBurnEnabled: workflowForm.commentBurnEnabled,
+  subtitleMaskEnabled: workflowForm.subtitleMaskEnabled,
   commentBurnCount: workflowForm.commentBurnCount,
   commentTranslationMode: workflowForm.commentTranslationMode,
   contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
@@ -1546,9 +1561,12 @@ const currentWorkflowSettingsPayload = () => ({
 
 const applyStoredWorkflowSettings = (settings) => {
   commentBurnAvailable.value = settings?.commentBurnAvailable !== false
+  subtitleMaskAvailable.value = settings?.subtitleMaskAvailable !== false
   const { searchQuery, ...workflowSettings } = normalizeStoredWorkflowSettings(settings)
   Object.assign(workflowForm, workflowSettings)
   if (!commentBurnAvailable.value || workflowForm.processVersion !== 'editing_v1') workflowForm.commentBurnEnabled = false
+  if (!subtitleMaskAvailable.value) workflowForm.subtitleMaskEnabled = false
+  if (!subtitleMaskAvailable.value && workflowForm.subtitleMode === 'auto') workflowForm.subtitleMode = 'force_burn'
   if (searchQuery) {
     form.query = searchQuery
   }
@@ -1626,17 +1644,28 @@ const processingSettingsRows = (settings = {}) => {
   const burnProfile = burnProfiles.find(item => item.value === settings.burnProfile)?.label || settings.burnProfile || '-'
   const subtitleSize = subtitleSizes.find(item => item.value === settings.subtitleSize)?.label || settings.subtitleSize || '-'
   const commentMode = settings.commentTranslationMode === 'google' ? 'Google 翻译' : 'Google 翻译 + LLM 修订'
+  const analysis = settings.sourceSubtitleAnalysis || {}
+  const subtitleMode = { auto: '自动适配', force_burn: '强制烧制', original: '原字幕', legacy: '历史模式' }[settings.subtitleMode] || '历史模式'
+  const sourceSubtitle = analysis.status === 'unknown' ? '识别失败' : ({ zh: '中文', non_zh: '非中文', none: '无', unknown: '未识别' }[analysis.classification] || '未识别')
+  const finalAction = { original: '原字幕', original_zh: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
+  const region = analysis.region
+  const regionText = region ? `${Math.round(region.x * 100)}%, ${Math.round(region.y * 100)}%, ${Math.round(region.width * 100)}% × ${Math.round(region.height * 100)}%` : '-'
   return [
     { label: '处理版本', value: processVersionLabel(settings.processVersion) },
     { label: '字幕语言', value: language },
     { label: '烧录预设', value: burnProfile },
     { label: '字幕字号', value: subtitleSize },
     { label: '字幕翻译', value: enabled(settings.translationEnabled) },
+    { label: '字幕模式', value: subtitleMode },
+    { label: '原字幕', value: sourceSubtitle },
+    { label: '最终处理', value: finalAction },
+    { label: '遮挡区域', value: regionText },
     { label: '翻译署名', value: settings.translatorLabel || '-' },
     { label: '水印', value: settings.watermarkEnabled ? settings.watermarkText || '已开启' : '关闭' },
     { label: '高光片头', value: settings.highlightIntroEnabled ? `${settings.highlightCount || 0} 条` : '关闭' },
     { label: '封面片头', value: settings.coverIntroEnabled ? settings.coverTitle || '开启' : '关闭' },
     { label: '评论烧制', value: settings.commentBurnEnabled ? `${settings.commentBurnCount || 0} 条，${commentMode}` : '关闭' },
+    { label: '字幕遮挡', value: enabled(settings.subtitleMaskEnabled) },
     { label: '内容安全审查', value: enabled(settings.contentSafetyReviewEnabled) }
   ]
 }
@@ -1655,6 +1684,11 @@ watch(() => workflowForm.processVersion, (nextVersion, previousVersion) => {
   })
 })
 
+watch(() => workflowForm.subtitleMode, value => {
+  workflowForm.translationEnabled = value !== 'original'
+  if (value !== 'force_burn') workflowForm.subtitleMaskEnabled = false
+})
+
 watch(
   () => ({
     processVersion: workflowForm.processVersion,
@@ -1666,10 +1700,12 @@ watch(
     watermarkEnabled: workflowForm.watermarkEnabled,
     watermarkText: workflowForm.watermarkText,
     highlightCount: workflowForm.highlightCount,
+    subtitleMode: workflowForm.subtitleMode,
     translationEnabled: workflowForm.translationEnabled,
     highlightIntroEnabled: workflowForm.highlightIntroEnabled,
     coverIntroEnabled: workflowForm.coverIntroEnabled,
     commentBurnEnabled: workflowForm.commentBurnEnabled,
+    subtitleMaskEnabled: workflowForm.subtitleMaskEnabled,
     commentBurnCount: workflowForm.commentBurnCount,
     commentTranslationMode: workflowForm.commentTranslationMode
   }),
@@ -2656,10 +2692,12 @@ const createJob = async (row) => {
       coverSignature: workflowForm.coverSignature,
       watermarkEnabled: workflowForm.watermarkEnabled,
       watermarkText: workflowForm.watermarkText,
+      subtitleMode: workflowForm.subtitleMode,
       translationEnabled: workflowForm.translationEnabled,
       highlightIntroEnabled: workflowForm.highlightIntroEnabled,
       coverIntroEnabled: workflowForm.coverIntroEnabled,
       commentBurnEnabled: workflowForm.commentBurnEnabled,
+      subtitleMaskEnabled: workflowForm.subtitleMaskEnabled,
       commentBurnCount: workflowForm.commentBurnCount,
       commentTranslationMode: workflowForm.commentTranslationMode,
       contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
@@ -3019,10 +3057,12 @@ const processVideo = async (row) => {
       watermarkEnabled: workflowForm.watermarkEnabled,
       watermarkText: workflowForm.watermarkText,
       highlightCount: workflowForm.highlightCount,
+      subtitleMode: workflowForm.subtitleMode,
       translationEnabled: workflowForm.translationEnabled,
       highlightIntroEnabled: workflowForm.highlightIntroEnabled,
       coverIntroEnabled: workflowForm.coverIntroEnabled,
       commentBurnEnabled: workflowForm.commentBurnEnabled,
+      subtitleMaskEnabled: workflowForm.subtitleMaskEnabled,
       commentBurnCount: workflowForm.commentBurnCount,
       commentTranslationMode: workflowForm.commentTranslationMode,
       contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
@@ -3072,6 +3112,8 @@ const updateEditingIntro = async (row) => {
       highlightCount: workflowForm.highlightCount, highlightIntroEnabled: workflowForm.highlightIntroEnabled,
       coverIntroEnabled: workflowForm.coverIntroEnabled,
       commentBurnEnabled: workflowForm.commentBurnEnabled,
+      subtitleMode: workflowForm.subtitleMode,
+      subtitleMaskEnabled: workflowForm.subtitleMaskEnabled,
       commentBurnCount: workflowForm.commentBurnCount,
       commentTranslationMode: workflowForm.commentTranslationMode
     })

@@ -195,6 +195,9 @@ def editing_body_signature(job):
     return _editing_signature({
         **_editing_body_signature_payload(job),
         "translationEnabled": bool(job.get("translationEnabled", True)),
+        "subtitleMaskEnabled": bool(job.get("subtitleMaskEnabled")),
+        "subtitleMode": job.get("subtitleMode") or "legacy",
+        "sourceSubtitleAnalysis": job.get("sourceSubtitleAnalysis") or {},
         "commentBurnEnabled": bool(job.get("commentBurnEnabled", False)),
     })
 
@@ -292,11 +295,26 @@ def render_editing_intro_assets(job, source_file, ass_file, analysis_result, wor
         overlay_ass = _write_editing_up_next_overlay_ass(work_dir / f"highlight_{index}_up_next.ass", width, height, end - start)
         clip_file = work_dir / f"highlight_{index}.mp4"
         filters = [f"scale={width}:{height}:flags=lanczos", "setsar=1"]
+        clip_ass = None
         if ass_file and Path(ass_file).is_file():
             clip_ass = _write_clip_ass(ass_file, work_dir / f"highlight_{index}.ass", start, end, include_comments=False)
-            filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
-        filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
-        _run_command([ffmpeg, "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source_file), "-vf", ",".join(filters),
+        if job.get("subtitleMaskEnabled"):
+            mask_graph = _subtitle_mask_filter("highlight_mask_input", "highlight_masked", width, height, _subtitle_mask_region(job))
+            overlay_filters = []
+            if clip_ass:
+                overlay_filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
+            overlay_filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
+            filter_args = [
+                "-filter_complex",
+                f"[0:v]{','.join(filters)}[highlight_mask_input];{mask_graph};[highlight_masked]{','.join(overlay_filters)}[highlight_output]",
+                "-map", "[highlight_output]", "-map", "0:a?",
+            ]
+        else:
+            if clip_ass:
+                filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
+            filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
+            filter_args = ["-vf", ",".join(filters)]
+        _run_command([ffmpeg, "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source_file), *filter_args,
                       "-fps_mode", "cfr", "-r", f"{fps:.3f}".rstrip("0").rstrip("."), *video_encode_args(burn_config),
                       "-maxrate", burn_config["maxrate"], "-bufsize", burn_config["bufsize"], "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", burn_config.get("h264_level", "4.1"),
                       "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(clip_file)], cwd=BASE_DIR)
