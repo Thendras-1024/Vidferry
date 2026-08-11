@@ -149,7 +149,7 @@ def create_scheduled_publish_task(data):
                 cursor, material, video, target["platformName"], now,
                 publish_title=publish_title, account_count=1, platform_type=target["platformType"],
                 account_file=account["filePath"], publish_task_id=task_id, status="pending",
-                message="等待定时发布", account_name=account["name"],
+                message="等待定时发布", account_name=account["name"], account_id=account["id"],
             )
         conn.commit()
         cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ?", (task_id,))
@@ -340,6 +340,7 @@ def run_scheduled_publish_task(task_id):
                     [task["file_path"]], platform_type=target["platformType"], title=content["title"],
                     account_count=1, account_file=account_file, publish_task_id=task_id,
                     status="failed", message=str(exc), account_name=account_name,
+                    account_id=target["accountId"],
                 )
             except Exception as record_exc:
                 backend_logger.exception(

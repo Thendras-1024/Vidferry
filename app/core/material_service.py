@@ -782,6 +782,9 @@ def _row_to_published_material(row):
         "message": item.get("message") or "",
         "durationMs": int(item.get("duration_ms") or 0),
         "accountName": item.get("account_name") or "",
+        "accountId": item.get("account_id"),
+        "platformWorkId": item.get("platform_work_id") or "",
+        "platformWorkUrl": item.get("platform_work_url") or "",
         "deletedAt": item.get("deleted_at") or "",
         "updatedAt": item.get("updated_at") or item.get("published_at") or item.get("created_at") or "",
         "publishedAt": item.get("published_at") or item.get("created_at") or "",
@@ -855,6 +858,9 @@ def _archive_published_material(
     retry_of_task_id="",
     retry_of_record_id=None,
     retry_source="",
+    account_id=None,
+    platform_work_id="",
+    platform_work_url="",
 ):
     video_id = material.get("source_video_id") or _material_source_video_id(material) or (video or {}).get("id") or ""
     source_url = _canonical_youtube_url((video or {}).get("url") or material.get("displayUrl") or "", video_id)
@@ -913,6 +919,9 @@ def _archive_published_material(
             account_file = ?,
             account_count = ?,
             account_name = ?,
+            account_id = ?,
+            platform_work_id = COALESCE(NULLIF(?, ''), platform_work_id),
+            platform_work_url = COALESCE(NULLIF(?, ''), platform_work_url),
             material_id = ?,
             filename = ?,
             file_path = ?,
@@ -941,6 +950,9 @@ def _archive_published_material(
             account_file or "",
             int(account_count or 0),
             account_name or "",
+            account_id,
+            platform_work_id or "",
+            platform_work_url or "",
             material.get("id"),
             material.get("filename") or "",
             str(_material_file_path(material) or material.get("file_path") or ""),
@@ -970,9 +982,9 @@ def _archive_published_material(
         filename, file_path, filesize, thumbnail, channel, subscribers,
         source_published_at, publish_title, metadata, published_at,
         publish_task_id, status, message, duration_ms, account_name, updated_at,
-        retry_of_task_id, retry_of_record_id, retry_source
+        retry_of_task_id, retry_of_record_id, retry_source, account_id, platform_work_id, platform_work_url
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING RETURNING id
     ''', (
         video_id,
@@ -1002,6 +1014,9 @@ def _archive_published_material(
         retry_of_task_id or "",
         retry_of_record_id,
         retry_source or "",
+        account_id,
+        platform_work_id or "",
+        platform_work_url or "",
     ))
     inserted = cursor.fetchone()
     if inserted:
@@ -1277,6 +1292,9 @@ def _mark_published_materials(
     retry_of_task_id="",
     retry_of_record_id=None,
     retry_source="",
+    account_id=None,
+    platform_work_id="",
+    platform_work_url="",
 ):
     if not file_list:
         return []
@@ -1321,6 +1339,9 @@ def _mark_published_materials(
                 retry_of_task_id=retry_of_task_id,
                 retry_of_record_id=retry_of_record_id,
                 retry_source=retry_source,
+                account_id=account_id,
+                platform_work_id=platform_work_id,
+                platform_work_url=platform_work_url,
             )
             if status == "success":
                 cursor.execute(
@@ -1397,6 +1418,7 @@ def reserve_publish_tasks_pending(tasks):
                     retry_of_task_id=task.get("retryOfTaskId") or "",
                     retry_of_record_id=task.get("retryOfRecordId"),
                     retry_source=task.get("retrySource") or "",
+                    account_id=task.get("accountId"),
                 )
                 updated.append({"videoId": video_id, "recordId": record_id, "platformType": platform_type})
         conn.commit()

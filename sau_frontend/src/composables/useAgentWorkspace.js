@@ -426,6 +426,10 @@ export function useAgentWorkspace({ route, router }) {
     agentIncludeVideoContext.value = Boolean(agentVideoContext.value)
     if (route.path !== '/') await router.push('/')
     await nextTick()
+    if (detail.message) {
+      await sendAgentMessage(detail.message, { selectedAgentAction: detail.selectedAgentAction || '' })
+      return
+    }
     agentInputRef.value?.focus()
   }
 

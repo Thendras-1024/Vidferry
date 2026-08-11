@@ -18,14 +18,18 @@ _REQUIRED_TABLES = (
     "youtube_workflow_locks", "youtube_workflow_events", "youtube_workflow_llm_usage_events",
     "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "scheduled_publish_tasks",
     "scheduled_publish_targets", "publish_account_groups", "publish_account_group_members", "auth_sessions", "auth_audit_logs",
-    "task_acknowledgements",
+    "task_acknowledgements", "platform_metric_snapshots", "platform_comment_samples",
 )
 _initialized = False
 _database_init_lock = threading.Lock()
 
 
 def _migration_paths():
-    return sorted(_MIGRATION_DIR.glob("V*__*.sql"))
+    paths = sorted(_MIGRATION_DIR.glob("V*__*.sql"))
+    versions = [int(path.name[1:].split("__", 1)[0]) for path in paths]
+    if len(versions) != len(set(versions)):
+        raise RuntimeError("PostgreSQL migration versions must be unique")
+    return paths
 
 
 def _apply_pending_migrations(conn):

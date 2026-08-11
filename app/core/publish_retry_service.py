@@ -125,6 +125,7 @@ def fail_failed_publish_retry_submission(tasks, message):
             status="failed",
             message=message,
             account_name=task.get("accountName") or "",
+            account_id=task.get("accountId"),
             retry_of_task_id=task.get("retryOfTaskId") or "",
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",

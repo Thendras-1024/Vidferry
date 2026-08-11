@@ -120,6 +120,6 @@ docs/                      中文功能与运维文档
 
 ## 本地数据与安全
 
-`.env`、`conf.py`、`cookiesFile/`、`videos/`、`videoFile/`、数据库备份和前端构建产物均为本地运行数据，不应提交到 Git。LLM 密钥、认证密钥、登录 Cookie 和用户密码不得写入前端代码或日志。
+`.env`、`conf.py`、`cookiesFile/`、`videos/`、`videoFile/`、数据库备份和前端构建产物均为本地运行数据，不应提交到 Git。LLM 密钥、认证密钥、登录 Cookie、平台 Token sidecar 和用户密码不得写入前端代码、Agent 上下文或日志。
 
 生产环境应使用 HTTPS、设置强随机的 `VIDFERRY_AUTH_SECRET`、启用 `VIDFERRY_AUTH_COOKIE_SECURE=true`，并让后端仅监听受控网络。

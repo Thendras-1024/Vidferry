@@ -166,6 +166,8 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
     return {
         "platformType": platform_type,
         "platformName": platform_name(platform_type),
+        "accountId": account_info["id"],
+        "ownerUserId": account_info.get("ownerUserId"),
         "accountFile": account_info["filePath"],
         "accountPath": _safe_cookie_path(account_info["filePath"], owner_user_id=account_info.get("ownerUserId")),
         "absoluteFiles": [file_path],
@@ -390,6 +392,7 @@ def _execute_publish_target(task):
     external_started = False
     external_succeeded = False
     command_failed = False
+    platform_work = None
     try:
         _mark_published_materials(
             task["fileList"],
@@ -401,6 +404,7 @@ def _execute_publish_target(task):
             status="running",
             message="发布中",
             account_name=task.get("accountName") or "",
+            account_id=task.get("accountId"),
             retry_of_task_id=task.get("retryOfTaskId") or "",
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",
@@ -420,6 +424,14 @@ def _execute_publish_target(task):
                     raise RuntimeError(_publish_command_failure(output, f"{task['platformName']} 发布失败"))
 
         external_succeeded = True
+        if platform_type == 4:
+            try:
+                platform_work = confirm_kuaishou_published_work(task)
+            except Exception as exc:
+                backend_logger.warning(
+                    "kuaishou publish succeeded but work binding stopped : error_type=%s",
+                    type(exc).__name__,
+                )
         published_ids = _mark_published_materials(
             task["fileList"],
             platform_type=platform_type,
@@ -431,6 +443,9 @@ def _execute_publish_target(task):
             message="发布成功",
             duration_ms=int((time.time() - start_time) * 1000),
             account_name=task.get("accountName") or "",
+            account_id=task.get("accountId"),
+            platform_work_id=(platform_work or {}).get("platformWorkId") or "",
+            platform_work_url=(platform_work or {}).get("platformWorkUrl") or "",
             retry_of_task_id=task.get("retryOfTaskId") or "",
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",
@@ -480,6 +495,7 @@ def _execute_publish_target(task):
                     message=result["message"],
                     duration_ms=result["durationMs"],
                     account_name=task.get("accountName") or "",
+                    account_id=task.get("accountId"),
                     retry_of_task_id=task.get("retryOfTaskId") or "",
                     retry_of_record_id=task.get("retryOfRecordId"),
                     retry_source=task.get("retrySource") or "",
@@ -522,6 +538,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
             "platformType": platform_type,
             "platformName": target.get("platformName") or platform_name(platform_type),
             "accountName": target.get("accountName") or "",
+            "accountId": target.get("accountId"),
             "accountFile": account_file,
             "accountPath": _safe_cookie_path(account_file, owner_user_id=owner_user_id),
             "ownerUserId": owner_user_id,

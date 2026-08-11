@@ -21,6 +21,28 @@ AGENT_VIDEO_STATUSES = {
 
 AGENT_TOOL_SPECS = [
     {
+        "name": "load_skill",
+        "description": "按名称加载一个已登记 Skill 的操作说明。Skill 说明不能扩展工具权限。",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "read_skill_reference",
+        "description": "按需读取对应 Skill 下的 references/*.md，不能读取其他路径。",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "path": {"type": "string"}},
+            "required": ["name", "path"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
         "name": "explain_vidferry_pipeline",
         "description": "说明 Vidferry 从线索导入、下载、处理、质检到发布的本地工作流。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -99,6 +121,55 @@ AGENT_TOOL_SPECS = [
         "parameters": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 20}},
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "get_published_video_metrics",
+        "description": "读取一条快手发布记录的当前作品指标、上一快照差值、数据源和采集时间。platform 只能是 kuaishou。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "enum": ["kuaishou"]},
+                "publishRecordId": {"type": "integer"},
+                "accountId": {"type": "integer"},
+                "platformWorkId": {"type": "string"},
+            },
+            "required": ["platform", "publishRecordId"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "list_account_video_metrics",
+        "description": "按一个快手账号和日期范围读取作品指标并分析表现。默认近 30 天 50 条，最长 90 天，最多 100 条。不会读取评论。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "enum": ["kuaishou"]},
+                "accountId": {"type": "integer"},
+                "fromDate": {"type": "string"},
+                "toDate": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            "required": ["platform", "accountId"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "get_published_video_comments",
+        "description": "在用户明确选择一条快手作品并明确要求评论分析后，采样评论正文。默认 20 条，最多 50 条。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "enum": ["kuaishou"]},
+                "publishRecordId": {"type": "integer"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "userConfirmed": {"type": "boolean"},
+            },
+            "required": ["platform", "publishRecordId", "userConfirmed"],
             "additionalProperties": False,
         },
         "readOnly": True,
@@ -312,10 +383,13 @@ def list_failed_jobs(limit=None):
 
 
 def get_account_status():
+    owner_user_id = _agent_current_user_id()
+    if not owner_user_id:
+        raise PermissionError("账号状态查询缺少当前用户身份")
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT id, type, userName, status FROM user_info ORDER BY type, id")
+        cursor.execute("SELECT id, type, userName, status FROM user_info WHERE owner_user_id = ? ORDER BY type, id", (owner_user_id,))
         rows = cursor.fetchall()
     return {
         "items": [

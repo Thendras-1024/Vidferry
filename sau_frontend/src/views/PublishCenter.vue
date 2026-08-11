@@ -367,10 +367,16 @@
                   <span>{{ record.accountName || record.accountFile || '未记录账号' }}</span>
                 </div>
                 <span>{{ record.publishedAt || record.updatedAt || '-' }}</span>
-                <el-button type="danger" text size="small" @click="deletePublishedRecord(record)">
-                  <el-icon><Delete /></el-icon>
-                  <span>删除记录</span>
-                </el-button>
+                <div class="published-record-controls">
+                  <el-button v-if="Number(record.platformType) === 4" type="primary" text size="small" @click="analyzePublishedRecord(video, record)">
+                    <el-icon><DataAnalysis /></el-icon>
+                    <span>分析数据</span>
+                  </el-button>
+                  <el-button type="danger" text size="small" @click="deletePublishedRecord(record)">
+                    <el-icon><Delete /></el-icon>
+                    <span>删除记录</span>
+                  </el-button>
+                </div>
               </div>
             </div>
             <div class="published-actions">
@@ -568,7 +574,7 @@
 </template>
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { Plus, Close, Delete, Folder, Refresh, Clock } from '@element-plus/icons-vue'
+import { Plus, Close, Delete, Folder, Refresh, Clock, DataAnalysis } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
@@ -1418,12 +1424,45 @@ const askAgentAboutPublishedVideo = (video) => {
         fileSize: video.processedFileSizeLabel || '',
         publishedPlatforms: publishedPlatforms(video),
         publishedRecords: (video.publishedRecords || []).map(record => ({
+          publishRecordId: record.id,
           platform: record.platform || platformNameByKey[Number(record.platformType)] || '',
           platformType: Number(record.platformType || 0),
+          accountId: record.accountId,
           accountName: record.accountName || '',
           status: record.status || 'success',
           publishedAt: record.publishedAt || record.updatedAt || ''
         }))
+      }
+    }
+  }))
+}
+
+const analyzePublishedRecord = (video, record) => {
+  const platform = record.platform || platformNameByKey[Number(record.platformType)] || '快手'
+  window.dispatchEvent(new CustomEvent('vidferry:ask-agent', {
+    detail: {
+      message: `请分析快手发布记录 ${record.id} 的作品数据。只查询快手，不读取评论。`,
+      selectedAgentAction: '分析快手作品数据',
+      videoContext: {
+        source: 'publish-center',
+        videoId: String(video.id || ''),
+        title: video.title || record.publishTitle || record.title || '',
+        publishRecordId: record.id,
+        platform: 'kuaishou',
+        platformType: Number(record.platformType || 0),
+        accountId: record.accountId,
+        accountName: record.accountName || '',
+        publishedAt: record.publishedAt || record.updatedAt || '',
+        publishedPlatforms: [platform],
+        publishedRecords: [{
+          publishRecordId: record.id,
+          platform,
+          platformType: Number(record.platformType || 0),
+          accountId: record.accountId,
+          accountName: record.accountName || '',
+          status: record.status || 'success',
+          publishedAt: record.publishedAt || record.updatedAt || ''
+        }]
       }
     }
   }))
@@ -2291,6 +2330,11 @@ $ink-strong: var(--vf-text-primary);
   font-size: 12px;
 
   > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+}
+
+.published-record-controls {
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .archived-record-row {
