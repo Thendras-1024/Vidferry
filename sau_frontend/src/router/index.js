@@ -5,6 +5,7 @@ import MaterialManagement from '../views/MaterialManagement.vue'
 import PublishCenter from '../views/PublishCenter.vue'
 import YoutubeResearch from '../views/YoutubeResearch.vue'
 import WorkflowStatistics from '../views/WorkflowStatistics.vue'
+import TaskCenter from '../views/TaskHistory.vue'
 import About from '../views/About.vue'
 import SubtitleAudit from '../views/SubtitleAudit.vue'
 import ScheduledPublishTasks from '../views/ScheduledPublishTasks.vue'
@@ -62,6 +63,11 @@ const routes = [
     path: '/workflow-statistics',
     name: 'WorkflowStatistics',
     component: WorkflowStatistics
+  },
+  {
+    path: '/task-center',
+    name: 'TaskCenter',
+    component: TaskCenter
   },
   {
     path: '/youtube-research',
