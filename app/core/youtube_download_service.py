@@ -1,5 +1,8 @@
 """下载与命令执行基础设施:FFmpeg/yt-dlp 运行时解析、子进程封装、文件安全替换与下载进度回调。"""
 
+import os
+from pathlib import Path
+
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command
 from app.utils.file_util import (
     _ensure_dir,
@@ -24,10 +27,42 @@ def _resolve_ytdlp_js_runtimes():
         return {"deno": {"path": deno_path}}
 
     node_path = shutil.which("node")
+    if not node_path:
+        for candidate in (
+            Path(os.environ.get("ProgramFiles", "")) / "nodejs" / "node.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "")) / "nodejs" / "node.exe",
+        ):
+            if candidate.is_file():
+                node_path = str(candidate)
+                break
     if node_path:
         return {"node": {"path": node_path}}
 
     return {}
+
+
+def _youtube_cookie_options():
+    """Return explicit yt-dlp cookie options without exposing cookie paths or values in logs."""
+    raw_file = str(YOUTUBE_COOKIE_FILE or "").strip()
+    if raw_file:
+        cookie_path = Path(raw_file).expanduser()
+        if not cookie_path.is_absolute():
+            cookie_path = Path(BASE_DIR) / cookie_path
+        cookie_path = cookie_path.resolve()
+        root = Path(BASE_DIR).resolve()
+        if not cookie_path.is_relative_to(root):
+            raise RuntimeError("YOUTUBE_COOKIE_FILE_INVALID")
+        if not cookie_path.is_file():
+            raise RuntimeError("YOUTUBE_COOKIE_FILE_MISSING")
+        return {"cookiefile": str(cookie_path)}
+
+    browser = str(YOUTUBE_COOKIES_FROM_BROWSER or "").strip().lower()
+    if not browser:
+        return {}
+    if browser not in {"brave", "chrome", "chromium", "edge", "firefox", "opera", "vivaldi", "whale"}:
+        raise RuntimeError("YOUTUBE_COOKIES_BROWSER_INVALID")
+    profile = str(YOUTUBE_COOKIES_BROWSER_PROFILE or "").strip()
+    return {"cookiesfrombrowser": (browser, profile) if profile else (browser,)}
 
 
 def _base_ytdlp_opts(include_ffmpeg=False):
@@ -37,6 +72,7 @@ def _base_ytdlp_opts(include_ffmpeg=False):
         # An explicit YTDLP_PROXY keeps proxy use opt-in for YouTube operations.
         "proxy": YTDLP_PROXY,
     }
+    opts.update(_youtube_cookie_options())
     if YTDLP_REMOTE_COMPONENTS:
         opts["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
     if include_ffmpeg:

@@ -4,10 +4,13 @@ import hashlib
 import threading
 from pathlib import Path
 
+from app.config import BASE_DIR
 from app.db.base import _db_connect
 
 
-_MIGRATION_DIR = Path(__file__).parent / "migrations" / "postgresql"
+# 后端模块由 runtime 执行到 sau_backend 的共享命名空间，不能依赖此处的
+# __file__ 推导目录；它会指向兼容入口而非当前模块文件。
+_MIGRATION_DIR = Path(BASE_DIR) / "app" / "db" / "migrations" / "postgresql"
 _REQUIRED_TABLES = (
     "app_settings", "app_notifications", "user_info", "file_records", "auth_users",
     "agent_sessions", "agent_session_bindings", "agent_session_locks", "agent_rules", "agent_memory_items",
@@ -16,7 +19,7 @@ _REQUIRED_TABLES = (
     "youtube_workflow_locks", "youtube_workflow_events", "youtube_workflow_llm_usage_events",
     "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "scheduled_publish_tasks",
     "scheduled_publish_targets", "auth_sessions", "auth_audit_logs",
-    "task_acknowledgements",
+    "task_acknowledgements", "candidate_analysis_jobs",
 )
 _initialized = False
 _database_init_lock = threading.Lock()

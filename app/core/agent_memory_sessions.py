@@ -118,6 +118,8 @@ def update_agent_proposal_state(
     scheduled_at="",
     result_message="",
     workflow_jobs=None,
+    analysis_jobs=None,
+    processing_options=None,
 ):
     """Persist a confirmation result on the assistant message that created the proposal."""
     session_id = str(session_id or "").strip()
@@ -153,6 +155,11 @@ def update_agent_proposal_state(
                 proposal["selectedAccountIds"] = [int(value) for value in (selected_account_ids or []) if str(value).strip()]
                 proposal["scheduledAt"] = str(scheduled_at or proposal.get("scheduledAt") or "")
                 proposal["resultMessage"] = str(result_message or "")
+                if processing_options is not None:
+                    proposal["processingOptions"] = {
+                        "watermarkEnabled": bool(processing_options.get("watermarkEnabled")),
+                        "commentBurnEnabled": bool(processing_options.get("commentBurnEnabled")),
+                    }
                 proposal["workflowJobs"] = [
                     {
                         "id": str(item.get("id") or ""),
@@ -162,6 +169,17 @@ def update_agent_proposal_state(
                     for item in (workflow_jobs or [])
                     if isinstance(item, dict) and item.get("id")
                 ]
+                if analysis_jobs is not None:
+                    proposal["analysisJobs"] = [
+                        {
+                            "id": str(item.get("id") or ""),
+                            "videoId": str(item.get("videoId") or ""),
+                            "title": str(item.get("title") or ""),
+                            "status": str(item.get("status") or "queued"),
+                        }
+                        for item in analysis_jobs
+                        if isinstance(item, dict) and item.get("id")
+                    ]
                 context[proposal_key] = proposal
                 cursor.execute(
                     "UPDATE agent_messages SET context = ? WHERE id = ?",

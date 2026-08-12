@@ -34,6 +34,7 @@ MODULE_ORDER = [
     "app/core/agent_memory_sessions.py",
     "app/core/agent_memory_summaries.py",
     "app/core/agent_memory_runs.py",
+    "app/core/candidate_analysis_service.py",
     "app/core/agent_tools.py",
     "app/core/agent_policy.py",
     "app/core/agent_orchestrator.py",

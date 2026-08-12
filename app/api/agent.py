@@ -55,14 +55,17 @@ def confirm_agent_import_proposal_route(proposal_id):
     selected_ids = payload.get("selectedIds")
     targets = payload.get("targets")
     scheduled_at = str(payload.get("scheduledAt") or "").strip()
+    processing_options = payload.get("processingOptions")
     if not session_id:
         return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
     if selected_ids is not None and not isinstance(selected_ids, list):
         return jsonify({"code": 400, "msg": "候选视频格式不正确", "data": None}), 400
     if targets is not None and not isinstance(targets, list):
         return jsonify({"code": 400, "msg": "发布目标格式不正确", "data": None}), 400
+    if processing_options is not None and not isinstance(processing_options, dict):
+        return jsonify({"code": 400, "msg": "处理选项格式不正确", "data": None}), 400
     try:
-        result = confirm_agent_import_proposal(proposal_id, session_id, selected_ids, targets, scheduled_at)
+        result = confirm_agent_import_proposal(proposal_id, session_id, selected_ids, targets, scheduled_at, processing_options)
         backend_logger.info(
             "Agent 线索导入完成 proposal_id=%s session_id=%s created=%s duplicate=%s failed=%s",
             proposal_id, session_id, result.get("createdCount"), result.get("duplicateCount"), result.get("failedCount"),
@@ -81,12 +84,15 @@ def confirm_agent_execution_proposal_route(proposal_id):
     session_id = str(payload.get("sessionId") or "").strip()
     targets = payload.get("targets")
     scheduled_at = str(payload.get("scheduledAt") or "").strip()
+    processing_options = payload.get("processingOptions")
     if not session_id:
         return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
     if targets is not None and not isinstance(targets, list):
         return jsonify({"code": 400, "msg": "发布目标格式不正确", "data": None}), 400
+    if processing_options is not None and not isinstance(processing_options, dict):
+        return jsonify({"code": 400, "msg": "处理选项格式不正确", "data": None}), 400
     try:
-        result = confirm_agent_execution_proposal(proposal_id, session_id, targets, scheduled_at)
+        result = confirm_agent_execution_proposal(proposal_id, session_id, targets, scheduled_at, processing_options)
         backend_logger.info(
             "Agent 执行提案已确认 proposal_id=%s session_id=%s action=%s",
             proposal_id, session_id, result.get("action"),
@@ -98,6 +104,39 @@ def confirm_agent_execution_proposal_route(proposal_id):
     except Exception as exc:
         backend_logger.exception("Agent 执行提案确认失败 proposal_id=%s", proposal_id)
         return jsonify({"code": 500, "msg": f"执行提案确认失败: {str(exc)}", "data": None}), 500
+
+
+@app.route('/agents/candidate-analysis-proposals/<proposal_id>/confirm', methods=['POST'])
+def confirm_agent_candidate_analysis_proposal_route(proposal_id):
+    payload = request.get_json(silent=True) or {}
+    session_id = str(payload.get("sessionId") or "").strip()
+    selected_ids = payload.get("selectedIds")
+    if not session_id:
+        return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
+    if not isinstance(selected_ids, list):
+        return jsonify({"code": 400, "msg": "候选视频格式不正确", "data": None}), 400
+    try:
+        result = confirm_agent_candidate_analysis_proposal(proposal_id, session_id, selected_ids)
+        backend_logger.info("Agent 候选音频分析已提交 proposal_id=%s session_id=%s count=%s", proposal_id, session_id, len(result.get("analysisJobs") or []))
+        return jsonify({"code": 200, "msg": result.get("message") or "候选分析任务已创建", "data": result}), 200
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        backend_logger.exception("Agent 候选音频分析提交失败 proposal_id=%s", proposal_id)
+        return jsonify({"code": 500, "msg": f"候选音频分析提交失败: {str(exc)}", "data": None}), 500
+
+
+@app.route('/agents/candidate-analysis-jobs/<job_id>', methods=['GET'])
+def get_agent_candidate_analysis_job_route(job_id):
+    session_id = str(request.args.get("sessionId") or "").strip()
+    if not session_id:
+        return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
+    try:
+        if not get_agent_session(session_id):
+            return jsonify({"code": 404, "msg": "Agent 会话不存在或已删除", "data": None}), 404
+        return jsonify({"code": 200, "msg": "success", "data": get_candidate_analysis_job(job_id, session_id)}), 200
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
 
 
 @app.route('/agents/sessions', methods=['GET'])

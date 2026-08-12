@@ -98,8 +98,8 @@ export const youtubeApi = {
     return request.get('/youtube/workflow/jobs', { params })
   },
 
-  getWorkflowJob(jobId) {
-    return request.get(`/youtube/workflow/jobs/${jobId}`)
+  getWorkflowJob(jobId, config = {}) {
+    return request.get(`/youtube/workflow/jobs/${jobId}`, config)
   },
 
   confirmWorkflowPublish(jobId, confirmed) {

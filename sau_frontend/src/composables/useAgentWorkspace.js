@@ -91,6 +91,7 @@ export function useAgentWorkspace({ route, router }) {
   let restoreSequence = 0
   let agentCompactionTimer = null
   const agentTaskPollers = new Map()
+  const candidateAnalysisPollers = new Map()
 
   const formatTokenCount = value => {
     const amount = Number(value || 0)
@@ -147,6 +148,7 @@ export function useAgentWorkspace({ route, router }) {
 
   const isAgentWorkflowActive = task => ['queued', 'running', 'waiting_confirmation'].includes(task?.status)
   const agentWorkflowStatusLabel = task => {
+    if (task?.status === 'missing') return '任务记录不存在'
     if (task?.status === 'failed' || task?.status === 'abnormal') return '失败'
     if (task?.status === 'waiting_confirmation') return '等待确认'
     if (task?.status === 'success' && task?.schedule) return '已提交定时发布'
@@ -164,9 +166,12 @@ export function useAgentWorkspace({ route, router }) {
     if (!tasks.length) return false
     const updates = await Promise.all(tasks.map(async task => {
       try {
-        const response = await youtubeApi.getWorkflowJob(task.id)
+        const response = await youtubeApi.getWorkflowJob(task.id, { silentError: true })
         return mapAgentWorkflowTask(response?.data || task)
-      } catch {
+      } catch (error) {
+        if (error?.response?.status === 404) {
+          return { ...task, status: 'missing', message: '任务记录已不存在，已停止更新', errorReason: '' }
+        }
         return task
       }
     }))
@@ -188,11 +193,48 @@ export function useAgentWorkspace({ route, router }) {
     agentTaskPollers.set(key, window.setInterval(() => { void poll() }, 3000))
   }
 
+  const isCandidateAnalysisActive = task => ['queued', 'running'].includes(task?.status)
+  const refreshCandidateAnalysisTasks = async message => {
+    const proposal = message?.candidateAnalysisProposal
+    const tasks = proposal?.analysisJobs || []
+    if (!tasks.length || !agentSessionId.value) return false
+    const updates = await Promise.all(tasks.map(async task => {
+      try {
+        const response = await agentApi.getCandidateAnalysisJob(task.id, agentSessionId.value)
+        return response?.data || task
+      } catch (error) {
+        if (error?.response?.status === 404) {
+          return { ...task, status: 'missing', message: '候选分析任务已不存在，已停止更新', errorReason: '' }
+        }
+        return task
+      }
+    }))
+    proposal.analysisJobs = updates
+    const resultByVideoId = new Map(updates.filter(task => task?.result?.score !== undefined).map(task => [String(task.videoId), task.result]))
+    proposal.items = (proposal.items || []).map(item => ({ ...item, analysis: resultByVideoId.get(String(item.id)) || item.analysis || null }))
+    return updates.some(isCandidateAnalysisActive)
+  }
+
+  const watchCandidateAnalysisTasks = message => {
+    const key = message?.id
+    if (!key || !(message?.candidateAnalysisProposal?.analysisJobs || []).some(isCandidateAnalysisActive) || candidateAnalysisPollers.has(key)) return
+    const poll = async () => {
+      const active = await refreshCandidateAnalysisTasks(message)
+      if (!active) {
+        window.clearInterval(candidateAnalysisPollers.get(key))
+        candidateAnalysisPollers.delete(key)
+      }
+    }
+    void poll()
+    candidateAnalysisPollers.set(key, window.setInterval(() => { void poll() }, 3000))
+  }
+
   const mapAgentHistoryMessage = message => {
     const importProposal = message.context?.importProposal || null
     const proposalConfirmed = importProposal?.status === 'confirmed'
     const executionProposal = message.context?.executionProposal || null
     const executionConfirmed = executionProposal?.status === 'confirmed'
+    const candidateAnalysisProposal = message.context?.candidateAnalysisProposal || null
     return {
       id: `history-${message.id}`,
       historyId: Number(message.id),
@@ -205,11 +247,15 @@ export function useAgentWorkspace({ route, router }) {
       selectedCandidateIds: proposalConfirmed ? (importProposal.selectedIds || []) : (importProposal?.items || []).map(item => item.id),
       selectedImportAccountIds: proposalConfirmed ? (importProposal.selectedAccountIds || []) : defaultImportAccountIds(importProposal),
       importScheduledAt: importProposal?.scheduledAt || '',
+      importProcessingOptions: { watermarkEnabled: Boolean(importProposal?.processingOptions?.watermarkEnabled), commentBurnEnabled: Boolean(importProposal?.processingOptions?.commentBurnEnabled) },
       imported: proposalConfirmed,
       importResult: proposalConfirmed ? (importProposal.resultMessage || '该确认已完成。') : '',
+      candidateAnalysisProposal,
+      candidateAnalysisResult: candidateAnalysisProposal?.resultMessage || '',
       executionProposal,
       selectedExecutionAccountIds: executionConfirmed ? (executionProposal.selectedAccountIds || []) : defaultExecutionAccountIds(executionProposal),
       executionScheduledAt: executionProposal?.scheduledAt || '',
+      executionProcessingOptions: { watermarkEnabled: Boolean(executionProposal?.processingOptions?.watermarkEnabled), commentBurnEnabled: Boolean(executionProposal?.processingOptions?.commentBurnEnabled) },
       executed: executionConfirmed,
       executionResult: executionConfirmed ? (executionProposal.resultMessage || '该确认已完成。') : '',
       agentTasks: [
@@ -251,7 +297,10 @@ export function useAgentWorkspace({ route, router }) {
       agentCurrentSession.value = sessionResponse?.data || agentCurrentSession.value
       agentContextStats.value = sessionResponse?.data?.contextStats || null
       agentMessages.value = (messagesResponse?.data?.items || []).map(mapAgentHistoryMessage)
-      agentMessages.value.forEach(watchAgentWorkflowTasks)
+      agentMessages.value.forEach(message => {
+        watchAgentWorkflowTasks(message)
+        watchCandidateAnalysisTasks(message)
+      })
       agentHasOlderMessages.value = Boolean(messagesResponse?.data?.hasMore)
       agentMessagesBeforeId.value = messagesResponse?.data?.nextBeforeId || null
       restoredSessionId = sessionId
@@ -281,7 +330,10 @@ export function useAgentWorkspace({ route, router }) {
         .map(mapAgentHistoryMessage)
         .filter(message => !existingIds.has(message.historyId))
       agentMessages.value = [...olderMessages, ...agentMessages.value]
-      olderMessages.forEach(watchAgentWorkflowTasks)
+      olderMessages.forEach(message => {
+        watchAgentWorkflowTasks(message)
+        watchCandidateAnalysisTasks(message)
+      })
       agentHasOlderMessages.value = Boolean(response?.data?.hasMore)
       agentMessagesBeforeId.value = response?.data?.nextBeforeId || null
     } catch (error) {
@@ -365,12 +417,17 @@ export function useAgentWorkspace({ route, router }) {
           responseMessage.selectedCandidateIds = (payload.importProposal?.items || []).map(item => item.id)
           responseMessage.selectedImportAccountIds = defaultImportAccountIds(payload.importProposal)
           responseMessage.importScheduledAt = payload.importProposal?.scheduledAt || ''
+          responseMessage.importProcessingOptions = { watermarkEnabled: Boolean(payload.importProposal?.processingOptions?.watermarkEnabled), commentBurnEnabled: Boolean(payload.importProposal?.processingOptions?.commentBurnEnabled) }
+          responseMessage.candidateAnalysisProposal = payload.candidateAnalysisProposal || null
+          responseMessage.candidateAnalysisResult = ''
           responseMessage.agentTasks = []
           responseMessage.executionProposal = payload.executionProposal || null
           responseMessage.selectedExecutionAccountIds = defaultExecutionAccountIds(payload.executionProposal)
           responseMessage.executionScheduledAt = ''
+          responseMessage.executionProcessingOptions = { watermarkEnabled: Boolean(payload.executionProposal?.processingOptions?.watermarkEnabled), commentBurnEnabled: Boolean(payload.executionProposal?.processingOptions?.commentBurnEnabled) }
           saveAgentSessionId(payload.sessionId)
           agentCurrentSession.value = { id: payload.sessionId, source: 'web' }
+          watchCandidateAnalysisTasks(responseMessage)
         }
         if (type === 'error') throw new Error(payload.message || 'Agent 暂时不可用')
         void scrollAgentMessages()
@@ -564,7 +621,8 @@ export function useAgentWorkspace({ route, router }) {
         sessionId: agentSessionId.value,
         selectedIds,
         targets,
-        scheduledAt: message.importScheduledAt || ''
+        scheduledAt: message.importScheduledAt || '',
+        processingOptions: proposal.requiresProcessingOptions ? message.importProcessingOptions : undefined
       })
       const data = response?.data || {}
       message.imported = true
@@ -580,6 +638,42 @@ export function useAgentWorkspace({ route, router }) {
       ElMessage.error(message.importResult)
     } finally {
       message.importing = false
+    }
+  }
+
+  const canConfirmCandidateAnalysis = message => {
+    const proposal = message?.candidateAnalysisProposal
+    const selected = message?.selectedCandidateIds || []
+    return Boolean(proposal?.proposalId) && proposal.status === 'pending' && !message.analyzingCandidates && selected.length > 0 && selected.length <= Number(proposal.maxItems || 3)
+  }
+
+  const confirmCandidateAnalysis = async message => {
+    const proposal = message?.candidateAnalysisProposal
+    const selectedIds = message?.selectedCandidateIds || []
+    if (!canConfirmCandidateAnalysis(message) || !agentSessionId.value) return
+    try {
+      await ElMessageBox.confirm(`将仅下载 ${selectedIds.length} 条候选的临时音频并转写分析；不会导入、下载完整视频、处理或发布。`, '确认深度分析', { confirmButtonText: '确认分析', cancelButtonText: '取消', type: 'warning' })
+    } catch {
+      return
+    }
+    message.analyzingCandidates = true
+    try {
+      const response = await agentApi.confirmCandidateAnalysisProposal(proposal.proposalId, {
+        sessionId: agentSessionId.value,
+        selectedIds
+      })
+      const data = response?.data || {}
+      proposal.status = 'submitted'
+      proposal.analysisJobs = data.analysisJobs || []
+      message.candidateAnalysisResult = data.message || '候选音频深度分析任务已创建。'
+      watchCandidateAnalysisTasks(message)
+      ElMessage.success(message.candidateAnalysisResult)
+    } catch (error) {
+      if ((error?.message || '').includes('已失效')) proposal.status = 'expired'
+      message.candidateAnalysisResult = error?.message || '候选音频深度分析提交失败'
+      ElMessage.error(message.candidateAnalysisResult)
+    } finally {
+      message.analyzingCandidates = false
     }
   }
 
@@ -632,7 +726,8 @@ export function useAgentWorkspace({ route, router }) {
       const response = await agentApi.confirmExecutionProposal(proposal.proposalId, {
         sessionId: agentSessionId.value,
         targets: executionTargets(message),
-        scheduledAt: message.executionScheduledAt || ''
+        scheduledAt: message.executionScheduledAt || '',
+        processingOptions: proposal.requiresProcessingOptions ? message.executionProcessingOptions : undefined
       })
       message.executed = true
       proposal.status = 'confirmed'
@@ -672,6 +767,7 @@ export function useAgentWorkspace({ route, router }) {
     selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
     confirmAgentAction, handleAskAgentEvent,
     normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport,
+    canConfirmCandidateAnalysis, confirmCandidateAnalysis,
     normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
     agentWorkflowStatusLabel, agentWorkflowStageLabel
   }

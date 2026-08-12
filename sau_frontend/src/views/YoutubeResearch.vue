@@ -3052,7 +3052,7 @@ const jobStatusText = (status, step = '') => {
     waiting_confirmation: step === 'content_safety_confirm' ? '等待视频处理确认' : '等待发布确认',
     success: '成功',
     failed: '失败',
-    abnormal: '异常'
+    abnormal: step === 'publish_confirmation' ? '发布结果待核验' : '异常'
   }
   return map[status] || status || '-'
 }

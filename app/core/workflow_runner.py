@@ -1014,6 +1014,26 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             command = _publish_workflow_platform(publish_job, processed_file, material, platform_type, account_name, command_factory)
             if command:
                 publish_commands.append(command)
+    except PublishResultUncertainError as exc:
+        message = str(exc)
+        finish_workflow_event(publish_event_id, "success", message, output_file_path=processed_file)
+        if workflow_event_id:
+            finish_workflow_event(workflow_event_id, "success", message, output_file_path=processed_file)
+        update_youtube_workflow_job(
+            job_id,
+            status="abnormal",
+            step="publish_confirmation",
+            message=message,
+            error_code="VF-PUBLISH-RESULT-UNCERTAIN",
+            error_type="PUBLISH_RESULT_UNCERTAIN",
+            error_reason=message,
+            error_detail="",
+            progress=100,
+            speed="",
+            eta="",
+        )
+        backend_logger.warning("workflow publish result uncertain job_id=%s platform_type=%s", job_id, publishing_platform_type)
+        return publish_commands
     except Exception as exc:
         platform_label = platform_name(publishing_platform_type) if publishing_platform_type else "目标平台"
         publish_error = RuntimeError(f"PUBLISH_FAILED:{platform_label}:{str(exc)}")

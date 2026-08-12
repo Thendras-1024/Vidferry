@@ -878,8 +878,17 @@ def _archive_published_material(
         retryable_existing = existing_status in {"failed", "timeout"} and retry_context
         if same_task or retryable_existing:
             return
+        if existing_status == "unknown":
+            message = (
+                f"该视频此前已提交到{platform_name or platform_type}，但最终发布结果尚待核验。"
+                "请先到平台作品管理页确认；为避免重复投稿，系统不会再次提交。"
+            )
+        elif existing_status in {"pending", "running"}:
+            message = f"该视频正在发布到{platform_name or platform_type}，不能重复提交。"
+        else:
+            message = f"该视频已发布到{platform_name or platform_type}，不能重复发布。"
         raise WorkflowConflictError(
-            f"璇ヨ棰戝凡鍙戝竷鎴栨鍦ㄥ彂甯冨埌{platform_name or platform_type}，涓嶈兘閲嶅鍙戝竷",
+            message,
             "VF-PUBLISH-DUPLICATE-PLATFORM",
             "PUBLISH_DUPLICATE_PLATFORM",
             {
@@ -1248,8 +1257,18 @@ def _assert_publish_targets_available(material, targets):
             )
             existing = cursor.fetchone()
             if existing:
+                existing_status = str(existing.get("status") or "success")
+                if existing_status == "unknown":
+                    message = (
+                        f"该视频此前已提交到{platform_name(platform_type)}，但最终发布结果尚待核验。"
+                        "请先到平台作品管理页确认；为避免重复投稿，系统不会再次提交。"
+                    )
+                elif existing_status in {"pending", "running"}:
+                    message = f"该视频正在发布到{platform_name(platform_type)}，不能重复提交。"
+                else:
+                    message = f"该视频已发布到{platform_name(platform_type)}，不能重复发布。"
                 raise WorkflowConflictError(
-                    f"该视频已发布或正在发布到{platform_name(platform_type)}，不能重复发布到同一平台。",
+                    message,
                     "VF-PUBLISH-DUPLICATE-PLATFORM",
                     "PUBLISH_DUPLICATE_PLATFORM",
                     {

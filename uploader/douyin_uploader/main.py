@@ -28,7 +28,9 @@ DOUYIN_UPLOAD_RETRY_LIMIT = int(os.environ.get("DOUYIN_UPLOAD_RETRY_LIMIT", "1")
 DOUYIN_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("DOUYIN_UPLOAD_WAIT_TIMEOUT", "1800") or 1800)
 DOUYIN_ENTER_PUBLISH_PAGE_TIMEOUT = int(os.environ.get("DOUYIN_ENTER_PUBLISH_PAGE_TIMEOUT", "120") or 120)
 DOUYIN_GOTO_TIMEOUT_MS = int(os.environ.get("DOUYIN_GOTO_TIMEOUT_MS", "90000") or 90000)
-DOUYIN_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("DOUYIN_PUBLISH_CONFIRM_TIMEOUT", "180") or 180)
+# 抖音在跳转作品管理页后还会进行平台侧处理。三分钟不足以覆盖高峰期，
+# 超时只会造成重复提交风险；仍允许通过环境变量按部署需要缩短或延长。
+DOUYIN_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("DOUYIN_PUBLISH_CONFIRM_TIMEOUT", "600") or 600)
 DOUYIN_UPLOAD_URL = "https://creator.douyin.com/creator-micro/content/upload"
 
 

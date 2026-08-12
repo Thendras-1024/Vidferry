@@ -64,6 +64,17 @@ export const agentApi = {
     return request.post(`/agents/execution-proposals/${encodeURIComponent(proposalId)}/confirm`, data)
   },
 
+  confirmCandidateAnalysisProposal(proposalId, data) {
+    return request.post(`/agents/candidate-analysis-proposals/${encodeURIComponent(proposalId)}/confirm`, data)
+  },
+
+  getCandidateAnalysisJob(jobId, sessionId) {
+    return request.get(`/agents/candidate-analysis-jobs/${encodeURIComponent(jobId)}`, {
+      params: { sessionId },
+      silentError: true
+    })
+  },
+
   async chatStream(data, onEvent) {
     const response = await fetch(`${apiBaseUrl}/agents/chat/stream`, {
       method: 'POST',

@@ -55,7 +55,10 @@ def _replace_placeholders(sql):
 def normalize_postgres_sql(sql):
     """转换项目当前使用的 SQLite 方言；业务 SQL 仍应逐步显式改写。"""
     value = str(sql or "")
-    value = re.sub(r"\bBEGIN\s+IMMEDIATE\b", "BEGIN", value, flags=re.I)
+    # psycopg opens a transaction automatically for the connection context.
+    # SQLite's BEGIN IMMEDIATE would otherwise issue a second BEGIN and make
+    # PostgreSQL log a warning on every scheduled-publish polling cycle.
+    value = re.sub(r"^\s*BEGIN\s+IMMEDIATE\s*;?\s*$", "", value, flags=re.I)
     value = re.sub(r"\bINSERT\s+OR\s+IGNORE\b", "INSERT", value, flags=re.I)
     if re.match(r"^\s*INSERT\s+INTO\b", value, re.I) and "ON CONFLICT" not in value.upper():
         value += " ON CONFLICT DO NOTHING" if "INSERT OR IGNORE" in str(sql).upper() else ""

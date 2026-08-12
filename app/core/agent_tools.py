@@ -6,7 +6,15 @@ from __future__ import annotations
 import os as _os
 import re as _re
 import datetime as _datetime
+import math as _math
+import time as _time
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+from threading import RLock as _RLock
+
+
+_AGENT_METADATA_CACHE_TTL_SECONDS = 15 * 60
+_AGENT_METADATA_CACHE = {}
+_AGENT_METADATA_CACHE_LOCK = _RLock()
 
 
 AGENT_VIDEO_STATUSES = {
@@ -144,6 +152,60 @@ def _agent_limit(limit=None):
     return max(1, min(int(limit or AGENT_MAX_TOOL_ROWS), AGENT_MAX_TOOL_ROWS))
 
 
+def _candidate_subscriber_count(value):
+    text = str(value or "").strip().lower().replace(",", "")
+    match = _re.search(r"([\d.]+)\s*(万|w|k|m)?", text)
+    if not match:
+        return 0
+    try:
+        amount = float(match.group(1))
+    except ValueError:
+        return 0
+    return int(amount * {"万": 10000, "w": 10000, "k": 1000, "m": 1000000}.get(match.group(2), 1))
+
+
+def _candidate_metadata_score(item):
+    """根据当前候选可获得的公开元数据排序，不把它宣称为题材热度或爆款预测。"""
+    views = max(0, int(item.get("viewCount") or 0))
+    published_at = str(item.get("publishedAt") or "")
+    try:
+        age_days = max(1, (_datetime.date.today() - _datetime.date.fromisoformat(published_at[:10])).days)
+    except ValueError:
+        age_days = 0
+    velocity = views / max(age_days, 1) if age_days else 0
+    velocity_score = min(52, round(_math.log10(velocity + 1) * 12)) if velocity else 0
+    total_view_score = min(20, round(_math.log10(views + 1) * 3)) if views else 0
+    freshness_score = min(18, round(18 * _math.exp(-age_days / 90))) if age_days else 0
+    subscribers = _candidate_subscriber_count(item.get("subscribers"))
+    channel_ratio = views / subscribers if subscribers else 0
+    channel_score = min(10, round(_math.log10(channel_ratio + 1) * 8)) if channel_ratio else 0
+    signals = []
+    if velocity:
+        signals.append(f"日均约 {int(velocity):,} 次播放")
+    if age_days:
+        signals.append(f"发布约 {age_days} 天")
+    if channel_ratio >= 1:
+        signals.append("播放量相对频道粉丝数表现较好")
+    if not signals:
+        signals.append("公开元数据不完整，热度判断置信度有限")
+    return min(100, velocity_score + total_view_score + freshness_score + channel_score), signals
+
+
+def _agent_enrich_candidate_metadata(item):
+    video_id = str((item or {}).get("id") or "").strip()
+    now = _time.time()
+    if video_id:
+        with _AGENT_METADATA_CACHE_LOCK:
+            cached = _AGENT_METADATA_CACHE.get(video_id)
+            if cached and now - cached[0] < _AGENT_METADATA_CACHE_TTL_SECONDS:
+                return dict(cached[1])
+    enriched = _enrich_video_metadata(item, "agent-search", quick_metadata=True)
+    if video_id:
+        with _AGENT_METADATA_CACHE_LOCK:
+            _AGENT_METADATA_CACHE[video_id] = (now, dict(enriched))
+    return enriched
+
+
 def search_youtube_candidates(query, limit=None, published_after="", min_views=None, max_views=None, min_duration_seconds=None, max_duration_seconds=None):
     query = str(query or "").strip()
     if not query:
@@ -159,17 +221,36 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
             cursor = conn.cursor()
             cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
             existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
-    # yt-dlp 的搜索摘要通常没有订阅数和精确发布日期。先剔除已有线索，
-    # 再对有限候选取详情，避免为不会展示的视频建立大量额外请求。
+    # 搜索摘要足以先排除明显不满足条件的候选，避免对大量视频发详情请求，
+    # 否则容易触发 YouTube 的 429 反爬限制。
     candidates = [item for item in videos if str(item.get("id") or "") not in existing_ids]
-    detail_limit = min(len(candidates), max(6, min(requested * 2, 12)))
+    cutoff = str(published_after or "").strip()
+
+    def summary_may_match(item):
+        views = int(item.get("viewCount") or 0)
+        duration = float(item.get("durationSeconds") or 0)
+        published = str(item.get("publishedAt") or "")
+        if cutoff and published and published < cutoff:
+            return False
+        if min_views is not None and views > 0 and views < int(min_views):
+            return False
+        if max_views is not None and views > 0 and views > int(max_views):
+            return False
+        if min_duration_seconds is not None and duration > 0 and duration < int(min_duration_seconds):
+            return False
+        if max_duration_seconds is not None and duration > 0 and duration > int(max_duration_seconds):
+            return False
+        return True
+
+    candidates = [item for item in candidates if summary_may_match(item)]
+    # 保持少量、低并发详情补全；重复检索会命中 15 分钟缓存。完整排序仍以补全后元数据为准。
+    detail_limit = min(len(candidates), max(6, min(requested * 2, 10)))
     detail_candidates = candidates[:detail_limit]
     if len(detail_candidates) > 1:
-        with _ThreadPoolExecutor(max_workers=min(3, len(detail_candidates)), thread_name_prefix="vidferry-agent-metadata") as executor:
-            enriched_candidates = list(executor.map(lambda item: _enrich_video_metadata(item, "agent-search", quick_metadata=True), detail_candidates))
+        with _ThreadPoolExecutor(max_workers=min(2, len(detail_candidates)), thread_name_prefix="vidferry-agent-metadata") as executor:
+            enriched_candidates = list(executor.map(_agent_enrich_candidate_metadata, detail_candidates))
     else:
-        enriched_candidates = [_enrich_video_metadata(item, "agent-search", quick_metadata=True) for item in detail_candidates]
-    cutoff = str(published_after or "").strip()
+        enriched_candidates = [_agent_enrich_candidate_metadata(item) for item in detail_candidates]
     def matches(item):
         views = int(item.get("viewCount") or 0)
         duration = float(item.get("durationSeconds") or 0)
@@ -181,7 +262,15 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
         if max_duration_seconds is not None and duration > int(max_duration_seconds): return False
         return True
     filtered = [item for item in enriched_candidates if matches(item)]
-    items = filtered[:requested]
+    for item in filtered:
+        score, signals = _candidate_metadata_score(item)
+        item["metadataScore"] = score
+        item["metadataSignals"] = signals
+    items = sorted(
+        filtered,
+        key=lambda item: (int(item.get("metadataScore") or 0), int(item.get("viewCount") or 0)),
+        reverse=True,
+    )[:requested]
     return {"query": query, "items": items, "filters": {
         "publishedAfter": cutoff, "minViews": min_views, "maxViews": max_views,
         "minDurationSeconds": min_duration_seconds, "maxDurationSeconds": max_duration_seconds,

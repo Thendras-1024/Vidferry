@@ -70,11 +70,17 @@
                     </div>
                     <el-checkbox-group v-if="message.importProposal.status === 'pending'" v-model="message.selectedCandidateIds" class="agent-proposal-list">
                       <el-checkbox v-for="item in message.importProposal.items || []" :key="item.id" :value="item.id" class="agent-proposal-item">
+                        <el-tooltip v-if="item.metadataScore !== undefined" :content="candidateMetadataScoreHint(item)" placement="top" :show-after="300">
+                          <small class="candidate-metadata-score">同批热度 {{ item.metadataScore }}/100</small>
+                        </el-tooltip>
                         <span class="agent-proposal-copy"><strong>{{ item.title }}</strong><small>{{ [item.channel, item.duration].filter(Boolean).join(' · ') }}</small></span>
                       </el-checkbox>
                     </el-checkbox-group>
                     <el-checkbox-group v-else-if="message.importProposal.status === 'confirmed'" v-model="message.selectedCandidateIds" class="agent-proposal-list is-readonly">
                       <el-checkbox v-for="item in message.importProposal.items || []" :key="item.id" :value="item.id" disabled class="agent-proposal-item">
+                        <el-tooltip v-if="item.metadataScore !== undefined" :content="candidateMetadataScoreHint(item)" placement="top" :show-after="300">
+                          <small class="candidate-metadata-score">同批热度 {{ item.metadataScore }}/100</small>
+                        </el-tooltip>
                         <span class="agent-proposal-copy"><strong>{{ item.title }}</strong><small>{{ [item.channel, item.duration].filter(Boolean).join(' · ') }}</small></span>
                       </el-checkbox>
                     </el-checkbox-group>
@@ -87,6 +93,28 @@
                     <el-date-picker v-if="message.importProposal.status === 'pending' && message.importProposal.requiresSchedule" v-model="message.importScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择定时发布时间" class="agent-proposal-schedule" />
                     <el-date-picker v-else-if="message.importProposal.status === 'confirmed' && message.importProposal.requiresSchedule" v-model="message.importScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
                     <p v-if="message.importProposal.status === 'pending' && message.importProposal.scheduleNotice" class="agent-proposal-result">{{ message.importProposal.scheduleNotice }}</p>
+                    <div v-if="message.importProposal.requiresProcessingOptions" class="agent-processing-options" :class="{ 'is-readonly': message.importProposal.status !== 'pending' }">
+                      <span>处理选项</span>
+                      <el-switch v-model="message.importProcessingOptions.watermarkEnabled" size="small" active-text="水印：开启" inactive-text="水印：关闭" :disabled="message.importProposal.status !== 'pending'" />
+                      <el-switch v-model="message.importProcessingOptions.commentBurnEnabled" size="small" active-text="评论烧制：开启" inactive-text="评论烧制：关闭" :disabled="message.importProposal.status !== 'pending'" />
+                    </div>
+                    <div v-if="message.candidateAnalysisProposal" class="candidate-analysis-panel">
+                      <p>音频深度分析会结合公开元数据与字幕结构；只下载临时音频，不导入或下载完整视频。</p>
+                      <div v-if="message.candidateAnalysisProposal.status === 'pending'" class="agent-proposal-action">
+                        <el-button size="small" :loading="message.analyzingCandidates" :disabled="!canConfirmCandidateAnalysis(message)" @click="confirmCandidateAnalysis(message)">
+                          深度分析所选 {{ (message.selectedCandidateIds || []).length }} 条
+                        </el-button>
+                      </div>
+                      <p v-else-if="message.candidateAnalysisProposal.status === 'expired'" class="agent-proposal-result">该候选分析确认已失效，请重新检索。</p>
+                      <div v-for="task in message.candidateAnalysisProposal.analysisJobs || []" :key="task.id" class="candidate-analysis-result">
+                        <strong>{{ task.title || task.videoId }}</strong>
+                        <span v-if="task.result?.score !== undefined">传播潜力 {{ task.result.score }}/100 · 内容 {{ task.result.contentScore }}/100 · 置信度{{ task.result.confidence }}</span>
+                        <span v-else>{{ task.message || '等待分析' }}</span>
+                        <small v-if="task.result?.summary">{{ task.result.summary }}</small>
+                        <small v-else-if="task.errorReason" class="is-error">{{ task.errorReason }}</small>
+                      </div>
+                      <p v-if="message.candidateAnalysisResult" class="agent-proposal-result">{{ message.candidateAnalysisResult }}</p>
+                    </div>
                     <div v-if="message.importProposal.status === 'pending'" class="agent-proposal-action">
                       <el-button type="primary" size="small" :loading="message.importing" :disabled="!canConfirmAgentImport(message)" @click="confirmAgentImport(message)">
                         确认{{ message.importProposal.actionLabel || '导入' }} {{ (message.selectedCandidateIds || []).length }} 个线索
@@ -106,6 +134,11 @@
                     </el-checkbox-group>
                     <el-date-picker v-if="message.executionProposal.status === 'pending' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择发布时间" class="agent-proposal-schedule" />
                     <el-date-picker v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
+                    <div v-if="message.executionProposal.requiresProcessingOptions" class="agent-processing-options" :class="{ 'is-readonly': message.executionProposal.status !== 'pending' }">
+                      <span>处理选项</span>
+                      <el-switch v-model="message.executionProcessingOptions.watermarkEnabled" size="small" active-text="水印：开启" inactive-text="水印：关闭" :disabled="message.executionProposal.status !== 'pending'" />
+                      <el-switch v-model="message.executionProcessingOptions.commentBurnEnabled" size="small" active-text="评论烧制：开启" inactive-text="评论烧制：关闭" :disabled="message.executionProposal.status !== 'pending'" />
+                    </div>
                     <div v-if="message.executionProposal.status === 'pending'" class="agent-proposal-action">
                       <el-button type="primary" size="small" :loading="message.executing" :disabled="!canConfirmAgentExecution(message)" @click="confirmAgentExecution(message)">
                         确认{{ message.executionProposal.actionLabel }}
@@ -448,10 +481,15 @@ const {
   sendAgentMessage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
   selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
   confirmAgentAction, handleAskAgentEvent,
-  normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport,
+  normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport, canConfirmCandidateAnalysis, confirmCandidateAnalysis,
   normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
   agentWorkflowStatusLabel, agentWorkflowStageLabel
 } = toRefs(reactive(props.workspace))
+
+const candidateMetadataScoreHint = item => {
+  const signals = Array.isArray(item?.metadataSignals) ? item.metadataSignals.filter(Boolean) : []
+  return ['仅用于本次候选排序，不代表题材整体热度。', ...signals].join('；')
+}
 </script>
 
 <style scoped>
@@ -485,6 +523,7 @@ const {
 
 .agent-proposal-copy {
   display: grid;
+  flex: 1;
   min-width: 0;
   gap: 2px;
 }
@@ -513,6 +552,25 @@ const {
   margin: 0 0 8px;
 }
 
+.agent-processing-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.agent-processing-options > span {
+  min-width: 52px;
+}
+
+.candidate-metadata-score {
+  color: var(--el-color-primary);
+  white-space: nowrap;
+}
+
 .is-readonly {
   opacity: 0.7;
 }
@@ -520,6 +578,39 @@ const {
 .agent-proposal-action {
   display: flex;
   width: 100%;
+}
+
+.candidate-analysis-panel {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.candidate-analysis-panel > p,
+.candidate-analysis-result small {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.candidate-analysis-result {
+  display: grid;
+  gap: 3px;
+  padding: 7px 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-size: 12px;
+}
+
+.candidate-analysis-result strong,
+.candidate-analysis-result span,
+.candidate-analysis-result small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-analysis-result .is-error {
+  color: var(--el-color-danger);
 }
 
 .agent-task-progress {

@@ -16,6 +16,8 @@ from app.config import (
     WORKFLOW_MAX_PUBLISH_QUEUED_JOBS,
     WORKFLOW_MAX_SEARCH_JOBS,
     WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
+    CANDIDATE_ANALYSIS_MAX_JOBS,
+    CANDIDATE_ANALYSIS_MAX_QUEUED_JOBS,
 )
 from app.db.base import (
     DATABASE_INTEGRITY_ERRORS,
@@ -64,6 +66,7 @@ _workflow_executor_limits = {
     "publish": (WORKFLOW_MAX_PUBLISH_JOBS, WORKFLOW_MAX_PUBLISH_QUEUED_JOBS),
     "analysis": (WORKFLOW_MAX_ANALYSIS_JOBS, WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS),
     "comment": (WORKFLOW_MAX_COMMENT_JOBS, WORKFLOW_MAX_COMMENT_QUEUED_JOBS),
+    "candidate_analysis": (CANDIDATE_ANALYSIS_MAX_JOBS, CANDIDATE_ANALYSIS_MAX_QUEUED_JOBS),
 }
 _workflow_executors = {
     resource: ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"vidferry-{resource}")

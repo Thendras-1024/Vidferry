@@ -8,6 +8,10 @@ import threading
 from app.utils.time_util import _build_publish_datetimes, _format_publish_schedule, _parse_publish_schedule
 
 
+class PublishResultUncertainError(RuntimeError):
+    """平台已接收上传但未能在自动化窗口内确认最终发布结果。"""
+
+
 def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
@@ -67,7 +71,20 @@ def _publish_workflow_platform(job, processed_file, material, platform_type, acc
     if not account_name:
         return ""
     backend_logger.info("发布开始 job_id=%s platform_type=%s", job.get("id", ""), platform_type)
-    command = command_factory(job, processed_file)
+    try:
+        command = command_factory(job, processed_file)
+    except PublishResultUncertainError as exc:
+        _mark_published_materials(
+            [material.get("file_path") or material.get("storage_key")],
+            platform_type=platform_type,
+            title=job.get("title") or "YouTube 视频",
+            account_count=1,
+            account_file=_publish_platform_account_file(platform_type, account_name),
+            account_name=account_name,
+            status="unknown",
+            message=str(exc),
+        )
+        raise
     if not command:
         return ""
     _mark_published_materials(
@@ -287,8 +304,10 @@ def terminate_inflight_publish_processes():
 
 def _run_isolated_publish_command(command, timeout=3600):
     env = os.environ.copy()
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONUTF8", "1")
+    # 发布适配器由独立 Python 进程运行。这里必须覆盖继承的控制台编码，
+    # 否则 Windows 上父进程的 GBK 设置会把平台的 UTF-8 状态提示变成乱码。
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     print(f"启动平台发布子进程: {' '.join(map(str, command))}", flush=True)
     process = None
     try:
@@ -310,14 +329,16 @@ def _run_isolated_publish_command(command, timeout=3600):
         while True:
             line = process.stdout.readline() if process.stdout else ""
             if line:
-                output_lines.append(line)
-                print(line.rstrip(), flush=True)
+                clean_line = _repair_publish_output_text(line)
+                output_lines.append(clean_line)
+                print(clean_line.rstrip(), flush=True)
             if process.poll() is not None:
                 if process.stdout:
                     rest = process.stdout.read()
                     if rest:
-                        output_lines.append(rest)
-                        print(rest.rstrip(), flush=True)
+                        clean_rest = _repair_publish_output_text(rest)
+                        output_lines.append(clean_rest)
+                        print(clean_rest.rstrip(), flush=True)
                 break
             if time.time() - started_at > timeout:
                 process.kill()
@@ -345,6 +366,8 @@ def _run_workflow_publish_command(command, platform_type, account_file, timeout=
     )
     if _is_cookie_invalid_error(output):
         _mark_account_abnormal(platform_type, account_file, output)
+    if _is_publish_result_uncertain(output):
+        raise PublishResultUncertainError(_publish_result_uncertain_message(platform_type))
     raise RuntimeError(_publish_command_failure(output, f"{platform_name(platform_type)} 发布失败"))
 
 
@@ -370,15 +393,60 @@ def _publish_command_failure(output, fallback="发布失败"):
 def _publish_failure_lines(output):
     ansi_pattern = _re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
     return [
-        ansi_pattern.sub("", line).strip()
+        _repair_publish_output_text(ansi_pattern.sub("", line)).strip()
         for line in str(output or "").splitlines()
-        if ansi_pattern.sub("", line).strip()
+        if _repair_publish_output_text(ansi_pattern.sub("", line)).strip()
     ]
 
 
 def _is_publish_rate_limited(lines):
     text = "\n".join(lines).lower()
     return "upload rate limit" in text or "code: 601" in text or "上传视频过快" in text
+
+
+def _is_publish_result_uncertain(output):
+    """仅匹配平台已进入提交后的确认超时，不能把明确上传失败归为待核验。"""
+    raw_text = str(output or "")
+    text = "\n".join(_publish_failure_lines(raw_text))
+    confirmation_timeout = "VF-PUBLISH-CONFIRM-TIMEOUT: 已进入作品管理页" in text
+    duplicate_submission = "不能重复发布" in text and ("已发布" in text or "正在发布" in text)
+    # 兼容旧子进程已经按 GBK 错解的抖音提示。即使单行中混有正常中文，
+    # 也不能因此漏判后再次调用平台上传接口。
+    garbled_duplicate_submission = (
+        "璇ヨ棰戝凡鍙戝竷鎴栨鍦ㄥ彂甯冨埌" in raw_text
+        and "涓嶈兘閲嶅鍙戝竷" in raw_text
+    )
+    return confirmation_timeout or duplicate_submission or garbled_duplicate_submission
+
+
+def _repair_publish_output_text(value):
+    """修复 Windows 子进程偶发的 UTF-8 被按 GBK 解码后的中文乱码。"""
+    text = str(value or "")
+    if not text:
+        return text
+    # 某些平台把正常中文品牌名混在乱码片段中，整行反解会失败。先修复已知的
+    # 平台业务提示，保证状态机能可靠识别“已发布/正在发布，不能重复发布”。
+    known_fragments = {
+        "璇ヨ棰戝凡鍙戝竷鎴栨鍦ㄥ彂甯冨埌": "该视频已发布或正在发布到",
+        "涓嶈兘閲嶅鍙戝竷": "不能重复发布",
+    }
+    for garbled, readable in known_fragments.items():
+        text = text.replace(garbled, readable)
+    try:
+        repaired = text.encode("gbk").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
+    # 仅在修复后的文本含有发布领域词汇时替换，避免误改正常日志。
+    signal_words = ("视频", "作品", "发布", "上传", "正在", "不能", "重复", "成功", "失败", "抖音")
+    return repaired if any(word in repaired for word in signal_words) else text
+
+
+def _publish_result_uncertain_message(platform_type):
+    return (
+        f"VF-PUBLISH-RESULT-UNCERTAIN: {platform_name(platform_type)}已接收发布请求，"
+        "但自动化无法可靠确认最终状态，或平台已提示该作品正在发布/已发布。"
+        "请先在平台作品管理页核验，系统已阻止自动重发以避免重复发布。"
+    )
 
 
 def _publish_failure_log_text(output):
@@ -405,6 +473,7 @@ def _execute_publish_target(task):
     external_started = False
     external_succeeded = False
     command_failed = False
+    result_uncertain = False
     try:
         _mark_published_materials(
             task["fileList"],
@@ -430,9 +499,23 @@ def _execute_publish_target(task):
                 external_started = True
                 process_result = _run_isolated_publish_command(command, timeout=task.get("timeoutSeconds") or 3600)
                 if process_result.returncode != 0:
-                    command_failed = True
                     output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
+                    if _is_publish_result_uncertain(output):
+                        result_uncertain = True
+                        result.update({
+                            "status": "unknown",
+                            "message": _publish_result_uncertain_message(platform_type),
+                        })
+                        backend_logger.warning(
+                            "publish platform result uncertain after confirmation timeout : platform_type=%s",
+                            platform_type,
+                        )
+                        break
+                    command_failed = True
                     raise RuntimeError(_publish_command_failure(output, f"{task['platformName']} 发布失败"))
+
+        if result_uncertain:
+            return result
 
         external_succeeded = True
         published_ids = _mark_published_materials(

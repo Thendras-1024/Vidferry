@@ -1294,9 +1294,50 @@ def _download_youtube_video(job):
         "no_warnings": False,
         "ffmpeg_location": ffmpeg_command,
         "progress_hooks": [_make_download_progress_hook(job["id"])],
+        # Keep the partial file so a retry can resume the interrupted HTTP stream.
+        "continuedl": True,
+        "retries": YTDLP_DOWNLOAD_RETRIES,
+        "fragment_retries": YTDLP_FRAGMENT_RETRIES,
+        "file_access_retries": 3,
+        "socket_timeout": YTDLP_SOCKET_TIMEOUT_SECONDS,
+        # A single fragment connection is less likely to trigger unstable local/network paths.
+        "concurrent_fragment_downloads": 1,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.extract_info(job["url"], download=True)
+    transient_markers = (
+        "bytes read", "incomplete read", "connection reset", "connection aborted",
+        "remote end closed", "timed out", "timeout", "http error 5", "temporarily unavailable",
+    )
+    last_error = None
+    for attempt in range(1, YTDLP_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(job["url"], download=True)
+            last_error = None
+            break
+        except yt_dlp.utils.DownloadError as exc:
+            last_error = exc
+            detail = str(exc).lower()
+            retryable = any(marker in detail for marker in transient_markers)
+            if not retryable or attempt >= YTDLP_DOWNLOAD_ATTEMPTS:
+                break
+            update_youtube_workflow_job(
+                job["id"],
+                step="download",
+                message=f"下载流中断，正在断点续传（第 {attempt + 1}/{YTDLP_DOWNLOAD_ATTEMPTS} 次）",
+                progress=0,
+                speed="",
+                eta="",
+            )
+            backend_logger.warning(
+                "YouTube download stream interrupted : job_id=%s video_id=%s attempt=%s/%s error=%s",
+                job.get("id") or "", job.get("videoId") or "", attempt, YTDLP_DOWNLOAD_ATTEMPTS, str(exc),
+            )
+            time.sleep(min(10, attempt * 2))
+    if last_error:
+        detail = str(last_error).lower()
+        if any(marker in detail for marker in transient_markers):
+            raise RuntimeError("YTDLP_DOWNLOAD_STREAM_INTERRUPTED") from last_error
+        raise last_error
 
     preferred = download_dir / f"{video_key}.mp4"
     if preferred.exists():
