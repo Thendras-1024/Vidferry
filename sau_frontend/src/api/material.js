@@ -52,6 +52,10 @@ export const materialApi = {
   deletePublishTargetRecord: (id) => {
     return http.delete(`/publish/target-records/${id}`)
   },
+
+  releaseUnknownPublishRecord: (id, reason = '') => {
+    return http.post(`/publish/target-records/${id}/release-unknown`, { confirmed: true, reason })
+  },
   
   // 下载素材
   downloadMaterial: (filePath) => {

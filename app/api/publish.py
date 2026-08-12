@@ -7,6 +7,8 @@ def postVideo():
         return jsonify({"code": exc.status_code, "msg": str(exc), "data": {"errorCode": exc.error_code, "guard": exc.result}}), exc.status_code
     except WorkflowConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
+    except PublishQueueFullError as exc:
+        return jsonify({"code": 429, "msg": str(exc), "data": {"errorCode": exc.error_code}}), 429
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as e:
@@ -16,18 +18,11 @@ def postVideo():
             "msg": f"发布失败: {str(e)}",
             "data": None,
         }), 500
-    failed_count = result.get("failedCount", 0)
-    unknown_count = result.get("unknownCount", 0)
-    success_count = result.get("successCount", 0)
     return jsonify({
-        "code": 200,
-        "msg": (
-            "存在待核验的平台发布结果"
-            if unknown_count
-            else ("所有平台发布失败" if failed_count and success_count == 0 else ("部分平台发布失败" if failed_count else "发布任务已提交"))
-        ),
+        "code": 202,
+        "msg": "发布任务已进入队列",
         "data": result,
-    }), 200
+    }), 202
 
 
 @app.route('/updateUserinfo', methods=['POST'])
@@ -81,7 +76,7 @@ def postVideoBatch():
         try:
             batch_results.append({
                 "index": index,
-                "status": "success",
+                "status": "accepted",
                 "data": _publish_payload(data),
             })
         except AgentGuardError as exc:
@@ -98,6 +93,13 @@ def postVideoBatch():
                 "message": str(exc),
                 "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data},
             })
+        except PublishQueueFullError as exc:
+            batch_results.append({
+                "index": index,
+                "status": "failed",
+                "message": str(exc),
+                "data": {"errorCode": exc.error_code},
+            })
         except Exception as exc:
             batch_results.append({
                 "index": index,
@@ -108,17 +110,17 @@ def postVideoBatch():
     failed_count = sum(
         1
         for item in batch_results
-        if item["status"] != "success"
+        if item["status"] != "accepted"
         or (isinstance(item.get("data"), dict) and item["data"].get("hasFailures"))
     )
     return jsonify({
-        "code": 200,
+        "code": 202,
         "msg": "部分批次发布失败" if failed_count else "发布任务已提交",
         "data": {
             "items": batch_results,
             "hasFailures": failed_count > 0,
         }
-    }), 200
+    }), 202
 
 
 @app.route('/bilibili/categories', methods=['GET'])

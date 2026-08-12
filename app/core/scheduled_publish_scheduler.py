@@ -17,10 +17,10 @@
 # - 认领原子性：_claim_due_scheduled_publish_task 用 BEGIN IMMEDIATE + UPDATE…WHERE
 #   status='pending' + rowcount==1 保证同一任务不会被重复认领/重复触发。
 # - 崩溃恢复：进程异常退出会留下 status='running' 的任务，下次 start 时由
-#   recover_interrupted_scheduled_publish_tasks 统一收口（标 failed，提示人工核查）。
+#   recover_interrupted_scheduled_publish_tasks 统一收口（标 unknown，提示人工核查）。
 # - 时间基准：scheduled_at 为 naive 本地时间，单机固定时区（无 DST），见 service 层
 #   _scheduled_now() 与 _parse_scheduled_publish_time 的注释。
-SCHEDULED_PUBLISH_WORKERS = 4
+SCHEDULED_PUBLISH_WORKERS = 1
 _scheduled_publish_stop = threading.Event()
 _scheduled_publish_thread = None
 _scheduled_publish_slots = None
@@ -46,11 +46,25 @@ def fail_scheduled_publish_task(task_id, reason):
 
 
 def recover_interrupted_scheduled_publish_tasks():
+    now = _now_iso()
+    reason = "后端中断，任务执行结果未知，请人工核查平台后再决定是否重试"
     with _db_connect() as conn:
-        task_ids = [row[0] for row in conn.execute("SELECT id FROM scheduled_publish_tasks WHERE status = 'running'").fetchall()]
-    reason = "后端中断，任务执行结果未知，请人工核查平台后重新创建任务"
-    for task_id in task_ids:
-        fail_scheduled_publish_task(task_id, reason)
+        cursor = conn.cursor()
+        task_ids = [row[0] for row in cursor.execute("SELECT id FROM scheduled_publish_tasks WHERE status IN ('running', 'queued')").fetchall()]
+        if task_ids:
+            marks = ",".join("?" for _ in task_ids)
+            cursor.execute(
+                f"UPDATE scheduled_publish_tasks SET status = 'unknown', message = ?, finished_at = ?, updated_at = ? WHERE id IN ({marks})",
+                (reason, now, now, *task_ids),
+            )
+            cursor.execute(
+                f"UPDATE scheduled_publish_targets SET status = 'unknown', message = ?, finished_at = ?, updated_at = ? WHERE task_id IN ({marks}) AND status IN ('pending', 'running')",
+                (reason, now, now, *task_ids),
+            )
+            cursor.execute(
+                f"UPDATE published_youtube_materials SET status = 'unknown', message = ?, updated_at = ? WHERE publish_task_id IN ({marks}) AND status IN ('pending', 'running')",
+                (reason, now, *task_ids),
+            )
     return task_ids
 
 

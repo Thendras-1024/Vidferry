@@ -17,6 +17,7 @@ _WORKFLOW_JOB_MUTABLE_FIELDS = {
     "publish_confirmation_status", "content_risk",
     "translation_enabled", "subtitle_mask_enabled", "source_subtitle_analysis",
 }
+_WORKFLOW_ACTIVE_STATUSES = ("queued", "running", "waiting_confirmation", "waiting_publish")
 
 
 def _workflow_content_risk(value):
@@ -496,12 +497,42 @@ def get_youtube_workflow_job(job_id, owner_user_id=None):
         row = cursor.fetchone()
         if not row:
             raise LookupError("任务不存在")
-        return _row_to_workflow_job(row)
+        job = _row_to_workflow_job(row)
+        publish_progress = _workflow_publish_progress(cursor, job.get("id"))
+        if publish_progress:
+            job["publishProgress"] = publish_progress
+        return job
+
+
+def _workflow_publish_progress(cursor, job_id):
+    if not job_id:
+        return None
+    cursor.execute(
+        "SELECT id, status, message FROM publish_dispatch_jobs WHERE source = 'workflow' AND source_ref_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (str(job_id),),
+    )
+    dispatch = cursor.fetchone()
+    if not dispatch:
+        return None
+    cursor.execute(
+        "SELECT platform_type, status, message, duration_ms, started_at, finished_at "
+        "FROM publish_dispatch_targets WHERE job_id = ? ORDER BY platform_type, id",
+        (dispatch["id"],),
+    )
+    targets = [dict(item) for item in cursor.fetchall()]
+    progress = _publish_dispatch_progress(targets)
+    progress.update({
+        "publishTaskId": dispatch["id"],
+        "status": dispatch["status"] or "pending",
+        "message": clean_display_text(dispatch["message"]),
+        "targets": targets,
+    })
+    return progress
 
 
 def _workflow_status_clause(status):
     if status == "running":
-        return "status IN ('queued', 'running', 'waiting_confirmation')", []
+        return "status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')", []
     if status == "recent":
         return "", []
     if status in {"success", "failed", "abnormal"}:
@@ -529,11 +560,13 @@ def list_youtube_workflow_jobs(limit=50, params=None, owner_user_id=None):
             values.extend(status_values)
         if str(params.get("status") or "") == "recent":
             where.append("""(
-                status IN ('queued', 'running', 'waiting_confirmation')
+                status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
                 OR COALESCE(updated_at, created_at) >= ?
             )""")
-        if str(params.get("status") or "") == "recent":
             values.append((datetime.datetime.now() - datetime.timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"))
+        if str(params.get("hasSchedule") or "").lower() in {"1", "true", "yes"}:
+            where.append("COALESCE(schedule, '') <> '' AND schedule > ?")
+            values.append(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         video_ids = _split_request_values(params.get("videoIds") or params.get("ids"))
         if video_ids:
             where.append(f"video_id IN ({_sql_placeholders(video_ids)})")
@@ -544,13 +577,20 @@ def list_youtube_workflow_jobs(limit=50, params=None, owner_user_id=None):
         cursor.execute('''
         SELECT * FROM youtube_workflow_jobs
         {where_sql}
-        ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0 ELSE 1 END,
+        ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') THEN 0 ELSE 1 END,
                  updated_at DESC,
                  created_at DESC
         LIMIT ? OFFSET ?
         '''.format(where_sql=where_sql), values + [page_size, offset])
+        items = []
+        for row in cursor.fetchall():
+            job = _row_to_workflow_job(row)
+            publish_progress = _workflow_publish_progress(cursor, job.get("id"))
+            if publish_progress:
+                job["publishProgress"] = publish_progress
+            items.append(job)
         return {
-            "items": [_row_to_workflow_job(row) for row in cursor.fetchall()],
+            "items": items,
             "total": total,
             "page": page,
             "pageSize": page_size,
@@ -562,7 +602,7 @@ def _active_job_for_video(cursor, video_id):
         return None
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id = ? AND status IN ('queued', 'running', 'waiting_confirmation')
+    WHERE video_id = ? AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
     ''', (video_id,))
@@ -580,7 +620,7 @@ def _latest_workflow_job_for_material(cursor, video_id, process_version=""):
         SELECT * FROM youtube_workflow_jobs
         WHERE video_id = ?
           AND process_version = ?
-          AND status IN ('queued', 'running', 'waiting_confirmation')
+        AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
         ORDER BY updated_at DESC, created_at DESC
         LIMIT 1
         ''', (video_id, normalized_version))
@@ -591,7 +631,7 @@ def _latest_workflow_job_for_material(cursor, video_id, process_version=""):
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
     WHERE video_id = ?
-      AND status IN ('queued', 'running', 'waiting_confirmation')
+      AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
     ''', (video_id,))
@@ -646,7 +686,7 @@ def _latest_workflow_jobs_for_videos(cursor, video_ids):
     cursor.execute(f'''
     SELECT * FROM youtube_workflow_jobs
     WHERE video_id IN ({_sql_placeholders(clean_ids)})
-    ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0 ELSE 1 END,
+    ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') THEN 0 ELSE 1 END,
              updated_at DESC,
              created_at DESC
     ''', clean_ids)
@@ -673,7 +713,7 @@ def _material_workflow_job(material, jobs_by_video, jobs_by_video_version):
         if job:
             return job
         fallback_job = jobs_by_video.get(video_id)
-        if fallback_job and fallback_job.get("status") in {"queued", "running", "waiting_confirmation"}:
+        if fallback_job and fallback_job.get("status") in {"queued", "running", "waiting_confirmation", "waiting_publish"}:
             return fallback_job
         return None
     return jobs_by_video.get(video_id)
@@ -712,7 +752,7 @@ def _active_analysis_job_for_video(cursor, video_id):
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
     WHERE video_id = ?
-      AND status IN ('queued', 'running', 'waiting_confirmation')
+      AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
       AND step = 'analysis'
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
@@ -1055,7 +1095,7 @@ def reconcile_finished_workflow_events():
         FROM youtube_workflow_events e
         LEFT JOIN youtube_workflow_jobs j ON j.id = e.job_id
         WHERE e.status = 'running'
-          AND (j.id IS NULL OR j.status NOT IN ('queued', 'running', 'waiting_confirmation'))
+          AND (j.id IS NULL OR j.status NOT IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish'))
         ''')
         job_ids = [row[0] for row in cursor.fetchall()]
     for job_id in job_ids:

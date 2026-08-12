@@ -7,6 +7,7 @@ def _mark_shutdown_once():
         return
     _shutdown_marked = True
     stop_scheduled_publish_scheduler()
+    stop_publish_dispatcher()
     try:
         interrupted = mark_shutdown_interrupted_jobs()
         if interrupted:

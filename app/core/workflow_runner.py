@@ -1,5 +1,6 @@
 """YouTube 工作流执行编排:下载/转写/分析/剪辑/发布各阶段的串联与状态流转。"""
 
+import datetime as _datetime
 
 from app.core.error_catalog import classify_workflow_exception
 from app.core.highlight_review_service import refine_highlight_segments
@@ -97,6 +98,29 @@ def _resolve_source_subtitle_processing(job, source_file):
         },
     )
     return updated
+
+
+def _ensure_workflow_publish_schedule(job_id, job):
+    """Keep a platform-scheduled publish far enough in the future after processing."""
+    raw_schedule = str((job or {}).get("schedule") or "").strip()
+    if not raw_schedule:
+        return job, ""
+    scheduled = None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            scheduled = _datetime.datetime.strptime(raw_schedule, fmt)
+            break
+        except ValueError:
+            continue
+    if not scheduled:
+        return job, ""
+    minimum = (_datetime.datetime.now() + _datetime.timedelta(minutes=125)).replace(second=0, microsecond=0)
+    if scheduled >= minimum:
+        return job, ""
+    adjusted = minimum.strftime("%Y-%m-%d %H:%M:%S")
+    notice = f"处理完成时原定发布时间已不足平台要求的 2 小时，已自动顺延至 {adjusted}。"
+    update_youtube_workflow_job(job_id, schedule=adjusted, message=notice)
+    return {**job, "schedule": adjusted}, notice
 
 
 def _editing_result_message(editing_result):
@@ -1048,10 +1072,12 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             )
         return []
 
+    publish_job, schedule_notice = _ensure_workflow_publish_schedule(job_id, publish_job)
     publish_results = []
     skipped_platforms = []
     published_platform_types = _published_platform_types_for_video(latest_job.get("videoId"))
     publish_event_id = start_workflow_event(publish_job, "publish", "开始发布", input_file_path=processed_file)
+    publishing_platform_type = 0
     publish_specs = [
         (3, latest_job.get("account") or ""),
         (5, latest_job.get("bilibiliAccount") or ""),
@@ -1059,10 +1085,52 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         (4, latest_job.get("kuaishouAccount") or ""),
         (2, latest_job.get("tencentAccount") or ""),
     ]
+    queued_tasks = []
+    queued_owner_user_id = None
+    for platform_type, account_name in publish_specs:
+        if not account_name:
+            continue
+        if platform_type in published_platform_types:
+            skipped_platforms.append(platform_name(platform_type))
+            continue
+        account_info = _check_named_publish_account(platform_type, account_name, publish_job.get("ownerUserId"))
+        queued_task = _workflow_publish_task(publish_job, processed_file, platform_type, account_info)
+        queued_task.update({
+            "publishTaskId": f"workflow:{job_id}",
+            "accountName": account_name,
+            "fileList": [str(material.get("file_path") or material.get("storage_key") or processed_file)],
+            "absoluteFiles": [Path(processed_file)],
+            "timeoutSeconds": 3600,
+        })
+        queued_tasks.append(queued_task)
+        queued_owner_user_id = account_info.get("ownerUserId")
+    if queued_tasks:
+        queued = enqueue_publish_tasks(
+            queued_tasks,
+            source="workflow",
+            source_ref_id=job_id,
+            owner_user_id=queued_owner_user_id,
+            publish_task_id=f"workflow:{job_id}",
+        )
+        message = "发布任务已进入队列"
+        if skipped_platforms:
+            message += "；已跳过已发布平台：" + "、".join(skipped_platforms)
+        update_youtube_workflow_job(
+            job_id,
+            status="waiting_publish",
+            step="publish",
+            message=message,
+            progress=97,
+            speed="",
+            eta="",
+        )
+        backend_logger.info("workflow publish queued : job_id = %s | publish_task_id = %s", job_id, queued["publishTaskId"])
+        return []
     try:
         for platform_type, account_name in publish_specs:
             if not account_name:
                 continue
+            publishing_platform_type = platform_type
             if platform_type in published_platform_types:
                 skipped_platforms.append(platform_name(platform_type))
                 backend_logger.info(
@@ -1075,8 +1143,10 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             if result:
                 publish_results.append(result)
     except Exception as exc:
-        finish_workflow_event(publish_event_id, "failed", _workflow_error_fields(exc)["error_reason"])
-        raise
+        platform_label = platform_name(publishing_platform_type) if publishing_platform_type else "目标平台"
+        publish_error = RuntimeError(f"PUBLISH_FAILED:{platform_label}:{str(exc)}")
+        finish_workflow_event(publish_event_id, "failed", _workflow_error_fields(publish_error)["error_reason"])
+        raise publish_error from exc
 
     summary = _workflow_publish_summary(publish_results)
     final_message = "任务完成"
@@ -1093,6 +1163,8 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         final_message = f"{final_message}；{_editing_result_message(editing_result)}"
     if skipped_subtitles:
         final_message = f"{final_message}；{_subtitle_skip_reason({'skippedBySetting': not latest_job.get('translationEnabled', True)})}"
+    if schedule_notice:
+        final_message = f"{final_message}；{schedule_notice}"
 
     final_status = "failed" if summary["failed"] else "success"
     finish_workflow_event(publish_event_id, final_status, final_message, output_file_path=processed_file)
@@ -1193,7 +1265,7 @@ def run_youtube_workflow(job_id):
         _, language_meta = _subtitle_language_meta(initial_job.get("subtitleLanguage"))
         process_version = _normalize_process_version(initial_job.get("processVersion"))
         video_record = _get_youtube_video_record(initial_job.get("videoId")) or {}
-        if not initial_job.get("contentSafetyReviewEnabled") and _video_has_processed_output(video_record, initial_job):
+        if _video_has_processed_output(video_record, initial_job):
             job = update_youtube_workflow_job(
                 job_id,
                 status="running",
@@ -1343,7 +1415,9 @@ def run_youtube_workflow(job_id):
     except Exception as exc:
         _settle_background_futures(intro_future, analysis_future, comment_future)
         error_fields = _log_workflow_failure("完整工作流", job_id, exc)
-        finish_workflow_event(editing_event_id or analysis_event_id or burn_event_id or subtitle_event_id or transcript_event_id or download_event_id or workflow_event_id, "failed", error_fields["error_reason"])
+        latest_job = get_youtube_workflow_job(job_id)
+        failure_event_id = workflow_event_id if latest_job.get("step") == "publish" else (editing_event_id or analysis_event_id or burn_event_id or subtitle_event_id or transcript_event_id or download_event_id or workflow_event_id)
+        finish_workflow_event(failure_event_id, "failed", error_fields["error_reason"])
         if workflow_event_id:
             finish_workflow_event(workflow_event_id, "failed", error_fields["error_reason"])
         finish_open_workflow_events(job_id, "failed", error_fields["error_reason"])

@@ -44,6 +44,7 @@ MODULE_ORDER = [
     "app/core/agent_orchestrator.py",
     "app/core/prepublish_guard.py",
     "app/core/publish_execution.py",
+    "app/core/publish_dispatch_service.py",
     "app/core/publish_retry_service.py",
     "app/core/scheduled_publish_service.py",
     "app/core/scheduled_publish_scheduler.py",

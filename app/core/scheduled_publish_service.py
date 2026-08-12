@@ -188,7 +188,7 @@ def list_scheduled_publish_tasks(params=None):
             "items": items, "total": total, "page": page, "pageSize": page_size,
             "summary": {
                 "all": sum(counts.values()), "pending": counts.get("pending", 0),
-                "running": counts.get("running", 0), "success": counts.get("success", 0),
+                "queued": counts.get("queued", 0), "running": counts.get("running", 0), "success": counts.get("success", 0),
                 "failed": counts.get("failed", 0) + counts.get("partial", 0),
                 "canceled": counts.get("canceled", 0),
             },
@@ -281,13 +281,88 @@ def _revalidate_scheduled_publish(task, targets):
     if str(material.get("id") or "") != str(task.get("material_id") or ""):
         raise ValueError("底层素材已变更，请重新创建任务")
     # B1/B5：平台未被占用（pending/running/success 均算占用）+ 来源内容风险按创建时确认放行
-    _assert_publish_targets_available(material, revalidate_targets)
     validate_prepublish_guard_or_raise(
         {"riskOverride": risk_override}, file_list, revalidate_targets, materials, check_agent=False
     )
 
 
 def run_scheduled_publish_task(task_id):
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ? AND status = 'running'", (task_id,))
+        task = cursor.fetchone()
+        if not task:
+            return None
+        task = dict(task)
+        targets = _scheduled_task_targets(cursor, task_id)
+    try:
+        _revalidate_scheduled_publish(task, targets)
+    except Exception as exc:
+        backend_logger.exception("scheduled publish revalidation failed : task_id = %s | error_type = %s", task_id, type(exc).__name__)
+        fail_scheduled_publish_task(task_id, f"发布前校验未通过：{exc}")
+        return _load_scheduled_task_payload(task_id)
+    _, content = _scheduled_publish_content(task["video_id"])
+    publish_tasks = []
+    owner_user_id = None
+    for target in targets:
+        with _db_connect() as conn:
+            conn.row_factory = True
+            account = conn.execute("SELECT * FROM user_info WHERE id = ? AND type = ?", (target["accountId"], target["platformType"])).fetchone()
+        if not account or int(account["status"] or 0) != 1:
+            fail_scheduled_publish_task(task_id, f"{target['platformName']}账号不存在或状态异常")
+            return _load_scheduled_task_payload(task_id)
+        settings = target["settings"]
+        publish_target = {
+            "platformType": target["platformType"], "platformName": target["platformName"],
+            "accountFile": account["filePath"], "accountId": account["id"], "accountName": account["userName"],
+            "ownerUserId": account["owner_user_id"], "tags": content["tags"], **settings,
+        }
+        data = {**content, "fileList": [task["file_path"]], "targets": [publish_target], "enableTimer": False, **settings}
+        publish_tasks.extend(_build_publish_tasks(data, [publish_target], [task["file_path"]], publish_task_id=task_id))
+        owner_user_id = account["owner_user_id"]
+    try:
+        enqueue_publish_tasks(
+            publish_tasks,
+            source="scheduled",
+            source_ref_id=task_id,
+            owner_user_id=owner_user_id,
+            publish_task_id=task_id,
+        )
+    except PublishQueueFullError as exc:
+        now = _now_iso()
+        with _db_connect() as conn:
+            conn.execute(
+                "UPDATE scheduled_publish_tasks SET status = 'pending', message = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+                (clean_display_text(str(exc)), now, task_id),
+            )
+        return _load_scheduled_task_payload(task_id)
+    except Exception as exc:
+        fail_scheduled_publish_task(task_id, str(exc))
+        return _load_scheduled_task_payload(task_id)
+    now = _now_iso()
+    with _db_connect() as conn:
+        conn.execute("UPDATE scheduled_publish_tasks SET status = 'queued', message = '已进入发布队列', updated_at = ? WHERE id = ? AND status = 'running'", (now, task_id))
+    return _load_scheduled_task_payload(task_id)
+
+
+def finish_scheduled_publish_dispatch(task_id, results, status, message):
+    now = _now_iso()
+    by_platform = {int(item.get("platformType") or 0): item for item in results or []}
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        for platform_type, result in by_platform.items():
+            cursor.execute(
+                "UPDATE scheduled_publish_targets SET status = ?, message = ?, duration_ms = ?, finished_at = ?, updated_at = ? WHERE task_id = ? AND platform_type = ?",
+                (result.get("status") or "failed", clean_display_text(result.get("message")), int(result.get("durationMs") or 0), now, now, task_id, platform_type),
+            )
+        aggregated = _aggregate_scheduled_task_status(cursor, task_id)
+        final_status = aggregated[0] if aggregated else status
+        cursor.execute("UPDATE scheduled_publish_tasks SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?", (final_status, clean_display_text(message), now, now, task_id))
+
+
+def _run_scheduled_publish_task_direct(task_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()

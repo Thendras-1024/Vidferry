@@ -117,6 +117,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { materialApi } from '@/api/material'
+import { youtubeApi } from '@/api/youtube'
 
 const tasks = ref([])
 const total = ref(0)
@@ -128,6 +129,8 @@ let pollTimer = null
 const summaryItems = computed(() => [
   { label: '全部', value: 'all', count: summary.value.all || 0 },
   { label: '未执行', value: 'pending', count: summary.value.pending || 0 },
+  { label: '排队中', value: 'queued', count: summary.value.queued || 0 },
+  { label: '平台已排期', value: 'scheduled', count: summary.value.scheduled || 0 },
   { label: '执行中', value: 'running', count: summary.value.running || 0 },
   { label: '已完成', value: 'success', count: summary.value.success || 0 },
   { label: '执行失败', value: 'failed', count: summary.value.failed || 0 },
@@ -135,25 +138,77 @@ const summaryItems = computed(() => [
 ])
 
 const statusLabel = (status) => ({
-  pending: '未执行', running: '执行中', success: '已完成', partial: '部分失败',
-  failed: '执行失败', timeout: '执行超时', unknown: '待核验', canceled: '已取消'
+  pending: '未执行', queued: '排队中', running: '执行中', success: '已完成', partial: '部分失败',
+  failed: '执行失败', timeout: '执行超时', unknown: '待核验', canceled: '已取消',
+  scheduled: '已提交平台定时'
 }[status] || status || '-')
 
 const statusType = (status) => ({
-  pending: 'info', running: 'primary', success: 'success', partial: 'warning',
-  failed: 'danger', timeout: 'danger', unknown: 'warning', canceled: 'info'
+  pending: 'info', queued: 'primary', running: 'primary', success: 'success', partial: 'warning',
+  failed: 'danger', timeout: 'danger', unknown: 'warning', canceled: 'info', scheduled: 'primary'
 }[status] || 'info')
 
 const formatTime = (value) => value ? String(value).replace('T', ' ').slice(0, 16) : '-'
 const formatDuration = (value) => Number(value || 0) > 0 ? `${(Number(value) / 1000).toFixed(1)} 秒` : '-'
 
+const workflowScheduledTask = (job) => {
+  const workflowStatus = job.status === 'failed' || job.status === 'abnormal'
+    ? 'failed'
+    : ['queued', 'running', 'waiting_confirmation', 'waiting_publish'].includes(job.status) ? 'running' : 'scheduled'
+  const targetSpecs = [
+    [3, '抖音', 'account'], [5, 'B站', 'bilibiliAccount'], [1, '小红书', 'xiaohongshuAccount'],
+    [4, '快手', 'kuaishouAccount'], [2, '视频号', 'tencentAccount']
+  ]
+  const targets = targetSpecs
+    .filter(([, , accountKey]) => job[accountKey])
+    .map(([platformType, platformName, accountKey]) => ({
+      id: `${job.id}-${platformType}`,
+      platformType,
+      platformName,
+      accountName: job[accountKey],
+      status: workflowStatus,
+      message: workflowStatus === 'scheduled' ? '已提交平台定时发布' : (job.errorReason || job.message || '工作流处理中'),
+      durationMs: 0
+    }))
+  return {
+    id: `workflow-${job.id}`,
+    source: 'workflow',
+    videoId: job.videoId,
+    title: job.title || '未命名视频',
+    thumbnail: '',
+    scheduledAt: job.schedule,
+    status: workflowStatus,
+    overdue: false,
+    message: job.errorReason || job.message || (workflowStatus === 'scheduled' ? '已提交平台定时发布' : '工作流处理中'),
+    summary: { success: 0, failed: workflowStatus === 'failed' ? targets.length : 0, total: targets.length },
+    targets,
+    startedAt: '',
+    createdAt: job.createdAt || ''
+  }
+}
+
 const loadTasks = async () => {
   loading.value = true
   try {
-    const response = await materialApi.getScheduledPublishTasks(filter)
-    tasks.value = response.data?.items || []
-    total.value = Number(response.data?.total || 0)
-    summary.value = response.data?.summary || {}
+    const [response, workflowResponse] = await Promise.all([
+      materialApi.getScheduledPublishTasks(filter),
+      youtubeApi.listWorkflowJobs({ page: 1, pageSize: 100, hasSchedule: true })
+    ])
+    const localTasks = response.data?.items || []
+    const workflowTasks = (workflowResponse.data?.items || []).map(workflowScheduledTask)
+      .filter(task => !filter.keyword || task.title.includes(filter.keyword) || task.videoId.includes(filter.keyword))
+    const mergedTasks = [...localTasks, ...workflowTasks]
+      .sort((left, right) => String(right.scheduledAt || '').localeCompare(String(left.scheduledAt || '')))
+    tasks.value = filter.status === 'all' ? mergedTasks : mergedTasks.filter(task => task.status === filter.status)
+    total.value = tasks.value.length
+    const localSummary = response.data?.summary || {}
+    summary.value = {
+      ...localSummary,
+      all: Number(localSummary.all || 0) + workflowTasks.length,
+      scheduled: workflowTasks.filter(task => task.status === 'scheduled').length,
+      running: Number(localSummary.running || 0) + workflowTasks.filter(task => task.status === 'running').length,
+      failed: Number(localSummary.failed || 0) + workflowTasks.filter(task => task.status === 'failed').length
+    }
   } catch (error) {
     ElMessage.error(error.message || '读取定时发布任务失败')
   } finally {
@@ -173,6 +228,10 @@ const applyKeyword = () => {
 }
 
 const cancelTask = async (task) => {
+  if (task.source === 'workflow') {
+    ElMessage.info('该任务已提交到平台的定时发布队列，当前不能在此页面取消。')
+    return
+  }
   try {
     await ElMessageBox.confirm(`确定取消「${task.title}」的全部平台定时发布吗？`, '取消定时任务', {
       confirmButtonText: '取消任务', cancelButtonText: '返回', type: 'warning'
@@ -189,7 +248,7 @@ const cancelTask = async (task) => {
 onMounted(() => {
   loadTasks()
   pollTimer = window.setInterval(() => {
-    if ((summary.value.pending || 0) + (summary.value.running || 0) > 0) loadTasks()
+    if ((summary.value.pending || 0) + (summary.value.queued || 0) + (summary.value.running || 0) > 0) loadTasks()
   }, 10000)
 })
 
@@ -204,7 +263,7 @@ onBeforeUnmount(() => window.clearInterval(pollTimer))
 .page-heading h1 { margin: 4px 0 6px; color: var(--vf-text-primary); font-size: 24px; }
 .page-heading p { margin: 0; color: var(--vf-text-regular); font-size: 14px; }
 .eyebrow { color: var(--vf-primary); font-size: 12px; font-weight: 700; }
-.queue-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--vf-border); border-radius: 8px; overflow: hidden; background: var(--vf-surface); }
+.queue-summary { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--vf-border); border-radius: 8px; overflow: hidden; background: var(--vf-surface); }
 .queue-summary button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 58px; padding: 12px 14px; border: 0; border-right: 1px solid var(--vf-border-light); background: var(--vf-surface); color: var(--vf-text-regular); cursor: pointer; }
 .queue-summary button:last-child { border-right: 0; }
 .queue-summary button.active { background: var(--vf-surface-hover); color: var(--vf-primary); box-shadow: inset 0 -2px var(--vf-primary); }

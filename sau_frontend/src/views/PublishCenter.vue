@@ -395,6 +395,26 @@
           <el-button type="primary" plain size="small" @click="openRetryDialog(task)">重发失败项</el-button>
         </div>
       </div>
+      <div v-if="publishedRecordScope === 'active' && reviewablePublishTasks.length" class="retry-task-list">
+        <div v-for="task in reviewablePublishTasks" :key="`review-${task.taskId}`" class="retry-task-row">
+          <div>
+            <strong>{{ task.chineseTitle || '未命名发布任务' }}</strong>
+            <span>存在待核验的平台结果，请先确认平台未发布</span>
+          </div>
+          <div class="review-task-actions">
+            <el-button
+              v-for="target in (task.targets || []).filter(item => item.status === 'unknown')"
+              :key="target.id"
+              type="warning"
+              plain
+              size="small"
+              @click="releaseUnknownPublishTarget(task, target)"
+            >
+              确认未发布并释放 {{ target.platform || target.platformName || '平台' }}
+            </el-button>
+          </div>
+        </div>
+      </div>
       <div v-if="publishedRecordScope === 'archived' && archivedPublishedRecords.length" class="archived-record-list">
         <div v-for="record in archivedPublishedRecords" :key="record.id" class="archived-record-row">
           <div>
@@ -616,6 +636,7 @@ const publishedVideos = ref([])
 const archivedPublishedRecords = ref([])
 const publishedRecordScope = ref('active')
 const retryablePublishTasks = ref([])
+const reviewablePublishTasks = ref([])
 const retryDialogVisible = ref(false)
 const retryTask = ref(null)
 
@@ -1530,9 +1551,26 @@ const loadPublishedVideos = async () => {
 const loadPublishRetryTasks = async () => {
   try {
     const response = await materialApi.getPublishTasks({ limit: 50 })
-    retryablePublishTasks.value = (response.data || []).filter(task => task.canRetry)
+    const tasks = response.data || []
+    retryablePublishTasks.value = tasks.filter(task => task.canRetry)
+    reviewablePublishTasks.value = tasks.filter(task => (task.targets || []).some(target => target.status === 'unknown'))
   } catch (error) {
     console.error('加载可重发发布任务失败:', error)
+  }
+}
+
+const releaseUnknownPublishTarget = async (task, target) => {
+  try {
+    await ElMessageBox.confirm(
+      `请确认已在${target.platform || target.platformName || '平台'}核查该视频未发布。释放后才允许重新发布。`,
+      '确认平台未发布',
+      { confirmButtonText: '确认释放', cancelButtonText: '取消', type: 'warning' }
+    )
+    await materialApi.releaseUnknownPublishRecord(target.id, `用户确认未发布 : task_id = ${task.taskId}`)
+    await refreshPublishRetryTasks()
+    ElMessage.success('已释放平台发布占位')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
   }
 }
 
@@ -1793,6 +1831,40 @@ const runAgentPrepublishCheck = async (tab) => {
 }
 
 // 确认发布
+const watchQueuedPublishTask = async (tab, taskId) => {
+  for (let attempt = 0; attempt < 1800 && tab.lastPublishTaskId === taskId; attempt += 1) {
+    try {
+      const response = await http.get(`/publish/tasks/${encodeURIComponent(taskId)}`)
+      const task = response?.data || {}
+      const targetByPlatform = new Map((task.targets || []).map(item => [Number(item.platformType), item]))
+      tab.publishTargetStatuses = (tab.publishTargetStatuses || []).map(item => ({
+        ...item,
+        ...(targetByPlatform.get(Number(item.platformType)) || {})
+      }))
+      tab.lastPublishResults = (task.targets || []).map(item => ({
+        platformType: item.platformType,
+        platformName: platformNameByKey[Number(item.platformType)] || '',
+        accountName: item.settings?.accountName || '',
+        status: item.status,
+        message: item.message,
+        durationMs: item.durationMs
+      }))
+      if (['success', 'failed', 'partial', 'unknown'].includes(task.status)) {
+        tab.publishStatus = {
+          message: task.message || '发布任务已完成',
+          type: task.status === 'success' ? 'success' : (task.status === 'partial' ? 'warning' : 'error')
+        }
+        await loadPublishedVideos()
+        await loadPublishRetryTasks()
+        return
+      }
+    } catch (error) {
+      console.warn('发布任务状态刷新失败:', error)
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 2000))
+  }
+}
+
 const confirmPublish = async (tab) => {
   // 防止重复点击
   if (tab.publishing) {
@@ -1889,6 +1961,17 @@ const confirmPublish = async (tab) => {
       resetAgentGuard(tab)
       return
     }
+    tab.lastPublishTaskId = String(data?.data?.publishTaskId || '')
+    tab.publishTargetStatuses = targets.map(target => ({
+      platformType: target.platformType,
+      platformName: target.platformName,
+      accountName: target.accountName,
+      status: 'pending',
+      message: '已进入发布队列'
+    }))
+    tab.publishStatus = { message: '发布任务已进入队列', type: 'success' }
+    if (tab.lastPublishTaskId) void watchQueuedPublishTask(tab, tab.lastPublishTaskId)
+    return
     const results = Array.isArray(data?.data?.results) ? data.data.results : []
     tab.lastPublishResults = results
     tab.lastPublishTaskId = String(data?.data?.publishTaskId || '')
@@ -1945,15 +2028,19 @@ const confirmPublish = async (tab) => {
       applyAgentGuardResult(tab, agentData.guard)
     }
     const errorMessage = error?.response?.data?.msg || error.message || '请检查网络连接'
+    const conflictData = error?.response?.data?.data || {}
+    const conflictPlatformType = Number(conflictData.platformType || 0)
     await loadAccounts()
     await loadPublishedVideos()
+    await loadPublishRetryTasks()
     tab.publishTargetStatuses = targets.map(target => {
       const previous = (tab.publishTargetStatuses || []).find(item => Number(item.platformType) === Number(target.platformType))
+      const unknownConflict = conflictData.status === 'unknown' && conflictPlatformType === Number(target.platformType)
       return {
         platformType: target.platformType,
         platformName: target.platformName,
         accountName: target.accountName,
-        status: previous?.status === 'success' ? 'success' : 'failed',
+        status: previous?.status === 'success' ? 'success' : (unknownConflict ? 'unknown' : 'failed'),
         message: previous?.status === 'success' ? previous.message : errorMessage
       }
     })
@@ -2243,6 +2330,7 @@ $ink-strong: var(--vf-text-primary);
 .retry-task-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid $panel-border; padding: 10px 12px; }
 .retry-task-row > div { display: grid; gap: 4px; min-width: 0; }
 .retry-task-row span { color: $text-secondary; font-size: 12px; overflow-wrap: anywhere; }
+.review-task-actions { display: flex !important; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 
 .published-card {
   display: grid;
@@ -2711,6 +2799,8 @@ $ink-strong: var(--vf-text-primary);
   .panel-heading-row { align-items: flex-start; flex-direction: column; }
   .published-summary,
   .published-card { grid-template-columns: 1fr; }
+  .retry-task-row { align-items: flex-start; flex-direction: column; }
+  .review-task-actions { justify-content: flex-start; }
   .published-record-row,
   .archived-record-row { grid-template-columns: 1fr; gap: 6px; }
   .section-heading { align-items: flex-start; flex-direction: column; }

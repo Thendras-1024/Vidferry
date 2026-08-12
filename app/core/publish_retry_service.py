@@ -101,11 +101,18 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
     validate_prepublish_guard_or_raise(data, file_list, targets, materials, check_agent=False)
     retry_task_id = uuid.uuid4().hex
     tasks = _build_publish_tasks(data, targets, file_list, publish_task_id=retry_task_id)
-    _mark_publish_tasks_pending(tasks)
+    queued = enqueue_publish_tasks(
+        tasks,
+        source="retry",
+        source_ref_id=task_id,
+        owner_user_id=owner_user_id,
+        publish_task_id=retry_task_id,
+    )
     return {
         "publishTaskId": retry_task_id,
         "retryOfTaskId": task_id,
-        "tasks": tasks,
+        "status": queued["status"],
+        "targets": queued["targets"],
     }
 
 

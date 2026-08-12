@@ -418,7 +418,7 @@
                 </div>
                 <div v-if="activeJobForVideo(row)" class="inline-job">
                   <el-progress :percentage="displayProgress(activeJobForVideo(row))" :stroke-width="6" />
-                  <span>{{ activeJobForVideo(row).message || jobStatusText(activeJobForVideo(row).status, activeJobForVideo(row).step) }}</span>
+                  <span>{{ workflowProgressText(activeJobForVideo(row)) }}</span>
                   <el-popover placement="bottom-start" trigger="click" width="360">
                     <div class="processing-settings-popover">
                       <strong>本次处理设置</strong>
@@ -606,6 +606,10 @@
                 </el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
+                    <el-dropdown-item @click="askAgentAboutVideo(row)">
+                      <el-icon><ChatDotRound /></el-icon>
+                      <span>交给 Agent</span>
+                    </el-dropdown-item>
                     <el-dropdown-item @click="copyUrl(row.url)">
                       <el-icon><DocumentCopy /></el-icon>
                       <span>复制链接</span>
@@ -1044,7 +1048,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { ChatDotRound, Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
@@ -1752,7 +1756,7 @@ const isDownloaded = (item) => Number(item.downloadStatus) === 1
 const isTranslated = (item) => Number(item.translateStatus) === 1
 const isTranslationSkipped = (item) => Number(item.translateStatus) === 2
 const isPublished = (item) => item.publishStatus === 1
-const isRunningJob = (job) => ['queued', 'running', 'waiting_confirmation'].includes(job.status)
+const isRunningJob = (job) => ['queued', 'running', 'waiting_confirmation', 'waiting_publish'].includes(job.status)
 
 const latestJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id)
 const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job))
@@ -2556,9 +2560,26 @@ const formatDuration = (seconds) => {
 
 const displayProgress = (job) => {
   const rawProgress = Number(job.progress || 0)
+  const publishProgress = job.publishProgress || {}
+  const publishTotal = Number(publishProgress.total || 0)
+  const publishCompleted = Number(publishProgress.completed || 0)
+  const publishValue = publishTotal > 0 ? 97 + (Math.min(publishCompleted, publishTotal) / publishTotal) * 3 : 97
   const boundedProgress = Math.max(0, Math.min(100, rawProgress))
+  if (job.step === 'publish' && publishTotal > 0) {
+    return Math.max(boundedProgress, Math.min(job.status === 'running' ? 99 : 100, publishValue))
+  }
   if (job.status !== 'running') return boundedProgress
   return Math.max(0, Math.min(99, boundedProgress))
+}
+
+const workflowProgressText = (job = {}) => {
+  const progress = job.publishProgress || {}
+  if (Number(progress.total || 0) > 0) {
+    const completed = Number(progress.completed || 0)
+    const total = Number(progress.total || 0)
+    return job.status === 'waiting_publish' ? `发布排队中 - ${completed} / ${total}` : `发布中 - ${completed} / ${total}`
+  }
+  return job.message || jobStatusText(job.status, job.step)
 }
 
 const jobTimeText = (job) => {
@@ -2702,7 +2723,9 @@ const createJob = async (row) => {
       commentTranslationMode: workflowForm.commentTranslationMode,
       contentSafetyReviewEnabled: workflowForm.contentSafetyReviewEnabled
     })
-    jobs.value.unshift(res.data)
+    const existingIndex = jobs.value.findIndex(job => String(job.id) === String(res.data?.id))
+    if (existingIndex >= 0) jobs.value[existingIndex] = res.data
+    else jobs.value.unshift(res.data)
     ElMessage.success('一键发布任务已创建')
     startJobsPolling()
     refreshVideosByIds([row.id])
@@ -3148,6 +3171,7 @@ const jobStatusText = (status, step = '') => {
     queued: '排队中',
     running: '执行中',
     waiting_confirmation: step === 'content_safety_confirm' ? '等待视频处理确认' : '等待发布确认',
+    waiting_publish: '发布排队中',
     success: '成功',
     failed: '失败',
     abnormal: '异常'
@@ -3160,6 +3184,7 @@ const jobStatusType = (status) => {
     queued: 'info',
     running: 'warning',
     waiting_confirmation: 'warning',
+    waiting_publish: 'warning',
     success: 'success',
     failed: 'danger',
     abnormal: 'danger'
@@ -3197,6 +3222,28 @@ const statusChipClass = (type, status) => {
   return translateStatusType(status) === 'success' ? 'is-success' : 'is-muted'
 }
 
+const askAgentAboutVideo = (row) => {
+  window.dispatchEvent(new CustomEvent('vidferry:ask-agent', {
+    detail: {
+      videoContext: {
+        source: 'youtube-research',
+        videoId: String(row?.id || ''),
+        title: row?.title || '',
+        url: row?.url || '',
+        channel: row?.channel || '',
+        subscribers: row?.subscribers || '',
+        sourcePublishedAt: row?.publishedAt || '',
+        duration: row?.duration || '',
+        processVersion: row?.processVersion || '',
+        downloadStatus: Number(row?.downloadStatus || 0),
+        translateStatus: Number(row?.translateStatus || 0),
+        publishStatus: Number(row?.publishStatus || 0),
+        publishedPlatforms: (row?.publishedPlatforms || []).map(platform => platform.name || '')
+      }
+    }
+  }))
+}
+
 const copyUrl = async (url) => {
   if (!url) return
   try {
@@ -3220,6 +3267,10 @@ const copyText = async (text) => {
   }
 }
 
+const handleAgentLeadsImported = () => {
+  loadVideos(false, { force: true })
+}
+
 onMounted(async () => {
   loadingWorkflowSettings = true
   await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishAccountGroups(), videoGroupStore.load()])
@@ -3238,6 +3289,7 @@ onMounted(async () => {
   await consumeFocusJobQuery()
   consumeAgentStatusQuery()
   window.addEventListener('beforeunload', handleBeforeUnload)
+  window.addEventListener('vidferry:youtube-leads-imported', handleAgentLeadsImported)
 })
 
 watch(() => route.query.openSettings, () => {
@@ -3263,6 +3315,7 @@ onBeforeUnmount(() => {
     delete window.__VIDFERRY_OPEN_PROCESS_SETTINGS__
   }
   window.removeEventListener('beforeunload', handleBeforeUnload)
+  window.removeEventListener('vidferry:youtube-leads-imported', handleAgentLeadsImported)
   if (jobsTimer) {
     window.clearTimeout(jobsTimer)
     jobsTimer = null

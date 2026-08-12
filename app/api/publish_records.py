@@ -27,6 +27,20 @@ def publish_tasks():
         return jsonify({"code": 500, "msg": f"获取发布任务失败: {str(e)}", "data": None}), 500
 
 
+@app.route('/publish/tasks/<task_id>', methods=['GET'])
+def publish_task_detail(task_id):
+    try:
+        task = get_publish_dispatch_job(task_id, _current_account_owner_id())
+        if not task:
+            raise LookupError("发布任务不存在")
+        return jsonify({"code": 200, "msg": "success", "data": task}), 200
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
+    except Exception as exc:
+        backend_logger.exception("get publish task failed : publish_task_id = %s | error_type = %s", task_id, type(exc).__name__)
+        return jsonify({"code": 500, "msg": f"获取发布任务失败: {exc}", "data": None}), 500
+
+
 @app.route('/publish/tasks/<task_id>/retry-failed', methods=['POST'])
 def retry_failed_publish(task_id):
     try:
@@ -35,20 +49,13 @@ def retry_failed_publish(task_id):
             raise ValueError("重发请求格式无效")
         target_record_ids = payload.get("targetRecordIds") if payload and "targetRecordIds" in payload else None
         result = prepare_failed_publish_retry(task_id, target_record_ids)
-        try:
-            _submit_background_task("publish", run_failed_publish_retry, result["tasks"])
-        except Exception:
-            fail_failed_publish_retry_submission(result["tasks"], "重发任务提交失败")
-            raise
-        return jsonify({
-            "code": 202,
-            "msg": "失败平台已开始重发",
-            "data": {key: value for key, value in result.items() if key != "tasks"},
-        }), 202
+        return jsonify({"code": 202, "msg": "失败平台已进入发布队列", "data": result}), 202
     except LookupError as exc:
         return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
     except WorkflowConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
+    except PublishQueueFullError as exc:
+        return jsonify({"code": 429, "msg": str(exc), "data": {"errorCode": exc.error_code}}), 429
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as exc:
@@ -78,6 +85,25 @@ def delete_publish_target(record_id):
         }), 409
     except Exception as e:
         return jsonify({"code": 500, "msg": f"删除发布记录失败: {str(e)}", "data": None}), 500
+
+
+@app.route('/publish/target-records/<int:record_id>/release-unknown', methods=['POST'])
+def release_unknown_publish(record_id):
+    try:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict) or payload.get("confirmed") is not True:
+            raise ValueError("请先确认平台未发布，再释放本地占位")
+        result = release_unknown_publish_record(record_id, payload.get("reason") or "")
+        return jsonify({"code": 200, "msg": "已释放未知发布占位", "data": result}), 200
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
+    except WorkflowConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        backend_logger.exception("release unknown publish record failed : record_id = %s | error_type = %s", record_id, type(exc).__name__)
+        return jsonify({"code": 500, "msg": f"释放发布占位失败: {exc}", "data": None}), 500
 
 
 @app.route('/publish/scheduled-tasks', methods=['POST'])
