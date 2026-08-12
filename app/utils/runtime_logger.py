@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -25,7 +26,7 @@ def configure_backend_logger(base_dir: Path) -> logging.Logger:
         encoding="utf-8",
     )
     file_handler.setFormatter(formatter)
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
 
     logger.setLevel(logging.INFO)

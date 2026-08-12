@@ -34,6 +34,8 @@ def _base_ytdlp_opts(include_ffmpeg=False):
     opts = {
         "js_runtimes": _resolve_ytdlp_js_runtimes(),
     }
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
     if YTDLP_REMOTE_COMPONENTS:
         opts["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
     if include_ffmpeg:

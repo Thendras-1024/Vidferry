@@ -137,7 +137,7 @@ def _get_video_info(media_file):
 
 
 def _asr_failure_kind(exc):
-    text = str(exc or "").lower()
+    text = f"{exc.__class__.__name__}:{exc}".lower() if exc else ""
     if "huggingface" in text or "hfhub" in text or "localentrynotfound" in text:
         return "WHISPER_MODEL_DOWNLOAD_FAILED"
     if "cublas64_12.dll" in text:
@@ -1104,17 +1104,20 @@ def _ffmpeg_error_summary(lines):
 def _subtitle_mask_geometry(width, height, region=None):
     width = max(2, int(width or 0))
     height = max(2, int(height or 0))
-    region = region if isinstance(region, dict) else {"x": 0.08, "y": 0.84, "width": 0.84, "height": 0.14}
+    fallback_region = {"x": 0.06, "y": 0.84, "width": 0.88, "height": 0.155}
+    region = region if isinstance(region, dict) else fallback_region
     try:
-        normalized_x = max(0.0, min(1.0, float(region.get("x", 0.08))))
         normalized_y = max(0.0, min(1.0, float(region.get("y", 0.84))))
-        normalized_width = max(0.01, min(1.0 - normalized_x, float(region.get("width", 0.84))))
-        normalized_height = max(0.01, min(1.0 - normalized_y, float(region.get("height", 0.14))))
+        normalized_height = max(0.01, min(1.0 - normalized_y, float(region.get("height", 0.155))))
     except (TypeError, ValueError):
         return _subtitle_mask_geometry(width, height)
-    x = min(width - 2, max(0, int(width * normalized_x) // 2 * 2))
+    if normalized_y < 0.55 or normalized_height > 0.28:
+        normalized_y = fallback_region["y"]
+        normalized_height = fallback_region["height"]
     y = min(height - 2, max(0, int(height * normalized_y) // 2 * 2))
-    mask_width = max(2, min(width - x, int(width * normalized_width)) // 2 * 2)
+    mask_width = max(2, min(width, int(width * fallback_region["width"])) // 2 * 2)
+    x = max(0, (width - mask_width) // 4 * 2)
+    mask_width = max(2, (width - x * 2) // 2 * 2)
     mask_height = max(2, min(height - y, int(height * normalized_height)) // 2 * 2)
     block = 6 if min(width, height) >= 720 else 4
     pixel_width = max(2, round(mask_width / block) // 2 * 2)

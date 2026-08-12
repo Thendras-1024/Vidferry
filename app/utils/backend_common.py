@@ -104,8 +104,11 @@ def _submit_background_task(resource, target, *args):
         raise
 
 
-def _get_publish_account_lock(platform_type, account_file):
-    key = f"{int(platform_type or 0)}:{_safe_text(account_file)}"
+def _get_publish_account_lock(platform_type, account_file, account_id=None, owner_user_id=None):
+    if account_id is not None:
+        key = f"{int(owner_user_id or 0)}:{int(platform_type or 0)}:{int(account_id)}"
+    else:
+        key = f"legacy:{int(platform_type or 0)}:{_safe_text(account_file)}"
     with _publish_account_locks_guard:
         lock = _publish_account_locks.get(key)
         if lock is None:

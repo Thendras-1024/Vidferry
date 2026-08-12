@@ -27,6 +27,29 @@ TENCENT_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
 TENCENT_UPLOAD_RETRY_LIMIT = int(os.environ.get("TENCENT_UPLOAD_RETRY_LIMIT", "1") or 1)
 TENCENT_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("TENCENT_UPLOAD_WAIT_TIMEOUT", "1800") or 1800)
 TENCENT_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("TENCENT_PUBLISH_CONFIRM_TIMEOUT", "300") or 300)
+TENCENT_PAGE_CLOSED_FAILURE_LIMIT = 5
+TENCENT_COVER_GENERATION_STALL_TIMEOUT = 90
+TENCENT_PUBLISH_RECOVERY_LIMIT = 1
+
+
+class TencentPublishRecoveryRequired(RuntimeError):
+    """提交前页面状态不可恢复，需要重新建立一次视频号投稿会话。"""
+
+    def __init__(self, reason: str):
+        self.reason = str(reason or "unknown")
+        message = "页面已关闭" if self.reason == "page_closed" else "生成封面卡住"
+        super().__init__(message)
+
+
+def _is_page_lifecycle_closed_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "target page, context or browser has been closed" in text
+        or "targetpage,contextorbrowserhasbeenclosed" in text.replace(" ", "")
+        or "page has been closed" in text
+        or "browser has been closed" in text
+        or "context has been closed" in text
+    )
 
 
 class TencentCookieCheckError(RuntimeError):
@@ -643,11 +666,21 @@ class TencentBaseUploader(BaseVideoUploader):
             if await declare_button.count():
                 await declare_button.click()
 
+    async def is_cover_generation_visible(self, page: Page) -> bool:
+        cover_markers = page.get_by_text("生成封面", exact=False)
+        for index in range(await cover_markers.count()):
+            if await cover_markers.nth(index).is_visible():
+                return True
+        return False
+
     async def wait_for_upload_complete(self, page: Page) -> None:
-        upload_deadline = asyncio.get_running_loop().time() + TENCENT_UPLOAD_WAIT_TIMEOUT
+        loop = asyncio.get_running_loop()
+        upload_deadline = loop.time() + TENCENT_UPLOAD_WAIT_TIMEOUT
         retry_count = 0
+        page_closed_failures = 0
+        cover_generation_started_at = None
         while True:
-            if asyncio.get_running_loop().time() > upload_deadline:
+            if loop.time() > upload_deadline:
                 raise RuntimeError(
                     f"VF-PUBLISH-UPLOAD-TIMEOUT: 视频号上传等待超过 {TENCENT_UPLOAD_WAIT_TIMEOUT} 秒，"
                     "页面仍未进入可发布状态，请检查网络、平台页面或重新发起发布。"
@@ -655,11 +688,20 @@ class TencentBaseUploader(BaseVideoUploader):
             try:
                 publish_button = page.get_by_role("button", name="发表")
                 button_class = await publish_button.get_attribute("class")
+                page_closed_failures = 0
                 if button_class and "weui-desktop-btn_disabled" not in button_class:
                     tencent_logger.info(_msg("🥳", "视频上传完毕"))
                     break
 
-                tencent_logger.info(_msg("🏃", "正在上传视频中..."))
+                if await self.is_cover_generation_visible(page):
+                    if cover_generation_started_at is None:
+                        cover_generation_started_at = loop.time()
+                    elif loop.time() - cover_generation_started_at >= TENCENT_COVER_GENERATION_STALL_TIMEOUT:
+                        raise TencentPublishRecoveryRequired("cover_generation_stalled")
+                else:
+                    cover_generation_started_at = None
+
+                tencent_logger.info("publish upload waiting : state = uploading")
                 await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
                 upload_failed = await page.locator("div.status-msg.error").count()
@@ -673,10 +715,20 @@ class TencentBaseUploader(BaseVideoUploader):
                     tencent_logger.error(_msg("😵", "发现上传出错了，准备重试"))
                     retry_count += 1
                     await self.handle_upload_error(page)
-            except RuntimeError:
-                raise
             except Exception as exc:
-                tencent_logger.info(_msg("🏃", f"正在上传视频中，继续观察: {exc}"))
+                if _is_page_lifecycle_closed_error(exc):
+                    page_closed_failures += 1
+                    tencent_logger.warning(
+                        f"publish upload page closed : consecutive_failures = {page_closed_failures} / "
+                        f"{TENCENT_PAGE_CLOSED_FAILURE_LIMIT}"
+                    )
+                    if page_closed_failures >= TENCENT_PAGE_CLOSED_FAILURE_LIMIT:
+                        raise TencentPublishRecoveryRequired("page_closed") from exc
+                    await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+                    continue
+                if isinstance(exc, RuntimeError):
+                    raise
+                tencent_logger.info(f"publish upload observation failed : error_type = {type(exc).__name__}")
                 await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
     async def submit_publish(self, page: Page) -> None:
@@ -836,6 +888,24 @@ class TencentVideo(TencentBaseUploader):
         await self.validate_upload_args()
         tencent_logger.info(_msg("🥳", "上传前检查通过"))
 
+        recovery_attempt = 0
+        while True:
+            try:
+                await self._upload_once(playwright)
+                return
+            except TencentPublishRecoveryRequired as exc:
+                if recovery_attempt >= TENCENT_PUBLISH_RECOVERY_LIMIT:
+                    raise RuntimeError(
+                        "PUBLISH_FAILED: VF-PUBLISH-PAGE-RECOVERY-FAILED: 视频号页面恢复后仍无法完成提交，"
+                        f"恢复原因 = {exc.reason}，已达到自动恢复上限。"
+                    ) from exc
+                recovery_attempt += 1
+                tencent_logger.warning(
+                    f"publish recovery requested : reason = {exc.reason} | "
+                    f"attempt = {recovery_attempt} / {TENCENT_PUBLISH_RECOVERY_LIMIT}"
+                )
+
+    async def _upload_once(self, playwright: Playwright) -> None:
         browser = await playwright.chromium.launch(**_build_launch_kwargs(headless=self.headless))
         context = await browser.new_context(storage_state=self.account_file)
         context = await set_init_script(context)

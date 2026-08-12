@@ -270,7 +270,7 @@ def upsert_youtube_videos(videos, query):
 def _youtube_video_status_clause(status):
     active_job_sql = """video_id IN (
             SELECT video_id FROM youtube_workflow_jobs
-            WHERE status IN ('queued', 'running', 'waiting_confirmation') AND video_id IS NOT NULL AND video_id != ''
+            WHERE status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') AND video_id IS NOT NULL AND video_id != ''
         )"""
     failed_job_sql = _relevant_job_status_exists_sql("failed")
     abnormal_job_sql = _relevant_job_status_exists_sql("abnormal")
@@ -318,7 +318,7 @@ def _active_job_exists_sql():
     return """EXISTS (
         SELECT 1 FROM youtube_workflow_jobs job
         WHERE job.video_id = youtube_videos.video_id
-          AND job.status IN ('queued', 'running', 'waiting_confirmation')
+          AND job.status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
     )"""
 
 
@@ -544,7 +544,7 @@ def _youtube_video_summary(cursor, keyword="", group_id=None):
     cursor.execute(f'''
     SELECT COUNT(DISTINCT video_id) AS running
     FROM youtube_workflow_jobs
-    WHERE status IN ('queued', 'running', 'waiting_confirmation') AND video_id IS NOT NULL AND video_id != ''
+    WHERE status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') AND video_id IS NOT NULL AND video_id != ''
     {running_group_clause}
     ''', running_values)
     running_row = cursor.fetchone() or {}
@@ -893,7 +893,7 @@ def _delete_youtube_transcript_cache(video):
 
 
 def _delete_reset_youtube_workflow_history(cursor, video_id, process_version=""):
-    conditions = ["video_id = ?", "status NOT IN ('queued', 'running', 'waiting_confirmation')"]
+    conditions = ["video_id = ?", "status NOT IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')"]
     values = [video_id]
     if process_version:
         conditions.append("process_version = ?")

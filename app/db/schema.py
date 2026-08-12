@@ -16,7 +16,8 @@ _REQUIRED_TABLES = (
     "agent_messages", "agent_runs", "youtube_video_groups", "youtube_videos",
     "youtube_search_jobs", "youtube_search_job_items", "youtube_workflow_jobs",
     "youtube_workflow_locks", "youtube_workflow_events", "youtube_workflow_llm_usage_events",
-    "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "scheduled_publish_tasks",
+    "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "publish_dispatch_jobs",
+    "publish_dispatch_targets", "scheduled_publish_tasks",
     "scheduled_publish_targets", "publish_account_groups", "publish_account_group_members", "auth_sessions", "auth_audit_logs",
     "task_acknowledgements", "platform_metric_snapshots", "platform_comment_samples",
 )

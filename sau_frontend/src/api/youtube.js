@@ -23,7 +23,7 @@ export const youtubeApi = {
   },
 
   importVideo(data) {
-    return request.post('/youtube/videos/import', data)
+    return request.post('/youtube/videos/import', data, { timeout: 30000 })
   },
 
   getVideoGroups() {

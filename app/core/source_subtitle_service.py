@@ -23,7 +23,7 @@ from app.utils.ffmpeg_util import _resolve_ffmpeg_command
 SOURCE_SUBTITLE_SAMPLE_COUNT = 12
 SOURCE_SUBTITLE_FRAME_WIDTH = 960
 SOURCE_SUBTITLE_MIN_CONFIDENCE = 0.75
-SOURCE_SUBTITLE_FALLBACK_REGION = {"x": 0.08, "y": 0.84, "width": 0.84, "height": 0.14}
+SOURCE_SUBTITLE_FALLBACK_REGION = {"x": 0.06, "y": 0.84, "width": 0.88, "height": 0.155}
 
 _logger = logging.getLogger("vidferry.backend")
 
@@ -120,17 +120,22 @@ def validate_source_subtitle_result(value, frame_count):
 
 
 def _source_subtitle_region(evidence_frames):
-    boxes = [item.get("bbox") for item in evidence_frames or [] if isinstance(item.get("bbox"), dict)]
-    if not boxes:
+    boxes = [
+        item["bbox"]
+        for item in evidence_frames or []
+        if isinstance(item.get("bbox"), dict)
+        and item["bbox"]["y"] + item["bbox"]["height"] / 2 >= 0.55
+        and item["bbox"]["width"] <= 0.88
+    ]
+    if len(boxes) < 2:
         return None
-    left = max(0.0, min(item["x"] for item in boxes) - 0.02)
+    # ponytail: 仅支持底部对白字幕；非底部字幕需要 OCR 跟踪后再扩展。
     top = max(0.0, min(item["y"] for item in boxes) - 0.01)
-    right = min(1.0, max(item["x"] + item["width"] for item in boxes) + 0.02)
-    bottom = min(1.0, max(item["y"] + item["height"] for item in boxes) + 0.01)
+    bottom = 0.995
     return {
-        "x": round(left, 4),
+        "x": SOURCE_SUBTITLE_FALLBACK_REGION["x"],
         "y": round(top, 4),
-        "width": round(right - left, 4),
+        "width": SOURCE_SUBTITLE_FALLBACK_REGION["width"],
         "height": round(bottom - top, 4),
     }
 

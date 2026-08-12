@@ -190,7 +190,7 @@ def import_youtube_video():
         video_id = _extract_youtube_video_id(url)
         backend_logger.info("YouTube import started : videoId = %s | groupId = %s", video_id, payload.get("groupId") or "default")
         started_at = datetime.datetime.now().isoformat(timespec='seconds')
-        video = _import_youtube_video_by_url(url)
+        video = _import_youtube_video_by_url(url, quick_metadata=True)
         save_result = save_new_youtube_videos([video], "manual-url", payload.get("groupId"))
         backend_logger.info(
             "YouTube import completed : videoId = %s | groupId = %s | created = %s | duplicate = %s",

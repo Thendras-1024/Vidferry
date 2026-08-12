@@ -33,7 +33,7 @@ def create_logger(log_name: str, file_path: str):
         return record["extra"].get("business_name") == log_name
 
     Path(BASE_DIR / file_path).parent.mkdir(exist_ok=True)
-    logger.add(Path(BASE_DIR / file_path), filter=filter_record, level="INFO", rotation="10 MB", retention="10 days", backtrace=True, diagnose=True)
+    logger.add(Path(BASE_DIR / file_path), filter=filter_record, level="INFO", rotation="10 MB", retention="10 days", backtrace=True, diagnose=True, encoding="utf-8")
     return logger.bind(business_name=log_name)
 
 

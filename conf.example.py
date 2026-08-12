@@ -1,6 +1,7 @@
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.resolve()
+INTERNAL_CONFIG = {}  # 可选的内部默认配置；通常保持为空并使用 .env
 XHS_SERVER = "http://127.0.0.1:11901"  # 仅用于小红书相关流程
 LOCAL_CHROME_PATH = ""  # 可选,例如 C:/Program Files/Google/Chrome/Application/chrome.exe
 LOCAL_CHROME_HEADLESS = False  # 上传器/示例默认的无头模式行为
