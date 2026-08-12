@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os as _os
 import re as _re
+import datetime as _datetime
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
 
 
 AGENT_VIDEO_STATUSES = {
@@ -142,6 +144,25 @@ AGENT_TOOL_SPECS = [
         "readOnly": True,
     },
     {
+        "name": "search_youtube_candidates",
+        "description": "按关键词检索 YouTube 候选视频。该工具只返回候选线索，不会导入、下载或修改任何数据。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS},
+                "publishedAfter": {"type": "string"},
+                "minViews": {"type": "integer", "minimum": 0},
+                "maxViews": {"type": "integer", "minimum": 0},
+                "minDurationSeconds": {"type": "integer", "minimum": 0},
+                "maxDurationSeconds": {"type": "integer", "minimum": 0},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
         "name": "list_account_video_metrics",
         "description": "按一个快手账号和日期范围读取作品指标并分析表现。默认近 30 天 50 条，最长 90 天，最多 100 条。不会读取评论。",
         "parameters": {
@@ -174,6 +195,27 @@ AGENT_TOOL_SPECS = [
         },
         "readOnly": True,
     },
+    {
+        "name": "inspect_youtube_url",
+        "description": "读取一个 YouTube 视频链接的元数据，用于生成待确认的导入线索；不会导入或下载视频。",
+        "parameters": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "generate_pending_publish_plan",
+        "description": "生成已处理待发布视频的只读发布计划，列出平台、账号、排期风险和需要在页面确认的动作；不会发布或修改任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS}},
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
 ]
 
 AGENT_TOOL_SPEC_MAP = {item["name"]: item for item in AGENT_TOOL_SPECS}
@@ -181,6 +223,57 @@ AGENT_TOOL_SPEC_MAP = {item["name"]: item for item in AGENT_TOOL_SPECS}
 
 def _agent_limit(limit=None):
     return max(1, min(int(limit or AGENT_MAX_TOOL_ROWS), AGENT_MAX_TOOL_ROWS))
+
+
+def search_youtube_candidates(query, limit=None, published_after="", min_views=None, max_views=None, min_duration_seconds=None, max_duration_seconds=None):
+    query = str(query or "").strip()
+    if not query:
+        raise ValueError("请提供要检索的 YouTube 主题")
+    requested = _agent_limit(limit)
+    videos = _search_youtube_with_ytdlp(query, min(50, max(requested * 8, 20)))
+    candidate_ids = [str(item.get("id") or "").strip() for item in videos if str(item.get("id") or "").strip()]
+    existing_ids = set()
+    if candidate_ids:
+        init_youtube_video_table()
+        placeholders = ",".join("?" for _ in candidate_ids)
+        with _db_connect(row_factory=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
+            existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
+    # yt-dlp 的搜索摘要通常没有订阅数和精确发布日期。先剔除已有线索，
+    # 再对有限候选取详情，避免为不会展示的视频建立大量额外请求。
+    candidates = [item for item in videos if str(item.get("id") or "") not in existing_ids]
+    detail_limit = min(len(candidates), max(6, min(requested * 2, 12)))
+    detail_candidates = candidates[:detail_limit]
+    if len(detail_candidates) > 1:
+        with _ThreadPoolExecutor(max_workers=min(3, len(detail_candidates)), thread_name_prefix="vidferry-agent-metadata") as executor:
+            enriched_candidates = list(executor.map(lambda item: _enrich_video_metadata(item, "agent-search", quick_metadata=True), detail_candidates))
+    else:
+        enriched_candidates = [_enrich_video_metadata(item, "agent-search", quick_metadata=True) for item in detail_candidates]
+    cutoff = str(published_after or "").strip()
+    def matches(item):
+        views = int(item.get("viewCount") or 0)
+        duration = float(item.get("durationSeconds") or 0)
+        published = str(item.get("publishedAt") or "")
+        if cutoff and (not published or published < cutoff): return False
+        if min_views is not None and views < int(min_views): return False
+        if max_views is not None and views > int(max_views): return False
+        if min_duration_seconds is not None and duration < int(min_duration_seconds): return False
+        if max_duration_seconds is not None and duration > int(max_duration_seconds): return False
+        return True
+    filtered = [item for item in enriched_candidates if matches(item)]
+    items = filtered[:requested]
+    return {"query": query, "items": items, "filters": {
+        "publishedAfter": cutoff, "minViews": min_views, "maxViews": max_views,
+        "minDurationSeconds": min_duration_seconds, "maxDurationSeconds": max_duration_seconds,
+    }, "searched": len(videos), "excludedExisting": len(videos) - len(candidates)}
+
+
+def inspect_youtube_url(url):
+    url = str(url or "").strip()
+    if not url:
+        raise ValueError("请提供 YouTube 视频链接")
+    return {"item": _import_youtube_video_by_url(url)}
 
 
 def _agent_public_path(value):
@@ -346,6 +439,132 @@ def get_publish_platforms(video_id):
             for item in items
         ],
     }
+
+
+_PUBLISH_PLAN_PLATFORMS = (
+    (3, "publishToDouyin", "account"),
+    (5, "publishToBilibili", "bilibiliAccount"),
+    (1, "publishToXiaohongshu", "xiaohongshuAccount"),
+    (4, "publishToKuaishou", "kuaishouAccount"),
+    (2, "publishToTencent", "tencentAccount"),
+)
+
+
+def _agent_pending_publish_rows(limit):
+    owner_user_id = _agent_current_user_id()
+    if not owner_user_id:
+        raise PermissionError("发布计划查询缺少当前用户身份")
+    clause, values = _youtube_video_status_clause("processed")
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT * FROM youtube_videos
+            WHERE {clause}
+              AND EXISTS (
+                  SELECT 1 FROM youtube_workflow_jobs job
+                  WHERE job.video_id = youtube_videos.video_id
+                    AND job.owner_user_id = ?
+              )
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ?
+            """,
+            (*values, int(limit)),
+        )
+        videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
+        result = []
+        for video in videos:
+            cursor.execute(
+                """
+                SELECT * FROM youtube_workflow_jobs
+                WHERE video_id = ? AND owner_user_id = ?
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (video.get("id") or "", owner_user_id),
+            )
+            job_row = cursor.fetchone()
+            if job_row:
+                result.append((video, _row_to_workflow_job(job_row)))
+        return result
+
+
+def _agent_publish_schedule_status(schedule, now):
+    raw_schedule = str(schedule or "").strip()
+    if not raw_schedule:
+        return {"status": "notScheduled", "scheduledAt": "", "risk": ""}
+    scheduled = None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            scheduled = _datetime.datetime.strptime(raw_schedule, fmt)
+            break
+        except ValueError:
+            continue
+    if not scheduled:
+        return {"status": "invalid", "scheduledAt": raw_schedule, "risk": "定时发布时间格式无效"}
+    minimum = (now + _datetime.timedelta(minutes=125)).replace(second=0, microsecond=0)
+    if scheduled < minimum:
+        return {"status": "tooSoon", "scheduledAt": raw_schedule, "risk": "定时发布时间不足平台要求的 2 小时"}
+    return {"status": "ready", "scheduledAt": raw_schedule, "risk": ""}
+
+
+def _agent_publish_account_status(cursor, owner_user_id, platform_type, account_name):
+    if not account_name:
+        return "missingAccount"
+    cursor.execute(
+        """
+        SELECT status FROM user_info
+        WHERE owner_user_id = ? AND type = ? AND userName = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (owner_user_id, platform_type, account_name),
+    )
+    row = cursor.fetchone()
+    return "ready" if row and int(row["status"] or 0) == 1 else "invalidAccount"
+
+
+def generate_pending_publish_plan(limit=None, now=None):
+    requested = _agent_limit(limit)
+    now = now or _datetime.datetime.now()
+    rows = _agent_pending_publish_rows(requested)
+    items = []
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        for video, job in rows:
+            owner_user_id = job.get("ownerUserId")
+            published = get_publish_platforms(video.get("id")).get("items") or []
+            published_types = {int(item.get("platformType") or 0) for item in published}
+            platforms = []
+            risks = []
+            for platform_type, enabled_key, account_key in _PUBLISH_PLAN_PLATFORMS:
+                if not job.get(enabled_key):
+                    continue
+                account_name = str(job.get(account_key) or "")
+                platform = platform_name(platform_type)
+                if platform_type in published_types:
+                    platforms.append({"platform": platform, "accountName": account_name, "status": "alreadyPublished", "action": "skip"})
+                    continue
+                account_status = _agent_publish_account_status(cursor, owner_user_id, platform_type, account_name)
+                platforms.append({"platform": platform, "accountName": account_name, "status": account_status, "action": "confirmInPage"})
+                if account_status != "ready":
+                    risks.append(f"{platform}账号未配置或异常")
+            schedule = _agent_publish_schedule_status(job.get("schedule"), now)
+            if schedule["risk"]:
+                risks.append(schedule["risk"])
+            if not video.get("processedFilePath") and not job.get("processedFilePath"):
+                risks.append("未找到处理后的视频文件")
+            items.append({
+                "videoId": video.get("id") or "",
+                "title": video.get("title") or job.get("title") or "",
+                "materialStatus": "ready" if not risks else "needsAttention",
+                "platforms": platforms,
+                "schedule": schedule,
+                "risks": risks,
+                "requiredAction": "请在页面确认后执行发布",
+            })
+    return {"items": items, "total": len(items), "readOnly": True}
 
 
 def agent_list_publish_tasks(limit=None):

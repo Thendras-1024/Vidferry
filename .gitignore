@@ -122,6 +122,10 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.uv-cache/
+.npm-cache/
+.postgres-data/
+.runtime/
 env/
 venv/
 ENV/
@@ -241,4 +245,5 @@ tests/*
 !tests/test_comment_burn_service.py
 !tests/test_feishu_robot.py
 !tests/test_agent_observability.py
+!tests/test_task_center_history.py
 !tests/test_multilingual_subtitles.py

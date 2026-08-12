@@ -119,6 +119,7 @@ from app.config import (
     YOUTUBE_TRANSCRIPT_DIR,
     YTDLP_JS_RUNTIME,
     YTDLP_JS_RUNTIME_PATH,
+    YTDLP_PROXY,
     YTDLP_REMOTE_COMPONENTS,
 )
 from app.utils.runtime_logger import configure_backend_logger

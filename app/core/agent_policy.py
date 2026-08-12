@@ -62,6 +62,9 @@ def _contains_any(text, words):
 def agent_policy_check(message, context=None):
     text = str(message or "").strip()
     lowered = text.lower()
+    context = context if isinstance(context, dict) else {}
+    video_context = context.get("videoContext") if isinstance(context.get("videoContext"), dict) else {}
+    has_selected_video = bool(str(video_context.get("videoId") or video_context.get("url") or "").strip())
     if not text:
         return {
             "allowed": False,
@@ -70,13 +73,25 @@ def agent_policy_check(message, context=None):
             "message": "请输入要询问 Agent 的内容。",
         }
 
-    if any(word in text for word in _AGENT_VAGUE_REQUESTS):
+    if any(word in text for word in _AGENT_VAGUE_REQUESTS) and not has_selected_video:
         return {
             "allowed": False,
             "category": "needs_clarification",
             "reason": "缺少要处理的视频、目标或操作类型。",
             "message": "我需要先确认你希望处理什么。请选择一个方向，或补充视频和目标。",
             "actions": _clarification_actions(),
+        }
+
+    # Write operations are permitted only as a separate, user-confirmed proposal
+    # for the video explicitly selected in the UI. The orchestrator still
+    # revalidates the video, account and prepublish state before execution.
+    proposal_action = any(word in lowered for word in ("下载", "download", "处理", "转写", "字幕", "剪辑", "发布", "分发", "publish"))
+    if proposal_action and has_selected_video:
+        return {
+            "allowed": True,
+            "category": "confirmed_proposal",
+            "reason": "当前视频的执行操作必须经前端确认后提交。",
+            "message": "",
         }
 
     for category, intent_words, action_words, message_text in _AGENT_POLICY_RULES:

@@ -107,6 +107,71 @@ def save_agent_message(session_id, role, content, context=None):
             return message_id
 
 
+def update_agent_proposal_state(
+    session_id,
+    proposal_id,
+    proposal_key,
+    status,
+    *,
+    selected_ids=None,
+    selected_account_ids=None,
+    scheduled_at="",
+    result_message="",
+    workflow_jobs=None,
+):
+    """Persist a confirmation result on the assistant message that created the proposal."""
+    session_id = str(session_id or "").strip()
+    proposal_id = str(proposal_id or "").strip()
+    proposal_key = str(proposal_key or "").strip()
+    if not session_id or not proposal_id or not proposal_key:
+        return False
+    owner_user_id = _agent_current_user_id()
+    owner_filter, owner_values = _agent_owner_filter(owner_user_id, "s.owner_user_id")
+    with agent_session_guard(session_id):
+        with _db_connect(row_factory=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT m.id, m.context
+                FROM agent_messages AS m
+                JOIN agent_sessions AS s ON s.id = m.session_id
+                WHERE m.session_id = ? AND m.role = 'assistant' AND s.deleted_at IS NULL
+                  {owner_filter}
+                ORDER BY m.id DESC
+                """,
+                (session_id, *owner_values),
+            )
+            for row in cursor.fetchall():
+                context = _agent_json_loads(row["context"], {})
+                context = dict(context) if isinstance(context, dict) else {}
+                proposal = context.get(proposal_key)
+                if not isinstance(proposal, dict) or proposal.get("proposalId") != proposal_id:
+                    continue
+                proposal = dict(proposal)
+                proposal["status"] = str(status or "confirmed")
+                proposal["selectedIds"] = [str(value) for value in (selected_ids or []) if str(value)]
+                proposal["selectedAccountIds"] = [int(value) for value in (selected_account_ids or []) if str(value).strip()]
+                proposal["scheduledAt"] = str(scheduled_at or proposal.get("scheduledAt") or "")
+                proposal["resultMessage"] = str(result_message or "")
+                proposal["workflowJobs"] = [
+                    {
+                        "id": str(item.get("id") or ""),
+                        "videoId": str(item.get("videoId") or ""),
+                        "title": str(item.get("title") or ""),
+                    }
+                    for item in (workflow_jobs or [])
+                    if isinstance(item, dict) and item.get("id")
+                ]
+                context[proposal_key] = proposal
+                cursor.execute(
+                    "UPDATE agent_messages SET context = ? WHERE id = ?",
+                    (_agent_json_dumps(context), row["id"]),
+                )
+                conn.commit()
+                return True
+    return False
+
+
 def start_agent_turn(session_id="", message="", context=None):
     """在一个短事务中确保会话并保存本轮用户消息。"""
     session_id = str(session_id or "").strip() or _agent_new_id("session")

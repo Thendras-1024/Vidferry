@@ -56,6 +56,14 @@ export const agentApi = {
     return request.post('/agents/chat', data, { silentError: true })
   },
 
+  confirmImportProposal(proposalId, data) {
+    return request.post(`/agents/import-proposals/${encodeURIComponent(proposalId)}/confirm`, data)
+  },
+
+  confirmExecutionProposal(proposalId, data) {
+    return request.post(`/agents/execution-proposals/${encodeURIComponent(proposalId)}/confirm`, data)
+  },
+
   async chatStream(data, onEvent) {
     const response = await fetch(`${apiBaseUrl}/agents/chat/stream`, {
       method: 'POST',
