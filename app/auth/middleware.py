@@ -26,7 +26,7 @@ def _is_public_request():
 
 
 def _requires_admin():
-    if request.path.startswith(("/admin/users", "/admin/audit-logs")):
+    if request.path.startswith(("/admin/users", "/admin/audit-logs", "/admin/short-video")):
         return True
     if request.path in _ADMIN_PATHS:
         return True

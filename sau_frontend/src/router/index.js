@@ -13,6 +13,8 @@ import Login from '../views/Login.vue'
 import ChangePassword from '../views/ChangePassword.vue'
 import UserManagement from '../views/UserManagement.vue'
 import ProcessingSettings from '../views/ProcessingSettings.vue'
+import ShortVideoStudio from '../views/ShortVideoStudio.vue'
+import ShortVideoBgmAdmin from '../views/ShortVideoBgmAdmin.vue'
 import pinia, { useUserStore } from '../stores'
 
 const routes = [
@@ -73,6 +75,17 @@ const routes = [
     path: '/youtube-research',
     name: 'YoutubeResearch',
     component: YoutubeResearch
+  },
+  {
+    path: '/short-video-studio',
+    name: 'ShortVideoStudio',
+    component: ShortVideoStudio
+  },
+  {
+    path: '/short-video-bgm',
+    name: 'ShortVideoBgmAdmin',
+    component: ShortVideoBgmAdmin,
+    meta: { requiresAdmin: true }
   },
   {
     path: '/workflow-settings',

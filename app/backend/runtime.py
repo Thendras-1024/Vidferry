@@ -13,6 +13,7 @@ from types import ModuleType
 MODULE_ORDER = [
     "app/backend/setup.py",
     "app/utils/backend_common.py",
+    "app/core/publish_state.py",
     "app/db/schema.py",
     "app/core/notification_service.py",
     "app/core/youtube_group_service.py",
@@ -50,6 +51,7 @@ MODULE_ORDER = [
     "app/core/scheduled_publish_scheduler.py",
     "app/core/workflow_runner.py",
     "app/core/youtube_search_service.py",
+    "app/core/short_video_service.py",
     "app/api/common.py",
     "app/api/task_center.py",
     "app/api/auth.py",
@@ -60,6 +62,7 @@ MODULE_ORDER = [
     "app/api/youtube_groups.py",
     "app/api/subtitle_audit.py",
     "app/api/youtube.py",
+    "app/api/short_video.py",
     "app/api/material.py",
     "app/api/publish_records.py",
     "app/api/agent.py",

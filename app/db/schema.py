@@ -20,6 +20,7 @@ _REQUIRED_TABLES = (
     "publish_dispatch_targets", "scheduled_publish_tasks",
     "scheduled_publish_targets", "publish_account_groups", "publish_account_group_members", "auth_sessions", "auth_audit_logs",
     "task_acknowledgements", "platform_metric_snapshots", "platform_comment_samples",
+    "short_video_projects", "short_video_candidates", "short_video_bgm_tracks", "short_video_channel_whitelist",
 )
 _initialized = False
 _database_init_lock = threading.Lock()

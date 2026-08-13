@@ -20,6 +20,9 @@
               <el-menu-item index="/youtube-research">
                 <el-icon><Search /></el-icon><span>视频采集与处理</span>
               </el-menu-item>
+              <el-menu-item index="/short-video-studio">
+                <el-icon><VideoPlay /></el-icon><span>短视频拼接</span>
+              </el-menu-item>
               <el-menu-item v-if="isAdmin" index="/account-management">
                 <el-icon><User /></el-icon><span>账号连接</span>
               </el-menu-item>
@@ -106,6 +109,7 @@
                     <el-dropdown-item v-if="isAdmin" command="users" divided>用户与安全</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="statistics">处理统计</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="audit">字幕审计与诊断</el-dropdown-item>
+                    <el-dropdown-item v-if="isAdmin" command="shortVideoBgm">短视频 BGM 管理</el-dropdown-item>
                     <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -347,7 +351,7 @@ import { ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis, ArrowDown,
   Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete, DocumentChecked, Cpu, Moon, Sunny,
-  MoreFilled, Top, Promotion
+  MoreFilled, Top, Promotion, VideoPlay
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { commonApi } from '@/api/common'
@@ -502,6 +506,7 @@ const handleUserCommand = async command => {
   if (command === 'users') return router.push('/user-management')
   if (command === 'statistics') return router.push('/workflow-statistics')
   if (command === 'audit') return router.push('/subtitle-audit')
+  if (command === 'shortVideoBgm') return router.push('/short-video-bgm')
   if (command === 'about') return router.push('/about')
   if (command === 'password') return router.push('/change-password')
   if (command === 'logout') {
