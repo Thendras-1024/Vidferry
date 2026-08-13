@@ -12,6 +12,7 @@ import urllib.request
 
 from app.core.errors import LLMContractError, LLMRequestError
 from app.config import llm_provider_profile
+from app.core.highlight_policy import HIGHLIGHT_MAX_DURATION_SECONDS, HIGHLIGHT_MIN_DURATION_SECONDS, HIGHLIGHT_MIN_START_SECONDS
 from app.core.llm_provider import fallback_payloads, provider_optional_fields
 
 
@@ -505,9 +506,9 @@ def _highlight_segments(
             item_violations.append(f"{item_path}.type 不能为空")
         reason = _chinese_text(item.get("reason"), f"{item_path}.reason", item_violations, validate_text=validate_text)
         caption = _chinese_text(item.get("suggested_caption"), f"{item_path}.suggested_caption", item_violations, validate_text=validate_text)
-        if start < 30:
-            item_violations.append(f"{item_path}.start 不得早于 30 秒")
-        if end - start < 6 or end - start > 12:
+        if start < HIGHLIGHT_MIN_START_SECONDS:
+            item_violations.append(f"{item_path}.start 不得早于 {HIGHLIGHT_MIN_START_SECONDS} 秒")
+        if end - start < HIGHLIGHT_MIN_DURATION_SECONDS or end - start > HIGHLIGHT_MAX_DURATION_SECONDS:
             item_violations.append(f"{item_path} 时长必须为 6-12 秒")
         if max_timestamp and end > max_timestamp + 0.01:
             item_violations.append(f"{item_path}.end 超出转写时长")
@@ -524,7 +525,7 @@ def _highlight_segments(
         if any(start < existing["end"] and end > existing["start"] for existing in output):
             continue
         output.append({"start": round(start, 2), "end": round(end, 2), "type": kind, "reason": reason, "suggested_caption": caption})
-    return output[:max(0, int(max_items or 0))]
+    return sorted(output, key=lambda item: (item["start"], item["end"]))[:max(0, int(max_items or 0))]
 
 
 def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_highlights=0, soft_warnings=None):

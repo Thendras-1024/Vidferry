@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
+from app.core.highlight_policy import HIGHLIGHT_MIN_START_SECONDS
 
-EDITING_PROMPT_VERSION = "editing-plan-zh-v9"
+
+EDITING_PROMPT_VERSION = "editing-plan-zh-v10"
+HIGHLIGHT_TEXT_SHORTLIST_PROMPT_VERSION = "highlight-text-shortlist-zh-v1"
 HIGHLIGHT_VISION_PROMPT_VERSION = "highlight-vision-zh-v1"
 GUARD_PROMPT_VERSION = "prepublish-guard-zh-v2"
 AGENT_PROMPT_VERSION = "agent-leads-zh-v2"
@@ -47,7 +50,7 @@ def editing_analysis_system_prompt():
         + "必须根据标题、检索词、分组和转写识别实际主题。涉及中国发展的内容可关注科技机制、制造规模、"
         + "基础设施、效率、真实使用体验及有明确证据的反应；不得强套外国人、旅行、中外对比或震惊情绪。"
         + "不得使用民族优越、绝对化表述、虚构人物反应或转写未支持的技术结论。"
-        + "禁止选择视频开始 30 秒内的片段。每个高光必须为 6-12 秒，按吸引力由高到低排列，候选之间不得重叠。"
+        + f"禁止选择视频开始 {HIGHLIGHT_MIN_START_SECONDS} 秒内的片段。每个高光必须为 6-12 秒，按时间先后排列，候选之间不得重叠。"
         + "转写中出现明确脏话不代表整条视频不可处理，但包含明确脏话的时间片段不得作为高光。"
         + "不得复述原始脏话，只能在 risk_notes 中用中性简体中文提示需要人工审核。"
         + "publish_copy 只写正文，不能包含 #话题；tags 单独保存不带 # 的中文为主话题词，可保留必要的英文技术缩写或专有名词。"
@@ -58,7 +61,7 @@ def editing_analysis_system_prompt():
         + "cover_title_options 是专用于封面烧制的两行短标题，每项必须且只能包含一个换行；每行 2-12 个字符，总长度不超过 20 个字符。"
         + _JSON_RULE
         + "\n示例一：转写明确介绍工厂自动化流程时，可选择展示机制与效率的片段；只有原内容明确表达惊讶时，才描述人物反应。\n"
-        "示例二：候选片段若为 00:08-00:16，即使内容精彩也必须舍弃；30 秒后的片段才可返回。"
+        f"示例二：候选片段若为 00:08-00:16，即使内容精彩也必须舍弃；{HIGHLIGHT_MIN_START_SECONDS} 秒后的片段才可返回。"
     )
 
 
@@ -87,9 +90,9 @@ def build_editing_analysis_prompt(job, transcript_text, chunk_context=""):
         "若没有明确反应证据，应改为有反差和看点的总结式概述。"
         "cover_title_options 生成 4 个候选，每项严格两行、每行 2-12 个字符、总长度不超过 20 个字符；"
         "title_options 与 cover_title_options 均不得包含平台违禁、粗俗、攻击、贬损或诱导点击表达。\n"
-        "highlight_segments 必须生成且仅生成 8 个；这 8 个是供后续视觉审核使用的文本候选，与用户最终选择拼接 1-3 条无关。"
+        "highlight_segments 必须生成且仅生成 8 个；这 8 个是按时间先后排列的文本候选，后续会另行按吸引力初选，与用户最终选择拼接 1-3 条无关。"
         "仅基于转写选择，不得编造；若某个候选不合规，必须改选其他合法时间段补足 8 个。"
-        "start >= 30，end - start 在 6 到 12 秒之间，按吸引力由高到低排列，候选之间不得重叠；不得选择包含明确脏话的片段。"
+        f"start >= {HIGHLIGHT_MIN_START_SECONDS}，end - start 在 6 到 12 秒之间，严格按时间先后排列，候选之间不得重叠；不得选择包含明确脏话的片段。"
         + _JSON_RULE
         + "\n"
         "<video_metadata>\n"
@@ -114,7 +117,7 @@ def build_chunk_summary_prompt(job, index, total, chunk):
         + _DISPLAY_RULE
         + f"当前职责：评审第 {index}/{total} 段转写，只输出 JSON，且只能包含 chunk_summary 与 highlight_candidates。"
         "chunk_summary 必须为简体中文。highlight_candidates 最多返回 4 条，每项只能含 start、end、type、reason、suggested_caption；"
-        "reason 与 suggested_caption 必须为简体中文。忽略开始 30 秒内的片段，排除包含明确脏话的片段，每段时长 6-12 秒并按吸引力由高到低排列。"
+        f"reason 与 suggested_caption 必须为简体中文。忽略开始 {HIGHLIGHT_MIN_START_SECONDS} 秒内的片段，排除包含明确脏话的片段，每段时长 6-12 秒并按时间先后排列。"
         + _JSON_RULE
         + "\n"
         "<video_metadata>\n"
@@ -160,6 +163,24 @@ def highlight_vision_system_prompt():
         + "当前职责：审核一个高光候选的画面吸引力与叙事完整性。"
         + "必须从输入字幕边界选择完整片段，避免从句中、动作中或画面转换中间开始或结束。"
         + "只返回 JSON，且只能包含 startCueIndex、endCueIndex、score、reason；score 为 0-100 数字，reason 为简体中文。"
+    )
+
+
+def highlight_text_shortlist_system_prompt():
+    return (
+        _EDITING_ROLE + _UNTRUSTED_INPUT_RULE + _DISPLAY_RULE
+        + "当前职责：从按时间顺序提供的 8 个合法高光候选中，选出最适合短视频开头的 4 个。"
+        + "优先看反差、情绪、信息密度、叙事完整性和继续观看意愿；不得因时间靠前而优先。"
+        + "只返回 JSON，且只能包含 selected；selected 必须恰好包含 4 项，每项只能包含 candidateId 与 reason，按吸引力由高到低排列。"
+    )
+
+
+def build_highlight_text_shortlist_prompt(candidates, candidate_contexts):
+    return (
+        "候选按时间先后提供，不代表吸引力排序。请从全部候选中选出 4 个最能吸引用户继续观看的片段，"
+        "并按吸引力由高到低输出。只能引用输入的 candidateId。\n"
+        f"<highlight_candidates>{json.dumps(candidates, ensure_ascii=False)}</highlight_candidates>\n"
+        f"<candidate_contexts>{json.dumps(candidate_contexts, ensure_ascii=False)}</candidate_contexts>"
     )
 
 

@@ -10,18 +10,25 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.config import LLM_TIMEOUT, MULTIMODAL_LLM_API_KEY, MULTIMODAL_LLM_BASE_URL, MULTIMODAL_LLM_MODEL, get_llm_config_status
+from app.config import (
+    LLM_TIMEOUT,
+    MULTIMODAL_LLM_API_KEY,
+    MULTIMODAL_LLM_BASE_URL,
+    MULTIMODAL_LLM_MODEL,
+    TEXT_LLM_API_KEY,
+    TEXT_LLM_BASE_URL,
+    TEXT_LLM_MODEL,
+    get_llm_config_status,
+)
 from app.core import llm_prompts
 from app.core.llm_harness import call_json_contract, contains_profanity
+from app.core.highlight_policy import HIGHLIGHT_MAX_DURATION_SECONDS, HIGHLIGHT_MIN_DURATION_SECONDS, HIGHLIGHT_MIN_START_SECONDS
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command
 
 
-HIGHLIGHT_CANDIDATE_LIMIT = 4
+HIGHLIGHT_TEXT_SHORTLIST_LIMIT = 4
 HIGHLIGHT_FRAME_COUNT = 10
 HIGHLIGHT_CONTEXT_SECONDS = 4
-HIGHLIGHT_MIN_START_SECONDS = 30
-HIGHLIGHT_MIN_DURATION_SECONDS = 6
-HIGHLIGHT_MAX_DURATION_SECONDS = 12
 HIGHLIGHT_FRAME_WIDTH = 640
 HIGHLIGHT_REVIEW_TOTAL_TIMEOUT_SECONDS = 720
 HIGHLIGHT_REVIEW_MIN_REQUEST_SECONDS = 15
@@ -144,21 +151,87 @@ def _review_candidate(candidate, video_path, transcript_segments, video_duration
     return result
 
 
+def _validate_text_shortlist(value, candidates):
+    if not isinstance(value, dict) or set(value) != {"selected"} or not isinstance(value.get("selected"), list):
+        raise ValueError("高光文本初选返回字段不合法")
+    known = {str(item.get("candidateId") or ""): item for item in candidates}
+    selected = value["selected"]
+    if len(selected) != HIGHLIGHT_TEXT_SHORTLIST_LIMIT:
+        raise ValueError("高光文本初选必须返回 4 条")
+    result = []
+    seen = set()
+    for item in selected:
+        if not isinstance(item, dict) or set(item) != {"candidateId", "reason"}:
+            raise ValueError("高光文本初选条目字段不合法")
+        candidate_id = str(item.get("candidateId") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not candidate_id or candidate_id not in known or candidate_id in seen or not reason:
+            raise ValueError("高光文本初选包含未知或重复候选")
+        seen.add(candidate_id)
+        result.append({**known[candidate_id], "textShortlistRank": len(result) + 1, "textShortlistReason": reason})
+    return result
+
+
+def _evenly_spaced_candidates(candidates):
+    if len(candidates) <= HIGHLIGHT_TEXT_SHORTLIST_LIMIT:
+        return [dict(item) for item in candidates]
+    indexes = [round(index * (len(candidates) - 1) / (HIGHLIGHT_TEXT_SHORTLIST_LIMIT - 1)) for index in range(HIGHLIGHT_TEXT_SHORTLIST_LIMIT)]
+    return [{**candidates[index], "textShortlistRank": rank + 1, "textShortlistReason": "文本初选不可用，按时间分布降级抽取"} for rank, index in enumerate(indexes)]
+
+
+def _text_shortlist_candidates(job, transcript_segments, candidates, telemetry=None):
+    candidates = list(candidates or [])
+    if len(candidates) <= HIGHLIGHT_TEXT_SHORTLIST_LIMIT:
+        return candidates, {"status": "skipped", "reason": "文本候选不足 5 条", "candidateCount": len(candidates), "selectedCount": len(candidates), "selected": candidates}
+    contexts = []
+    for candidate in candidates:
+        start = max(HIGHLIGHT_MIN_START_SECONDS, _clip_float(candidate.get("start")) - HIGHLIGHT_CONTEXT_SECONDS)
+        end = _clip_float(candidate.get("end")) + HIGHLIGHT_CONTEXT_SECONDS
+        contexts.append({"candidateId": candidate.get("candidateId"), "cues": _window_cues(transcript_segments, start, end)})
+    prompt_candidates = [
+        {key: item.get(key) for key in ("candidateId", "start", "end", "type", "reason", "suggested_caption")}
+        for item in candidates
+    ]
+    try:
+        selected, _, metadata = call_json_contract(
+            messages=[
+                {"role": "system", "content": llm_prompts.highlight_text_shortlist_system_prompt()},
+                {"role": "user", "content": llm_prompts.build_highlight_text_shortlist_prompt(prompt_candidates, contexts)},
+            ],
+            contract_id="highlight_text_shortlist",
+            validator=lambda value: _validate_text_shortlist(value, candidates),
+            model=TEXT_LLM_MODEL,
+            api_key=TEXT_LLM_API_KEY,
+            base_url=TEXT_LLM_BASE_URL,
+            timeout=LLM_TIMEOUT,
+            temperature=0.2,
+            max_tokens=1200,
+            prompt_version=llm_prompts.HIGHLIGHT_TEXT_SHORTLIST_PROMPT_VERSION,
+            telemetry=telemetry,
+        )
+        return selected, {"status": "success", "candidateCount": len(candidates), "selectedCount": len(selected), "attemptCount": metadata.get("attemptCount", 0), "selected": selected}
+    except Exception as exc:
+        fallback = _evenly_spaced_candidates(candidates)
+        return fallback, {"status": "degraded", "reason": str(exc)[:160], "candidateCount": len(candidates), "selectedCount": len(fallback), "selected": fallback}
+
+
 def refine_highlight_segments(job, video_path, transcript_segments, candidates, video_duration, progress_callback=None, total_timeout_seconds=HIGHLIGHT_REVIEW_TOTAL_TIMEOUT_SECONDS, telemetry=None):
     try:
         target_count = int((job or {}).get("highlightCount") or 3)
     except (TypeError, ValueError):
         target_count = 3
     target_count = max(1, min(3, target_count))
-    candidates = list(candidates or [])[:HIGHLIGHT_CANDIDATE_LIMIT]
-    fallback = [dict(item) for item in candidates[:target_count]]
+    candidates = list(candidates or [])
     if not candidates:
         return [], {"status": "skipped", "reason": "无可用文本候选", "candidateCount": 0, "timedOut": False}
+    shortlist, shortlist_review = _text_shortlist_candidates(job, transcript_segments, candidates[:8], telemetry)
+    candidates = shortlist[:HIGHLIGHT_TEXT_SHORTLIST_LIMIT]
+    fallback = [dict(item) for item in candidates[:target_count]]
     multimodal_status = (get_llm_config_status() or {}).get("multimodal") or {}
     if not (MULTIMODAL_LLM_API_KEY and MULTIMODAL_LLM_BASE_URL and MULTIMODAL_LLM_MODEL):
-        return fallback, {"status": "degraded", "reason": "未配置多模态模型", "candidateCount": len(candidates), "timedOut": False}
+        return fallback, {"status": "degraded", "reason": "未配置多模态模型", "candidateCount": len(candidates), "timedOut": False, "textShortlist": shortlist_review, "selectionSource": "text_shortlist"}
     if not multimodal_status.get("ready") or not multimodal_status.get("visionReady"):
-        return fallback, {"status": "degraded", "reason": multimodal_status.get("message") or "多模态模型不支持图片输入", "candidateCount": len(candidates), "timedOut": False}
+        return fallback, {"status": "degraded", "reason": multimodal_status.get("message") or "多模态模型不支持图片输入", "candidateCount": len(candidates), "timedOut": False, "textShortlist": shortlist_review, "selectionSource": "text_shortlist"}
 
     started_at = time.monotonic()
     reviewed = []
@@ -166,8 +239,8 @@ def refine_highlight_segments(job, video_path, transcript_segments, candidates, 
     timed_out = False
     blocked_ranges = _blocked_ranges(transcript_segments)
     _logger.info(
-        "高光视觉审核开始 job_id=%s candidates=%s target=%s timeout_seconds=%s",
-        (job or {}).get("id") or "", len(candidates), target_count, total_timeout_seconds,
+        "highlights vision review started : job_id = %s | candidates = %s | target = %s | timeout_seconds = %s | shortlist_status = %s",
+        (job or {}).get("id") or "", len(candidates), target_count, total_timeout_seconds, shortlist_review.get("status"),
     )
     for index, candidate in enumerate(candidates):
         elapsed = time.monotonic() - started_at
@@ -201,6 +274,7 @@ def refine_highlight_segments(job, video_path, transcript_segments, candidates, 
                 "originalEnd": original_end,
                 "reviewAdjusted": abs(result["start"] - original_start) > 0.01 or abs(result["end"] - original_end) > 0.01,
                 "reason": f"{candidate.get('reason') or ''}；视觉审核：{result['reason']}".strip("；"),
+                "visionScore": result["score"],
                 "_score": result["score"],
             })
             _logger.info(
@@ -245,4 +319,14 @@ def refine_highlight_segments(job, video_path, transcript_segments, candidates, 
         "elapsedSeconds": elapsed_seconds,
         "timeoutSeconds": total_timeout_seconds,
         "timedOut": timed_out,
+        "textShortlist": shortlist_review,
+        "reviewedCandidates": [
+            {
+                "candidateId": item.get("candidateId"),
+                "visionScore": item.get("visionScore"),
+                "reviewAdjusted": item.get("reviewAdjusted"),
+            }
+            for item in reviewed
+        ],
+        "selectionSource": "vision" if selected and reviewed else "text_shortlist",
     }

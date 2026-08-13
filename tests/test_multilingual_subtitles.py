@@ -51,3 +51,28 @@ def test_multilingual_source_copy_keeps_chinese_redaction_behavior():
         60,
         blocked_ranges=[{"start": 1, "end": 2}],
     )["risk_notes"][-1]
+
+
+def test_processed_output_is_reused_even_if_current_editing_options_changed(tmp_path):
+    backend = create_backend_module()
+    processed_file = tmp_path / "processed.mp4"
+    processed_file.write_bytes(b"video")
+
+    assert backend._video_has_processed_output(
+        {"translateStatus": 1, "processedFilePath": str(processed_file)},
+        {"processVersion": backend.PROCESS_VERSION_EDITING, "subtitleMaskEnabled": True},
+    )
+
+
+def test_workflow_resource_uses_video_artifact_state(monkeypatch):
+    backend = create_backend_module()
+    monkeypatch.setattr(backend, "_get_youtube_video_record", lambda _video_id: {"downloadStatus": 1, "translateStatus": 1})
+    monkeypatch.setattr(backend, "_video_has_processed_output", lambda record, _job: record.get("translateStatus") == 1)
+
+    assert backend.workflow_job_resource({"videoId": "processed"}) == "publish"
+
+    monkeypatch.setattr(backend, "_get_youtube_video_record", lambda _video_id: {"downloadStatus": 1, "translateStatus": 0})
+    assert backend.workflow_job_resource({"videoId": "downloaded"}) == "processing"
+
+    monkeypatch.setattr(backend, "_get_youtube_video_record", lambda _video_id: {"downloadStatus": 0, "translateStatus": 0})
+    assert backend.workflow_job_resource({"videoId": "lead"}) == "processing"

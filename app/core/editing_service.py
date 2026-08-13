@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from app.core.llm_harness import LLMContractError, call_json_contract, contains_profanity, validate_chunk_summary, validate_editing_plan
+from app.core.highlight_policy import HIGHLIGHT_MAX_DURATION_SECONDS, HIGHLIGHT_MIN_DURATION_SECONDS, HIGHLIGHT_MIN_START_SECONDS
 from app.core import llm_prompts
 from app.core.cover_service import (
     analyze_cover_layout,
@@ -23,7 +24,7 @@ from app.core.cover_service import (
 _logger = logging.getLogger("vidferry.backend")
 
 
-EDITING_INTRO_MIN_START_SECONDS = 30
+EDITING_INTRO_MIN_START_SECONDS = HIGHLIGHT_MIN_START_SECONDS
 EDITING_COVER_DURATION_SECONDS = 2.0
 
 
@@ -48,7 +49,7 @@ def _select_intro_highlight_segments(analysis_result, max_segments=3):
             end = max(start + 1, float(segment.get("end") or 0))
         except (TypeError, ValueError):
             continue
-        if start < EDITING_INTRO_MIN_START_SECONDS or not 6 <= end - start <= 12:
+        if start < EDITING_INTRO_MIN_START_SECONDS or not HIGHLIGHT_MIN_DURATION_SECONDS <= end - start <= HIGHLIGHT_MAX_DURATION_SECONDS:
             continue
         if any(start < item["end"] and end > item["start"] for item in selected):
             continue
@@ -474,12 +475,12 @@ def _normalize_highlight_segments(segments):
         if start < EDITING_INTRO_MIN_START_SECONDS:
             continue
         if end <= start:
-            end = start + 6
+            end = start + HIGHLIGHT_MIN_DURATION_SECONDS
         duration = end - start
-        if duration < 6:
-            end = start + 6
-        elif duration > 12:
-            end = start + 12
+        if duration < HIGHLIGHT_MIN_DURATION_SECONDS:
+            end = start + HIGHLIGHT_MIN_DURATION_SECONDS
+        elif duration > HIGHLIGHT_MAX_DURATION_SECONDS:
+            end = start + HIGHLIGHT_MAX_DURATION_SECONDS
         normalized.append({
             **segment,
             "start": round(start, 2),

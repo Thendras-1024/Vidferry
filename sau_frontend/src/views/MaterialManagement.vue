@@ -81,11 +81,6 @@
             <el-tag effect="plain">{{ processVersionLabel(row.processVersion || row.metadata?.processVersion) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="字幕语言" width="120">
-          <template #default="{ row }">
-            <el-tag type="success" effect="plain">{{ materialSubtitleLanguageLabel(row) || '-' }}</el-tag>
-          </template>
-        </el-table-column>
         <el-table-column label="内容风险" width="120">
           <template #default="{ row }">
             <el-tag v-if="row.analysisResult?.contentRisk?.requiresPublishConfirmation" type="warning" effect="light">发布需确认</el-tag>
@@ -427,30 +422,6 @@ const languageLabel = (language) => {
   return languageMap[language] || language || '-'
 }
 
-const inferSubtitleLanguage = (material) => {
-  const explicitLanguage = material?.subtitleLanguage || material?.metadata?.subtitleLanguage
-  if (explicitLanguage) return explicitLanguage
-  if (material?.source_type !== 'youtube_processed') return ''
-
-  const filename = material?.filename || material?.original_filename || ''
-  const match = filename.match(/_([a-z]{2}(?:-[A-Z]{2})?)\.[^.]+$/)
-  const suffixMap = {
-    zh: 'zh-CN',
-    en: 'en',
-    ja: 'ja',
-    ko: 'ko',
-    es: 'es',
-    fr: 'fr',
-    de: 'de',
-    ru: 'ru'
-  }
-  return match ? (suffixMap[match[1]] || match[1]) : ''
-}
-
-const materialSubtitleLanguageLabel = (material) => {
-  return material?.subtitleLanguageLabel || material?.metadata?.subtitleLanguageLabel || languageLabel(inferSubtitleLanguage(material))
-}
-
 const materialBurnProfile = (material) => {
   return String(
     material?.burnProfile ||
@@ -618,7 +589,6 @@ const MaterialIdentity = defineComponent({
     const infoRows = computed(() => [
       ['视频名称', materialTitle(props.material)],
       ['UUID', props.material.uuid],
-      ['存储路径', props.material.file_path],
       ['来源类型', props.material.source_type],
       ['状态', props.material.status],
       ['任务状态', workflowBadge.value ? `${workflowBadge.value.text} ${workflowBadge.value.detail}` : ''],
