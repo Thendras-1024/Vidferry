@@ -652,26 +652,36 @@ def list_youtube_videos(params=None):
         '''.format(where_sql=where_sql, order_sql=order_sql), query_values)
         videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
         video_ids = [video["id"] for video in videos if video.get("id")]
-        published_platforms = {}
+        publish_records = {}
         if video_ids:
             placeholders = ",".join("?" for _ in video_ids)
             cursor.execute(f'''
-            SELECT id, video_id, platform, platform_type
+            SELECT id, video_id, platform, platform_type, status, message, publish_task_id, updated_at
             FROM published_youtube_materials
             WHERE video_id IN ({placeholders})
               AND deleted_at IS NULL
-              AND COALESCE(NULLIF(status, ''), 'success') = 'success'
             ORDER BY platform_type
             ''', video_ids)
             for record in cursor.fetchall():
                 video_id = record["video_id"] or ""
-                published_platforms.setdefault(video_id, []).append({
+                publish_records.setdefault(video_id, []).append({
                     "recordId": int(record["id"] or 0),
                     "type": int(record["platform_type"] or 0),
                     "name": record["platform"] or platform_name(record["platform_type"]),
+                    "status": record["status"] or "failed",
+                    "message": clean_display_text(record["message"]),
+                    "publishTaskId": record["publish_task_id"] or "",
+                    "updatedAt": record["updated_at"] or "",
                 })
         for video in videos:
-            video["publishedPlatforms"] = published_platforms.get(video.get("id"), [])
+            records = publish_records.get(video.get("id"), [])
+            video["publishedPlatforms"] = [record for record in records if record["status"] == "confirmed"]
+            video["publishDelivery"] = {
+                "status": aggregate_publish_status(records) if records else "",
+                "statusLabel": publish_status_label(aggregate_publish_status(records)) if records else "未发布",
+                "progress": publish_progress(records),
+                "targets": records,
+            }
         _attach_processed_versions_for_videos(cursor, videos)
         return {
             "items": videos,

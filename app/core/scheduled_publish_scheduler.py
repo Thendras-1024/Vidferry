@@ -15,9 +15,8 @@
 # - 轮询周期：_scheduled_publish_loop 每 10 秒认领一次到期任务（契约常量，改动需同步前端
 #   「最早 1 分钟 granularity」预期）。
 # - 认领原子性：_claim_due_scheduled_publish_task 用 BEGIN IMMEDIATE + UPDATE…WHERE
-#   status='pending' + rowcount==1 保证同一任务不会被重复认领/重复触发。
-# - 崩溃恢复：进程异常退出会留下 status='running' 的任务，下次 start 时由
-#   recover_interrupted_scheduled_publish_tasks 统一收口（标 unknown，提示人工核查）。
+#   status='scheduled' + rowcount==1 保证同一任务不会被重复认领/重复触发。
+# - 崩溃恢复：已进入持久化发布队列的任务跟随队列状态；尚未入队的任务安全恢复为 scheduled。
 # - 时间基准：scheduled_at 为 naive 本地时间，单机固定时区（无 DST），见 service 层
 #   _scheduled_now() 与 _parse_scheduled_publish_time 的注释。
 SCHEDULED_PUBLISH_WORKERS = 1
@@ -40,32 +39,37 @@ def fail_scheduled_publish_task(task_id, reason):
         )
         if cursor.rowcount != 1:
             return False
-        cursor.execute("UPDATE scheduled_publish_targets SET status = 'failed', message = ?, finished_at = ?, updated_at = ? WHERE task_id = ? AND status IN ('pending', 'running')", (message, now, now, task_id))
-        cursor.execute("UPDATE published_youtube_materials SET status = 'failed', message = ?, updated_at = ? WHERE publish_task_id = ? AND status IN ('pending', 'running')", (message, now, task_id))
+        cursor.execute("UPDATE scheduled_publish_targets SET status = 'failed', message = ?, finished_at = ?, updated_at = ? WHERE task_id = ? AND status IN ('queued', 'running')", (message, now, now, task_id))
+        cursor.execute("UPDATE published_youtube_materials SET status = 'failed', message = ?, updated_at = ? WHERE publish_task_id = ? AND status IN ('queued', 'running')", (message, now, task_id))
     return True
 
 
 def recover_interrupted_scheduled_publish_tasks():
     now = _now_iso()
-    reason = "后端中断，任务执行结果未知，请人工核查平台后再决定是否重试"
+    reason = "后端中断前尚未进入发布队列，已恢复等待执行"
     with _db_connect() as conn:
+        conn.row_factory = True
         cursor = conn.cursor()
-        task_ids = [row[0] for row in cursor.execute("SELECT id FROM scheduled_publish_tasks WHERE status IN ('running', 'queued')").fetchall()]
-        if task_ids:
-            marks = ",".join("?" for _ in task_ids)
+        tasks = [dict(row) for row in cursor.execute("SELECT id, status FROM scheduled_publish_tasks WHERE status IN ('running', 'queued')").fetchall()]
+        recovered = []
+        for task in tasks:
+            dispatch = cursor.execute(
+                "SELECT status, message FROM publish_dispatch_jobs WHERE source = 'scheduled' AND source_ref_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (task["id"],),
+            ).fetchone()
+            if dispatch:
+                cursor.execute(
+                    "UPDATE scheduled_publish_tasks SET status = ?, message = ?, finished_at = CASE WHEN ? IN ('queued', 'running', 'waiting_existing') THEN NULL ELSE COALESCE(finished_at, ?) END, updated_at = ? WHERE id = ?",
+                    (dispatch["status"], dispatch["message"] or publish_status_label(dispatch["status"]), dispatch["status"], now, now, task["id"]),
+                )
+                recovered.append(task["id"])
+                continue
             cursor.execute(
-                f"UPDATE scheduled_publish_tasks SET status = 'unknown', message = ?, finished_at = ?, updated_at = ? WHERE id IN ({marks})",
-                (reason, now, now, *task_ids),
+                "UPDATE scheduled_publish_tasks SET status = 'scheduled', message = ?, started_at = NULL, finished_at = NULL, updated_at = ? WHERE id = ?",
+                (reason, now, task["id"]),
             )
-            cursor.execute(
-                f"UPDATE scheduled_publish_targets SET status = 'unknown', message = ?, finished_at = ?, updated_at = ? WHERE task_id IN ({marks}) AND status IN ('pending', 'running')",
-                (reason, now, now, *task_ids),
-            )
-            cursor.execute(
-                f"UPDATE published_youtube_materials SET status = 'unknown', message = ?, updated_at = ? WHERE publish_task_id IN ({marks}) AND status IN ('pending', 'running')",
-                (reason, now, *task_ids),
-            )
-    return task_ids
+            recovered.append(task["id"])
+    return recovered
 
 
 def _run_scheduled_publish_task(task_id):

@@ -82,6 +82,8 @@ def upload_cookie():
             cursor.execute('UPDATE user_info SET status = ? WHERE id = ?', (1, account_id))
             conn.commit()
 
+        resolve_publish_cookie_invalid_notifications(account_id, owner_user_id)
+
         return jsonify({
             "code": 200,
             "msg": "Cookie文件上传成功",

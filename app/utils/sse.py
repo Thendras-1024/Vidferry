@@ -3,7 +3,26 @@
 from app.utils.sse_util import build_sse_stream
 
 
+class _LoginStatusQueue:
+    def __init__(self, queue, account_id, owner_user_id):
+        self._queue = queue
+        self._account_id = account_id
+        self._owner_user_id = owner_user_id
+
+    def put(self, message, *args, **kwargs):
+        self._queue.put(message, *args, **kwargs)
+        if message == "200" and self._account_id is not None:
+            try:
+                resolve_publish_cookie_invalid_notifications(self._account_id, self._owner_user_id)
+            except Exception:
+                backend_logger.exception(
+                    "resolve cookie invalid notification failed : account_id = %s",
+                    self._account_id,
+                )
+
+
 def run_async_function(type,id,status_queue,account_id=None,owner_user_id=None):
+    status_queue = _LoginStatusQueue(status_queue, account_id, owner_user_id)
     if type == '5':
         bilibili_cookie_gen(id, status_queue, account_id, owner_user_id)
         return

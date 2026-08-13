@@ -18,6 +18,7 @@ _WORKFLOW_JOB_MUTABLE_FIELDS = {
     "translation_enabled", "subtitle_mask_enabled", "source_subtitle_analysis",
 }
 _WORKFLOW_ACTIVE_STATUSES = ("queued", "running", "waiting_confirmation", "waiting_publish")
+_WORKFLOW_TERMINAL_STATUSES = ("success", "reused", "partial", "needs_verification", "failed", "abnormal", "cancelled")
 
 
 def _workflow_content_risk(value):
@@ -523,7 +524,7 @@ def _workflow_publish_progress(cursor, job_id):
     progress = _publish_dispatch_progress(targets)
     progress.update({
         "publishTaskId": dispatch["id"],
-        "status": dispatch["status"] or "pending",
+        "status": dispatch["status"] or "queued",
         "message": clean_display_text(dispatch["message"]),
         "targets": targets,
     })
@@ -535,7 +536,7 @@ def _workflow_status_clause(status):
         return "status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')", []
     if status == "recent":
         return "", []
-    if status in {"success", "failed", "abnormal"}:
+    if status in set(_WORKFLOW_TERMINAL_STATUSES):
         return "status = ?", [status]
     return "", []
 
@@ -794,7 +795,7 @@ def update_youtube_workflow_job(job_id, **changes):
         SET {", ".join(fields)}
         WHERE id = ?
         ''', values)
-        if changes.get("status") in {"success", "failed", "abnormal", "cancelled"}:
+        if changes.get("status") in set(_WORKFLOW_TERMINAL_STATUSES):
             cursor.execute("DELETE FROM youtube_workflow_locks WHERE job_id = ?", (job_id,))
         conn.commit()
     return get_youtube_workflow_job(job_id)

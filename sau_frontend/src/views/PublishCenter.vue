@@ -403,7 +403,7 @@
           </div>
           <div class="review-task-actions">
             <el-button
-              v-for="target in (task.targets || []).filter(item => item.status === 'unknown')"
+              v-for="target in (task.targets || []).filter(item => item.status === 'uncertain')"
               :key="target.id"
               type="warning"
               plain
@@ -1179,27 +1179,30 @@ const targetStatusList = (tab) => {
   const statusMap = new Map((tab.publishTargetStatuses || []).map(item => [Number(item.platformType), item]))
   return publishTargets(tab).map(target => ({
     ...target,
-    status: statusMap.get(Number(target.platformType))?.status || 'pending',
+    status: statusMap.get(Number(target.platformType))?.status || 'queued',
     message: statusMap.get(Number(target.platformType))?.message || '等待发布'
   }))
 }
 
 const publishStatusLabel = (status) => {
   const map = {
-    pending: '待发布',
+    queued: '待发布',
     running: '发布中',
-    success: '成功',
+    confirmed: '已确认发布',
+    reused: '复用已发布结果',
+    waiting_existing: '等待已有任务',
     failed: '失败',
-    timeout: '超时',
-    unknown: '待核验'
+    uncertain: '待核验',
+    partial: '部分完成',
+    cancelled: '已取消'
   }
   return map[status] || status || '待发布'
 }
 
 const publishStatusTagType = (status) => {
-  if (status === 'success') return 'success'
-  if (status === 'failed' || status === 'timeout') return 'danger'
-  if (status === 'unknown') return 'warning'
+  if (status === 'confirmed') return 'success'
+  if (status === 'failed') return 'danger'
+  if (['uncertain', 'partial', 'waiting_existing'].includes(status)) return 'warning'
   if (status === 'running') return 'warning'
   return 'info'
 }
@@ -1450,7 +1453,7 @@ const askAgentAboutPublishedVideo = (video) => {
           platformType: Number(record.platformType || 0),
           accountId: record.accountId,
           accountName: record.accountName || '',
-          status: record.status || 'success',
+          status: record.status || 'confirmed',
           publishedAt: record.publishedAt || record.updatedAt || ''
         }))
       }
@@ -1481,7 +1484,7 @@ const analyzePublishedRecord = (video, record) => {
           platformType: Number(record.platformType || 0),
           accountId: record.accountId,
           accountName: record.accountName || '',
-          status: record.status || 'success',
+          status: record.status || 'confirmed',
           publishedAt: record.publishedAt || record.updatedAt || ''
         }]
       }
@@ -1553,7 +1556,7 @@ const loadPublishRetryTasks = async () => {
     const response = await materialApi.getPublishTasks({ limit: 50 })
     const tasks = response.data || []
     retryablePublishTasks.value = tasks.filter(task => task.canRetry)
-    reviewablePublishTasks.value = tasks.filter(task => (task.targets || []).some(target => target.status === 'unknown'))
+    reviewablePublishTasks.value = tasks.filter(task => (task.targets || []).some(target => target.status === 'uncertain'))
   } catch (error) {
     console.error('加载可重发发布任务失败:', error)
   }
@@ -1670,6 +1673,22 @@ const disabledScheduleMinutes = (tab, hour, comparingDate) => {
 }
 
 const extractAgentErrorData = (error) => error?.response?.data?.data || {}
+
+const isUnavailablePublishMaterialError = (message = '') => [
+  '发布文件未登记到素材库',
+  '处理后视频文件不存在',
+  'Publish material is no longer available.'
+].some(text => String(message || '').includes(text))
+
+const clearUnavailablePublishMaterial = (tab) => {
+  tab.fileList = []
+  tab.displayFileList = []
+  tab.publishTargetStatuses = []
+  tab.lastPublishResults = []
+  tab.lastPublishTaskId = ''
+  tab.sourceContentConfirmed = false
+  resetAgentGuard(tab)
+}
 
 const normalizeAgentGuardInput = (summary = {}) => ({
   title: String(summary.title || '').trim(),
@@ -1849,11 +1868,12 @@ const watchQueuedPublishTask = async (tab, taskId) => {
         message: item.message,
         durationMs: item.durationMs
       }))
-      if (['success', 'failed', 'partial', 'unknown'].includes(task.status)) {
+      if (['confirmed', 'failed', 'partial', 'uncertain', 'reused', 'cancelled'].includes(task.status)) {
         tab.publishStatus = {
           message: task.message || '发布任务已完成',
-          type: task.status === 'success' ? 'success' : (task.status === 'partial' ? 'warning' : 'error')
+          type: ['confirmed', 'reused'].includes(task.status) ? 'success' : (['partial', 'uncertain'].includes(task.status) ? 'warning' : 'error')
         }
+        await notificationStore.refresh()
         await loadPublishedVideos()
         await loadPublishRetryTasks()
         return
@@ -1920,8 +1940,8 @@ const confirmPublish = async (tab) => {
     platformType: target.platformType,
     platformName: target.platformName,
     accountName: target.accountName,
-    status: 'running',
-    message: tab.scheduleEnabled ? '等待定时发布' : '发布中'
+    status: 'queued',
+    message: tab.scheduleEnabled ? '等待定时发布' : '等待发布'
   }))
   tab.lastPublishResults = []
   tab.lastPublishTaskId = ''
@@ -1966,61 +1986,12 @@ const confirmPublish = async (tab) => {
       platformType: target.platformType,
       platformName: target.platformName,
       accountName: target.accountName,
-      status: 'pending',
+      status: 'queued',
       message: '已进入发布队列'
     }))
-    tab.publishStatus = { message: '发布任务已进入队列', type: 'success' }
+    tab.publishStatus = { message: '发布任务已进入队列', type: 'info' }
     if (tab.lastPublishTaskId) void watchQueuedPublishTask(tab, tab.lastPublishTaskId)
     return
-    const results = Array.isArray(data?.data?.results) ? data.data.results : []
-    tab.lastPublishResults = results
-    tab.lastPublishTaskId = String(data?.data?.publishTaskId || '')
-    results.forEach(result => {
-      const target = targets.find(item => Number(item.platformType) === Number(result.platformType))
-      if (!target) return
-      updateTargetStatus(target, {
-        platformType: target.platformType,
-        platformName: target.platformName,
-        accountName: target.accountName,
-        status: result?.status || 'success',
-        message: result?.message || '发布成功'
-      })
-    })
-    const resultCount = results.length || targets.length
-    const failedCount = tab.publishTargetStatuses.filter(item => item.status === 'failed' || item.status === 'timeout').length
-    const unknownCount = tab.publishTargetStatuses.filter(item => item.status === 'unknown').length
-    const successCount = resultCount - failedCount - unknownCount
-    tab.publishStatus = {
-      message: unknownCount
-        ? `发布完成：${successCount} 个成功，${failedCount} 个失败，${unknownCount} 个待核验`
-        : (failedCount ? `发布完成：${successCount} 个成功，${failedCount} 个失败` : `发布成功，已提交 ${resultCount} 个平台`),
-      type: (failedCount + unknownCount) === resultCount ? 'error' : ((failedCount + unknownCount) ? 'warning' : 'success')
-    }
-    if (failedCount || unknownCount) {
-      notificationStore.addDirectPublishFailureMessage({
-        publishTaskId: tab.lastPublishTaskId,
-        tabName: tab.name,
-        title: tab.title,
-        failedPlatforms: tab.publishTargetStatuses
-          .filter(item => item.status === 'failed' || item.status === 'timeout' || item.status === 'unknown')
-          .map(item => item.platformName),
-        reason: tab.publishStatus.message,
-        createdAt: Date.now()
-      })
-      return
-    }
-    // 清空当前tab的数据
-    tab.fileList = []
-    tab.displayFileList = []
-    tab.title = ''
-    tab.description = ''
-    tab.selectedTopics = []
-    tab.contentLocked = false
-    resetAgentGuard(tab)
-    tab.sourceContentConfirmed = false
-    tab.selectedAccounts = []
-    tab.platformAccounts = {}
-    tab.scheduleEnabled = false
   } catch (error) {
     console.error('发布错误:', error)
     const agentData = extractAgentErrorData(error)
@@ -2030,32 +2001,40 @@ const confirmPublish = async (tab) => {
     const errorMessage = error?.response?.data?.msg || error.message || '请检查网络连接'
     const conflictData = error?.response?.data?.data || {}
     const conflictPlatformType = Number(conflictData.platformType || 0)
+    const unavailableMaterial = isUnavailablePublishMaterialError(errorMessage)
     await loadAccounts()
     await loadPublishedVideos()
     await loadPublishRetryTasks()
-    tab.publishTargetStatuses = targets.map(target => {
-      const previous = (tab.publishTargetStatuses || []).find(item => Number(item.platformType) === Number(target.platformType))
-      const unknownConflict = conflictData.status === 'unknown' && conflictPlatformType === Number(target.platformType)
-      return {
-        platformType: target.platformType,
-        platformName: target.platformName,
-        accountName: target.accountName,
-        status: previous?.status === 'success' ? 'success' : (unknownConflict ? 'unknown' : 'failed'),
-        message: previous?.status === 'success' ? previous.message : errorMessage
-      }
-    })
-    tab.publishStatus = {
-      message: `发布失败：${errorMessage}`,
-      type: 'error'
+    if (unavailableMaterial) clearUnavailablePublishMaterial(tab)
+    else {
+      tab.publishTargetStatuses = targets.map(target => {
+        const previous = (tab.publishTargetStatuses || []).find(item => Number(item.platformType) === Number(target.platformType))
+        const uncertainConflict = conflictData.status === 'uncertain' && conflictPlatformType === Number(target.platformType)
+        return {
+          platformType: target.platformType,
+          platformName: target.platformName,
+          accountName: target.accountName,
+          status: previous?.status === 'confirmed' ? 'confirmed' : (uncertainConflict ? 'uncertain' : 'failed'),
+          message: previous?.status === 'confirmed' ? previous.message : errorMessage
+        }
+      })
     }
-    notificationStore.addDirectPublishFailureMessage({
-      publishTaskId: tab.lastPublishTaskId,
-      tabName: tab.name,
-      title: tab.title,
-      failedPlatforms: targets.map(target => target.platformName),
-      reason: errorMessage,
-      createdAt: Date.now()
-    })
+    tab.publishStatus = {
+      message: unavailableMaterial
+        ? '该素材已失效，已从当前批次移除，请重新选择处理后视频'
+        : `发布失败：${errorMessage}`,
+      type: unavailableMaterial ? 'warning' : 'error'
+    }
+    if (!unavailableMaterial) {
+      notificationStore.addDirectPublishFailureMessage({
+        publishTaskId: tab.lastPublishTaskId,
+        tabName: tab.name,
+        title: tab.title,
+        failedPlatforms: targets.map(target => target.platformName),
+        reason: errorMessage,
+        createdAt: Date.now()
+      })
+    }
     throw error
   } finally {
     tab.publishing = false

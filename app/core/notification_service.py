@@ -130,11 +130,58 @@ def _workflow_notification_issues(cursor):
     return issues
 
 
+def _publish_target_notification_issues(cursor):
+    cursor.execute('''
+    SELECT record.id, record.video_id, record.platform, record.status, record.message,
+           COALESCE(video.title, record.title, record.video_id) AS title
+    FROM published_youtube_materials record
+    LEFT JOIN youtube_videos video ON video.video_id = record.video_id
+    WHERE record.deleted_at IS NULL AND record.status IN ('failed', 'uncertain')
+    ORDER BY record.updated_at DESC, record.id DESC
+    ''')
+    groups = {"failed": [], "uncertain": []}
+    for row in cursor.fetchall():
+        item = dict(row)
+        groups[item["status"]].append({
+            "id": item.get("id"),
+            "title": item.get("title") or "未命名视频",
+            "platform": item.get("platform") or "平台",
+            "reason": item.get("message") or "发布状态需要处理",
+        })
+    issues = []
+    if groups["uncertain"]:
+        items = groups["uncertain"]
+        issues.append(_notification_issue(
+            "publish-target-uncertain", "warning", "publish-target-uncertain",
+            f"{len(items)} 个平台发布结果待核验",
+            f"{items[0]['title']} 在 {items[0]['platform']} 的发布结果不确定，请核验后处理。",
+            {"path": "/publish-center"}, items,
+        ))
+    if groups["failed"]:
+        items = groups["failed"]
+        issues.append(_notification_issue(
+            "publish-target-failed", "danger", "publish-target-failed",
+            f"{len(items)} 个平台发布失败",
+            f"{items[0]['title']} 在 {items[0]['platform']} 发布失败，可在发布中心重试。",
+            {"path": "/publish-center"}, items,
+        ))
+    return issues
+
+
 def _account_notification_issues(cursor):
+    cursor.execute("SELECT source_refs FROM app_notifications WHERE notification_type = 'publish-cookie-invalid' AND source_active = 1")
+    cookie_invalid_account_ids = {
+        int(item.get("accountId"))
+        for row in cursor.fetchall()
+        for item in _notification_json(row["source_refs"], [])
+        if isinstance(item, dict) and str(item.get("accountId") or "").isdigit()
+    }
     cursor.execute("SELECT id, type, userName, status FROM user_info WHERE COALESCE(status, 0) = 0 ORDER BY id DESC")
     groups = {}
     for row in cursor.fetchall():
         item = row
+        if int(item.get("id") or 0) in cookie_invalid_account_ids:
+            continue
         platform = {1: "小红书", 2: "视频号", 3: "抖音", 4: "快手", 5: "B站"}.get(int(item.get("type") or 0), "平台")
         groups.setdefault(platform, []).append({"id": item.get("id"), "title": item.get("userName") or "未命名账号"})
     return [
@@ -145,6 +192,58 @@ def _account_notification_issues(cursor):
         )
         for platform, items in groups.items()
     ]
+
+
+def create_publish_cookie_invalid_notification(task, reason):
+    account_id = int(task.get("accountId") or 0)
+    owner_user_id = int(task.get("ownerUserId") or 0)
+    if not account_id or not owner_user_id:
+        return
+    platform = task.get("platformName") or platform_name(task.get("platformType"))
+    publish_task_id = str(task.get("publishTaskId") or "")
+    source_key = f"publish-cookie-invalid:{publish_task_id}:{task.get('platformType')}:{account_id}"
+    source_ref = {
+        "id": source_key,
+        "accountId": account_id,
+        "ownerUserId": owner_user_id,
+        "publishTaskId": publish_task_id,
+        "platformType": int(task.get("platformType") or 0),
+        "platformName": platform,
+        "title": task.get("title") or "当前视频",
+        "reason": str(reason or "Cookie 已失效"),
+    }
+    issue = _notification_issue(
+        "publish-cookie-invalid", "danger", source_key,
+        f"{platform}账号 Cookie 已失效",
+        f"{source_ref['title']} 发布失败：{source_ref['reason']}",
+        {"path": "/account-management"}, [source_ref],
+    )
+    _sync_notification_issues([issue], resolve_stale=False)
+
+
+def resolve_publish_cookie_invalid_notifications(account_id, owner_user_id):
+    account_id = int(account_id or 0)
+    owner_user_id = int(owner_user_id or 0)
+    if not account_id or not owner_user_id:
+        return
+    now = _notification_now()
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, source_refs FROM app_notifications WHERE notification_type = 'publish-cookie-invalid' AND source_active = 1")
+        notification_ids = [
+            row["id"]
+            for row in cursor.fetchall()
+            if any(
+                int(item.get("accountId") or 0) == account_id and int(item.get("ownerUserId") or 0) == owner_user_id
+                for item in _notification_json(row["source_refs"], [])
+                if isinstance(item, dict)
+            )
+        ]
+        if notification_ids:
+            cursor.executemany(
+                "UPDATE app_notifications SET status = 'resolved', source_active = 0, resolved_at = ?, updated_at = ? WHERE id = ?",
+                [(now, now, notification_id) for notification_id in notification_ids],
+            )
 
 
 def _runtime_notification_issues():
@@ -209,7 +308,7 @@ def _sync_notification_issues(issues, resolve_stale=True):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', 1, 0, ?, ?, ?)
                 ''', (issue["type"], issue["severity"], issue["aggregateKey"], *values[2:6], now, now, now))
         if resolve_stale:
-            cursor.execute("SELECT id, aggregate_key FROM app_notifications WHERE source_active = 1 AND notification_type != 'direct-publish-failed'")
+            cursor.execute("SELECT id, aggregate_key FROM app_notifications WHERE source_active = 1 AND notification_type NOT IN ('direct-publish-failed', 'publish-cookie-invalid')")
             stale_ids = [row["id"] for row in cursor.fetchall() if row["aggregate_key"] not in active_keys]
             if stale_ids:
                 cursor.executemany("UPDATE app_notifications SET status = 'resolved', source_active = 0, resolved_at = ?, updated_at = ? WHERE id = ?", [(now, now, item_id) for item_id in stale_ids])
@@ -221,7 +320,7 @@ def reconcile_notifications():
     init_youtube_workflow_table()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        issues = _workflow_notification_issues(cursor) + _account_notification_issues(cursor)
+        issues = _workflow_notification_issues(cursor) + _publish_target_notification_issues(cursor) + _account_notification_issues(cursor)
     _sync_notification_issues(issues + _runtime_notification_issues())
 
 
@@ -275,11 +374,22 @@ def create_direct_publish_failure_notification(payload):
     if not source_key:
         raise ValueError("直接发布失败通知缺少任务标识")
     title = str(payload.get("title") or "当前视频").strip()
+    target_results = [item for item in (payload.get("targetResults") or []) if isinstance(item, dict)]
     platforms = "、".join(str(item).strip() for item in (payload.get("failedPlatforms") or []) if str(item).strip())
     reason = str(payload.get("reason") or "请查看发布中心结果后重试。").strip()
+    if target_results:
+        labels = {"confirmed": "已确认发布", "reused": "复用已发布结果", "failed": "失败", "uncertain": "待核验", "waiting_existing": "等待已有任务"}
+        reason = "；".join(
+            f"{item.get('platformName') or '平台'}：{labels.get(item.get('status'), item.get('status') or '未知')}"
+            + (f"（{item.get('message')}）" if item.get("message") else "")
+            for item in target_results
+        )
+        platforms = "、".join(str(item.get("platformName") or "").strip() for item in target_results if item.get("platformName"))
+    unresolved = any(item.get("status") in {"failed", "uncertain"} for item in target_results)
     issue = _notification_issue(
-        "direct-publish-failed", "danger", f"direct-publish-failed:{source_key}", "直接发布未完成",
-        f"{title}{f' 在 {platforms}' if platforms else ''} 发布失败：{reason}",
+        "direct-publish-failed", "danger" if unresolved or not target_results else "warning", f"direct-publish-failed:{source_key}",
+        "直接发布未完成" if unresolved or not target_results else "直接发布未重复提交",
+        f"{title}{f' 在 {platforms}' if platforms else ''}：{reason}",
         {"path": "/publish-center"}, [{"id": source_key, "title": title}],
     )
     _sync_notification_issues([issue], resolve_stale=False)

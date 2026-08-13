@@ -269,13 +269,13 @@ def ensure_auth_tables(cursor):
 def ensure_scheduled_publish_tables(cursor):
     cursor.execute('''CREATE TABLE IF NOT EXISTS scheduled_publish_tasks (
         id TEXT PRIMARY KEY, video_id TEXT NOT NULL, material_id INTEGER NOT NULL, file_path TEXT NOT NULL,
-        scheduled_at DATETIME NOT NULL, status TEXT NOT NULL DEFAULT 'pending', overdue INTEGER NOT NULL DEFAULT 0,
+        scheduled_at DATETIME NOT NULL, status TEXT NOT NULL DEFAULT 'scheduled', overdue INTEGER NOT NULL DEFAULT 0,
         message TEXT, risk_override TEXT DEFAULT '{}', created_at DATETIME NOT NULL, started_at DATETIME,
         finished_at DATETIME, canceled_at DATETIME, updated_at DATETIME NOT NULL
     )''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS scheduled_publish_targets (
         id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, platform_type INTEGER NOT NULL,
-        account_id INTEGER, account_name TEXT, settings TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending',
+        account_id INTEGER, account_name TEXT, settings TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued',
         message TEXT, duration_ms INTEGER NOT NULL DEFAULT 0, started_at DATETIME, finished_at DATETIME,
         updated_at DATETIME NOT NULL, FOREIGN KEY(task_id) REFERENCES scheduled_publish_tasks(id) ON DELETE CASCADE
     )''')
@@ -448,14 +448,26 @@ def ensure_published_youtube_material_tables(cursor):
         "published_at": "DATETIME",
         "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
         "publish_task_id": "TEXT",
-        "status": "TEXT DEFAULT 'success'",
+        "status": "TEXT DEFAULT 'confirmed'",
         "message": "TEXT",
         "duration_ms": "INTEGER DEFAULT 0",
         "account_name": "TEXT",
         "deleted_at": "DATETIME",
         "updated_at": "DATETIME",
     })
-    cursor.execute("UPDATE published_youtube_materials SET status = 'success' WHERE status IS NULL OR status = ''")
+    cursor.execute("UPDATE published_youtube_materials SET status = 'confirmed' WHERE status IS NULL OR status = ''")
+    cursor.execute("""
+    UPDATE published_youtube_materials
+    SET status = CASE status
+        WHEN 'success' THEN 'confirmed'
+        WHEN 'pending' THEN 'queued'
+        WHEN 'unknown' THEN 'uncertain'
+        WHEN 'canceled' THEN 'cancelled'
+        WHEN 'timeout' THEN 'failed'
+        ELSE status
+    END
+    WHERE status IN ('success', 'pending', 'unknown', 'canceled', 'timeout')
+    """)
     cursor.execute("""
     UPDATE published_youtube_materials
     SET updated_at = COALESCE(updated_at, published_at, created_at, CURRENT_TIMESTAMP)

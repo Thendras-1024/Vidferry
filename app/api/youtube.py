@@ -477,6 +477,9 @@ def create_youtube_workflow():
         )
         return _json_response(data=job, status=202)
     except WorkflowConflictError as e:
+        existing_job = (e.data or {}).get("job") if e.error_type == "ACTIVE_JOB_LOCK" else None
+        if existing_job and existing_job.get("status") in _WORKFLOW_ACTIVE_STATUSES:
+            return _json_response(data={**existing_job, "reused": True}, status=202)
         return _error_response(409, str(e), e.error_code, e.error_type, e.data)
     except Exception as e:
         backend_logger.exception("创建完整工作流失败")

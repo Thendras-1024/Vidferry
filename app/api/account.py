@@ -26,6 +26,12 @@ def _account_row_to_list(row):
     return [row["id"], row["type"], row["filePath"], row["userName"], row["status"]]
 
 
+def _resolve_valid_account_cookie_notifications(results):
+    for result in results:
+        if result.get("checkStatus") == "valid":
+            resolve_publish_cookie_invalid_notifications(result["id"], result["ownerUserId"])
+
+
 def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, check_status="unknown", message="", retry_after_seconds=0, status_override=None):
     status_value = status_override if status_override is not None else row["status"]
     return {
@@ -425,9 +431,9 @@ def getValidAccounts():
         conn.row_factory = True
         cursor = conn.cursor()
         rows = _load_accounts(cursor, owner_user_id)
-        for row in rows:
-            _check_account_cookie_row(cursor, row)
+        results = [_check_account_cookie_row(cursor, row) for row in rows]
         conn.commit()
+        _resolve_valid_account_cookie_notifications(results)
         rows_list = _list_all_accounts(cursor, owner_user_id)
         return jsonify(
                         {
@@ -458,6 +464,7 @@ def check_account_cookies():
             missing_ids = [item for item in account_ids if item not in found_ids]
             results = [_check_account_cookie_row(cursor, row) for row in rows]
             conn.commit()
+            _resolve_valid_account_cookie_notifications(results)
             accounts = _list_all_accounts(cursor, owner_user_id)
 
         invalid = [item for item in results if item.get("checkStatus") == "invalid"]

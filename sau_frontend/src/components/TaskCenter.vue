@@ -40,7 +40,7 @@
                   <div class="task-item-english" :title="item.englishTitle">{{ item.englishTitle }}</div>
                   <div class="task-item-meta"><span class="task-status-dot" :class="`is-${item.status}`" />{{ item.currentStage }}</div>
                   <el-progress :percentage="item.progress" :show-text="false" :stroke-width="4" :status="progressStatus(item.status)" />
-                  <div class="task-item-time">{{ item.status === 'success' ? `完成于 ${formatTime(item.finishedAt)}` : formatTime(item.updatedAt) }}<span v-if="item.errorReason" class="task-error-summary">{{ item.errorReason }}</span></div>
+                  <div class="task-item-time">{{ ['success', 'reused'].includes(item.status) ? `完成于 ${formatTime(item.finishedAt)}` : formatTime(item.updatedAt) }}<span v-if="item.errorReason" class="task-error-summary">{{ item.errorReason }}</span></div>
                 </div>
                 <div class="task-item-actions">
                   <el-button text type="primary" size="small" @click="openDetail(item)">详情</el-button>
@@ -95,7 +95,7 @@ const formatTime = value => {
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-const progressStatus = status => status === 'failed' || status === 'abnormal' ? 'exception' : status === 'success' ? 'success' : undefined
+const progressStatus = status => ['failed', 'abnormal', 'partial', 'needs_verification'].includes(status) ? 'exception' : ['success', 'reused'].includes(status) ? 'success' : undefined
 
 const refresh = async ({ activeOnly = false } = {}) => {
   if (loading.value) return
@@ -110,7 +110,7 @@ const refresh = async ({ activeOnly = false } = {}) => {
     for (const item of items.value) {
       if (['queued', 'running', 'waiting_publish'].includes(item.status)) groups.active.push(item)
       else if (item.status === 'waiting_confirmation') groups.waitingConfirmation.push(item)
-      else if (item.status === 'success') groups.recentCompleted.push(item)
+      else if (['success', 'reused'].includes(item.status)) groups.recentCompleted.push(item)
       else groups.abnormal.push(item)
     }
     summary.value = {
@@ -200,7 +200,8 @@ onBeforeUnmount(() => {
 .task-error-summary { overflow: hidden; color: $danger-color; text-overflow: ellipsis; white-space: nowrap; }
 .task-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #aeb6c2; }
 .task-status-dot.is-running { background: $primary-color; }
-.task-status-dot.is-success { background: $success-color; }
+.task-status-dot.is-success, .task-status-dot.is-reused { background: $success-color; }
+.task-status-dot.is-partial, .task-status-dot.is-needs_verification { background: $warning-color; }
 .task-status-dot.is-warning { background: $warning-color; }
 .task-status-dot.is-failed, .task-status-dot.is-abnormal { background: $danger-color; }
 .task-item-actions { display: flex; flex: 0 0 auto; gap: 1px; padding-top: 16px; }

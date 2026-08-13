@@ -45,7 +45,7 @@ def _scheduled_task_targets(cursor, task_id):
             "accountId": item.get("account_id"),
             "accountName": item.get("account_name") or "",
             "settings": settings,
-            "status": item.get("status") or "pending",
+            "status": item.get("status") or "queued",
             "message": clean_display_text(item.get("message")),
             "durationMs": int(item.get("duration_ms") or 0),
             "startedAt": item.get("started_at") or "",
@@ -57,9 +57,9 @@ def _scheduled_task_targets(cursor, task_id):
 def _scheduled_task_payload(cursor, row):
     item = dict(row)
     targets = _scheduled_task_targets(cursor, item["id"])
-    success_count = sum(target["status"] == "success" for target in targets)
-    failed_count = sum(target["status"] in {"failed", "timeout"} for target in targets)
-    unknown_count = sum(target["status"] == "unknown" for target in targets)
+    success_count = sum(target["status"] in {"confirmed", "reused"} for target in targets)
+    failed_count = sum(target["status"] == "failed" for target in targets)
+    unknown_count = sum(target["status"] == "uncertain" for target in targets)
     cursor.execute("SELECT title, thumbnail, publish_draft FROM youtube_videos WHERE video_id = ?", (item["video_id"],))
     video = cursor.fetchone()
     title = video["title"] if video else ""
@@ -77,7 +77,7 @@ def _scheduled_task_payload(cursor, row):
         "title": title or "未命名视频",
         "thumbnail": video["thumbnail"] if video else "",
         "scheduledAt": item.get("scheduled_at") or "",
-        "status": item.get("status") or "pending",
+        "status": item.get("status") or "scheduled",
         "overdue": bool(item.get("overdue") or 0),
         "message": clean_display_text(item.get("message")),
         "summary": {"success": success_count, "failed": failed_count, "unknown": unknown_count, "total": len(targets)},
@@ -116,7 +116,7 @@ def create_scheduled_publish_task(data):
             cursor.execute('''
             SELECT 1 FROM published_youtube_materials
             WHERE video_id = ? AND platform_type = ? AND deleted_at IS NULL
-              AND COALESCE(NULLIF(status, ''), 'success') IN ('pending', 'running', 'success')
+              AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('queued', 'running', 'confirmed', 'uncertain')
             LIMIT 1
             ''', (video_id, platform_type))
             if cursor.fetchone():
@@ -130,7 +130,7 @@ def create_scheduled_publish_task(data):
         cursor.execute('''
         INSERT INTO scheduled_publish_tasks (
             id, video_id, material_id, file_path, scheduled_at, status, message, created_at, updated_at, risk_override
-        ) VALUES (?, ?, ?, ?, ?, 'pending', '等待执行', ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, 'scheduled', '等待执行', ?, ?, ?)
         ''', (task_id, video_id, material.get("id"), file_list[0], scheduled_at.strftime("%Y-%m-%d %H:%M:%S"), now, now, risk_override_json))
         for target, account in zip(targets, accounts):
             settings = {
@@ -142,13 +142,13 @@ def create_scheduled_publish_task(data):
             cursor.execute('''
             INSERT INTO scheduled_publish_targets (
                 task_id, platform_type, account_id, account_name, settings, status, message, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'pending', '等待执行', ?)
+            ) VALUES (?, ?, ?, ?, ?, 'queued', '等待执行', ?)
             ''', (task_id, target["platformType"], account["id"], account["name"], json.dumps(settings, ensure_ascii=False), now))
             publish_title = data.get("title") or video.get("title") or "YouTube 视频"
             _archive_published_material(
                 cursor, material, video, target["platformName"], now,
                 publish_title=publish_title, account_count=1, platform_type=target["platformType"],
-                account_file=account["filePath"], publish_task_id=task_id, status="pending",
+                account_file=account["filePath"], publish_task_id=task_id, status="queued",
                 message="等待定时发布", account_name=account["name"], account_id=account["id"],
             )
         conn.commit()
@@ -187,10 +187,11 @@ def list_scheduled_publish_tasks(params=None):
         return {
             "items": items, "total": total, "page": page, "pageSize": page_size,
             "summary": {
-                "all": sum(counts.values()), "pending": counts.get("pending", 0),
-                "queued": counts.get("queued", 0), "running": counts.get("running", 0), "success": counts.get("success", 0),
+                "all": sum(counts.values()), "pending": counts.get("scheduled", 0),
+                "scheduled": counts.get("scheduled", 0),
+                "queued": counts.get("queued", 0), "running": counts.get("running", 0), "success": counts.get("confirmed", 0),
                 "failed": counts.get("failed", 0) + counts.get("partial", 0),
-                "canceled": counts.get("canceled", 0),
+                "canceled": counts.get("cancelled", 0),
             },
         }
 
@@ -201,15 +202,15 @@ def cancel_scheduled_publish_task(task_id):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("UPDATE scheduled_publish_tasks SET status = 'canceled', message = '已取消', canceled_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'", (now, now, task_id))
+        cursor.execute("UPDATE scheduled_publish_tasks SET status = 'cancelled', message = '已取消', canceled_at = ?, updated_at = ? WHERE id = ? AND status = 'scheduled'", (now, now, task_id))
         if cursor.rowcount != 1:
             cursor.execute("SELECT status FROM scheduled_publish_tasks WHERE id = ?", (task_id,))
             row = cursor.fetchone()
             if not row:
                 raise LookupError("定时发布任务不存在")
             raise WorkflowConflictError("只有未执行任务可以取消。", "VF-SCHEDULED-PUBLISH-ACTIVE", "SCHEDULED_PUBLISH_ACTIVE", {"status": row["status"]})
-        cursor.execute("UPDATE scheduled_publish_targets SET status = 'canceled', message = '已取消', finished_at = ?, updated_at = ? WHERE task_id = ? AND status = 'pending'", (now, now, task_id))
-        cursor.execute("UPDATE published_youtube_materials SET deleted_at = ?, updated_at = ? WHERE publish_task_id = ? AND status = 'pending' AND deleted_at IS NULL", (now, now, task_id))
+        cursor.execute("UPDATE scheduled_publish_targets SET status = 'cancelled', message = '已取消', finished_at = ?, updated_at = ? WHERE task_id = ? AND status = 'queued'", (now, now, task_id))
+        cursor.execute("UPDATE published_youtube_materials SET deleted_at = ?, updated_at = ? WHERE publish_task_id = ? AND status = 'queued' AND deleted_at IS NULL", (now, now, task_id))
         conn.commit()
         cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ?", (task_id,))
         return _scheduled_task_payload(cursor, cursor.fetchone())
@@ -221,14 +222,14 @@ def _claim_due_scheduled_publish_task():
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT id, scheduled_at FROM scheduled_publish_tasks WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?) ORDER BY datetime(scheduled_at), created_at LIMIT 1", (now,))
+        cursor.execute("SELECT id, scheduled_at FROM scheduled_publish_tasks WHERE status = 'scheduled' AND datetime(scheduled_at) <= datetime(?) ORDER BY datetime(scheduled_at), created_at LIMIT 1", (now,))
         row = cursor.fetchone()
         if not row:
             return ""
         scheduled_at = datetime.datetime.fromisoformat(str(row["scheduled_at"]))
         current_minute = _scheduled_now().replace(second=0, microsecond=0)
         overdue = int(scheduled_at < current_minute)
-        cursor.execute("UPDATE scheduled_publish_tasks SET status = 'running', overdue = ?, message = ?, started_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'", (overdue, "逾期补发" if overdue else "正在执行", now, now, row["id"]))
+        cursor.execute("UPDATE scheduled_publish_tasks SET status = 'running', overdue = ?, message = ?, started_at = ?, updated_at = ? WHERE id = ? AND status = 'scheduled'", (overdue, "逾期补发" if overdue else "正在执行", now, now, row["id"]))
         conn.commit()
         return row["id"] if cursor.rowcount == 1 else ""
 
@@ -244,17 +245,18 @@ def _scheduled_publish_content(video_id):
 
 
 def _aggregate_scheduled_task_status(cursor, task_id):
-    # D2：由 targets 状态派生 task 终态，统一 success/partial/failed 判定，避免两张状态表手动同步漂移。
+    # 由 targets 状态派生 task 终态，避免任务表与目标表手动同步漂移。
     # 用下标取值，兼容按列名行模式或默认 tuple 的连接。
     cursor.execute("SELECT status FROM scheduled_publish_targets WHERE task_id = ?", (task_id,))
     statuses = [row[0] for row in cursor.fetchall()]
     if not statuses:
         return None
-    success_count = statuses.count("success")
-    failed_count = sum(status in {"failed", "timeout"} for status in statuses)
-    unknown_count = statuses.count("unknown")
-    status = "unknown" if unknown_count else ("success" if success_count == len(statuses) else ("partial" if success_count else "failed"))
-    return status, success_count, failed_count, unknown_count
+    success_count = sum(status in {"confirmed", "reused"} for status in statuses)
+    failed_count = statuses.count("failed")
+    unknown_count = statuses.count("uncertain")
+    skipped_count = statuses.count("reused")
+    status = aggregate_publish_status([{"status": item} for item in statuses])
+    return status, success_count, failed_count, unknown_count, skipped_count
 
 
 def _load_scheduled_task_payload(task_id):
@@ -280,7 +282,7 @@ def _revalidate_scheduled_publish(task, targets):
     # B4：素材记录仍是创建时那条（未被删除/重建导致 id 漂移）
     if str(material.get("id") or "") != str(task.get("material_id") or ""):
         raise ValueError("底层素材已变更，请重新创建任务")
-    # B1/B5：平台未被占用（pending/running/success 均算占用）+ 来源内容风险按创建时确认放行
+    # 平台目标被占用或发布结果待核验时，不允许重复提交。
     validate_prepublish_guard_or_raise(
         {"riskOverride": risk_override}, file_list, revalidate_targets, materials, check_agent=False
     )
@@ -322,7 +324,7 @@ def run_scheduled_publish_task(task_id):
         publish_tasks.extend(_build_publish_tasks(data, [publish_target], [task["file_path"]], publish_task_id=task_id))
         owner_user_id = account["owner_user_id"]
     try:
-        enqueue_publish_tasks(
+        dispatch_task = enqueue_publish_tasks(
             publish_tasks,
             source="scheduled",
             source_ref_id=task_id,
@@ -333,12 +335,22 @@ def run_scheduled_publish_task(task_id):
         now = _now_iso()
         with _db_connect() as conn:
             conn.execute(
-                "UPDATE scheduled_publish_tasks SET status = 'pending', message = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+                "UPDATE scheduled_publish_tasks SET status = 'scheduled', message = ?, updated_at = ? WHERE id = ? AND status = 'running'",
                 (clean_display_text(str(exc)), now, task_id),
             )
         return _load_scheduled_task_payload(task_id)
     except Exception as exc:
         fail_scheduled_publish_task(task_id, str(exc))
+        return _load_scheduled_task_payload(task_id)
+    if dispatch_task.get("status") == "waiting_existing":
+        now = _now_iso()
+        with _db_connect() as conn:
+            conn.execute(
+                "UPDATE scheduled_publish_tasks SET status = 'waiting_existing', message = '等待已有发布任务完成', updated_at = ? WHERE id = ? AND status = 'running'",
+                (now, task_id),
+            )
+        return _load_scheduled_task_payload(task_id)
+    if dispatch_task.get("status") in {"reused", "uncertain"}:
         return _load_scheduled_task_payload(task_id)
     now = _now_iso()
     with _db_connect() as conn:
@@ -430,10 +442,10 @@ def _run_scheduled_publish_task_direct(task_id):
         cursor = conn.cursor()
         aggregated = _aggregate_scheduled_task_status(cursor, task_id)
         if aggregated is None:
-            status, success_count, failed_count, unknown_count = "failed", 0, 0, 0
+            status, success_count, failed_count, unknown_count, skipped_count = "failed", 0, 0, 0, 0
         else:
-            status, success_count, failed_count, unknown_count = aggregated
-        message = f"执行完成：成功 {success_count} 个平台，失败 {failed_count} 个平台，待核验 {unknown_count} 个平台"
+            status, success_count, failed_count, unknown_count, skipped_count = aggregated
+        message = f"执行完成：成功 {success_count} 个平台，失败 {failed_count} 个平台，待核验 {unknown_count} 个平台，跳过 {skipped_count} 个平台"
         now = _now_iso()
         cursor.execute("UPDATE scheduled_publish_tasks SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?", (status, message, now, now, task_id))
         cursor.execute("SELECT * FROM scheduled_publish_tasks WHERE id = ?", (task_id,))

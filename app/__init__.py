@@ -25,6 +25,7 @@ def initialize_runtime() -> None:
     """执行后端启动钩子,与正式入口 ``run.py`` 共用。"""
     backend = _backend()
     backend.init_youtube_video_table()
+    backend.recover_interrupted_publish_dispatch_jobs()
     recovered_jobs = backend.recover_interrupted_workflow_jobs()
     if recovered_jobs:
         print(f"启动恢复：已标记 {len(recovered_jobs)} 个历史中断任务为异常")

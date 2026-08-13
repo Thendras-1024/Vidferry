@@ -367,6 +367,19 @@ def _run_editing_plan_analysis(job, source_file, segments, language, transcript_
             result["highlight_candidates"] = candidates
             result["selected_highlight_segments"] = highlights
             result["highlight_segments"] = candidates
+            result["highlightReview"] = {
+                **(vision_review or {}),
+                "candidateCount": len(candidates),
+                "shortlistedCandidates": [
+                    {
+                        "candidateId": item.get("candidateId"),
+                        "textShortlistRank": item.get("textShortlistRank"),
+                        "textShortlistReason": item.get("textShortlistReason"),
+                    }
+                    for item in (vision_review or {}).get("textShortlist", {}).get("selected", [])
+                    if item.get("textShortlistRank")
+                ],
+            }
         else:
             vision_review = {"status": "disabled", "reason": "高光拼接开关已关闭"}
         save_youtube_video_analysis(job.get("videoId"), {
@@ -1013,8 +1026,8 @@ def run_youtube_update_editing_intro_job(job_id):
 
 def _workflow_publish_summary(results):
     results = list(results or [])
-    successful_platforms = [item.get("platformName") for item in results if item.get("status") == "success"]
-    failed_platforms = [item.get("platformName") for item in results if item.get("status") != "success"]
+    successful_platforms = [item.get("platformName") for item in results if item.get("status") in {"confirmed", "reused"}]
+    failed_platforms = [item.get("platformName") for item in results if item.get("status") not in {"confirmed", "reused"}]
     return {
         "successfulPlatforms": successful_platforms,
         "failedPlatforms": failed_platforms,
@@ -1075,7 +1088,6 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
     publish_job, schedule_notice = _ensure_workflow_publish_schedule(job_id, publish_job)
     publish_results = []
     skipped_platforms = []
-    published_platform_types = _published_platform_types_for_video(latest_job.get("videoId"))
     publish_event_id = start_workflow_event(publish_job, "publish", "开始发布", input_file_path=processed_file)
     publishing_platform_type = 0
     publish_specs = [
@@ -1089,9 +1101,6 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
     queued_owner_user_id = None
     for platform_type, account_name in publish_specs:
         if not account_name:
-            continue
-        if platform_type in published_platform_types:
-            skipped_platforms.append(platform_name(platform_type))
             continue
         account_info = _check_named_publish_account(platform_type, account_name, publish_job.get("ownerUserId"))
         queued_task = _workflow_publish_task(publish_job, processed_file, platform_type, account_info)
@@ -1112,7 +1121,16 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             owner_user_id=queued_owner_user_id,
             publish_task_id=f"workflow:{job_id}",
         )
-        message = "发布任务已进入队列"
+        dispatch_status = queued.get("status") or "queued"
+        if dispatch_status not in {"queued", "waiting_existing"}:
+            backend_logger.info(
+                "workflow publish resolved without new execution : job_id = %s | publish_task_id = %s | status = %s",
+                job_id,
+                queued["publishTaskId"],
+                dispatch_status,
+            )
+            return []
+        message = "等待已有发布任务完成" if dispatch_status == "waiting_existing" else "发布任务已进入队列"
         if skipped_platforms:
             message += "；已跳过已发布平台：" + "、".join(skipped_platforms)
         update_youtube_workflow_job(
@@ -1131,14 +1149,6 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
             if not account_name:
                 continue
             publishing_platform_type = platform_type
-            if platform_type in published_platform_types:
-                skipped_platforms.append(platform_name(platform_type))
-                backend_logger.info(
-                    "workflow publish skipped : job_id = %s | platform_type = %s | reason = already_published",
-                    job_id,
-                    platform_type,
-                )
-                continue
             result = _publish_workflow_platform(publish_job, processed_file, material, platform_type, account_name)
             if result:
                 publish_results.append(result)
@@ -1209,12 +1219,6 @@ def _video_has_processed_output(record, job=None):
     translate_status = int(record.get("translateStatus") or 0)
     if translate_status not in (1, 2):
         return False
-    if job and _normalize_process_version(job.get("processVersion")) == PROCESS_VERSION_EDITING:
-        body_file = Path(record.get("editingBodyPath") or "")
-        ass_path = record.get("editingAssPath") or ""
-        ass_file = Path(ass_path) if ass_path else None
-        if not body_file.is_file() or not _editing_body_signature_compatible(record, job, ass_file):
-            return False
     processed_path = Path(record.get("processedFilePath") or "")
     if processed_path.is_file():
         return True

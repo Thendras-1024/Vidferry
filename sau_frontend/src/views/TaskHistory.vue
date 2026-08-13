@@ -26,8 +26,9 @@
       </el-select>
       <el-select v-model="filters.status" placeholder="任务状态" @change="applyFilters">
         <el-option label="全部状态" value="all" /><el-option label="进行中" value="active" />
-        <el-option label="等待确认" value="waiting_confirmation" /><el-option label="成功" value="success" />
-        <el-option label="失败/异常" value="problem" /><el-option label="失败" value="failed" /><el-option label="异常" value="abnormal" />
+        <el-option label="等待确认" value="waiting_confirmation" /><el-option label="完成" value="success" />
+        <el-option label="需处理" value="problem" /><el-option label="部分完成" value="partial" /><el-option label="待核验" value="needs_verification" />
+        <el-option label="失败" value="failed" /><el-option label="异常" value="abnormal" />
         <el-option label="已取消" value="cancelled" />
       </el-select>
       <el-date-picker v-model="filters.updatedRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" unlink-panels @change="applyFilters" />
@@ -100,13 +101,13 @@ const summaryItems = computed(() => [
   { key: 'total', label: '全部', value: summary.value.total || 0, status: 'all' },
   { key: 'active', label: '进行中', value: summary.value.active || 0, status: 'active' },
   { key: 'waiting', label: '待确认', value: summary.value.waitingConfirmation || 0, status: 'waiting_confirmation' },
-  { key: 'success', label: '成功', value: summary.value.success || 0, status: 'success' },
-  { key: 'problem', label: '失败/异常', value: (summary.value.failed || 0) + (summary.value.abnormal || 0), status: 'problem' },
+  { key: 'success', label: '完成', value: summary.value.success || 0, status: 'success' },
+  { key: 'problem', label: '需处理', value: (summary.value.failed || 0) + (summary.value.abnormal || 0) + (summary.value.partial || 0) + (summary.value.needsVerification || 0), status: 'problem' },
   { key: 'cancelled', label: '已取消', value: summary.value.cancelled || 0, status: 'cancelled' },
 ])
 
-const tagType = status => ({ success: 'success', failed: 'danger', abnormal: 'danger', cancelled: 'info', waiting_confirmation: 'warning', waiting_publish: 'warning' }[status] || '')
-const progressType = status => status === 'failed' || status === 'abnormal' ? 'exception' : status === 'success' ? 'success' : undefined
+const tagType = status => ({ success: 'success', reused: 'info', partial: 'warning', needs_verification: 'warning', failed: 'danger', abnormal: 'danger', cancelled: 'info', waiting_confirmation: 'warning', waiting_publish: 'warning' }[status] || '')
+const progressType = status => ['failed', 'abnormal', 'partial', 'needs_verification'].includes(status) ? 'exception' : ['success', 'reused'].includes(status) ? 'success' : undefined
 const formatTime = value => {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value || '时间未知' : date.toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })

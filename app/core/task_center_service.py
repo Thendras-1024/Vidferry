@@ -2,31 +2,17 @@
 
 import datetime
 import json
-
-
 _TASK_SUCCESS_RETENTION_HOURS = 12
 _TASK_ACTIVE_STATUSES = {"queued", "running", "waiting_confirmation", "waiting_publish"}
-_TASK_TERMINAL_STATUSES = {"success", "failed", "abnormal", "cancelled"}
+_TASK_TERMINAL_STATUSES = {"success", "reused", "partial", "needs_verification", "failed", "abnormal", "cancelled"}
 _TASK_RECOVERABLE_STAGES = {"comment_fetch", "comment_review", "comment_render", "subtitle", "highlight_render"}
 _TASK_STAGE_LABELS = {
-    "workflow": "工作流",
-    "download": "下载",
-    "transcript": "转写",
-    "analysis": "内容分析",
-    "content_safety_detect": "内容安全检测",
-    "content_safety_confirm": "风险确认",
-    "content_trim": "风险裁剪",
-    "subtitle": "字幕处理",
-    "subtitle_burn": "字幕烧制",
-    "body_burn": "正片烧制",
-    "comment_fetch": "评论获取",
-    "comment_review": "评论筛选",
-    "comment_render": "评论烧制",
-    "cover_render": "封面片头",
-    "highlight_render": "高光生成",
-    "editing_concat": "正片拼接",
-    "editing": "视频编辑",
-    "publish": "发布",
+    "workflow": "工作流", "download": "下载", "transcript": "转写", "analysis": "内容分析",
+    "content_safety_detect": "内容安全检测", "content_safety_confirm": "风险确认", "content_trim": "风险裁剪",
+    "subtitle": "字幕处理", "subtitle_burn": "字幕烧制", "body_burn": "正片烧制",
+    "comment_fetch": "评论获取", "comment_review": "评论筛选", "comment_render": "评论烧制",
+    "cover_render": "封面片头", "highlight_render": "高光生成", "editing_concat": "正片拼接",
+    "editing": "视频编辑", "publish": "发布",
 }
 _TASK_PLATFORMS = (
     (3, "抖音", "publish_to_douyin", "account"),
@@ -35,12 +21,8 @@ _TASK_PLATFORMS = (
     (4, "快手", "publish_to_kuaishou", "kuaishou_account"),
     (2, "腾讯视频", "publish_to_tencent", "tencent_account"),
 )
-
-
 def _task_now():
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
-
 def _task_datetime(value):
     if not value:
         return None
@@ -50,13 +32,9 @@ def _task_datetime(value):
         return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
     except (TypeError, ValueError):
         return None
-
-
 def _task_iso(value):
     parsed = _task_datetime(value)
     return parsed.isoformat(timespec="seconds") if parsed else ""
-
-
 def _task_json(value):
     if isinstance(value, dict):
         return value
@@ -98,7 +76,7 @@ def _task_option(job, name, default=False):
 
 def _task_status(status):
     status = str(status or "pending").lower()
-    return status if status in {"queued", "running", "waiting_confirmation", "waiting_publish", "success", "reused", "failed", "abnormal", "cancelled", "warning"} else "pending"
+    return status if status in {"queued", "running", "waiting_existing", "waiting_confirmation", "waiting_publish", "success", "confirmed", "reused", "partial", "uncertain", "needs_verification", "failed", "abnormal", "cancelled", "warning"} else "pending"
 
 
 def _task_status_label(status):
@@ -106,8 +84,8 @@ def _task_status_label(status):
         return "发布排队中"
     return {
         "queued": "排队中", "running": "进行中", "waiting_confirmation": "等待确认",
-        "success": "已完成", "failed": "失败", "abnormal": "异常", "cancelled": "已取消", "warning": "已降级继续",
-        "reused": "已复用", "pending": "未开始", "waiting": "等待分支",
+        "success": "已完成", "confirmed": "已确认发布", "failed": "失败", "abnormal": "异常", "cancelled": "已取消", "warning": "已降级继续",
+        "reused": "已复用", "partial": "部分完成", "uncertain": "待核验", "needs_verification": "待核验", "waiting_existing": "等待已有任务", "pending": "未开始", "waiting": "等待分支",
     }.get(status, status)
 
 
@@ -225,7 +203,7 @@ def _task_publish_graph(job, events, material_rows):
             "errorReason": str(record.get("message") or "") if target_status == "failed" else "",
             "inferred": not bool(record), "synthetic": True,
         })
-        edges.append({"from": "publish", "to": lane_id, "kind": "parallel", "status": "failed" if target_status == "failed" else "running" if target_status == "running" else "reused" if target_status == "reused" else "success" if status == "success" and target_status == "success" else "pending"})
+        edges.append({"from": "publish", "to": lane_id, "kind": "parallel", "status": "failed" if target_status == "failed" else "warning" if target_status in {"uncertain", "needs_verification", "cancelled"} else "running" if target_status in {"running", "queued", "waiting_existing"} else "reused" if target_status == "reused" else "success" if target_status in {"success", "confirmed"} else "pending"})
     return {"lanes": lanes, "nodes": nodes, "edges": edges, "inferred": True}
 
 
@@ -365,7 +343,7 @@ def _task_graph(job, events, material_rows, subtitle_fallback=False, scope="full
             elif any(item in {"running", "warning"} for item in dependencies):
                 node["status"] = "waiting" if any(item == "running" for item in dependencies) else "warning"
                 node["message"] = "等待并行分支完成" if node["status"] == "waiting" else "分支已降级后汇合"
-            elif all(item in {"success", "reused"} for item in dependencies):
+            elif all(item in {"success", "confirmed", "reused"} for item in dependencies):
                 node["status"] = "success"
             node["statusLabel"] = _task_status_label(node["status"])
             node["dependencySummary"] = {
@@ -528,7 +506,7 @@ def _task_publish_retry_data(job, materials):
     task_id = f"workflow:{job.get('id')}"
     records = [item for item in materials if str(item.get("publish_task_id") or "") == task_id]
     retry_records = [item for item in records if str(item.get("status") or "") in {"failed", "timeout"}]
-    has_blocking_status = any(str(item.get("status") or "") in {"pending", "running", "unknown", "canceled"} for item in records)
+    has_blocking_status = any(str(item.get("status") or "") in {"queued", "running", "uncertain", "cancelled"} for item in records)
     can_retry = bool(retry_records) and not has_blocking_status and not any(item.get("retry_source") for item in records)
     return {
         "publishTaskId": task_id if retry_records else "",
@@ -555,7 +533,7 @@ def _task_item(job, events, materials, acknowledged_at=""):
     latest = next((event for event in reversed(stage_events) if event["status"] == "running"), None) or (stage_events[-1] if stage_events else None)
     warning_events = [event for event in stage_events if _task_has_fallback(event, False)[0]]
     completion_at = _task_datetime(job.get("updated_at")) or _task_datetime(job.get("created_at"))
-    expires_at = completion_at + datetime.timedelta(hours=_TASK_SUCCESS_RETENTION_HOURS) if job_status == "success" and completion_at else None
+    expires_at = completion_at + datetime.timedelta(hours=_TASK_SUCCESS_RETENTION_HOURS) if job_status in {"success", "reused"} and completion_at else None
     has_publish_event = any(event["stage"] == "publish" for event in events)
     is_publish = has_publish_event or str(job.get("step") or "") in {"publish", "publish_confirmation"}
     publish_progress = job.get("publishProgress") if isinstance(job.get("publishProgress"), dict) else {}
@@ -592,9 +570,9 @@ def _task_item(job, events, materials, acknowledged_at=""):
 
 def _task_history_statuses(result):
     if result == "success":
-        return ("success",)
+        return ("success", "reused")
     if result == "problem":
-        return ("failed", "abnormal")
+        return ("partial", "needs_verification", "failed", "abnormal")
     return tuple(sorted(_TASK_TERMINAL_STATUSES))
 
 
@@ -616,8 +594,11 @@ def _task_unified_query(*, keyword="", task_type="all", status="all", updated_fr
     status_groups = {
         "active": tuple(sorted(_TASK_ACTIVE_STATUSES)),
         "waiting_confirmation": ("waiting_confirmation",),
-        "success": ("success",),
-        "problem": ("failed", "abnormal"),
+        "success": ("success", "reused"),
+        "problem": ("partial", "needs_verification", "failed", "abnormal"),
+        "reused": ("reused",),
+        "partial": ("partial",),
+        "needs_verification": ("needs_verification",),
         "failed": ("failed",),
         "abnormal": ("abnormal",),
         "cancelled": ("cancelled",),
@@ -691,7 +672,10 @@ def list_all_task_center(user_id, *, is_admin=False, task_type="all", status="al
             "total": total,
             "active": sum(status_counts.get(value, 0) for value in _TASK_ACTIVE_STATUSES),
             "waitingConfirmation": status_counts.get("waiting_confirmation", 0),
-            "success": status_counts.get("success", 0),
+            "success": status_counts.get("success", 0) + status_counts.get("reused", 0),
+            "reused": status_counts.get("reused", 0),
+            "partial": status_counts.get("partial", 0),
+            "needsVerification": status_counts.get("needs_verification", 0),
             "failed": status_counts.get("failed", 0),
             "abnormal": status_counts.get("abnormal", 0),
             "cancelled": status_counts.get("cancelled", 0),
@@ -738,7 +722,7 @@ def list_task_center(user_id, *, is_admin=False, history=False, active_only=Fals
             groups["active"].append(item)
         elif item["status"] == "waiting_confirmation":
             groups["waitingConfirmation"].append(item)
-        elif item["status"] == "success":
+        elif item["status"] in {"success", "reused"}:
             groups["recentCompleted"].append(item)
         else:
             groups["abnormal"].append(item)

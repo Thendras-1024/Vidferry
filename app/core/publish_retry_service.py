@@ -40,20 +40,20 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
             raise LookupError("原发布任务不存在")
         if any(record.get("retrySource") for record in records):
             raise ValueError("重发执行记录不能再次作为原任务重发")
-        unknown_records = [record for record in records if record.get("status") == "unknown"]
-        if unknown_records:
+        uncertain_records = [record for record in records if record.get("status") == "uncertain"]
+        if uncertain_records:
             raise WorkflowConflictError(
                 "存在待核验的平台发布结果，请先核验平台状态并释放本地占位后再重发。",
                 "VF-PUBLISH-RETRY-UNKNOWN",
                 "PUBLISH_RETRY_UNKNOWN",
                 {
-                    "recordIds": [record.get("id") for record in unknown_records],
+                    "recordIds": [record.get("id") for record in uncertain_records],
                     "publishTaskId": task_id,
                 },
             )
-        if any(record.get("status") in {"pending", "running", "canceled"} for record in records):
+        if any(record.get("status") in {"queued", "running", "cancelled"} for record in records):
             raise WorkflowConflictError("运行中、待确认或已取消的任务不能重发。", "VF-PUBLISH-RETRY-INACTIVE", "PUBLISH_RETRY_INACTIVE", {})
-        failed_records = [record for record in records if record.get("status") in {"failed", "timeout"}]
+        failed_records = [record for record in records if record.get("status") == "failed"]
         if not failed_records:
             raise ValueError("原发布任务没有可重发的失败平台")
         failed_records = _select_failed_publish_records(failed_records, target_record_ids)
