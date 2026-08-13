@@ -473,6 +473,7 @@ class KSVideo(KSBaseUploader):
             kuaishou_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
             kuaishou_logger.info(_msg("🧭", "小人正在赶往快手上传主页"))
             await page.wait_for_url(KUAISHOU_UPLOAD_URL_PATTERN)
+            await asyncio.sleep(5)
 
             upload_button = page.locator("button[class^='_upload-btn']")
             await upload_button.wait_for(state="visible", timeout=10000)

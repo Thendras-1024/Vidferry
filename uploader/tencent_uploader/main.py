@@ -4,10 +4,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import json
 import os
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from patchright.async_api import Page
 from patchright.async_api import Playwright
@@ -16,6 +17,7 @@ from patchright.async_api import async_playwright
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
+from utils.humanize import human_delay, jitter_seconds
 from utils.log import tencent_logger
 
 TENCENT_LOGIN_URL = "https://channels.weixin.qq.com"
@@ -23,6 +25,246 @@ TENCENT_UPLOAD_URL = "https://channels.weixin.qq.com/platform/post/create"
 TENCENT_MANAGE_URL = "https://channels.weixin.qq.com/platform/post/list"
 TENCENT_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 TENCENT_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+TENCENT_UPLOAD_RETRY_LIMIT = int(os.environ.get("TENCENT_UPLOAD_RETRY_LIMIT", "1") or 1)
+TENCENT_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("TENCENT_UPLOAD_WAIT_TIMEOUT", "2700") or 2700)
+TENCENT_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("TENCENT_PUBLISH_CONFIRM_TIMEOUT", "600") or 600)
+TENCENT_PAGE_CLOSED_FAILURE_LIMIT = 5
+TENCENT_COVER_GENERATION_STALL_TIMEOUT = 90
+TENCENT_PUBLISH_RECOVERY_LIMIT = 1
+TENCENT_UPLOAD_PAGE_READY_DELAY_SECONDS = 10
+TENCENT_POST_PUBLISH_OBSERVE_SECONDS = int(os.environ.get("TENCENT_POST_PUBLISH_OBSERVE_SECONDS", "900") or 900)
+TENCENT_POST_PUBLISH_OBSERVE_INTERVAL_SECONDS = 30
+TENCENT_PUBLISH_RESULT_MARKER = "VIDFERRY_TENCENT_PUBLISH_RESULT="
+TENCENT_DIAGNOSTIC_DIR = Path(BASE_DIR) / "logs" / "tencent_diagnostics"
+TENCENT_WORK_ID_KEYS = {
+    "object_id", "objectId", "feed_id", "feedId", "post_id", "postId",
+    "work_id", "workId",
+}
+TENCENT_WORK_URL_KEYS = {"url", "link", "work_url", "workUrl", "object_url", "objectUrl"}
+
+
+class TencentPublishRecoveryRequired(RuntimeError):
+    """提交前页面状态不可恢复，需要重新建立一次视频号投稿会话。"""
+
+    def __init__(self, reason: str):
+        self.reason = str(reason or "unknown")
+        message = "页面已关闭" if self.reason == "page_closed" else "生成封面卡住"
+        super().__init__(message)
+
+
+class TencentCookieCheckError(RuntimeError):
+    """视频号页面无法可靠判断登录状态时使用的可分类异常。"""
+
+    def __init__(self, user_message: str):
+        super().__init__(user_message)
+        self.user_message = user_message
+
+
+class TencentPublishPermissionError(RuntimeError):
+    """登录账号缺少目标视频号发布权限。"""
+
+    def __init__(self):
+        super().__init__(
+            "VF-PUBLISH-PERMISSION-DENIED: 当前登录微信没有目标视频号的管理员或运营者权限，"
+            "请使用已授权账号重新登录。"
+        )
+        self.user_message = str(self)
+
+
+def _is_page_lifecycle_closed_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    compact = text.replace(" ", "")
+    return any(marker in text or marker in compact for marker in (
+        "target page, context or browser has been closed",
+        "targetpage,contextorbrowserhasbeenclosed",
+        "page has been closed",
+        "browser has been closed",
+        "context has been closed",
+    ))
+
+
+def _safe_tencent_url(value) -> str:
+    parsed_url = urlsplit(str(value or ""))
+    if not parsed_url.scheme or not parsed_url.netloc:
+        return ""
+    return f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+
+
+def _safe_tencent_text(value, limit: int = 500) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+class TencentPublishDiagnostics:
+    """Collect browser diagnostics without persisting cookies or request bodies."""
+
+    def __init__(self):
+        self.console_errors = []
+        self.failed_requests = []
+        self.failed_responses = []
+        self.page_errors = []
+
+    def attach(self, page: Page) -> None:
+        page.on("console", self._on_console)
+        page.on("pageerror", self._on_page_error)
+        page.on("requestfailed", self._on_request_failed)
+        page.on("response", self._on_response)
+
+    def _append(self, items: list, value) -> None:
+        if len(items) < 20:
+            items.append(value)
+
+    def _on_console(self, message) -> None:
+        message_type = str(getattr(message, "type", "") or "")
+        if message_type in {"error", "warning"}:
+            self._append(self.console_errors, {
+                "type": message_type,
+                "text": _safe_tencent_text(getattr(message, "text", "")),
+            })
+
+    def _on_page_error(self, error) -> None:
+        self._append(self.page_errors, _safe_tencent_text(error))
+
+    def _on_request_failed(self, request) -> None:
+        self._append(self.failed_requests, {
+            "method": str(getattr(request, "method", "") or ""),
+            "url": _safe_tencent_url(getattr(request, "url", "")),
+            "failure": _safe_tencent_text(getattr(request, "failure", "")),
+        })
+
+    def _on_response(self, response) -> None:
+        status = int(getattr(response, "status", 0) or 0)
+        if status < 400:
+            return
+        request = getattr(response, "request", None)
+        self._append(self.failed_responses, {
+            "status": status,
+            "method": str(getattr(request, "method", "") or ""),
+            "url": _safe_tencent_url(getattr(response, "url", "")),
+        })
+
+    def describe(self, stage: str, page: Page) -> dict:
+        return {
+            "recordedAt": datetime.now().isoformat(timespec="seconds"),
+            "stage": stage,
+            "url": _safe_tencent_url(getattr(page, "url", "")),
+            "consoleErrors": self.console_errors,
+            "pageErrors": self.page_errors,
+            "failedRequests": self.failed_requests,
+            "failedResponses": self.failed_responses,
+        }
+
+    async def capture(self, page: Page, stage: str, error: Exception | None = None) -> Path | None:
+        details = self.describe(stage, page)
+        if error is not None:
+            details["errorType"] = type(error).__name__
+            details["error"] = _safe_tencent_text(error)
+        try:
+            page_messages = await page.locator(
+                "div.status-msg.error, div.weui-desktop-toast, div.weui-desktop-dialog__bd"
+            ).all_inner_texts()
+            details["pageMessages"] = [
+                _safe_tencent_text(item) for item in page_messages if _safe_tencent_text(item)
+            ][:20]
+        except Exception as page_error:
+            details["pageMessageError"] = _safe_tencent_text(page_error)
+        try:
+            TENCENT_DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
+            filename = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            details_path = TENCENT_DIAGNOSTIC_DIR / f"{filename}_{stage}.json"
+            screenshot_path = TENCENT_DIAGNOSTIC_DIR / f"{filename}_{stage}.png"
+            await page.screenshot(path=str(screenshot_path), full_page=True)
+            details["screenshot"] = str(screenshot_path)
+            details_path.write_text(json.dumps(details, ensure_ascii=False, indent=2), encoding="utf-8")
+            tencent_logger.error(
+                "publish diagnostic captured : "
+                f"stage = {stage} | url = {details['url']} | error_type = {details.get('errorType', '')} | "
+                f"details = {details_path}"
+            )
+            return details_path
+        except Exception as write_error:
+            tencent_logger.warning(
+                "publish diagnostic write failed : "
+                f"stage = {stage} | error_type = {type(write_error).__name__}"
+            )
+            return None
+
+
+def _tencent_work_candidates(value) -> dict[str, str]:
+    candidates = {}
+
+    def visit(item):
+        if isinstance(item, dict):
+            work_id = next((str(item[key]).strip() for key in TENCENT_WORK_ID_KEYS if item.get(key)), "")
+            if work_id:
+                work_url = next((str(item[key]).strip() for key in TENCENT_WORK_URL_KEYS if item.get(key)), "")
+                candidates[work_id] = work_url
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return candidates
+
+
+class TencentPublishVerification:
+    def __init__(self):
+        self.submission_started = False
+        self.submit_work_ids = {}
+        self.list_work_ids = {}
+        self.tasks = []
+
+    def observe(self, response, source: str) -> None:
+        if source == "submit" and not self.submission_started:
+            return
+        request = getattr(response, "request", None)
+        method = str(getattr(request, "method", "") or "")
+        if source == "submit" and method != "POST":
+            return
+        if source == "list" and method != "GET":
+            return
+        self.tasks.append(asyncio.create_task(self._read_response(response, source)))
+
+    async def _read_response(self, response, source: str) -> None:
+        try:
+            payload = await response.json()
+        except Exception:
+            return
+        candidates = _tencent_work_candidates(payload)
+        if source == "submit":
+            self.submit_work_ids.update(candidates)
+        else:
+            self.list_work_ids.update(candidates)
+
+    async def confirmed_work(self) -> dict:
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+        work_ids = sorted(set(self.submit_work_ids) & set(self.list_work_ids))
+        if len(work_ids) != 1:
+            return {}
+        work_id = work_ids[0]
+        return {
+            "platformWorkId": work_id,
+            "platformWorkUrl": self.list_work_ids.get(work_id) or self.submit_work_ids.get(work_id) or "",
+        }
+
+
+async def _observe_tencent_publish_page(page: Page, verification: TencentPublishVerification) -> dict:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0, TENCENT_POST_PUBLISH_OBSERVE_SECONDS)
+    while True:
+        await page.reload(wait_until="domcontentloaded")
+        work = await verification.confirmed_work()
+        tencent_logger.info(f"publish observation : verified = {bool(work)}")
+        remaining = deadline - loop.time()
+        if work or remaining <= 0:
+            return work
+        await asyncio.sleep(min(TENCENT_POST_PUBLISH_OBSERVE_INTERVAL_SECONDS, remaining))
+
+
+def format_tencent_publish_result(result: dict) -> str:
+    return TENCENT_PUBLISH_RESULT_MARKER + json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 def _msg(emoji: str, text: str) -> str:
@@ -109,11 +351,16 @@ async def cookie_auth(account_file):
     account_file = _resolve_account_file(account_file)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**_build_launch_kwargs(headless=True))
+        diagnostics = None
+        page = None
         try:
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
             page = await context.new_page()
+            diagnostics = TencentPublishDiagnostics()
+            diagnostics.attach(page)
             await page.goto(TENCENT_UPLOAD_URL, wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
 
             # cookie 失效时, 页面先停在 post/create, 随后由前端 JS 跳转到登录页;
             # 必须等待跳转完成再判断, 否则会误报"cookie 有效"
@@ -132,9 +379,15 @@ async def cookie_auth(account_file):
 
             tencent_logger.success(_msg("🥳", "cookie 有效"))
             return True
+        except TencentPublishPermissionError:
+            raise
         except Exception as exc:
-            tencent_logger.warning(_msg("😵", f"cookie 校验时出错，按失效处理: {exc}"))
-            return False
+            if diagnostics is not None and page is not None:
+                await diagnostics.capture(page, "cookie_check_failed", exc)
+            tencent_logger.exception(_msg("😵", "cookie 校验异常，保留原账号状态"))
+            if "timeout" in type(exc).__name__.lower():
+                raise TencentCookieCheckError("视频号页面访问超时，请检查网络后重试检测。") from exc
+            raise TencentCookieCheckError("视频号登录状态检测异常，请稍后重试检测。") from exc
         finally:
             await browser.close()
 
@@ -230,6 +483,7 @@ async def _save_tencent_qrcode(page: Page, account_file: str, previous_qrcode_pa
 
 
 async def _is_tencent_login_completed(page: Page) -> bool:
+    await _raise_if_tencent_publish_permission_denied(page)
     publish_markers = [
         page.locator('div:has-text("发表视频")').first,
         page.locator('button:has-text("发表")').first,
@@ -259,6 +513,21 @@ async def _is_tencent_login_completed(page: Page) -> bool:
             continue
 
     return True
+
+
+async def _raise_if_tencent_publish_permission_denied(page: Page) -> None:
+    for selector in (
+        "div.no-permission-title",
+        'div.no-permission-content:has-text("管理员或运营者")',
+    ):
+        try:
+            marker = page.locator(selector).first
+            if await marker.count() and await marker.is_visible():
+                raise TencentPublishPermissionError()
+        except TencentPublishPermissionError:
+            raise
+        except Exception:
+            continue
 
 
 async def _is_tencent_qrcode_expired(page: Page) -> bool:
@@ -388,6 +657,7 @@ async def tencent_cookie_gen(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**_build_launch_kwargs(headless=headless))
         context = await browser.new_context()
+        context = await set_init_script(context)
         qrcode_path = None
         result = _build_login_result(False, "failed", "视频号登录失败", account_file)
         try:
@@ -545,6 +815,7 @@ class TencentBaseUploader(BaseVideoUploader):
 
     async def open_upload_page(self, page: Page) -> None:
         await page.goto(TENCENT_UPLOAD_URL, timeout=120000, wait_until="domcontentloaded")
+        await _raise_if_tencent_publish_permission_denied(page)
         # cookie 失效时前端 JS 会跳转到登录页, 提前发现并报明确的错误
         redirected = True
         try:
@@ -554,7 +825,16 @@ class TencentBaseUploader(BaseVideoUploader):
         if redirected or any(
             "open.weixin.qq.com/connect/qrconnect" in fr.url for fr in page.frames
         ):
-            raise RuntimeError("视频号 cookie 已失效（被跳转到登录页），请重新扫码登录后再发布")
+            raise RuntimeError(
+                "VF-PUBLISH-COOKIE-INVALID: 视频号 cookie 已失效（被跳转到登录页），"
+                "请重新扫码登录后再发布。"
+            )
+
+    async def wait_for_upload_page_ready(self) -> None:
+        tencent_logger.info(
+            f"publish upload page ready delay : seconds = {TENCENT_UPLOAD_PAGE_READY_DELAY_SECONDS}"
+        )
+        await asyncio.sleep(TENCENT_UPLOAD_PAGE_READY_DELAY_SECONDS)
 
     async def upload_video_file(self, page: Page, file_path: str) -> None:
         async def find_file_input():
@@ -716,29 +996,88 @@ class TencentBaseUploader(BaseVideoUploader):
             # 视频号「声明原创」为可选项：页面无对应入口时跳过并继续发布，而非中止。
             tencent_logger.warning(_msg("📭", "本视频未声明原创（页面无入口或为可选项），跳过并继续发布"))
 
+    async def is_cover_generation_visible(self, page: Page) -> bool:
+        cover_markers = page.get_by_text("生成中", exact=True)
+        for index in range(await cover_markers.count()):
+            if await cover_markers.nth(index).is_visible():
+                return True
+        return False
+
     async def wait_for_upload_complete(self, page: Page) -> None:
+        loop = asyncio.get_running_loop()
+        upload_deadline = loop.time() + TENCENT_UPLOAD_WAIT_TIMEOUT
+        retry_count = 0
+        page_closed_failures = 0
+        cover_generation_started_at = None
         while True:
+            if loop.time() > upload_deadline:
+                raise RuntimeError(
+                    f"VF-PUBLISH-UPLOAD-TIMEOUT: 视频号上传等待超过 {TENCENT_UPLOAD_WAIT_TIMEOUT} 秒，"
+                    "页面仍未进入可发布状态，请检查网络、平台页面或重新发起发布。"
+                )
             try:
+                upload_failed = await page.locator("div.status-msg.error").count()
+                delete_button = await page.locator(
+                    'div.media-status-content div.tag-inner:has-text("删除")'
+                ).count()
+                if upload_failed and delete_button:
+                    if retry_count >= TENCENT_UPLOAD_RETRY_LIMIT:
+                        raise RuntimeError(
+                            "VF-PUBLISH-UPLOAD-FAILED: 视频号上传失败，已停止自动重传。"
+                            f"当前自动重试上限为 {TENCENT_UPLOAD_RETRY_LIMIT} 次。"
+                        )
+                    tencent_logger.error(_msg("😵", "发现上传出错了，准备重试"))
+                    retry_count += 1
+                    await self.handle_upload_error(page)
+                    cover_generation_started_at = None
+                    continue
+
+                if await self.is_cover_generation_visible(page):
+                    if cover_generation_started_at is None:
+                        cover_generation_started_at = loop.time()
+                    elif loop.time() - cover_generation_started_at >= TENCENT_COVER_GENERATION_STALL_TIMEOUT:
+                        raise TencentPublishRecoveryRequired("cover_generation_stalled")
+                    tencent_logger.info("publish upload waiting : state = cover_generating")
+                    await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+                    continue
+                cover_generation_started_at = None
+
                 publish_button = page.get_by_role("button", name="发表")
                 button_class = await publish_button.get_attribute("class")
+                page_closed_failures = 0
                 if button_class and "weui-desktop-btn_disabled" not in button_class:
                     tencent_logger.info(_msg("🥳", "视频上传完毕"))
                     break
 
-                tencent_logger.info(_msg("🏃", "正在上传视频中..."))
-                await asyncio.sleep(2)
+                tencent_logger.info("publish upload waiting : state = uploading")
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+            except Exception as exc:
+                if _is_page_lifecycle_closed_error(exc):
+                    page_closed_failures += 1
+                    tencent_logger.warning(
+                        f"publish upload page closed : consecutive_failures = {page_closed_failures} / "
+                        f"{TENCENT_PAGE_CLOSED_FAILURE_LIMIT}"
+                    )
+                    if page_closed_failures >= TENCENT_PAGE_CLOSED_FAILURE_LIMIT:
+                        raise TencentPublishRecoveryRequired("page_closed") from exc
+                    await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+                    continue
+                if isinstance(exc, RuntimeError):
+                    raise
+                tencent_logger.info(f"publish upload observation failed : error_type = {type(exc).__name__}")
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
 
-                upload_failed = await page.locator("div.status-msg.error").count()
-                delete_button = await page.locator('div.media-status-content div.tag-inner:has-text("删除")').count()
-                if upload_failed and delete_button:
-                    tencent_logger.error(_msg("😵", "发现上传出错了，准备重试"))
-                    await self.handle_upload_error(page)
-            except Exception:
-                tencent_logger.info(_msg("🏃", "正在上传视频中..."))
-                await asyncio.sleep(2)
-
-    async def submit_publish(self, page: Page) -> None:
+    async def submit_publish(self, page: Page) -> dict:
+        verification = TencentPublishVerification()
+        submit_listener = lambda response: verification.observe(response, "submit")
+        page.on("response", submit_listener)
+        publish_deadline = asyncio.get_running_loop().time() + TENCENT_PUBLISH_CONFIRM_TIMEOUT
         while True:
+            if asyncio.get_running_loop().time() > publish_deadline:
+                raise RuntimeError(
+                    f"VF-PUBLISH-CONFIRM-TIMEOUT: 视频号发布确认超过 {TENCENT_PUBLISH_CONFIRM_TIMEOUT} 秒，"
+                    "未确认提交结果。"
+                )
             try:
                 if getattr(self, "is_draft", False):
                     draft_button = page.locator('div.form-btns button:has-text("保存草稿")')
@@ -749,23 +1088,44 @@ class TencentBaseUploader(BaseVideoUploader):
                 else:
                     publish_button = page.locator('div.form-btns button:has-text("发表")')
                     if await publish_button.count():
+                        await human_delay(1.5, 5)
+                        verification.submission_started = True
                         await publish_button.click()
                     await page.wait_for_url(TENCENT_MANAGE_URL, timeout=5000)
-                    tencent_logger.success(_msg("🥳", "视频发布成功"))
                 break
+            except RuntimeError:
+                raise
             except Exception as exc:
                 current_url = page.url
                 if getattr(self, "is_draft", False):
                     if "post/list" in current_url or "draft" in current_url:
                         tencent_logger.success(_msg("🥳", "视频草稿保存成功"))
-                        break
+                        return {}
                 else:
                     if TENCENT_MANAGE_URL in current_url:
                         tencent_logger.success(_msg("🥳", "视频发布成功"))
                         break
                 tencent_logger.exception(f"  [-] Exception: {exc}")
                 tencent_logger.info(_msg("🏃", "视频正在发布中..."))
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(jitter_seconds(0.5, min_seconds=0.3, max_seconds=0.9))
+
+        if getattr(self, "is_draft", False):
+            tencent_logger.success(_msg("🥳", "视频草稿保存成功"))
+            return {}
+
+        page.remove_listener("response", submit_listener)
+        page.on("response", lambda response: verification.observe(response, "list"))
+        work = await _observe_tencent_publish_page(page, verification)
+        if not work:
+            raise RuntimeError(
+                "VF-PUBLISH-UNVERIFIED: 视频号已提交发布，但未在作品列表响应中确认同一作品 ID，结果待核验。"
+            )
+        tencent_logger.success(
+            "publish verified : "
+            f"platform_work_id = {work['platformWorkId']} | "
+            f"platform_work_url = {work['platformWorkUrl']}"
+        )
+        return work
 
 
 class TencentVideo(TencentBaseUploader):
@@ -930,20 +1290,42 @@ class TencentVideo(TencentBaseUploader):
         await self.fill_description(page)
         await self.apply_collection(page)
 
-    async def upload(self, playwright: Playwright) -> None:
+    async def upload(self, playwright: Playwright) -> dict:
         tencent_logger.info(_msg("🧍", "小人先检查 cookie、视频文件和发布时间"))
         await self.validate_upload_args()
         tencent_logger.info(_msg("🥳", "上传前检查通过"))
 
+        recovery_attempt = 0
+        while True:
+            try:
+                return await self._upload_once(playwright)
+            except TencentPublishRecoveryRequired as exc:
+                if recovery_attempt >= TENCENT_PUBLISH_RECOVERY_LIMIT:
+                    raise RuntimeError(
+                        "PUBLISH_FAILED: VF-PUBLISH-PAGE-RECOVERY-FAILED: 视频号页面恢复后仍无法完成提交，"
+                        f"恢复原因 = {exc.reason}，已达到自动恢复上限。"
+                    ) from exc
+                recovery_attempt += 1
+                tencent_logger.warning(
+                    f"publish recovery requested : reason = {exc.reason} | "
+                    f"attempt = {recovery_attempt} / {TENCENT_PUBLISH_RECOVERY_LIMIT}"
+                )
+
+    async def _upload_once(self, playwright: Playwright) -> dict:
         browser = await playwright.chromium.launch(**_build_launch_kwargs(headless=self.headless))
         context = await browser.new_context(storage_state=self.account_file)
+        context = await set_init_script(context)
 
         try:
             page = await context.new_page()
+            diagnostics = TencentPublishDiagnostics()
+            diagnostics.attach(page)
             await self.open_upload_page(page)
             tencent_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}"))
 
+            await self.wait_for_upload_page_ready()
             await self.upload_video_file(page, self.file_path)
+            await human_delay(0.8, 2.5)
             await self.prepare_video_for_publish(page)
             await self.wait_for_upload_complete(page)
             await self.apply_original_statement(page)
@@ -953,17 +1335,24 @@ class TencentVideo(TencentBaseUploader):
                 await self.set_schedule_time_tencent(page, self.publish_date)
 
             await self.set_short_title(page, self.title, self.short_title)
-            await self.submit_publish(page)
+            work = await self.submit_publish(page)
 
             await context.storage_state(path=self.account_file)
             tencent_logger.success(_msg("🥳", "cookie 更新完毕"))
+            return work
+        except Exception as exc:
+            diagnostics = locals().get("diagnostics")
+            page = locals().get("page")
+            if diagnostics is not None and page is not None:
+                await diagnostics.capture(page, "publish_failed", exc)
+            raise
         finally:
             await context.close()
             await browser.close()
 
-    async def tencent_upload_video(self):
+    async def tencent_upload_video(self) -> dict:
         async with async_playwright() as playwright:
-            await self.upload(playwright)
+            return await self.upload(playwright)
 
     async def main(self):
         await self.tencent_upload_video()

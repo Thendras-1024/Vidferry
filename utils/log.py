@@ -1,4 +1,5 @@
 import sys
+import re
 from pathlib import Path
 from loguru import logger
 
@@ -17,16 +18,8 @@ def log_formatter(record: dict) -> str:
     :param dict record: Log object containing log metadata & message.
     :returns: str
     """
-    colors = {
-        "TRACE": "#cfe2f3",
-        "INFO": "#9cbfdd",
-        "DEBUG": "#8598ea",
-        "WARNING": "#dcad5a",
-        "SUCCESS": "#3dd08d",
-        "ERROR": "#ae2c2c"
-    }
-    color = colors.get(record["level"].name, "#b3cfe7")
-    return f"<fg #70acde>{{time:YYYY-MM-DD HH:mm:ss}}</fg #70acde> | <fg {color}>{{level}}</fg {color}>: <light-white>{{message}}</light-white>\n"
+    record["message"] = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf]", "", str(record["message"])).strip()
+    return "{time:YYYY-MM-DD HH:mm:ss} | {level} : {message}\n"
 
 
 def create_logger(log_name: str, file_path: str):
@@ -40,14 +33,23 @@ def create_logger(log_name: str, file_path: str):
         return record["extra"].get("business_name") == log_name
 
     Path(BASE_DIR / file_path).parent.mkdir(exist_ok=True)
-    logger.add(Path(BASE_DIR / file_path), filter=filter_record, level="INFO", rotation="10 MB", retention="10 days", backtrace=True, diagnose=True)
+    logger.add(
+        Path(BASE_DIR / file_path),
+        filter=filter_record,
+        level="INFO",
+        rotation="10 MB",
+        retention="10 days",
+        backtrace=True,
+        diagnose=True,
+        encoding="utf-8",
+    )
     return logger.bind(business_name=log_name)
 
 
 # Remove all existing handlers
 logger.remove()
 # Add a standard console handler
-logger.add(sys.stdout, colorize=True, format=log_formatter)
+logger.add(sys.stdout, colorize=False, format=log_formatter)
 
 douyin_logger = create_logger('douyin', 'logs/douyin.log')
 tencent_logger = create_logger('tencent', 'logs/tencent.log')

@@ -598,6 +598,19 @@ class DouYinVideo(DouYinBaseUploader):
         if self.thumbnail_portrait_path:
             self.thumbnail_portrait_path = str(self.validate_image_file(self.thumbnail_portrait_path))
 
+    async def set_video_file_for_upload(self, page: Page) -> None:
+        for selector in (
+            'input[type="file"][accept*="video"]',
+            'input[accept*="video"]',
+            'div[class^="container"] input[type="file"]',
+        ):
+            file_input = page.locator(selector).first
+            if await file_input.count():
+                await file_input.wait_for(state="attached", timeout=60000)
+                await file_input.set_input_files(self.file_path)
+                return
+        raise RuntimeError("VF-PUBLISH-UPLOAD-INPUT-MISSING : 抖音视频上传控件未找到。")
+
     async def handle_upload_error(self, page):
         douyin_logger.warning(_msg("😵", "视频上传摔了一跤，小人马上重新上传"))
         await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
@@ -686,9 +699,8 @@ class DouYinVideo(DouYinBaseUploader):
         douyin_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
         douyin_logger.info(_msg("🧭", "小人正在赶往上传主页"))
         await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload", timeout=90000)
-        # wait_for_url 完成时上传页可能尚未渲染出文件 input（实测偶发），先等它挂载再 set_input_files
-        await page.wait_for_selector("div[class^='container'] input", state="attached", timeout=60000)
-        await page.locator("div[class^='container'] input").set_input_files(self.file_path)
+        await asyncio.sleep(5)
+        await self.set_video_file_for_upload(page)
 
         while True:
             try:

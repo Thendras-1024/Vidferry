@@ -545,7 +545,8 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
         )
         await page.goto(publish_url)
         await page.wait_for_url(publish_url)
-        await page.locator("div[class^='upload-content'] input[class='upload-input']").set_input_files(self.file_path)
+        await asyncio.sleep(5)
+        await self.set_upload_files(page.locator("div[class^='upload-content'] input[class='upload-input']"), self.file_path, "小红书", "视频")
 
         while True:
             try:

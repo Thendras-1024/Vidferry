@@ -3,9 +3,13 @@
 
 import re as _re
 import threading
+import json
 
 
 from app.utils.time_util import _build_publish_datetimes, _format_publish_schedule, _parse_publish_schedule
+
+
+TENCENT_PUBLISH_RESULT_MARKER = "VIDFERRY_TENCENT_PUBLISH_RESULT="
 
 
 def _publish_to_douyin(job, processed_file):
@@ -14,7 +18,7 @@ def _publish_to_douyin(job, processed_file):
     account_info = _check_named_publish_account(3, job["account"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 3, account_info)
     command = _workflow_publish_runner_command(task)
-    _run_workflow_publish_command(command, 3, account_info["filePath"])
+    _run_workflow_publish_command(command, task)
     return " ".join(command)
 
 
@@ -24,7 +28,7 @@ def _publish_to_bilibili(job, processed_file):
     account_info = _check_named_publish_account(5, job["bilibiliAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 5, account_info)
     command = _workflow_publish_runner_command(task)
-    _run_workflow_publish_command(command, 5, account_info["filePath"])
+    _run_workflow_publish_command(command, task)
     return " ".join(command)
 
 
@@ -34,7 +38,7 @@ def _publish_to_xiaohongshu(job, processed_file):
     account_info = _check_named_publish_account(1, job["xiaohongshuAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 1, account_info)
     command = _workflow_publish_runner_command(task)
-    _run_workflow_publish_command(command, 1, account_info["filePath"])
+    _run_workflow_publish_command(command, task)
     return " ".join(command)
 
 
@@ -44,7 +48,7 @@ def _publish_to_kuaishou(job, processed_file):
     account_info = _check_named_publish_account(4, job["kuaishouAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 4, account_info)
     command = _workflow_publish_runner_command(task)
-    _run_workflow_publish_command(command, 4, account_info["filePath"])
+    _run_workflow_publish_command(command, task)
     return " ".join(command)
 
 
@@ -54,7 +58,7 @@ def _publish_to_tencent(job, processed_file):
     account_info = _check_named_publish_account(2, job["tencentAccount"], job.get("ownerUserId"))
     task = _workflow_publish_task(job, processed_file, 2, account_info)
     command = _workflow_publish_runner_command(task)
-    _run_workflow_publish_command(command, 2, account_info["filePath"])
+    _run_workflow_publish_command(command, task)
     return " ".join(command)
 
 
@@ -246,8 +250,11 @@ def _is_cookie_invalid_error(message):
     )
 
 
-def _mark_account_abnormal(platform_type, account_file, reason=""):
-    if not account_file:
+def _mark_account_abnormal(task, reason=""):
+    account_id = task.get("accountId")
+    owner_user_id = task.get("ownerUserId")
+    if not account_id or owner_user_id is None:
+        backend_logger.warning("publish account mark abnormal skipped : reason = missing_scoped_account")
         return
     try:
         with _db_connect() as conn:
@@ -256,19 +263,21 @@ def _mark_account_abnormal(platform_type, account_file, reason=""):
                 '''
                 UPDATE user_info
                 SET status = 0
-                WHERE type = ? AND filePath = ?
+                WHERE id = ? AND owner_user_id = ?
                 ''',
-                (int(platform_type or 0), str(account_file)),
+                (int(account_id), int(owner_user_id)),
             )
             conn.commit()
+        create_publish_cookie_invalid_notification(task, reason)
         backend_logger.warning(
-            "publish account marked abnormal : platform_type = %s reason = cookie_invalid",
-            platform_type,
+            "publish account marked abnormal : account_id = %s owner_user_id = %s reason = cookie_invalid",
+            account_id,
+            owner_user_id,
         )
     except Exception as exc:
         backend_logger.exception(
-            "publish account mark abnormal failed : platform_type = %s error_type = %s",
-            platform_type,
+            "publish account mark abnormal failed : account_id = %s error_type = %s",
+            account_id,
             type(exc).__name__,
         )
 
@@ -357,7 +366,8 @@ def _run_isolated_publish_command(command, timeout=3600):
         _unregister_inflight_publish_process(process)
 
 
-def _run_workflow_publish_command(command, platform_type, account_file, timeout=3600):
+def _run_workflow_publish_command(command, task, timeout=3600):
+    platform_type = int(task["platformType"])
     result = _run_isolated_publish_command(command, timeout=timeout)
     if result.returncode == 0:
         return result
@@ -369,7 +379,7 @@ def _run_workflow_publish_command(command, platform_type, account_file, timeout=
         _publish_failure_log_text(output),
     )
     if _is_cookie_invalid_error(output):
-        _mark_account_abnormal(platform_type, account_file, output)
+        _mark_account_abnormal(task, output)
     raise RuntimeError(_publish_command_failure(output, f"{platform_name(platform_type)} 发布失败"))
 
 
@@ -406,9 +416,57 @@ def _is_publish_rate_limited(lines):
     return "upload rate limit" in text or "code: 601" in text or "上传视频过快" in text
 
 
+def _publish_failure_status(message):
+    text = str(message or "")
+    upper = text.upper()
+    if _is_cookie_invalid_error(text):
+        return "failed"
+    definite_codes = (
+        "VF-PUBLISH-UPLOAD-NOT-STARTED",
+        "VF-PUBLISH-UPLOAD-START-FAILED",
+        "VF-PUBLISH-UPLOAD-FAILED",
+        "VF-PUBLISH-DESCRIPTION-MISSING",
+        "VF-PUBLISH-TITLE-MISSING",
+        "VF-PUBLISH-PERMISSION-DENIED",
+        "VF-PUBLISH-RATE-LIMIT",
+        "VF-PUBLISH-SCHEDULE-TOO-SOON",
+        "VF-PUBLISH-PLATFORM-FAILED",
+    )
+    if any(code in upper for code in definite_codes):
+        return "failed"
+    definite_messages = (
+        "账号 Cookie 文件不存在",
+        "发布视频文件不存在",
+        "视频文件不存在",
+        "发布标题不能为空",
+        "发布描述不能为空",
+        "cookie文件不存在",
+    )
+    if any(marker in text for marker in definite_messages):
+        return "failed"
+    return "uncertain"
+
+
 def _publish_failure_log_text(output):
     text = " | ".join(_publish_failure_lines(output))
     return text[:1600] if text else "<empty publish runner output>"
+
+
+def _tencent_verified_work(output):
+    for line in reversed(str(output or "").splitlines()):
+        if not line.startswith(TENCENT_PUBLISH_RESULT_MARKER):
+            continue
+        try:
+            result = json.loads(line[len(TENCENT_PUBLISH_RESULT_MARKER):])
+        except (TypeError, ValueError):
+            return {}
+        work_id = str(result.get("platformWorkId") or "").strip()
+        if work_id:
+            return {
+                "platformWorkId": work_id,
+                "platformWorkUrl": str(result.get("platformWorkUrl") or "").strip(),
+            }
+    return {}
 
 
 def _execute_publish_target(task):
@@ -465,6 +523,12 @@ def _execute_publish_target(task):
                     command_failed = True
                     output = "\n".join(part for part in [(process_result.stderr or "").strip(), (process_result.stdout or "").strip()] if part)
                     raise RuntimeError(_publish_command_failure(output, f"{task['platformName']} 发布失败"))
+                if platform_type == 2:
+                    platform_work = _tencent_verified_work(process_result.stdout)
+                    if not platform_work:
+                        raise RuntimeError(
+                            "VF-PUBLISH-UNVERIFIED: 视频号命令已结束，但没有收到已验证的平台作品 ID，结果待核验。"
+                        )
 
         external_succeeded = True
         if platform_type == 4:
@@ -482,7 +546,7 @@ def _execute_publish_target(task):
             account_count=1,
             account_file=task["accountFile"],
             publish_task_id=task.get("publishTaskId") or "",
-            status="success",
+            status="confirmed",
             message="发布成功",
             duration_ms=int((time.time() - start_time) * 1000),
             account_name=task.get("accountName") or "",
@@ -495,37 +559,52 @@ def _execute_publish_target(task):
         )
         result.update({
             "publishedVideoIds": published_ids,
-            "status": "success",
-            "message": "发布成功",
+            "status": "confirmed",
+            "message": "已确认发布",
         })
     except TimeoutError as exc:
         backend_logger.exception("publish platform result uncertain after timeout : platform_type=%s", platform_type)
         result.update({
-            "status": "unknown" if external_started else "timeout",
+            "status": "uncertain" if external_started else "failed",
             "message": ("平台执行超时，结果待核验：" + str(exc)) if external_started else str(exc),
         })
     except WorkflowConflictError:
         # Reservation conflicts happen before platform execution and must not
         # overwrite the other task's record or enter failure finalization.
         raise
+    except RuntimeError as exc:
+        message = str(exc)
+        status = _publish_failure_status(message)
+        if _is_cookie_invalid_error(message):
+            _mark_account_abnormal(task, message)
+        result.update({"status": status, "message": message})
+        if status == "uncertain":
+            backend_logger.warning("publish target result uncertain : platform_type = %s", platform_type)
+        else:
+            backend_logger.warning("publish target failed : platform_type = %s", platform_type)
     except Exception as exc:
-        if _is_cookie_invalid_error(str(exc)):
-            _mark_account_abnormal(platform_type, task["accountFile"], str(exc))
-        if external_succeeded or (external_started and not command_failed):
+        message = str(exc)
+        status = _publish_failure_status(message)
+        if _is_cookie_invalid_error(message):
+            _mark_account_abnormal(task, message)
+        if status == "failed":
+            result.update({"status": "failed", "message": message})
+            backend_logger.exception("publish target failed : platform_type = %s", platform_type)
+        elif external_succeeded or (external_started and not command_failed):
             result.update({
-                "status": "unknown",
-                "message": "平台命令已完成，但本地成功状态保存失败，需人工核验：" + str(exc),
+                "status": "uncertain",
+                "message": "平台命令已完成，但本地成功状态保存失败，需人工核验：" + message,
             })
             backend_logger.exception("publish succeeded but local persistence failed : platform_type=%s", platform_type)
         else:
             backend_logger.exception("publish target failed : platform_type=%s", platform_type)
             result.update({
-                "status": "failed",
-                "message": str(exc),
+                "status": "uncertain",
+                "message": "发布命令异常，结果待核验：" + message,
             })
     finally:
         result["durationMs"] = int((time.time() - start_time) * 1000)
-        if running_claimed and result["status"] != "success":
+        if running_claimed and result["status"] != "confirmed":
             try:
                 _mark_published_materials(
                     task["fileList"],
@@ -632,14 +711,16 @@ def _summarize_publish_results(results):
     published_video_ids = []
     for item in results:
         published_video_ids.extend(item.get("publishedVideoIds") or [])
-    success_count = sum(1 for item in results if item.get("status") == "success")
-    unknown_count = sum(1 for item in results if item.get("status") == "unknown")
-    failed_count = sum(1 for item in results if item.get("status") in {"failed", "timeout"})
+    success_count = sum(1 for item in results if item.get("status") in {"confirmed", "reused"})
+    unknown_count = sum(1 for item in results if item.get("status") == "uncertain")
+    failed_count = sum(1 for item in results if item.get("status") == "failed")
+    skipped_count = sum(1 for item in results if item.get("status") == "reused")
     return {
         "publishedVideoIds": list(dict.fromkeys(published_video_ids)),
         "successCount": success_count,
         "failedCount": failed_count,
         "unknownCount": unknown_count,
+        "skippedCount": skipped_count,
         "hasFailures": failed_count > 0 or unknown_count > 0,
         "hasUnknown": unknown_count > 0,
     }
@@ -657,7 +738,6 @@ def _publish_payload(data):
     _check_accounts_for_publish(targets)
     file_list, publish_materials = _validate_publish_processed_files(file_list)
     publish_material = publish_materials[0]
-    _assert_publish_targets_available(publish_material, targets)
     # Agent 质检是可选能力；普通发布只保留来源内容风险确认。
     agent_guard = validate_prepublish_guard_or_raise(
         data, file_list, targets, publish_materials, check_agent=False
