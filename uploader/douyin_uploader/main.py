@@ -698,9 +698,12 @@ class DouYinVideo(DouYinBaseUploader):
         await page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=90000)
         douyin_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
         douyin_logger.info(_msg("🧭", "小人正在赶往上传主页"))
-        await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload", timeout=90000)
-        await asyncio.sleep(5)
-        await self.set_video_file_for_upload(page)
+        try:
+            await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload", timeout=90000)
+            await asyncio.sleep(5)
+            await self.set_video_file_for_upload(page)
+        except Exception as exc:
+            raise RuntimeError("VF-PUBLISH-UPLOAD-START-FAILED : 抖音上传控件未成功接收视频文件。") from exc
 
         while True:
             try:
