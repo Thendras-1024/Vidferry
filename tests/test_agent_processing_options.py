@@ -244,3 +244,11 @@ def test_agent_workspace_sends_processing_options_only_for_processing_proposals(
     assert "executionProcessingOptions" in composable
     assert "processingOptions: proposal.requiresProcessingOptions ? message.importProcessingOptions : undefined" in composable
     assert "processingOptions: proposal.requiresProcessingOptions ? message.executionProcessingOptions : undefined" in composable
+
+
+def test_agent_search_request_accepts_implicit_video_publish_intent():
+    backend = create_backend_module()
+
+    request = backend._agent_search_request("旅游 vlog 视频并发布")
+
+    assert request == {"query": "旅游", "limit": 5}

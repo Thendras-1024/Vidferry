@@ -222,14 +222,23 @@ def _agent_search_request(message):
     text = str(message or "").strip()
     if _agent_youtube_url(text):
         return None
-    if not _re.search(r"(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*", text, _re.I):
+    has_explicit_search = bool(_re.search(r"(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*", text, _re.I))
+    # 用户会直接描述视频主题和后续动作，这类消息也必须先进入候选确认流程。
+    has_implicit_video_search = bool(
+        _re.search(r"(?:视频|影片|vlogs?|video(?:s)?)", text, _re.I)
+        and _re.search(r"(?:导入|加入|存入|下载|处理|转写|字幕|剪辑|发布|分发|download|process|publish)", text, _re.I)
+    )
+    if not has_explicit_search and not has_implicit_video_search:
         return None
     limit_match = _re.search(r"\b([1-9]|1[0-9]|20)\s*(?:个|条|部|项|videos?|results?)\b", text, _re.I)
     chinese_count_match = _re.search(r"([一两二三四五六七八九十])\s*(?:个|条|部|项)", text)
     if not limit_match:
         limit_match = _re.search(r"\b([1-9]|1[0-9]|20)\b(?=.*\b(?:videos?|results?)\b)", text, _re.I)
     limit = int(limit_match.group(1)) if limit_match else _AGENT_CHINESE_COUNTS.get(chinese_count_match.group(1), 5) if chinese_count_match else 5
-    query = _re.sub(r"(?:请|帮我|帮忙|给我|麻烦)?\s*(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*(?:一下|一些|几个|[一两二三四五六七八九十]\s*(?:个|条|部|项)|\d+\s*(?:个|条|部|项|videos?|results?))?", "", text, flags=_re.I)
+    if has_explicit_search:
+        query = _re.sub(r"(?:请|帮我|帮忙|给我|麻烦)?\s*(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*(?:一下|一些|几个|[一两二三四五六七八九十]\s*(?:个|条|部|项)|\d+\s*(?:个|条|部|项|videos?|results?))?", "", text, flags=_re.I)
+    else:
+        query = _re.sub(r"^(?:请|帮我|帮忙|给我|麻烦)?\s*(?:这(?:一)?条|一(?:条|个|部)|[1一]\s*(?:条|个|部))\s*", "", text, flags=_re.I)
     query = _re.sub(r"^\d+\s+", "", query)
     filters = _agent_search_filters(query)
     query = _re.sub(r"近(?:一|1)周|近(?:一个|1个|一)月|近(?:三|3)个月", "", query)
@@ -247,7 +256,9 @@ def _agent_search_request(message):
         flags=_re.I,
     )
     query = _re.sub(r"[,，、]\s*(?:发布|分布)(?:的)?$", "", query)
-    query = _re.sub(r"(?:相关)?(?:的)?(?:YouTube)?(?:视频|影片|video|videos)?\s*(?:并|然后|并且)?\s*(?:帮我|替我)?\s*(?:(?:导入|加入|存入|放入)(?:线索列表|线索库|列表)?(?:中|里)?|下载|处理|转写|剪辑|发布|分发)(?:到[^，,。！？!]*?)?[。！？!?,，]*$", "", query, flags=_re.I).strip(" ：:，,。.!！？")
+    query = _re.sub(r"(?:相关)?(?:的)?(?:(?:YouTube)?(?:视频|影片|vlogs?|video|videos)\s*)*(?:并|然后|并且)?\s*(?:帮我|替我)?\s*(?:(?:导入|加入|存入|放入)(?:线索列表|线索库|列表)?(?:中|里)?|下载|处理|转写|剪辑|发布|分发)(?:到[^，,。！？!]*?)?[。！？!?,，]*$", "", query, flags=_re.I).strip(" ：:，,。.!！？")
+    if has_implicit_video_search:
+        query = _re.sub(r"(?:的|关于)$", "", query).strip()
     return {"query": query, "limit": limit, **filters} if query else {"query": "", "limit": limit, **filters}
 
 
