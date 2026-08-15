@@ -12,6 +12,42 @@ from app.utils.time_util import _build_publish_datetimes, _format_publish_schedu
 TENCENT_PUBLISH_RESULT_MARKER = "VIDFERRY_TENCENT_PUBLISH_RESULT="
 
 
+def _resolve_publish_target_tags(target, fallback_tags=None, fallback_custom_tags=None):
+    if target.get("_resolvedTags"):
+        tags = merge_publish_tags(target.get("platformType"), target.get("tags"))
+    else:
+        owner_user_id = target.get("ownerUserId")
+        presets = {}
+        if owner_user_id is not None:
+            presets = get_publish_tag_presets(owner_user_id).get("presets") or {}
+        selected_tags = (
+            target.get("tags")
+            if target.get("_tagsProvided", True)
+            else _normalize_publish_tags(fallback_tags)
+        )
+        custom_tags = (
+            target.get("customTags")
+            if target.get("_customTagsProvided", True)
+            else _normalize_publish_tags(fallback_custom_tags)
+        )
+        common_tags = presets.get(str(int(target.get("platformType") or 0)), [])
+        tags = merge_publish_tags(
+            target.get("platformType"),
+            common_tags=common_tags,
+            custom_tags=custom_tags,
+            selected_tags=selected_tags,
+        )
+    target["tags"] = tags
+    target["_resolvedTags"] = True
+    return tags
+
+
+def _resolve_publish_tags(targets, fallback_tags=None, fallback_custom_tags=None):
+    for target in targets or []:
+        _resolve_publish_target_tags(target, fallback_tags, fallback_custom_tags)
+    return targets
+
+
 def _publish_to_douyin(job, processed_file):
     if not job["publishToDouyin"] or not job["account"]:
         return ""
@@ -171,7 +207,7 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
     title = job.get("title") or "YouTube 视频"
     description = job.get("description") or (job.get("url") if platform_type == 5 else "") or ""
     file_path = Path(processed_file)
-    return {
+    task = {
         "platformType": platform_type,
         "platformName": platform_name(platform_type),
         "accountId": account_info["id"],
@@ -183,6 +219,7 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
         "title": title,
         "description": description,
         "tags": job.get("tags") or [],
+        "customTags": job.get("customTags") or [],
         "thumbnailPath": "",
         "productLink": "",
         "productTitle": "",
@@ -192,6 +229,8 @@ def _workflow_publish_task(job, processed_file, platform_type, account_info):
         "headless": False,
         "debug": True,
     }
+    _resolve_publish_target_tags(task)
+    return task
 
 
 def _workflow_publish_runner_command(task):
@@ -631,6 +670,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
     title = _safe_text(data.get("title"))
     description = _safe_text(data.get("description"))
     fallback_tags = _normalize_publish_tags(data.get("tags"))
+    fallback_custom_tags = _normalize_publish_tags(data.get("customTags"))
     thumbnail_path = _safe_text(data.get("thumbnail"))
     product_link = _safe_text(data.get("productLink"))
     product_title = _safe_text(data.get("productTitle"))
@@ -648,9 +688,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
         account_file = _safe_text(target.get("accountFile"))
         owner_user_id = target.get("ownerUserId")
         platform_type = int(target.get("platformType") or 0)
-        target_tags = _normalize_publish_tags(target.get("tags")) if "tags" in target else fallback_tags
-        if platform_type == 3:
-            target_tags = target_tags[:5]
+        target_tags = _resolve_publish_target_tags(target, fallback_tags, fallback_custom_tags)
         target_product_link = _safe_text(target.get("productLink")) if platform_type == 3 else product_link
         target_product_title = _safe_text(target.get("productTitle")) if platform_type == 3 else product_title
         target_bilibili_tid = normalize_bilibili_tid(target.get("bilibiliTid") or fallback_bilibili_tid) if platform_type == 5 else ""
@@ -736,6 +774,7 @@ def _publish_payload(data):
         raise ValueError("标题不能为空")
     targets = normalize_publish_targets(data)
     _check_accounts_for_publish(targets)
+    _resolve_publish_tags(targets, data.get("tags"), data.get("customTags"))
     file_list, publish_materials = _validate_publish_processed_files(file_list)
     publish_material = publish_materials[0]
     # Agent 质检是可选能力；普通发布只保留来源内容风险确认。

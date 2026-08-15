@@ -35,7 +35,9 @@ from app.utils.text_util import clean_display_text, ensure_utf8_stdio
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command, video_encode_args
 from app.publishing import (
     BILIBILI_DEFAULT_TID,
+    PUBLISH_TAG_LIMITS,
     bilibili_categories,
+    merge_publish_tags,
     normalize_bilibili_tid,
     normalize_publish_targets,
     platform_name,

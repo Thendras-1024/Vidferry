@@ -102,6 +102,7 @@ def create_scheduled_publish_task(data):
     if not video_id:
         raise ValueError("发布素材未绑定视频线索")
     accounts = _check_accounts_for_publish(targets)
+    _resolve_publish_tags(targets, data.get("tags"), data.get("customTags"))
     validate_prepublish_guard_or_raise(data, file_list, targets, materials, check_agent=False)
     task_id = uuid.uuid4().hex
     now = _now_iso()
@@ -134,6 +135,7 @@ def create_scheduled_publish_task(data):
         ''', (task_id, video_id, material.get("id"), file_list[0], scheduled_at.strftime("%Y-%m-%d %H:%M:%S"), now, now, risk_override_json))
         for target, account in zip(targets, accounts):
             settings = {
+                "tags": target.get("tags") or [],
                 "bilibiliTid": target.get("bilibiliTid"),
                 "productLink": target.get("productLink") or "",
                 "productTitle": target.get("productTitle") or "",
@@ -320,6 +322,7 @@ def run_scheduled_publish_task(task_id):
             "accountFile": account["filePath"], "accountId": account["id"], "accountName": account["userName"],
             "ownerUserId": account["owner_user_id"], "tags": content["tags"], **settings,
         }
+        publish_target["_resolvedTags"] = True
         data = {**content, "fileList": [task["file_path"]], "targets": [publish_target], "enableTimer": False, **settings}
         publish_tasks.extend(_build_publish_tasks(data, [publish_target], [task["file_path"]], publish_task_id=task_id))
         owner_user_id = account["owner_user_id"]
@@ -417,6 +420,7 @@ def _run_scheduled_publish_task_direct(task_id):
                 "ownerUserId": account["owner_user_id"],
                 "tags": content["tags"], **settings,
             }
+            publish_target["_resolvedTags"] = True
             data = {**content, "fileList": [task["file_path"]], "targets": [publish_target], "enableTimer": False, **settings}
             publish_task = _build_publish_tasks(data, [publish_target], [task["file_path"]], publish_task_id=task_id)[0]
             result = _execute_publish_target(publish_task)

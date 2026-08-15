@@ -11,6 +11,10 @@
           <el-icon><Plus /></el-icon>
           <span>新增批次</span>
         </el-button>
+        <el-button plain @click="openTagPresetsDialog">
+          <el-icon><Setting /></el-icon>
+          <span>平台通用标签</span>
+        </el-button>
         <el-button type="success" :loading="batchPublishing" @click="batchPublish">批量发布</el-button>
       </div>
     </section>
@@ -124,7 +128,7 @@
             <el-carousel
               v-if="publishTargets(tab).length > 0"
               class="target-carousel"
-              height="340px"
+              height="480px"
               indicator-position="outside"
               :autoplay="false"
               arrow="always"
@@ -145,9 +149,48 @@
                     <span>发布</span>
                     <p>{{ tab.scheduleEnabled ? `定时发布 · ${tab.scheduledAt || '未选择时间'}` : '立即发布' }}</p>
                   </div>
+                  <div class="target-topic-panel">
+                    <div class="target-topic-group">
+                      <span>发布标签</span>
+                      <div class="tag-cloud publish-topic-cloud">
+                        <el-tooltip
+                          v-for="item in topicItemsForTarget(tab, target)"
+                          :key="`${item.source}:${item.topic}`"
+                          :content="topicItemTooltip(item, target)"
+                          placement="top"
+                        >
+                          <el-tag
+                            :class="['publish-topic', `publish-topic--${item.source}`, { 'publish-topic--skipped': !item.willPublish }]"
+                            :type="topicItemTagType(item)"
+                            :effect="item.willPublish ? 'light' : 'plain'"
+                            :closable="item.source === 'platform'"
+                            size="small"
+                            @close="handleTopicItemClick(item)"
+                          >
+                            <el-icon v-if="item.source === 'platform'" class="publish-topic-lock"><Lock /></el-icon>
+                            #{{ item.topic }}
+                            <span class="publish-topic-source">{{ topicSourceLabel(item.source) }}</span>
+                            <span v-if="!item.willPublish" class="publish-topic-status">本次不发布</span>
+                          </el-tag>
+                        </el-tooltip>
+                        <span v-if="topicItemsForTarget(tab, target).length === 0" class="empty-topic">暂无话题</span>
+                      </div>
+                    </div>
+                    <div class="target-topic-group">
+                      <span>自动标签候选</span>
+                      <el-checkbox-group
+                        :model-value="selectedTopicsForTarget(tab, target)"
+                        class="target-topic-options"
+                        @update:model-value="setSelectedTopicsForTarget(tab, target, $event)"
+                      >
+                        <el-checkbox v-for="topic in tab.tagCandidates" :key="topic" :value="topic" border>{{ topic }}</el-checkbox>
+                      </el-checkbox-group>
+                      <span v-if="tab.tagCandidates.length === 0" class="empty-topic">暂无内容候选</span>
+                    </div>
+                  </div>
                   <el-alert
-                    v-if="isDouyinTopicTruncated(tab, target)"
-                    title="抖音最多支持一次选择 5 条话题，本次将只发布前 5 条。"
+                    v-if="hasSkippedTopicsForTarget(tab, target)"
+                    :title="targetTopicLimitNotice(tab, target)"
                     type="warning"
                     :closable="false"
                     show-icon
@@ -201,10 +244,10 @@
                 <p>{{ tab.description || '暂无发布文案' }}</p>
               </div>
               <div>
-                <span>话题</span>
+                <span>候选</span>
                 <div class="tag-cloud topic-cloud">
-                  <el-tag v-for="topic in tab.selectedTopics" :key="topic">#{{ topic }}</el-tag>
-                  <el-tag v-if="tab.selectedTopics.length === 0" type="info" effect="plain">暂无已保存话题</el-tag>
+                  <el-tag v-for="topic in tab.tagCandidates" :key="topic">#{{ topic }}</el-tag>
+                  <el-tag v-if="tab.tagCandidates.length === 0" type="info" effect="plain">暂无自动标签候选</el-tag>
                 </div>
               </div>
             </div>
@@ -577,24 +620,44 @@
       <template #footer><div class="dialog-footer"><el-button @click="accountDialogVisible = false">取消</el-button><el-button type="primary" @click="confirmAccountSelection">确定</el-button></div></template>
     </el-dialog>
 
-    <el-dialog v-model="topicDialogVisible" title="添加话题" width="600px" class="topic-dialog">
-      <div class="custom-topic-input">
-        <el-input v-model="customTopic" placeholder="输入自定义话题"><template #prepend>#</template></el-input>
-        <el-button type="primary" @click="addCustomTopic">添加</el-button>
-      </div>
-      <div class="recommended-topics">
-        <h4>推荐话题</h4>
-        <div class="topic-grid">
-          <el-button v-for="topic in recommendedTopics" :key="topic" :type="currentTab?.selectedTopics?.includes(topic) ? 'primary' : 'default'" @click="toggleRecommendedTopic(topic)">{{ topic }}</el-button>
+    <el-dialog v-model="tagPresetsDialogVisible" title="平台通用标签" width="680px" class="tag-presets-dialog">
+      <el-alert title="抖音通用标签优先占用 5 条名额，剩余名额依次补充视频自定义标签和自动标签；超出部分会保留并标记为本次不发布。" type="info" :closable="false" show-icon />
+      <div v-loading="tagPresetsLoading" class="tag-preset-list">
+        <div v-for="platform in platforms" :key="platform.key" class="tag-preset-row">
+          <div>
+            <strong>{{ platform.name }}</strong>
+            <span v-if="tagLimitForPlatform(platform.key)">最多 {{ tagLimitForPlatform(platform.key) }} 条最终标签</span>
+          </div>
+          <el-select
+            v-model="tagPresetDraft[String(platform.key)]"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="输入通用标签后按回车"
+          >
+            <el-option
+              v-for="topic in tagPresetDraft[String(platform.key)] || []"
+              :key="topic"
+              :label="topic"
+              :value="topic"
+            />
+          </el-select>
         </div>
       </div>
-      <template #footer><div class="dialog-footer"><el-button @click="topicDialogVisible = false">取消</el-button><el-button type="primary" @click="confirmTopicSelection">确定</el-button></div></template>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="tagPresetsDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="savingTagPresets" @click="savePublishTagPresets">保存</el-button>
+        </div>
+      </template>
     </el-dialog>
+
   </div>
 </template>
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { Plus, Close, Delete, Folder, Refresh, Clock, DataAnalysis } from '@element-plus/icons-vue'
+import { Plus, Close, Delete, Folder, Refresh, Clock, DataAnalysis, Lock, Setting } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
@@ -659,6 +722,12 @@ const platformNameByKey = platforms.reduce((map, platform) => {
   return map
 }, {})
 const platformOrderByKey = new Map(platforms.map((platform, index) => [platform.key, index]))
+const emptyTagPresetMap = () => Object.fromEntries(platforms.map(platform => [String(platform.key), []]))
+const tagPresets = ref({ presets: emptyTagPresetMap(), limits: {} })
+const tagPresetDraft = ref(emptyTagPresetMap())
+const tagPresetsDialogVisible = ref(false)
+const tagPresetsLoading = ref(false)
+const savingTagPresets = ref(false)
 
 const sortPublishedRecords = records => [...records].sort((left, right) => {
   const leftOrder = platformOrderByKey.get(Number(left.platformType)) ?? platforms.length
@@ -715,6 +784,9 @@ const defaultTabInit = {
   productTitle: '', // 商品名称
   bilibiliTid: 21,
   selectedTopics: [], // 话题列表（不带#号）
+  tagCandidates: [],
+  videoCustomTopics: [],
+  selectedTopicsByPlatform: {},
   contentLocked: false,
   publishTargetStatuses: [],
   lastPublishResults: [],
@@ -771,6 +843,17 @@ const normalizePlatformAccounts = (platformAccounts = {}) => {
   return normalized
 }
 
+const normalizeTopicList = (topics = []) => {
+  const values = Array.isArray(topics) ? topics : String(topics || '').split(/[，,\s]+/)
+  return Array.from(new Set(values.map(topic => String(topic || '').trim().replace(/^#+/, '')).filter(Boolean)))
+}
+
+const normalizeTopicSelections = (selections = {}) => {
+  return Object.fromEntries(
+    Object.entries(selections || {}).map(([platformType, topics]) => [String(platformType), normalizeTopicList(topics)])
+  )
+}
+
 const readPublishDraft = () => {
   try {
     const raw = localStorage.getItem(PUBLISH_DRAFT_STORAGE_KEY)
@@ -793,7 +876,10 @@ const normalizePublishTab = (tab, index) => {
     selectedAccounts: normalizeSelectedAccounts(tab?.selectedAccounts),
     platformAccounts: normalizePlatformAccounts(tab?.platformAccounts),
     bilibiliTid: Number(tab?.bilibiliTid || defaultBilibiliTid.value),
-    selectedTopics: Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : [],
+    selectedTopics: normalizeTopicList(tab?.selectedTopics),
+    tagCandidates: normalizeTopicList(tab?.tagCandidates ?? tab?.selectedTopics),
+    videoCustomTopics: normalizeTopicList(tab?.videoCustomTopics),
+    selectedTopicsByPlatform: normalizeTopicSelections(tab?.selectedTopicsByPlatform),
     scheduledAt: String(tab?.scheduledAt || ''),
     publishTargetStatuses: Array.isArray(tab?.publishTargetStatuses) ? tab.publishTargetStatuses : [],
     lastPublishResults: Array.isArray(tab?.lastPublishResults) ? tab.lastPublishResults : [],
@@ -829,7 +915,10 @@ const serializePublishTab = (tab) => ({
   productLink: tab.productLink,
   productTitle: tab.productTitle,
   bilibiliTid: Number(tab.bilibiliTid || defaultBilibiliTid.value),
-  selectedTopics: tab.selectedTopics,
+  selectedTopics: normalizeTopicList(tab.selectedTopics),
+  tagCandidates: normalizeTopicList(tab.tagCandidates),
+  videoCustomTopics: normalizeTopicList(tab.videoCustomTopics),
+  selectedTopicsByPlatform: normalizeTopicSelections(tab.selectedTopicsByPlatform),
   contentLocked: Boolean(tab.contentLocked),
   publishTargetStatuses: tab.publishTargetStatuses || [],
   lastPublishResults: tab.lastPublishResults || [],
@@ -877,17 +966,6 @@ const accountDialogVisible = ref(false)
 const tempPlatformAccounts = ref({})
 const currentTab = ref(null)
 
-// 话题相关状态
-const topicDialogVisible = ref(false)
-const customTopic = ref('')
-
-// 推荐话题列表
-const recommendedTopics = [
-  '游戏', '电影', '音乐', '美食', '旅行', '文化',
-  '科技', '生活', '娱乐', '体育', '教育', '艺术',
-  '健康', '时尚', '美妆', '摄影', '宠物', '汽车'
-]
-
 // 添加新tab
 const addTab = () => {
   tabCounter++
@@ -925,6 +1003,9 @@ const clearVideoDerivedContent = (tab) => {
   tab.title = ''
   tab.description = ''
   tab.selectedTopics = []
+  tab.tagCandidates = []
+  tab.videoCustomTopics = []
+  tab.selectedTopicsByPlatform = {}
   tab.productLink = ''
   tab.productTitle = ''
   tab.bilibiliTid = defaultBilibiliTid.value
@@ -955,28 +1036,33 @@ const removeFile = (tab, index) => {
 }
 
 const normalizeAnalysisTags = (tags = []) => {
-  return Array.isArray(tags)
-    ? tags.map(tag => String(tag || '').trim().replace(/^#/, '')).filter(Boolean)
-    : []
+  return normalizeTopicList(tags)
 }
 
 const normalizePublishDraft = (material) => {
   const draft = material?.publishDraft || {}
+  const result = material?.analysisResult || {}
+  const generatedTags = normalizeAnalysisTags(result.tags)
+  const draftTags = normalizeAnalysisTags(draft.tags)
+  const customTags = normalizeAnalysisTags(draft.customTags).filter(tag => !draftTags.includes(tag))
   if (draft && Object.keys(draft).length > 0) {
     return {
       title: draft.title || '',
       description: draft.description || '',
-      tags: normalizeAnalysisTags(draft.tags),
-      fromSavedDraft: true
+      tags: normalizeTopicList([...generatedTags, ...draftTags]),
+      selectedTags: draftTags,
+      customTags,
+      fromSavedDraft: draft.source === 'user_saved'
     }
   }
 
-  const result = material?.analysisResult || {}
   const titleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
   return {
     title: titleOptions[0] || '',
     description: result.publish_copy || '',
-    tags: normalizeAnalysisTags(result.tags),
+    tags: generatedTags,
+    selectedTags: [],
+    customTags: [],
     fromSavedDraft: false
   }
 }
@@ -993,12 +1079,10 @@ const hasStalePublishDraft = (tab, draft) => {
   const current = publishDraftSnapshot(draft)
   const selected = publishDraftSnapshot({
     title: tab.title,
-    description: tab.description,
-    tags: tab.selectedTopics
+    description: tab.description
   })
   return current.title !== selected.title
     || current.description !== selected.description
-    || current.tags.join('\n') !== selected.tags.join('\n')
 }
 
 const ensureLatestPublishDraftConfirmation = async (tab) => {
@@ -1161,13 +1245,144 @@ const publishTargets = (tab) => {
     .filter(Boolean)
 }
 
-const topicsForTarget = (tab, target) => {
-  const topics = Array.isArray(tab?.selectedTopics) ? tab.selectedTopics : []
-  return Number(target?.platformType) === 3 ? topics.slice(0, 5) : topics
+const selectedTopicsForTarget = (tab, target) => {
+  const key = String(target?.platformType || '')
+  const topics = tab?.selectedTopicsByPlatform?.[key]
+  return Array.isArray(topics) ? normalizeTopicList(topics) : normalizeTopicList(tab?.selectedTopics)
 }
 
-const isDouyinTopicTruncated = (tab, target) => {
-  return Number(target?.platformType) === 3 && Array.isArray(tab?.selectedTopics) && tab.selectedTopics.length > 5
+const setSelectedTopicsForTarget = (tab, target, topics) => {
+  const key = String(target?.platformType || '')
+  if (!key) return
+  tab.selectedTopicsByPlatform = {
+    ...(tab.selectedTopicsByPlatform || {}),
+    [key]: normalizeTopicList(topics)
+  }
+  resetAgentGuard(tab)
+}
+
+const commonTopicsForTarget = (target) => {
+  const key = String(target?.platformType || '')
+  return normalizeTopicList(tagPresets.value.presets?.[key])
+}
+
+const tagLimitForPlatform = (platformType) => {
+  const limit = Number(tagPresets.value.limits?.[String(platformType)] || 0)
+  return limit > 0 ? limit : null
+}
+
+const topicItemsForTarget = (tab, target) => {
+  const items = []
+  const seen = new Set()
+  const append = (topics, source) => {
+    normalizeTopicList(topics).forEach(topic => {
+      if (seen.has(topic)) return
+      seen.add(topic)
+      items.push({ topic, source })
+    })
+  }
+  append(commonTopicsForTarget(target), 'platform')
+  append(tab?.videoCustomTopics, 'custom')
+  append(selectedTopicsForTarget(tab, target), 'llm')
+  const limit = tagLimitForPlatform(target?.platformType)
+  return items.map((item, index) => ({ ...item, willPublish: !limit || index < limit }))
+}
+
+const topicsForTarget = (tab, target) => {
+  return topicItemsForTarget(tab, target)
+    .filter(item => item.willPublish)
+    .map(item => item.topic)
+}
+
+const hasSkippedTopicsForTarget = (tab, target) => {
+  return topicItemsForTarget(tab, target).some(item => !item.willPublish)
+}
+
+const targetTopicLimitNotice = (tab, target) => {
+  const limit = tagLimitForPlatform(target?.platformType)
+  const skipped = topicItemsForTarget(tab, target).filter(item => !item.willPublish).length
+  return `${target?.platformName || '该平台'}最多支持 ${limit} 条标签，本次将发布前 ${limit} 条，另有 ${skipped} 条保留但不提交。`
+}
+
+const topicSourceLabel = (source) => ({
+  platform: '平台',
+  custom: '自定义',
+  llm: '自动'
+}[source] || '标签')
+
+const topicItemTagType = (item) => {
+  if (!item.willPublish) return 'info'
+  return { platform: 'primary', custom: 'success', llm: 'info' }[item.source] || 'info'
+}
+
+const topicItemTooltip = (item, target) => {
+  if (!item.willPublish) {
+    const limit = tagLimitForPlatform(target?.platformType)
+    return `${target?.platformName || '该平台'}最多支持 ${limit} 条标签，本次不会发布此标签。`
+  }
+  if (item.source === 'platform') return '平台通用标签不可在此处删除，请在“平台通用标签”中管理。'
+  return item.source === 'custom' ? '本视频自定义标签' : 'LLM 自动标签'
+}
+
+const handleTopicItemClick = (item) => {
+  if (item.source === 'platform') {
+    ElMessage.info('平台通用标签请在“平台通用标签”中管理')
+  }
+}
+
+const normalizeTagPresetMap = (presets = {}) => {
+  const normalized = emptyTagPresetMap()
+  platforms.forEach(platform => {
+    normalized[String(platform.key)] = normalizeTopicList(presets?.[String(platform.key)])
+  })
+  return normalized
+}
+
+const applyTagPresetResponse = (data = {}) => {
+  tagPresets.value = {
+    presets: normalizeTagPresetMap(data.presets),
+    limits: data.limits || {}
+  }
+}
+
+const loadPublishTagPresets = async () => {
+  tagPresetsLoading.value = true
+  try {
+    const response = await youtubeApi.getPublishTagPresets()
+    applyTagPresetResponse(response.data || {})
+    return true
+  } catch (error) {
+    console.warn('读取平台通用标签失败 :', error)
+    return false
+  } finally {
+    tagPresetsLoading.value = false
+  }
+}
+
+const openTagPresetsDialog = async () => {
+  if (!await loadPublishTagPresets()) {
+    ElMessage.error('无法读取平台通用标签，请稍后重试')
+    return
+  }
+  tagPresetDraft.value = normalizeTagPresetMap(tagPresets.value.presets)
+  tagPresetsDialogVisible.value = true
+}
+
+const savePublishTagPresets = async () => {
+  savingTagPresets.value = true
+  try {
+    const response = await youtubeApi.updatePublishTagPresets({
+      presets: normalizeTagPresetMap(tagPresetDraft.value)
+    })
+    applyTagPresetResponse(response.data || {})
+    tagPresetsDialogVisible.value = false
+    ElMessage.success('平台通用标签已保存')
+  } catch (error) {
+    console.error('保存平台通用标签失败 :', error)
+    ElMessage.error('保存平台通用标签失败')
+  } finally {
+    savingTagPresets.value = false
+  }
 }
 
 const formatTopicsForTarget = (tab, target) => {
@@ -1212,12 +1427,15 @@ const hasSelectedPlatform = (tab, platformType) => {
 }
 
 const applyPublishDraftToPublishTab = (tab, drafts = []) => {
-  const firstDraft = drafts.find(draft => draft && (draft.title || draft.description || draft.tags.length > 0))
+  const firstDraft = drafts.find(draft => draft && (draft.title || draft.description || draft.tags.length > 0 || draft.customTags.length > 0))
   if (!firstDraft) return
 
   tab.title = firstDraft.title || ''
   tab.description = firstDraft.description || ''
-  tab.selectedTopics = firstDraft.tags || []
+  tab.tagCandidates = normalizeTopicList(firstDraft.tags)
+  tab.selectedTopics = normalizeTopicList(firstDraft.selectedTags)
+  tab.videoCustomTopics = normalizeTopicList(firstDraft.customTags).filter(tag => !tab.selectedTopics.includes(tag))
+  tab.selectedTopicsByPlatform = {}
   tab.contentLocked = true
 
   if (!firstDraft.fromSavedDraft) {
@@ -1235,12 +1453,14 @@ const saveTabPublishDraft = async (tab) => {
     const response = await youtubeApi.updatePublishDraft(targetFile.videoId, {
       title: tab.title,
       description: tab.description,
-      tags: tab.selectedTopics
+      tags: tab.selectedTopics,
+      customTags: tab.videoCustomTopics
     })
     const savedDraft = response.data?.draft || {
       title: tab.title,
       description: tab.description,
-      tags: tab.selectedTopics
+      tags: tab.selectedTopics,
+      customTags: tab.videoCustomTopics
     }
     tab.fileList.forEach(file => {
       if (file.videoId === targetFile.videoId) {
@@ -1257,57 +1477,6 @@ const saveTabPublishDraft = async (tab) => {
     console.error('保存发布稿失败:', error)
     ElMessage.error('保存发布稿失败')
   }
-}
-
-// 话题相关方法
-// 打开添加话题弹窗
-const openTopicDialog = (tab) => {
-  currentTab.value = tab
-  topicDialogVisible.value = true
-}
-
-// 添加自定义话题
-const addCustomTopic = () => {
-  if (!customTopic.value.trim()) {
-    ElMessage.warning('请输入话题内容')
-    return
-  }
-  if (currentTab.value && !currentTab.value.selectedTopics.includes(customTopic.value.trim())) {
-    currentTab.value.selectedTopics.push(customTopic.value.trim())
-    customTopic.value = ''
-    ElMessage.success('话题添加成功')
-  } else {
-    ElMessage.warning('话题已存在')
-  }
-}
-
-// 切换推荐话题
-const toggleRecommendedTopic = (topic) => {
-  if (!currentTab.value) return
-  
-  const index = currentTab.value.selectedTopics.indexOf(topic)
-  if (index > -1) {
-    currentTab.value.selectedTopics.splice(index, 1)
-  } else {
-    currentTab.value.selectedTopics.push(topic)
-  }
-}
-
-// 删除话题
-const removeTopic = (tab, index) => {
-  if (tab.contentLocked) {
-    ElMessage.info('发布内容需在视频采集与处理页修改并保存')
-    return
-  }
-  tab.selectedTopics.splice(index, 1)
-}
-
-// 确认添加话题
-const confirmTopicSelection = () => {
-  topicDialogVisible.value = false
-  customTopic.value = ''
-  currentTab.value = null
-  ElMessage.success('添加话题完成')
 }
 
 // 账号选择相关方法
@@ -1592,17 +1761,20 @@ const cancelPublish = (tab) => {
   ElMessage.info('已取消发布')
 }
 
-const buildPublishData = (tab, targets = publishTargets(tab)) => ({
+const buildPublishData = (tab, targets = publishTargets(tab), includeResolvedTags = false) => ({
   title: tab.title,
   description: tab.description,
   tags: tab.selectedTopics,
+  customTags: tab.videoCustomTopics,
   fileList: tab.fileList.map(file => file.path),
   targets: targets.map(target => ({
     platformType: target.platformType,
     accountFile: target.accountFile,
     accountId: target.accountId,
     accountName: target.accountName,
-    tags: topicsForTarget(tab, target),
+    ...(includeResolvedTags ? { tags: topicsForTarget(tab, target) } : {}),
+    selectedTags: selectedTopicsForTarget(tab, target),
+    customTags: tab.videoCustomTopics,
     bilibiliTid: Number(target.platformType) === 5 ? Number(tab.bilibiliTid || defaultBilibiliTid.value) : undefined,
     productLink: Number(target.platformType) === 3 ? tab.productLink.trim() : undefined,
     productTitle: Number(target.platformType) === 3 ? tab.productTitle.trim() : undefined
@@ -1705,7 +1877,7 @@ const normalizeAgentGuardInput = (summary = {}) => ({
     .sort((left, right) => left.platformType - right.platformType || left.accountId.localeCompare(right.accountId))
 })
 
-const currentAgentGuardInput = (tab) => normalizeAgentGuardInput(buildPublishData(tab, publishTargets(tab)))
+const currentAgentGuardInput = (tab) => normalizeAgentGuardInput(buildPublishData(tab, publishTargets(tab), true))
 
 const agentGuardInputSignature = (summary) => JSON.stringify(normalizeAgentGuardInput(summary))
 
@@ -1791,7 +1963,7 @@ const loadLatestAgentGuard = async (tab) => {
   const requestId = tab.agentGuardRequestId
   tab.agentGuardLoading = true
   try {
-    const publishData = buildPublishData(tab, publishTargets(tab))
+    const publishData = buildPublishData(tab, publishTargets(tab), true)
     const res = await agentApi.latestPrepublishCheck({ publishData })
     if (tab.agentGuardRequestId !== requestId || selectedMaterialId(tab) !== materialId) return
     if (res?.data) applyAgentGuardResult(tab, res.data, materialId)
@@ -1813,7 +1985,7 @@ const runAgentPrepublishCheck = async (tab) => {
     return null
   }
   const targets = publishTargets(tab)
-  const publishData = buildPublishData(tab, targets)
+  const publishData = buildPublishData(tab, targets, true)
   const requestId = Number(tab.agentGuardRequestId || 0) + 1
   tab.agentGuardRequestId = requestId
   tab.agentChecking = true
@@ -1932,10 +2104,6 @@ const confirmPublish = async (tab) => {
     tab.publishing = false
     throw new Error(`该视频已发布到${duplicatedTarget.platformName}`)
   }
-  const douyinTarget = targets.find(target => isDouyinTopicTruncated(tab, target))
-  if (douyinTarget) {
-    ElMessage.warning('抖音最多支持一次选择 5 条话题，本次发布将只使用前 5 条。')
-  }
   tab.publishTargetStatuses = targets.map((target, index) => ({
     platformType: target.platformType,
     platformName: target.platformName,
@@ -1972,6 +2140,9 @@ const confirmPublish = async (tab) => {
       tab.title = ''
       tab.description = ''
       tab.selectedTopics = []
+      tab.tagCandidates = []
+      tab.videoCustomTopics = []
+      tab.selectedTopicsByPlatform = {}
       tab.contentLocked = false
       tab.selectedAccounts = []
       tab.platformAccounts = {}
@@ -2129,6 +2300,10 @@ const cancelBatchPublish = () => {
 // 批量发布方法
 const batchPublish = async () => {
   if (batchPublishing.value) return
+  if (!await loadPublishTagPresets()) {
+    ElMessage.error('无法读取平台通用标签，本次发布已取消')
+    return
+  }
   
   batchPublishing.value = true
   currentPublishingTab.value = null
@@ -2197,7 +2372,7 @@ const batchPublish = async () => {
 }
 
 onMounted(async () => {
-  await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishedVideos(), loadPublishRetryTasks()])
+  await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishedVideos(), loadPublishRetryTasks(), loadPublishTagPresets()])
   tabs.filter(tab => tab.fileList.length > 0).forEach(tab => {
     void loadLatestAgentGuard(tab)
   })
@@ -2551,6 +2726,48 @@ $ink-strong: var(--vf-text-primary);
   overflow-wrap: anywhere;
   white-space: normal;
 }
+.target-topic-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: var(--vf-surface);
+}
+.target-topic-group {
+  display: grid;
+  gap: 6px;
+}
+.target-topic-group > span {
+  color: $text-secondary;
+  font-size: 12px;
+  font-weight: 650;
+}
+.target-topic-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.publish-topic-cloud { gap: 6px; }
+.publish-topic { align-items: center; gap: 4px; max-width: 100%; white-space: normal; }
+.publish-topic--platform { cursor: pointer; }
+.publish-topic--skipped { border-style: dashed; opacity: 0.68; }
+.publish-topic-lock { flex: 0 0 auto; }
+.publish-topic-source,
+.publish-topic-status {
+  border-left: 1px solid currentColor;
+  margin-left: 2px;
+  padding-left: 4px;
+  font-size: 11px;
+}
+.publish-topic-status { font-weight: 650; }
+.target-topic-options :deep(.el-checkbox) {
+  margin-right: 0;
+}
+.empty-topic {
+  color: $text-secondary;
+  font-size: 12px;
+}
 .platform-specific-panel {
   display: grid;
   gap: 8px;
@@ -2690,8 +2907,31 @@ $ink-strong: var(--vf-text-primary);
 .account-platform-heading span { color: $text-secondary; font-size: 12px; }
 .platform-account-radios { display: grid; gap: 8px; }
 .account-item { padding: 8px 10px; border: 1px solid $border-lighter; border-radius: 8px; background: var(--vf-surface); }
-.custom-topic-input { display: flex; gap: 10px; margin-bottom: 18px; }
-.topic-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.tag-preset-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.tag-preset-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid $border-lighter;
+}
+.tag-preset-row > div {
+  display: grid;
+  gap: 4px;
+}
+.tag-preset-row strong {
+  color: $ink-strong;
+  font-size: 14px;
+}
+.tag-preset-row span {
+  color: $text-secondary;
+  font-size: 12px;
+}
 :global(.material-library-dialog) {
   width: min(960px, calc(100vw - 32px));
   max-height: calc(100vh - 64px);
@@ -2784,6 +3024,7 @@ $ink-strong: var(--vf-text-primary);
   .archived-record-row { grid-template-columns: 1fr; gap: 6px; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .two-col,
-  .schedule-item { grid-template-columns: 1fr; }
+  .schedule-item,
+  .tag-preset-row { grid-template-columns: 1fr; }
 }
 </style>

@@ -1,3 +1,36 @@
+@app.route('/publish/tag-presets', methods=['GET'])
+def get_publish_tag_presets_route():
+    try:
+        return jsonify({
+            "code": 200,
+            "msg": "success",
+            "data": get_publish_tag_presets(_current_account_owner_id()),
+        }), 200
+    except PermissionError as exc:
+        return jsonify({"code": 401, "msg": str(exc), "data": None}), 401
+    except Exception as exc:
+        backend_logger.exception("get publish tag presets failed")
+        return jsonify({"code": 500, "msg": "获取平台通用标签失败", "data": None}), 500
+
+
+@app.route('/publish/tag-presets', methods=['PATCH'])
+def update_publish_tag_presets_route():
+    try:
+        payload = request.get_json(silent=True) or {}
+        return jsonify({
+            "code": 200,
+            "msg": "平台通用标签已保存",
+            "data": update_publish_tag_presets(_current_account_owner_id(), payload),
+        }), 200
+    except PermissionError as exc:
+        return jsonify({"code": 401, "msg": str(exc), "data": None}), 401
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
+    except Exception as exc:
+        backend_logger.exception("update publish tag presets failed")
+        return jsonify({"code": 500, "msg": "保存平台通用标签失败", "data": None}), 500
+
+
 @app.route('/postVideo', methods=['POST'])
 def postVideo():
     data = request.get_json()

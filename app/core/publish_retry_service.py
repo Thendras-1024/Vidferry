@@ -57,6 +57,15 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
         if not failed_records:
             raise ValueError("原发布任务没有可重发的失败平台")
         failed_records = _select_failed_publish_records(failed_records, target_record_ids)
+        cursor.execute("SELECT platform_type, settings FROM publish_dispatch_targets WHERE job_id = ?", (task_id,))
+        stored_tags_by_platform = {}
+        for target_row in cursor.fetchall():
+            try:
+                settings = json.loads(target_row["settings"] or "{}")
+            except (TypeError, ValueError):
+                settings = {}
+            if isinstance(settings.get("tags"), list):
+                stored_tags_by_platform[int(target_row["platform_type"] or 0)] = list(settings["tags"])
 
         source = records[0]
         cursor.execute("SELECT * FROM file_records WHERE id = ?", (source.get("materialId"),))
@@ -69,22 +78,29 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
 
         targets = []
         for record in failed_records:
+            platform_type = int(record["platformType"] or 0)
             cursor.execute(
                 "SELECT * FROM user_info WHERE type = ? AND filePath = ? AND owner_user_id = ?",
-                (record["platformType"], record["accountFile"], owner_user_id),
+                (platform_type, record["accountFile"], owner_user_id),
             )
             account = cursor.fetchone()
             if not account or int(account["status"] or 0) != 1:
                 raise ValueError(f"{record['platform']} 原账号不存在或状态异常，无法重发")
-            targets.append({
-                "platformType": record["platformType"],
+            target = {
+                "platformType": platform_type,
                 "platformName": record["platform"],
                 "accountFile": account["filePath"],
                 "accountId": account["id"],
                 "accountName": account["userName"],
                 "ownerUserId": account["owner_user_id"],
                 "retryOfRecordId": record["id"],
-            })
+            }
+            if platform_type in stored_tags_by_platform:
+                target["tags"] = stored_tags_by_platform[platform_type]
+                target["_resolvedTags"] = True
+            else:
+                target["_tagsProvided"] = False
+            targets.append(target)
 
     _assert_publish_targets_available(materials[0], targets)
     video = _get_youtube_video_record(source.get("videoId")) or {}

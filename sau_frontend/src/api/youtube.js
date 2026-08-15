@@ -94,6 +94,14 @@ export const youtubeApi = {
     return request.patch(`/youtube/videos/${videoId}/publish-draft`, data)
   },
 
+  getPublishTagPresets() {
+    return request.get('/publish/tag-presets')
+  },
+
+  updatePublishTagPresets(data) {
+    return request.patch('/publish/tag-presets', data)
+  },
+
   listWorkflowJobs(params = {}) {
     return request.get('/youtube/workflow/jobs', { params })
   },
