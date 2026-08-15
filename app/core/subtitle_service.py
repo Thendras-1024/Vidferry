@@ -4,7 +4,7 @@ import re
 from threading import RLock
 
 from app.core.llm_harness import redact_profanity
-from app.core.subtitle_review import review_translated_segments
+from app.core.subtitle_review import _normalize_subtitle_source_language, review_translated_segments
 
 
 # 词级时间戳仅用于把较长转写段拆为可读的短语，不暴露为用户配置。
@@ -306,20 +306,25 @@ def _strip_chinese_period(text):
     return text.replace("。", "").replace("．", "")
 
 
-def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job_id=""):
+def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job_id="", source_language=""):
     target_language, language_meta = _subtitle_language_meta(target_language)
+    source_language = _normalize_subtitle_source_language(source_language)
     if isinstance(segments, dict):
         job_id = job_id or segments.get("jobId") or ""
         segments = segments.get("segments") or []
     try:
         from deep_translator import GoogleTranslator
+        from deep_translator.constants import GOOGLE_LANGUAGES_TO_CODES
     except ImportError as exc:
         raise RuntimeError("未安装 deep-translator，请先安装依赖后再执行字幕翻译。") from exc
 
     if target_language == "en":
         return [dict(segment, subtitle=segment.get("text") or "") for segment in segments]
 
-    translator = GoogleTranslator(source="auto", target=target_language)
+    google_source_language = "zh-CN" if source_language == "zh" else source_language
+    if google_source_language not in set(GOOGLE_LANGUAGES_TO_CODES.values()):
+        google_source_language = "auto"
+    translator = GoogleTranslator(source=google_source_language, target=target_language)
     translated = [dict(segment) for segment in segments]
     batch = []
     batch_indices = []
@@ -1487,7 +1492,9 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
     cues = _build_subtitle_cues(segments, language)
     _update_translate_progress(job_id, 34, f"已识别 {len(segments)} 段字幕，已切分为 {len(cues)} 条短语，正在处理为{language_meta['label']}")
     try:
-        translated_segments = _translate_segments(segments, target_language, job_id=job_id)
+        translated_segments = _translate_segments(
+            segments, target_language, job_id=job_id, source_language=language,
+        )
     except Exception as exc:
         raise RuntimeError(f"SUBTITLE_TRANSLATION_FAILED: {exc.__class__.__name__}") from exc
     initial_segments = [dict(segment) for segment in translated_segments]
@@ -1504,6 +1511,7 @@ def _process_subtitles(job, source_file, telemetry=None, before_burn=None, comme
         ),
         telemetry=telemetry,
         review_metadata=review_metadata,
+        source_language=language,
     )
     if review_metadata.get("fallbackCount"):
         review_metadata["status"] = "partial_fallback"

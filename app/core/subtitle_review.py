@@ -22,6 +22,12 @@ from app.core import llm_prompts
 from app.core.llm_harness import call_json_contract, validate_subtitle_revision
 
 
+def _normalize_subtitle_source_language(value):
+    language = str(value or "").strip().lower().replace("_", "-")
+    match = re.fullmatch(r"([a-z]{2,3})(?:-[a-z0-9]+)?", language)
+    return match.group(1) if match else ""
+
+
 def _normalize_chinese_subtitle(text):
     # 中文句号去除已前移到翻译阶段(subtitle_service._strip_chinese_period)，
     # 此处仅合并空白，避免与翻译后处理职责重叠；修订是否产出句号交由提示词约束。
@@ -44,6 +50,7 @@ def _build_review_payload(reviewed, indexes, context):
         }
 
     return {
+        "sourceLanguage": _normalize_subtitle_source_language(context.get("sourceLanguage")),
         "video": {
             "title": str(context.get("title") or "").strip(),
             "channel": str(context.get("channel") or "").strip(),
@@ -162,8 +169,9 @@ def _review_single_batch(batch_number, total_batches, indexes, reviewed, context
         }
 
 
-def review_translated_segments(segments, target_language, job=None, job_id="", progress_callback=None, telemetry=None, review_metadata=None):
+def review_translated_segments(segments, target_language, job=None, job_id="", progress_callback=None, telemetry=None, review_metadata=None, source_language=""):
     reviewed = [dict(segment) for segment in (segments or [])]
+    source_language = _normalize_subtitle_source_language(source_language)
     metadata = review_metadata if isinstance(review_metadata, dict) else None
     def mark(status, fallback=0, batches=0, changed=0, tokens=0, batch_details=None):
         if metadata is not None:
@@ -211,7 +219,7 @@ def review_translated_segments(segments, target_language, job=None, job_id="", p
     if current:
         batches.append(current)
 
-    context = job if isinstance(job, dict) else {}
+    context = {**(job if isinstance(job, dict) else {}), "sourceLanguage": source_language}
     total_batches = len(batches)
     concurrency = max(1, min(SUBTITLE_REVIEW_CONCURRENCY, total_batches))
     total_segments = len(reviewed)
