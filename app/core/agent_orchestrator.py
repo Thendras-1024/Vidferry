@@ -339,6 +339,23 @@ def _agent_requested_import_action(message):
     return "download" if "下载" in text or _re.search(r"\bdownload\b", text, _re.I) else ""
 
 
+def _agent_processing_options(value=None):
+    settings = get_workflow_settings()
+    options = {
+        "watermarkEnabled": bool(settings.get("watermarkEnabled")),
+        "commentBurnEnabled": bool(settings.get("commentBurnEnabled")),
+    }
+    if value is None:
+        return options
+    if not isinstance(value, dict) or set(value) - set(options):
+        raise ValueError("处理选项格式不正确")
+    for key, selected in value.items():
+        if not isinstance(selected, bool):
+            raise ValueError("处理选项必须为布尔值")
+        options[key] = selected
+    return options
+
+
 def _select_agent_tools(message):
     text = str(message or "").lower()
     tools = []
@@ -696,6 +713,7 @@ def _create_agent_import_proposal(session_id, tool_results, page_context, messag
     proposal_id = _secrets.token_urlsafe(24)
     requested_action = _agent_requested_import_action(message)
     requested_schedule = _agent_requested_schedule(message)
+    requires_processing_options = requested_action in {"workflow_process", "workflow_publish", "workflow_publish_scheduled"}
     scheduled_at = _agent_schedule_with_minimum_lead(requested_schedule) if requested_action == "workflow_publish_scheduled" else ""
     proposal = {
         "proposalId": proposal_id,
@@ -714,6 +732,8 @@ def _create_agent_import_proposal(session_id, tool_results, page_context, messag
         "availableAccounts": _agent_available_publish_accounts() if requested_action in {"workflow_publish", "workflow_publish_scheduled"} else [],
         "requiresTargets": requested_action in {"workflow_publish", "workflow_publish_scheduled"},
         "requiresSchedule": requested_action == "workflow_publish_scheduled",
+        "requiresProcessingOptions": requires_processing_options,
+        "processingOptions": _agent_processing_options() if requires_processing_options else None,
         "scheduledAt": scheduled_at,
         "scheduleNotice": "所选平台要求定时发布时间至少提前 2 小时，已调整为最早可用时间。" if requested_schedule and scheduled_at != requested_schedule else "",
         "status": "pending",
@@ -726,7 +746,7 @@ def _create_agent_import_proposal(session_id, tool_results, page_context, messag
     return {key: value for key, value in proposal.items() if key != "sessionId"}
 
 
-def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, targets=None, scheduled_at=""):
+def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, targets=None, scheduled_at="", processing_options=None):
     proposal_id = str(proposal_id or "").strip()
     session_id = str(session_id or "").strip()
     with _AGENT_IMPORT_PROPOSALS_LOCK:
@@ -743,6 +763,10 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
         raise ValueError("请至少选择一个候选视频")
     requested_action = proposal.get("requestedAction") or ""
     is_publish_workflow = requested_action in {"workflow_publish", "workflow_publish_scheduled"}
+    requires_processing_options = requested_action in {"workflow_process", "workflow_publish", "workflow_publish_scheduled"}
+    if processing_options is not None:
+        _agent_processing_options(processing_options)
+    resolved_processing_options = _agent_processing_options(processing_options) if requires_processing_options else None
     resolved_targets = _agent_execution_targets(targets) if is_publish_workflow else []
     schedule = _agent_valid_scheduled_at(scheduled_at, required=requested_action == "workflow_publish_scheduled")
     created = []
@@ -789,6 +813,7 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
                     saved_item,
                     resolved_targets if is_publish_workflow else [],
                     schedule=schedule,
+                    processing_options=resolved_processing_options,
                 ))
                 _submit_background_task(workflow_job_resource(job), run_youtube_workflow, job["id"])
                 workflow_jobs.append(job)
@@ -818,6 +843,7 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
         scheduled_at=schedule,
         result_message=f"已导入 {len(created)} 个线索，重复 {len(duplicate)} 个。",
         workflow_jobs=[*download_jobs, *workflow_jobs],
+        processing_options=resolved_processing_options,
     )
     with _AGENT_IMPORT_PROPOSALS_LOCK:
         _AGENT_IMPORT_PROPOSALS.pop(proposal_id, None)
@@ -941,6 +967,8 @@ def _create_agent_execution_proposal(session_id, message, page_context):
         "availableAccounts": _agent_available_publish_accounts() if action in {"workflow_publish", "publish_now", "publish_scheduled"} else [],
         "requiresTargets": action in {"workflow_publish", "publish_now", "publish_scheduled"},
         "requiresSchedule": action == "publish_scheduled",
+        "requiresProcessingOptions": action in {"process", "workflow_publish"},
+        "processingOptions": _agent_processing_options() if action in {"process", "workflow_publish"} else None,
         "status": "pending",
         "expiresAt": now + _AGENT_IMPORT_PROPOSAL_TTL_SECONDS,
     }
@@ -988,8 +1016,9 @@ def _agent_execution_targets(targets):
     return resolved
 
 
-def _agent_execution_workflow_payload(video, targets=None, schedule=""):
+def _agent_execution_workflow_payload(video, targets=None, schedule="", processing_options=None):
     targets = targets or []
+    processing_options = _agent_processing_options(processing_options)
     draft = video.get("publishDraft") if isinstance(video.get("publishDraft"), dict) else {}
     payload = {
         "videoId": video.get("id") or "",
@@ -1007,6 +1036,9 @@ def _agent_execution_workflow_payload(video, targets=None, schedule=""):
         "publishToXiaohongshu": False,
         "publishToKuaishou": False,
         "publishToTencent": False,
+        "processVersion": PROCESS_VERSION_EDITING if processing_options["commentBurnEnabled"] else PROCESS_VERSION_TRANSLATION,
+        "watermarkEnabled": processing_options["watermarkEnabled"],
+        "commentBurnEnabled": processing_options["commentBurnEnabled"],
     }
     account_fields = {
         1: ("publishToXiaohongshu", "xiaohongshuAccount"),
@@ -1033,7 +1065,7 @@ def _agent_latest_processed_material(video_id):
     return material
 
 
-def _complete_agent_execution_proposal(proposal_id, session_id, result, selected_account_ids=None, scheduled_at=""):
+def _complete_agent_execution_proposal(proposal_id, session_id, result, selected_account_ids=None, scheduled_at="", processing_options=None):
     update_agent_proposal_state(
         session_id,
         proposal_id,
@@ -1043,6 +1075,7 @@ def _complete_agent_execution_proposal(proposal_id, session_id, result, selected
         scheduled_at=scheduled_at,
         result_message=result.get("message") or "该确认已完成。",
         workflow_jobs=[result["job"]] if isinstance(result.get("job"), dict) else [],
+        processing_options=processing_options,
     )
     with _AGENT_EXECUTION_PROPOSALS_LOCK:
         proposal = _AGENT_EXECUTION_PROPOSALS.get(proposal_id)
@@ -1051,7 +1084,7 @@ def _complete_agent_execution_proposal(proposal_id, session_id, result, selected
     return result
 
 
-def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, scheduled_at=""):
+def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, scheduled_at="", processing_options=None):
     proposal_id = str(proposal_id or "").strip()
     session_id = str(session_id or "").strip()
     with _AGENT_EXECUTION_PROPOSALS_LOCK:
@@ -1063,6 +1096,9 @@ def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, sche
     action = proposal["action"]
     video = _agent_execution_video({"videoId": proposal.get("videoId")})
     resolved_targets = _agent_execution_targets(targets) if proposal.get("requiresTargets") else []
+    if processing_options is not None:
+        _agent_processing_options(processing_options)
+    resolved_processing_options = _agent_processing_options(processing_options) if proposal.get("requiresProcessingOptions") else None
     if action == "download":
         if int(video.get("downloadStatus") or 0) == 1:
             raise ValueError("该视频已下载，无需重复创建下载任务")
@@ -1082,13 +1118,13 @@ def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, sche
     if action == "process":
         if int(video.get("downloadStatus") or 0) != 1:
             raise ValueError("该视频尚未下载，无法直接处理；请先让 Agent 创建下载任务")
-        job = create_youtube_workflow_job(_agent_execution_workflow_payload(video))
+        job = create_youtube_workflow_job(_agent_execution_workflow_payload(video, processing_options=resolved_processing_options))
         _submit_background_task("processing", run_youtube_translate_job, job["id"])
-        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理任务已创建"})
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理任务已创建"}, processing_options=resolved_processing_options)
     if action == "workflow_publish":
-        job = create_youtube_workflow_job(_agent_execution_workflow_payload(video, resolved_targets))
+        job = create_youtube_workflow_job(_agent_execution_workflow_payload(video, resolved_targets, processing_options=resolved_processing_options))
         _submit_background_task(workflow_job_resource(job), run_youtube_workflow, job["id"])
-        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理并发布任务已创建"}, [target.get("accountId") for target in resolved_targets])
+        return _complete_agent_execution_proposal(proposal_id, session_id, {"proposalId": proposal_id, "action": action, "job": job, "message": "处理并发布任务已创建"}, [target.get("accountId") for target in resolved_targets], processing_options=resolved_processing_options)
     material = _agent_latest_processed_material(video.get("id") or "")
     publish_payload = {
         "title": (video.get("publishDraft") or {}).get("title") or video.get("title") or "YouTube 视频",

@@ -55,6 +55,7 @@ def confirm_agent_import_proposal_route(proposal_id):
     selected_ids = payload.get("selectedIds")
     targets = payload.get("targets")
     scheduled_at = str(payload.get("scheduledAt") or "").strip()
+    processing_options = payload.get("processingOptions")
     if not session_id:
         return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
     if selected_ids is not None and not isinstance(selected_ids, list):
@@ -62,7 +63,16 @@ def confirm_agent_import_proposal_route(proposal_id):
     if targets is not None and not isinstance(targets, list):
         return jsonify({"code": 400, "msg": "发布目标格式不正确", "data": None}), 400
     try:
-        result = confirm_agent_import_proposal(proposal_id, session_id, selected_ids, targets, scheduled_at)
+        if processing_options is not None:
+            _agent_processing_options(processing_options)
+        result = confirm_agent_import_proposal(
+            proposal_id,
+            session_id,
+            selected_ids,
+            targets,
+            scheduled_at,
+            processing_options=processing_options,
+        )
         backend_logger.info(
             "Agent 线索导入完成 proposal_id=%s session_id=%s created=%s duplicate=%s failed=%s",
             proposal_id, session_id, result.get("createdCount"), result.get("duplicateCount"), result.get("failedCount"),
@@ -81,12 +91,21 @@ def confirm_agent_execution_proposal_route(proposal_id):
     session_id = str(payload.get("sessionId") or "").strip()
     targets = payload.get("targets")
     scheduled_at = str(payload.get("scheduledAt") or "").strip()
+    processing_options = payload.get("processingOptions")
     if not session_id:
         return jsonify({"code": 400, "msg": "缺少 Agent 会话标识", "data": None}), 400
     if targets is not None and not isinstance(targets, list):
         return jsonify({"code": 400, "msg": "发布目标格式不正确", "data": None}), 400
     try:
-        result = confirm_agent_execution_proposal(proposal_id, session_id, targets, scheduled_at)
+        if processing_options is not None:
+            _agent_processing_options(processing_options)
+        result = confirm_agent_execution_proposal(
+            proposal_id,
+            session_id,
+            targets,
+            scheduled_at,
+            processing_options=processing_options,
+        )
         backend_logger.info(
             "Agent 执行提案已确认 proposal_id=%s session_id=%s action=%s",
             proposal_id, session_id, result.get("action"),

@@ -207,11 +207,19 @@ export function useAgentWorkspace({ route, router }) {
       selectedCandidateIds: proposalConfirmed ? (importProposal.selectedIds || []) : (importProposal?.items || []).map(item => item.id),
       selectedImportAccountIds: proposalConfirmed ? (importProposal.selectedAccountIds || []) : defaultImportAccountIds(importProposal),
       importScheduledAt: importProposal?.scheduledAt || '',
+      importProcessingOptions: {
+        watermarkEnabled: Boolean(importProposal?.processingOptions?.watermarkEnabled),
+        commentBurnEnabled: Boolean(importProposal?.processingOptions?.commentBurnEnabled)
+      },
       imported: proposalConfirmed,
       importResult: proposalConfirmed ? (importProposal.resultMessage || '该确认已完成。') : '',
       executionProposal,
       selectedExecutionAccountIds: executionConfirmed ? (executionProposal.selectedAccountIds || []) : defaultExecutionAccountIds(executionProposal),
       executionScheduledAt: executionProposal?.scheduledAt || '',
+      executionProcessingOptions: {
+        watermarkEnabled: Boolean(executionProposal?.processingOptions?.watermarkEnabled),
+        commentBurnEnabled: Boolean(executionProposal?.processingOptions?.commentBurnEnabled)
+      },
       executed: executionConfirmed,
       executionResult: executionConfirmed ? (executionProposal.resultMessage || '该确认已完成。') : '',
       agentTasks: [
@@ -367,10 +375,18 @@ export function useAgentWorkspace({ route, router }) {
           responseMessage.selectedCandidateIds = (payload.importProposal?.items || []).map(item => item.id)
           responseMessage.selectedImportAccountIds = defaultImportAccountIds(payload.importProposal)
           responseMessage.importScheduledAt = payload.importProposal?.scheduledAt || ''
+          responseMessage.importProcessingOptions = {
+            watermarkEnabled: Boolean(payload.importProposal?.processingOptions?.watermarkEnabled),
+            commentBurnEnabled: Boolean(payload.importProposal?.processingOptions?.commentBurnEnabled)
+          }
           responseMessage.agentTasks = []
           responseMessage.executionProposal = payload.executionProposal || null
           responseMessage.selectedExecutionAccountIds = defaultExecutionAccountIds(payload.executionProposal)
           responseMessage.executionScheduledAt = ''
+          responseMessage.executionProcessingOptions = {
+            watermarkEnabled: Boolean(payload.executionProposal?.processingOptions?.watermarkEnabled),
+            commentBurnEnabled: Boolean(payload.executionProposal?.processingOptions?.commentBurnEnabled)
+          }
           saveAgentSessionId(payload.sessionId)
           agentCurrentSession.value = { id: payload.sessionId, source: 'web' }
         }
@@ -566,7 +582,8 @@ export function useAgentWorkspace({ route, router }) {
         sessionId: agentSessionId.value,
         selectedIds,
         targets,
-        scheduledAt: message.importScheduledAt || ''
+        scheduledAt: message.importScheduledAt || '',
+        processingOptions: proposal.requiresProcessingOptions ? message.importProcessingOptions : undefined
       })
       const data = response?.data || {}
       message.imported = true
@@ -634,7 +651,8 @@ export function useAgentWorkspace({ route, router }) {
       const response = await agentApi.confirmExecutionProposal(proposal.proposalId, {
         sessionId: agentSessionId.value,
         targets: executionTargets(message),
-        scheduledAt: message.executionScheduledAt || ''
+        scheduledAt: message.executionScheduledAt || '',
+        processingOptions: proposal.requiresProcessingOptions ? message.executionProcessingOptions : undefined
       })
       message.executed = true
       proposal.status = 'confirmed'

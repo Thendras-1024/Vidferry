@@ -84,6 +84,14 @@
                     <el-checkbox-group v-else-if="message.importProposal.status === 'confirmed' && message.importProposal.requiresTargets" v-model="message.selectedImportAccountIds" class="agent-proposal-targets is-readonly">
                       <el-checkbox v-for="account in message.importProposal.availableAccounts || []" :key="account.id" :value="account.id" disabled>{{ account.platformName }} · {{ account.name }}</el-checkbox>
                     </el-checkbox-group>
+                    <div v-if="message.importProposal.status === 'pending' && message.importProposal.requiresProcessingOptions" class="agent-proposal-options">
+                      <el-checkbox v-model="message.importProcessingOptions.watermarkEnabled">添加水印</el-checkbox>
+                      <el-checkbox v-model="message.importProcessingOptions.commentBurnEnabled">烧制评论</el-checkbox>
+                    </div>
+                    <div v-else-if="message.importProposal.status === 'confirmed' && message.importProposal.requiresProcessingOptions" class="agent-proposal-options is-readonly">
+                      <el-checkbox v-model="message.importProcessingOptions.watermarkEnabled" disabled>添加水印</el-checkbox>
+                      <el-checkbox v-model="message.importProcessingOptions.commentBurnEnabled" disabled>烧制评论</el-checkbox>
+                    </div>
                     <el-date-picker v-if="message.importProposal.status === 'pending' && message.importProposal.requiresSchedule" v-model="message.importScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择定时发布时间" class="agent-proposal-schedule" />
                     <el-date-picker v-else-if="message.importProposal.status === 'confirmed' && message.importProposal.requiresSchedule" v-model="message.importScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
                     <p v-if="message.importProposal.status === 'pending' && message.importProposal.scheduleNotice" class="agent-proposal-result">{{ message.importProposal.scheduleNotice }}</p>
@@ -104,6 +112,14 @@
                     <el-checkbox-group v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresTargets" v-model="message.selectedExecutionAccountIds" class="agent-proposal-targets is-readonly">
                       <el-checkbox v-for="account in message.executionProposal.availableAccounts || []" :key="account.id" :value="account.id" disabled>{{ account.platformName }} · {{ account.name }}</el-checkbox>
                     </el-checkbox-group>
+                    <div v-if="message.executionProposal.status === 'pending' && message.executionProposal.requiresProcessingOptions" class="agent-proposal-options">
+                      <el-checkbox v-model="message.executionProcessingOptions.watermarkEnabled">添加水印</el-checkbox>
+                      <el-checkbox v-model="message.executionProcessingOptions.commentBurnEnabled">烧制评论</el-checkbox>
+                    </div>
+                    <div v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresProcessingOptions" class="agent-proposal-options is-readonly">
+                      <el-checkbox v-model="message.executionProcessingOptions.watermarkEnabled" disabled>添加水印</el-checkbox>
+                      <el-checkbox v-model="message.executionProcessingOptions.commentBurnEnabled" disabled>烧制评论</el-checkbox>
+                    </div>
                     <el-date-picker v-if="message.executionProposal.status === 'pending' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" placeholder="选择发布时间" class="agent-proposal-schedule" />
                     <el-date-picker v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
                     <div v-if="message.executionProposal.status === 'pending'" class="agent-proposal-action">
@@ -472,7 +488,8 @@ const {
 }
 
 .agent-proposal-list,
-.agent-proposal-targets {
+.agent-proposal-targets,
+.agent-proposal-options {
   display: grid;
   gap: 6px;
   margin: 8px 0;

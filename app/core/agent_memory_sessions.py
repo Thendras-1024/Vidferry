@@ -118,6 +118,7 @@ def update_agent_proposal_state(
     scheduled_at="",
     result_message="",
     workflow_jobs=None,
+    processing_options=None,
 ):
     """Persist a confirmation result on the assistant message that created the proposal."""
     session_id = str(session_id or "").strip()
@@ -153,6 +154,11 @@ def update_agent_proposal_state(
                 proposal["selectedAccountIds"] = [int(value) for value in (selected_account_ids or []) if str(value).strip()]
                 proposal["scheduledAt"] = str(scheduled_at or proposal.get("scheduledAt") or "")
                 proposal["resultMessage"] = str(result_message or "")
+                if processing_options is not None:
+                    proposal["processingOptions"] = {
+                        "watermarkEnabled": bool(processing_options.get("watermarkEnabled")),
+                        "commentBurnEnabled": bool(processing_options.get("commentBurnEnabled")),
+                    }
                 proposal["workflowJobs"] = [
                     {
                         "id": str(item.get("id") or ""),
