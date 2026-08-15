@@ -133,6 +133,8 @@ def _editing_result_message(editing_result):
         parts.append(f"已拼接 {highlight_count} 个高光片段")
     if not parts:
         parts.append(f"未生成片头 : {result.get('reason') or '无可用封面或高光片段'}")
+    if result.get("highlightWarning"):
+        parts.append(str(result["highlightWarning"]))
     return "；".join(parts)
 
 
@@ -206,13 +208,12 @@ def _settle_background_futures(*futures):
             pass
 
 
-def _validate_requested_highlights(job, assets):
+def _highlight_shortfall_message(job, assets):
     expected = int(job.get("highlightCount") or 3) if job.get("highlightIntroEnabled", True) else 0
     actual = len((assets or {}).get("segments") or [])
-    if actual < expected:
-        raise RuntimeError(
-            f"HIGHLIGHT_SEGMENTS_INSUFFICIENT: 请求 {expected} 条高光片段，实际生成 {actual} 条"
-        )
+    if expected and actual < expected:
+        return f"高光片段数量不足：请求 {expected} 条，实际生成 {actual} 条，已使用现有片段继续生成成片"
+    return ""
 
 
 def _editing_body_signature_compatible(record, job, ass_file):
@@ -609,10 +610,12 @@ def _render_parallel_editing_intro(job, source_file, ass_file, analysis_future):
     highlight_event = None
     try:
         assets = render_editing_intro_assets(job, source_file, ass_file, analysis_result or {}, work_dir)
-        _validate_requested_highlights(job, assets)
+        highlight_warning = _highlight_shortfall_message(job, assets)
+        if highlight_warning:
+            assets["highlightWarning"] = highlight_warning
         finish_workflow_event(cover_event, "success", "封面片头生成完成" if assets.get("cover") else "未生成封面片头", output_file_path=(assets.get("clips") or [""])[0])
         highlight_event = start_workflow_event(job, "highlight_render", f"已生成 {len(assets.get('segments') or [])} 个高光短片", input_file_path=ass_file)
-        finish_workflow_event(highlight_event, "success", f"高光短片生成完成，共 {len(assets.get('segments') or [])} 段")
+        finish_workflow_event(highlight_event, "success", f"高光短片生成完成，共 {len(assets.get('segments') or [])} 段" + (f"；{highlight_warning}" if highlight_warning else ""))
         return analysis_result or {}, assets, work_dir
     except Exception as exc:
         finish_workflow_event(highlight_event or cover_event, "failed", _workflow_error_fields(exc)["error_reason"])
@@ -647,7 +650,7 @@ def _finalize_parallel_editing(job, subtitle_result, source_file, intro_future):
                 update_youtube_video_artifacts(job["videoId"], processedFilePath=str(body_file), editingIntroStatus="concat_failed")
                 finish_workflow_event(concat_event, "failed", _workflow_error_fields(exc)["error_reason"])
                 raise
-        result = {"path": str(final_file), "segments": assets.get("segments") or [], "cover": assets.get("cover"), "skipped": not bool(assets.get("clips")), "reason": "", "bodyPath": str(body_file), "assPath": subtitle_result.get("assPath") or "", "bodySignature": body_signature, "introSignature": intro_signature}
+        result = {"path": str(final_file), "segments": assets.get("segments") or [], "cover": assets.get("cover"), "skipped": not bool(assets.get("clips")), "reason": "", "highlightWarning": assets.get("highlightWarning") or "", "bodyPath": str(body_file), "assPath": subtitle_result.get("assPath") or "", "bodySignature": body_signature, "introSignature": intro_signature}
         _save_final_highlight_selection(job, analysis_result, result)
         update_youtube_video_artifacts(job["videoId"], editingBodyPath=result["bodyPath"], editingAssPath=result["assPath"], editingBodySignature=body_signature, editingIntroSignature=intro_signature, editingHighlightSnapshot=json.dumps(result["segments"], ensure_ascii=False), editingIntroStatus=intro_status)
         return result
@@ -1002,15 +1005,17 @@ def run_youtube_update_editing_intro_job(job_id):
             assets["segments"] = record.get("editingHighlightSnapshot") or []
         else:
             assets = render_editing_intro_assets(job, source_file, ass_file, analysis_result, work_dir)
-            _validate_requested_highlights(job, assets)
+            highlight_warning = _highlight_shortfall_message(job, assets)
+            if highlight_warning:
+                assets["highlightWarning"] = highlight_warning
             final_file = concat_editing_intro_assets(body_file, assets, output_file, work_dir) if assets.get("clips") else body_file
         intro_signature = editing_intro_signature(job, analysis_result, record["editingBodySignature"])
-        result = {"path": str(final_file), "segments": assets.get("segments") or [], "cover": assets.get("cover")}
+        result = {"path": str(final_file), "segments": assets.get("segments") or [], "cover": assets.get("cover"), "highlightWarning": assets.get("highlightWarning") or ""}
         _save_processed_video_to_material(final_file, {**job, "coverIntro": result.get("cover") or {}})
         if not cover_only:
             _save_final_highlight_selection(job, analysis_result, result)
         update_youtube_video_artifacts(job["videoId"], editingIntroSignature=intro_signature, editingHighlightSnapshot=json.dumps(result["segments"], ensure_ascii=False), editingIntroStatus="synced")
-        message = "封面片头已重新烧制" if cover_only else f"已更新 {len(result['segments'])} 个高光片段"
+        message = "封面片头已重新烧制" if cover_only else f"已更新 {len(result['segments'])} 个高光片段" + (f"；{highlight_warning}" if highlight_warning else "")
         finish_workflow_event(editing_event_id, "success", message, output_file_path=final_file)
         update_youtube_workflow_job(job_id, status="success", step="done", message=message, processed_file_path=str(final_file), progress=100, speed="", eta="")
     except Exception as exc:
