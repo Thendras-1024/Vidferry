@@ -29,6 +29,7 @@ _WORKFLOW_ERROR_CONFIG = (
     (lambda exc, _text: isinstance(exc, PermissionError), "VF-WORKFLOW-FILE-PERMISSION", "FILE_PERMISSION_ERROR", "任务文件无法访问，请确认文件未被其他程序占用且目录可写。"),
     (lambda _exc, text: "未找到已下载视频文件" in text or "no such file" in text.lower(), "VF-WORKFLOW-SOURCE-MISSING", "SOURCE_FILE_MISSING", "未找到任务所需文件，请先重新下载视频后再处理。"),
     (lambda _exc, text: "未安装 yt-dlp" in text.lower(), "VF-DOWNLOAD-DEPENDENCY-MISSING", "DOWNLOAD_DEPENDENCY_MISSING", "下载组件未安装或不可用，请检查后端依赖配置。"),
+    (lambda _exc, text: "unable to download video data" in text.lower() and "http error 403" in text.lower(), "VF-DOWNLOAD-YOUTUBE-FORBIDDEN", "YOUTUBE_DOWNLOAD_FORBIDDEN", "YouTube 拒绝了媒体流下载请求（HTTP 403）。请关闭不必要的 Google/YouTube 登录会话后重试；若多个视频持续失败，请检查当前网络出口或代理是否被限制。"),
     (lambda _exc, text: "ffmpeg 已执行，但未生成" in text.lower(), "VF-MEDIA-OUTPUT-MISSING", "MEDIA_OUTPUT_MISSING", "视频处理未生成有效输出文件，请重新处理；如持续发生，请检查磁盘空间和后端日志。"),
     (lambda _exc, text: "ffmpeg" in text.lower() or "cpb:" in text.lower(), "VF-MEDIA-PROCESS-UNCLASSIFIED", "MEDIA_PROCESS_UNCLASSIFIED", "视频处理失败，但工具输出未包含可判定原因。请查看任务编号对应的后端日志。"),
 )
