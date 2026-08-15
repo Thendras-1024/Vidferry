@@ -95,8 +95,14 @@
                     <p v-if="message.importProposal.status === 'pending' && message.importProposal.scheduleNotice" class="agent-proposal-result">{{ message.importProposal.scheduleNotice }}</p>
                     <div v-if="message.importProposal.requiresProcessingOptions" class="agent-processing-options" :class="{ 'is-readonly': message.importProposal.status !== 'pending' }">
                       <span>处理选项</span>
-                      <el-switch v-model="message.importProcessingOptions.watermarkEnabled" size="small" active-text="水印：开启" inactive-text="水印：关闭" :disabled="message.importProposal.status !== 'pending'" />
-                      <el-switch v-model="message.importProcessingOptions.commentBurnEnabled" size="small" active-text="评论烧制：开启" inactive-text="评论烧制：关闭" :disabled="message.importProposal.status !== 'pending'" />
+                      <label class="agent-processing-option">
+                        <el-switch v-model="message.importProcessingOptions.watermarkEnabled" size="small" :aria-label="`水印：${message.importProcessingOptions.watermarkEnabled ? '开启' : '关闭'}`" :disabled="message.importProposal.status !== 'pending'" />
+                        <span>水印：{{ message.importProcessingOptions.watermarkEnabled ? '开启' : '关闭' }}</span>
+                      </label>
+                      <label class="agent-processing-option">
+                        <el-switch v-model="message.importProcessingOptions.commentBurnEnabled" size="small" :aria-label="`评论烧制：${message.importProcessingOptions.commentBurnEnabled ? '开启' : '关闭'}`" :disabled="message.importProposal.status !== 'pending'" />
+                        <span>评论烧制：{{ message.importProcessingOptions.commentBurnEnabled ? '开启' : '关闭' }}</span>
+                      </label>
                     </div>
                     <div v-if="message.candidateAnalysisProposal" class="candidate-analysis-panel">
                       <p>音频深度分析会结合公开元数据与字幕结构；只下载临时音频，不导入或下载完整视频。</p>
@@ -136,8 +142,14 @@
                     <el-date-picker v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresSchedule" v-model="message.executionScheduledAt" type="datetime" value-format="YYYY-MM-DD HH:mm:ss" class="agent-proposal-schedule" disabled />
                     <div v-if="message.executionProposal.requiresProcessingOptions" class="agent-processing-options" :class="{ 'is-readonly': message.executionProposal.status !== 'pending' }">
                       <span>处理选项</span>
-                      <el-switch v-model="message.executionProcessingOptions.watermarkEnabled" size="small" active-text="水印：开启" inactive-text="水印：关闭" :disabled="message.executionProposal.status !== 'pending'" />
-                      <el-switch v-model="message.executionProcessingOptions.commentBurnEnabled" size="small" active-text="评论烧制：开启" inactive-text="评论烧制：关闭" :disabled="message.executionProposal.status !== 'pending'" />
+                      <label class="agent-processing-option">
+                        <el-switch v-model="message.executionProcessingOptions.watermarkEnabled" size="small" :aria-label="`水印：${message.executionProcessingOptions.watermarkEnabled ? '开启' : '关闭'}`" :disabled="message.executionProposal.status !== 'pending'" />
+                        <span>水印：{{ message.executionProcessingOptions.watermarkEnabled ? '开启' : '关闭' }}</span>
+                      </label>
+                      <label class="agent-processing-option">
+                        <el-switch v-model="message.executionProcessingOptions.commentBurnEnabled" size="small" :aria-label="`评论烧制：${message.executionProcessingOptions.commentBurnEnabled ? '开启' : '关闭'}`" :disabled="message.executionProposal.status !== 'pending'" />
+                        <span>评论烧制：{{ message.executionProcessingOptions.commentBurnEnabled ? '开启' : '关闭' }}</span>
+                      </label>
                     </div>
                     <div v-if="message.executionProposal.status === 'pending'" class="agent-proposal-action">
                       <el-button type="primary" size="small" :loading="message.executing" :disabled="!canConfirmAgentExecution(message)" @click="confirmAgentExecution(message)">
@@ -153,6 +165,11 @@
                       <div><strong>{{ task.title || task.videoId || '视频任务' }}</strong><span>{{ agentWorkflowStageLabel(task) }} · {{ agentWorkflowStatusLabel(task) }}</span></div>
                       <el-progress :percentage="Math.max(0, Math.min(100, task.progress || 0))" :status="task.status === 'failed' || task.status === 'abnormal' ? 'exception' : task.status === 'success' ? 'success' : ''" :stroke-width="5" />
                       <p :class="{ 'is-error': task.errorReason || task.status === 'failed' || task.status === 'abnormal' }">{{ task.errorReason || task.message }}</p>
+                      <div v-if="agentTaskNeedsPublishConfirmation(task)" class="agent-task-confirmation">
+                        <span>内容存在发布风险，请确认是否继续发布。</span>
+                        <el-button type="primary" size="small" :loading="task.confirming" @click="resolveAgentTaskPublishConfirmation(message, task, true)">继续发布</el-button>
+                        <el-button size="small" :disabled="task.confirming" @click="resolveAgentTaskPublishConfirmation(message, task, false)">暂不发布</el-button>
+                      </div>
                     </div>
                   </section>
                   <div v-if="message.actions?.length" class="agent-actions">
@@ -483,7 +500,7 @@ const {
   confirmAgentAction, handleAskAgentEvent,
   normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport, canConfirmCandidateAnalysis, confirmCandidateAnalysis,
   normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
-  agentWorkflowStatusLabel, agentWorkflowStageLabel
+  agentWorkflowStatusLabel, agentWorkflowStageLabel, agentTaskNeedsPublishConfirmation, resolveAgentTaskPublishConfirmation
 } = toRefs(reactive(props.workspace))
 
 const candidateMetadataScoreHint = item => {
@@ -566,6 +583,17 @@ const candidateMetadataScoreHint = item => {
   min-width: 52px;
 }
 
+.agent-processing-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.agent-processing-option > span {
+  min-width: 76px;
+}
+
 .candidate-metadata-score {
   color: var(--el-color-primary);
   white-space: nowrap;
@@ -641,6 +669,23 @@ const candidateMetadataScoreHint = item => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-task-confirmation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--el-color-warning-dark-2);
+  font-size: 12px;
+}
+
+.agent-task-confirmation > span {
+  flex: 1 1 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .agent-task-progress-item span,

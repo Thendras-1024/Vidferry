@@ -143,7 +143,8 @@ export function useAgentWorkspace({ route, router }) {
     progress: Number(job.progress || 0),
     message: job.errorReason || job.message || '任务已创建，等待执行',
     errorReason: job.errorReason || '',
-    schedule: job.schedule || ''
+    schedule: job.schedule || '',
+    publishConfirmationRequired: Boolean(job.publishConfirmationRequired)
   })
 
   const isAgentWorkflowActive = task => ['queued', 'running', 'waiting_confirmation'].includes(task?.status)
@@ -191,6 +192,32 @@ export function useAgentWorkspace({ route, router }) {
     }
     void poll()
     agentTaskPollers.set(key, window.setInterval(() => { void poll() }, 3000))
+  }
+
+  const agentTaskNeedsPublishConfirmation = task => Boolean(
+    task?.status === 'waiting_confirmation'
+    && task?.step === 'publish_confirmation'
+    && task?.publishConfirmationRequired
+  )
+
+  const resolveAgentTaskPublishConfirmation = async (message, task, confirmed) => {
+    if (!agentTaskNeedsPublishConfirmation(task) || task.confirming) return
+    task.confirming = true
+    try {
+      const response = await youtubeApi.confirmWorkflowPublish(task.id, confirmed)
+      const updatedTask = mapAgentWorkflowTask(response?.data || task)
+      Object.assign(task, updatedTask)
+      if (confirmed) {
+        ElMessage.success('已确认内容风险，任务将继续发布')
+        watchAgentWorkflowTasks(message)
+      } else {
+        ElMessage.info('已取消发布，处理后视频已保留到素材库')
+      }
+    } catch (error) {
+      ElMessage.error(error?.response?.data?.msg || error?.message || '处理发布确认失败')
+    } finally {
+      task.confirming = false
+    }
   }
 
   const isCandidateAnalysisActive = task => ['queued', 'running'].includes(task?.status)
@@ -769,6 +796,7 @@ export function useAgentWorkspace({ route, router }) {
     normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport,
     canConfirmCandidateAnalysis, confirmCandidateAnalysis,
     normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
-    agentWorkflowStatusLabel, agentWorkflowStageLabel
+    agentWorkflowStatusLabel, agentWorkflowStageLabel,
+    agentTaskNeedsPublishConfirmation, resolveAgentTaskPublishConfirmation
   }
 }
