@@ -7,7 +7,7 @@ import json
 from app.core.highlight_policy import HIGHLIGHT_MIN_START_SECONDS
 
 
-EDITING_PROMPT_VERSION = "editing-plan-zh-v10"
+EDITING_PROMPT_VERSION = "editing-plan-zh-v12"
 HIGHLIGHT_TEXT_SHORTLIST_PROMPT_VERSION = "highlight-text-shortlist-zh-v1"
 HIGHLIGHT_VISION_PROMPT_VERSION = "highlight-vision-zh-v1"
 GUARD_PROMPT_VERSION = "prepublish-guard-zh-v2"
@@ -36,7 +36,9 @@ _HOOK_COPY_RULE = (
     "看呆、震撼、不敢相信、直言等人物强反应只在转写明确支持时使用，严禁虚构人物反应、数字、经历或绝对化结论。"
     "publish_copy 只写 2-4 句：先抛核心看点，再给出作者真实感受或关键证据，最后形成能让国内观众共鸣的总结；不得写成流水账。"
     "cover_title_options 与正文共享同一核心看点，用反差或悬念加结论的两行节奏吸引注意，不得另起话题。"
-    "tags 围绕核心情绪、具体地点或主题和观众关心的问题生成，排除视频分享、日常记录等泛化话题。"
+    "title_options、cover_title_options、tags 均必须按预计传播和点击吸引力从高到低排列，第一项是最优先推荐。"
+    "只有标题、检索词或转写明确支持时，才可优先使用已有公共认知的品牌、人物、事件或主题；不得为了热点编造或关联无证据的名词。"
+    "tags 必须有标题、检索词或转写事实依据；先排除与视频无关的泛化词，再按预计传播潜力排序。优先考虑已有公共认知、明确主题、观众兴趣、讨论价值和具体场景，不能为了热点编造主题。"
 )
 
 
@@ -53,7 +55,7 @@ def editing_analysis_system_prompt():
         + f"禁止选择视频开始 {HIGHLIGHT_MIN_START_SECONDS} 秒内的片段。每个高光必须为 6-12 秒，按时间先后排列，候选之间不得重叠。"
         + "转写中出现明确脏话不代表整条视频不可处理，但包含明确脏话的时间片段不得作为高光。"
         + "不得复述原始脏话，只能在 risk_notes 中用中性简体中文提示需要人工审核。"
-        + "publish_copy 只写正文，不能包含 #话题；tags 单独保存不带 # 的中文为主话题词，可保留必要的英文技术缩写或专有名词。"
+        + "publish_copy 只写正文，不能包含 #话题；tags 是供用户选择的候选话题，单独保存不带 # 的中文为主话题词，可保留必要的英文技术缩写或专有名词。候选数量不设固定值，不得为了凑数量堆叠泛化词；按预计传播潜力从高到低排列。"
         + "先在内部确定发布标题与正文的内容主张，再从这个主张压缩出封面标题；封面标题必须一眼概述正文核心，"
         + "包含具体主题与有证据的看点，不能另起话题、编造细节或只堆泛化情绪词。"
         + "title_options 与 cover_title_options 都不得包含平台违禁、粗俗、攻击、贬损或无证据的夸张引流表达；"
@@ -83,7 +85,7 @@ def build_editing_analysis_prompt(job, transcript_text, chunk_context=""):
         + "当前职责：生成完整剪辑方案。输出 JSON 必须且只能包含：summary、china_view_angle、title_options、cover_title_options、"
         "publish_copy、tags、highlight_segments、risk_notes、editing_focus。highlight_segments 每项只能包含 start、end、type、"
         "reason、suggested_caption。title_options、cover_title_options、tags、risk_notes 为字符串数组。"
-        "tags 最多 8 个，且必须是不带 # 的中文为主话题词；必要时可保留不超过两个连续英文词的技术缩写、品牌或专有名词。"
+        "tags 必须是不带 # 的中文为主话题词；必要时可保留不超过两个连续英文词的技术缩写、品牌或专有名词。tags 是供用户选择的候选，数量不设固定值，必须按预计传播潜力从高到低排列。"
         "先在内部生成发布标题与正文的共同内容核心，再生成封面标题；cover_title_options 必须是对应正文内容的两行概述，"
         "用具体主题加有证据的看点抓住注意力，不得另造话题、虚构人物反应或无证据的夸张。"
         "例如，转写明确记录初到北京时对生活细节感到意外，可写“初到北京第一天\\n这些细节看懵老外”；"
@@ -317,6 +319,28 @@ def prepublish_text_guard_messages(summary):
     ]
 
 
+_SUBTITLE_SOURCE_LANGUAGE_GUIDANCE = {
+    "ja": (
+        "日语源文规则：注意主语省略、敬语和称谓；结合上下文判断汉字词含义。人名、地名、作品名和品牌名优先采用通行中文译法，"
+        "无法确认时保留原名，不得按读音臆测。\n"
+    ),
+    "ko": (
+        "韩语源文规则：注意敬语等级、句尾语气和成分省略；准确处理外来词与专有名词。不得为了中文顺畅擅自补充说话人、性别或人物关系。\n"
+    ),
+    "es": (
+        "西班牙语源文规则：根据原词理解地区表达和俚语，不得臆测说话者来自西班牙或墨西哥；保留时态、否定、程度和指代关系的核心含义。\n"
+    ),
+    "ru": (
+        "俄语源文规则：注意格关系、性别指代和否定范围；人名、地名与机构名使用通行中文译法，无法确认时保留原名，不得自行杜撰译名。\n"
+    ),
+}
+
+
+def _subtitle_source_language_guidance(source_language):
+    language = str(source_language or "").strip().lower().replace("_", "-").split("-", 1)[0]
+    return _SUBTITLE_SOURCE_LANGUAGE_GUIDANCE.get(language, "")
+
+
 def subtitle_review_system_prompt():
     """中文字幕审校系统提示词：角色 + 任务 + 修订范围 + 约束 + 输出格式 + few-shot。"""
     return (
@@ -337,8 +361,10 @@ def subtitle_review_system_prompt():
 
 
 def subtitle_review_messages(payload):
+    source_language = (payload or {}).get("sourceLanguage")
+    system_prompt = subtitle_review_system_prompt() + _subtitle_source_language_guidance(source_language)
     return [
-        {"role": "system", "content": subtitle_review_system_prompt()},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": f"<subtitle_review_data>\n{json.dumps(payload, ensure_ascii=False)}\n</subtitle_review_data>",

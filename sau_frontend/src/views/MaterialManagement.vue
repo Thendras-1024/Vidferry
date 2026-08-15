@@ -325,10 +325,28 @@
         <el-form-item label="发布文案">
           <el-input v-model="publishDraftForm.description" type="textarea" :rows="6" maxlength="800" show-word-limit />
         </el-form-item>
-        <el-form-item label="话题">
-          <el-select v-model="publishDraftForm.tags" multiple filterable allow-create default-first-option placeholder="输入后回车添加话题">
-            <el-option v-for="tag in publishDraftForm.tags" :key="tag" :label="tag" :value="tag" />
+        <el-form-item label="自动标签">
+          <el-select v-model="publishDraftForm.tags" multiple filterable default-first-option placeholder="选择候选话题" @change="normalizeMaterialDraftTopics">
+            <el-option v-for="tag in publishDraftForm.tagOptions" :key="tag" :label="tag" :value="tag" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="本视频自定义话题">
+          <div class="tag-cloud">
+            <el-tag v-for="tag in publishDraftForm.customTags" :key="tag" closable @close="removeMaterialDraftCustomTag(tag)">#{{ tag }}</el-tag>
+            <span v-if="publishDraftForm.customTags.length === 0" class="empty-topic">暂无自定义话题</span>
+          </div>
+          <div class="topic-add-row">
+            <el-input
+              v-model="publishDraftForm.newTag"
+              placeholder="输入自定义话题"
+              clearable
+              @keyup.enter.prevent="addMaterialDraftTag"
+            />
+            <el-button type="primary" plain @click="addMaterialDraftTag">
+              <el-icon><Plus /></el-icon>
+              <span>新增话题</span>
+            </el-button>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -343,7 +361,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { InfoFilled, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
+import { InfoFilled, Plus, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
 import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'element-plus'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
@@ -385,7 +403,10 @@ const currentDraftMaterial = ref(null)
 const publishDraftForm = ref({
   title: '',
   description: '',
-  tags: []
+  tags: [],
+  customTags: [],
+  tagOptions: [],
+  newTag: ''
 })
 const processedMaterials = ref([])
 const downloadedMaterials = ref([])
@@ -483,11 +504,45 @@ const buildPublishDraftFromMaterial = (material) => {
   const savedDraft = material?.publishDraft || {}
   const result = material?.analysisResult || {}
   const titleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
+  const generatedTags = cleanTopicList(result.tags)
+  const selectedTags = cleanTopicList(savedDraft.tags)
+  const customTags = cleanTopicList(savedDraft.customTags).filter(tag => !selectedTags.includes(tag))
   return {
     title: savedDraft.title || titleOptions[0] || '',
     description: savedDraft.description || result.publish_copy || '',
-    tags: cleanTopicList(savedDraft.tags?.length ? savedDraft.tags : result.tags)
+    tags: selectedTags,
+    customTags,
+    tagOptions: Array.from(new Set([...generatedTags, ...selectedTags])),
+    newTag: ''
   }
+}
+
+const addMaterialDraftTag = () => {
+  const tag = cleanTopicList(publishDraftForm.value.newTag)[0] || ''
+  if (!tag) {
+    ElMessage.warning('请输入话题内容')
+    return
+  }
+  if (publishDraftForm.value.tags.includes(tag) || publishDraftForm.value.customTags.includes(tag)) {
+    ElMessage.warning('话题已存在')
+    return
+  }
+  publishDraftForm.value.customTags.push(tag)
+  publishDraftForm.value.newTag = ''
+}
+
+const normalizeMaterialDraftTopics = () => {
+  publishDraftForm.value.tags = cleanTopicList(publishDraftForm.value.tags)
+  publishDraftForm.value.customTags = cleanTopicList(publishDraftForm.value.customTags)
+    .filter(tag => !publishDraftForm.value.tags.includes(tag))
+  publishDraftForm.value.tagOptions = Array.from(new Set([
+    ...publishDraftForm.value.tags,
+    ...cleanTopicList(publishDraftForm.value.tagOptions)
+  ]))
+}
+
+const removeMaterialDraftCustomTag = (tag) => {
+  publishDraftForm.value.customTags = publishDraftForm.value.customTags.filter(item => item !== tag)
 }
 
 const materialVideoIdForDraft = (material) => {
@@ -950,12 +1005,14 @@ const savePublishDraft = async () => {
     const response = await youtubeApi.updatePublishDraft(videoId, {
       title: publishDraftForm.value.title,
       description: publishDraftForm.value.description,
-      tags: cleanTopicList(publishDraftForm.value.tags)
+      tags: cleanTopicList(publishDraftForm.value.tags),
+      customTags: cleanTopicList(publishDraftForm.value.customTags).filter(tag => !publishDraftForm.value.tags.includes(tag))
     })
     material.publishDraft = response.data?.draft || {
       title: publishDraftForm.value.title,
       description: publishDraftForm.value.description,
-      tags: cleanTopicList(publishDraftForm.value.tags)
+      tags: cleanTopicList(publishDraftForm.value.tags),
+      customTags: cleanTopicList(publishDraftForm.value.customTags).filter(tag => !publishDraftForm.value.tags.includes(tag))
     }
     publishDraftDialogVisible.value = false
     ElMessage.success('发布稿已保存')
@@ -1515,5 +1572,12 @@ $ink-strong: var(--vf-text-primary);
     width: 96px;
     height: 54px;
   }
+}
+.publish-draft-form .topic-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
 }
 </style>

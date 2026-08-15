@@ -1000,6 +1000,7 @@ def _agent_execution_workflow_payload(video, targets=None, schedule=""):
         "title": draft.get("title") or video.get("title") or "YouTube 视频",
         "description": draft.get("description") or "",
         "tags": draft.get("tags") or [],
+        "customTags": draft.get("customTags") or [],
         "schedule": str(schedule or "").strip(),
         "publishToDouyin": False,
         "publishToBilibili": False,
@@ -1093,6 +1094,7 @@ def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, sche
         "title": (video.get("publishDraft") or {}).get("title") or video.get("title") or "YouTube 视频",
         "description": (video.get("publishDraft") or {}).get("description") or "",
         "tags": (video.get("publishDraft") or {}).get("tags") or [],
+        "customTags": (video.get("publishDraft") or {}).get("customTags") or [],
         "fileList": [material.get("file_path")],
         "targets": resolved_targets,
     }

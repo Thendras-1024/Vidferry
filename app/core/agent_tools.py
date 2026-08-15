@@ -402,6 +402,7 @@ def get_video_detail(video_id_or_keyword):
         "title": (video.get("publishDraft") or {}).get("title") or "",
         "description": (video.get("publishDraft") or {}).get("description") or "",
         "tags": (video.get("publishDraft") or {}).get("tags") or [],
+        "customTags": (video.get("publishDraft") or {}).get("customTags") or [],
     }
     detail["platforms"] = get_publish_platforms(video.get("id"))
     return detail

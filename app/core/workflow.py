@@ -1285,14 +1285,17 @@ def update_youtube_video_publish_draft(video_id, payload):
     title = payload.get("title", payload.get("selectedTitle", current_draft.get("title", "")))
     description = payload.get("description", payload.get("publish_copy", current_draft.get("description", "")))
     tags = payload.get("tags", current_draft.get("tags", []))
+    custom_tags = payload.get("customTags", current_draft.get("customTags", []))
     cover_title = payload.get("coverTitle", current_draft.get("coverTitle", ""))
     cover_context = payload.get("coverContext", current_draft.get("coverContext", ""))
+    selected_tags = _clean_topic_list(tags)
     draft = {
         "title": str(title or "").strip(),
         "coverTitle": normalize_cover_title(cover_title),
         "coverContext": normalize_cover_context(cover_context),
         "description": str(description or "").strip(),
-        "tags": _clean_topic_list(tags),
+        "tags": selected_tags,
+        "customTags": [tag for tag in _clean_topic_list(custom_tags) if tag not in selected_tags],
         "source": "user_saved",
         "updatedAt": _now_iso(),
     }

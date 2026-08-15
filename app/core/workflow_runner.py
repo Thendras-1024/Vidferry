@@ -1046,6 +1046,8 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         publish_job["description"] = publish_draft["description"]
     if not publish_job.get("tags") and publish_draft.get("tags"):
         publish_job["tags"] = publish_draft["tags"]
+    if publish_draft.get("customTags"):
+        publish_job["customTags"] = publish_draft["customTags"]
     source_content_risk = get_source_content_risk([material]) or {}
     generated_review_warnings = list((editing_result or {}).get("reviewWarnings") or [])
     requires_confirmation = bool(source_content_risk) or bool(generated_review_warnings)

@@ -145,6 +145,7 @@ def _build_default_publish_draft(analysis_result):
         "coverContext": normalize_cover_context(result.get("cover_context")),
         "description": str(result.get("publish_copy") or "").strip(),
         "tags": _clean_topic_list(result.get("tags")),
+        "customTags": [],
         "source": "llm_default",
         "updatedAt": _now_iso(),
     }
@@ -162,6 +163,7 @@ def _parse_publish_draft(raw_value, analysis_result=None):
         "coverContext": normalize_cover_context(draft.get("coverContext") or draft.get("cover_context") or result.get("cover_context")),
         "description": str(draft.get("description") or "").strip(),
         "tags": _clean_topic_list(draft.get("tags")),
+        "customTags": _clean_topic_list(draft.get("customTags")),
         "source": str(draft.get("source") or "").strip(),
         "updatedAt": str(draft.get("updatedAt") or "").strip(),
     }

@@ -590,10 +590,6 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             cleaned_tags.append(text)
     if not cleaned_tags:
         violations.append("tags 不能为空")
-    elif len(cleaned_tags) > 8:
-        if soft_warnings is not None:
-            soft_warnings.append("tags 超过 8 项，已截断为前 8 项")
-        cleaned_tags = cleaned_tags[:8]
     result["tags"] = cleaned_tags
     _fail(violations)
     return result

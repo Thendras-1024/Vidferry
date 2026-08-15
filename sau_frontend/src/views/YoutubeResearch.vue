@@ -485,10 +485,29 @@
                       </div>
                     </div>
                     <div class="draft-row">
-                      <div class="draft-field-label"><span>话题</span><small>输入后回车，可删除自定义话题</small></div>
-                      <el-select v-model="publishDraftForm(row).tags" multiple filterable allow-create default-first-option reserve-keyword placeholder="选择或新增话题" @change="normalizeDraftTopics(publishDraftForm(row))">
+                      <div class="draft-field-label"><span>自动标签</span><small>选择候选或删除已选标签</small></div>
+                      <el-select v-model="publishDraftForm(row).tags" multiple filterable default-first-option reserve-keyword placeholder="选择候选话题" @change="normalizeDraftTopics(publishDraftForm(row))">
                         <el-option v-for="tag in publishDraftForm(row).tagOptions" :key="tag" :label="tag" :value="tag" />
                       </el-select>
+                    </div>
+                    <div class="draft-row">
+                      <div class="draft-field-label"><span>本视频自定义话题</span><small>仅追加到当前视频的所有发布平台</small></div>
+                      <div class="tag-cloud">
+                        <el-tag v-for="tag in publishDraftForm(row).customTags" :key="tag" closable @close="removeDraftCustomTag(row, tag)">#{{ tag }}</el-tag>
+                        <span v-if="publishDraftForm(row).customTags.length === 0" class="empty-topic">暂无自定义话题</span>
+                      </div>
+                      <div class="topic-add-row">
+                        <el-input
+                          v-model="publishDraftForm(row).newTag"
+                          placeholder="输入自定义话题"
+                          clearable
+                          @keyup.enter.prevent="addDraftTag(row)"
+                        />
+                        <el-button type="primary" plain @click="addDraftTag(row)">
+                          <el-icon><Plus /></el-icon>
+                          <span>新增话题</span>
+                        </el-button>
+                      </div>
                     </div>
                   </div>
                   <div class="draft-description-panel">
@@ -502,7 +521,7 @@
                   <div class="draft-summary">
                     <span class="draft-label">发布文案</span>
                     <strong>{{ row.analysisDraft.selectedTitle || row.analysisDraft.coverTitle || '已生成' }}</strong>
-                    <span v-if="row.analysisDraft.tags?.length" class="draft-summary-tags">{{ row.analysisDraft.tags.length }} 个话题</span>
+                    <span v-if="row.analysisDraft.tags?.length || row.analysisDraft.customTags?.length" class="draft-summary-tags">{{ row.analysisDraft.tags.length + row.analysisDraft.customTags.length }} 个话题</span>
                   </div>
                   <span class="draft-summary-copy">{{ row.analysisDraft.publishCopy || '暂无发布文案' }}</span>
                 </div>
@@ -1010,7 +1029,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ChatDotRound, Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { ChatDotRound, Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Plus, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
@@ -1887,6 +1906,7 @@ const buildAnalysisDraft = (draft = {}, result = {}) => {
   const draftTags = cleanTopicList(draft.tags)
   const resultTags = cleanTopicList(result.tags)
   const selectedTags = draftTags.length ? draftTags : resultTags
+  const customTags = cleanTopicList(draft.customTags).filter(tag => !selectedTags.includes(tag))
   const tagOptions = Array.from(new Set([...selectedTags, ...resultTags]))
   return {
     titleOptions,
@@ -1898,7 +1918,9 @@ const buildAnalysisDraft = (draft = {}, result = {}) => {
     coverContext: draft.coverContext || draft.cover_context || result.cover_context || '',
     publishCopy: draft.description || draft.publish_copy || result.publish_copy || '',
     tags: selectedTags,
+    customTags,
     tagOptions,
+    newTag: '',
     summary: result.summary || '',
     chinaViewAngle: result.china_view_angle || ''
   }
@@ -1935,7 +1957,9 @@ const cloneAnalysisDraft = (draft = {}) => ({
   coverContext: draft.coverContext || '',
   publishCopy: draft.publishCopy || '',
   tags: [...(draft.tags || [])],
+  customTags: [...(draft.customTags || [])],
   tagOptions: [...(draft.tagOptions || [])],
+  newTag: '',
   summary: draft.summary || '',
   chinaViewAngle: draft.chinaViewAngle || ''
 })
@@ -1943,7 +1967,28 @@ const cloneAnalysisDraft = (draft = {}) => ({
 const normalizeDraftTopics = (draft) => {
   if (!draft) return
   draft.tags = cleanTopicList(draft.tags)
+  draft.customTags = cleanTopicList(draft.customTags).filter(tag => !draft.tags.includes(tag))
   draft.tagOptions = Array.from(new Set([...draft.tags, ...cleanTopicList(draft.tagOptions)]))
+}
+
+const addDraftTag = (item) => {
+  const draft = publishDraftForm(item)
+  const tag = cleanTopicList(draft.newTag)[0] || ''
+  if (!tag) {
+    ElMessage.warning('请输入话题内容')
+    return
+  }
+  if (draft.tags.includes(tag) || draft.customTags.includes(tag)) {
+    ElMessage.warning('话题已存在')
+    return
+  }
+  draft.customTags.push(tag)
+  draft.newTag = ''
+}
+
+const removeDraftCustomTag = (item, tag) => {
+  const draft = publishDraftForm(item)
+  draft.customTags = draft.customTags.filter(itemTag => itemTag !== tag)
 }
 
 const handleTitleOptionChange = (item, value) => {
@@ -3033,7 +3078,8 @@ const saveInlineAnalysis = async (row) => {
       coverTitle: form.coverTitle || '',
       coverContext: form.coverContext || '',
       description: form.publishCopy || '',
-      tags: form.tags.filter(Boolean)
+      tags: cleanTopicList(form.tags),
+      customTags: cleanTopicList(form.customTags).filter(tag => !form.tags.includes(tag))
     }
     const response = await youtubeApi.updatePublishDraft(row.id, payload)
     const savedDraft = response.data?.draft || payload
@@ -4667,6 +4713,14 @@ $ink-strong: var(--vf-text-primary);
   grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   align-items: start;
+}
+
+.topic-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
 }
 
 .draft-field-label {
