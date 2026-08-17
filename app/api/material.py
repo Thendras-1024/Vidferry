@@ -15,14 +15,14 @@ def delete_file():
             conn.row_factory = True
             cursor = conn.cursor()
 
-            data = delete_material_record(cursor, int(file_id))
+            data = delete_material_record(cursor, int(file_id), _current_account_owner_id())
             conn.commit()
 
         backend_logger.info("素材已删除 material_id=%s source_type=%s", file_id, data.get("sourceType", ""))
         return jsonify({
             "code": 200,
             "msg": "File deleted successfully",
-            "data": data
+            "data": _redact_public_paths(data)
         }), 200
 
     except LookupError as e:
@@ -64,13 +64,13 @@ def batch_delete_files():
         if not file_ids:
             return jsonify({"code": 400, "msg": "请选择要删除的素材", "data": None}), 400
         backend_logger.info("批量删除素材开始 count=%s", len(file_ids))
-        result = delete_material_records(file_ids)
+        result = delete_material_records(file_ids, _current_account_owner_id())
         backend_logger.info("批量删除素材完成 count=%s", len(result))
         return jsonify({
             "code": 200,
             "msg": "Files deleted",
-            "data": result
+            "data": _redact_public_paths(result)
         }), 200
-    except Exception as e:
+    except Exception:
         backend_logger.exception("批量删除素材失败")
-        return jsonify({"code": 500, "msg": f"batch delete failed: {str(e)}", "data": None}), 500
+        return jsonify({"code": 500, "msg": "批量删除素材失败，请稍后重试", "data": None}), 500

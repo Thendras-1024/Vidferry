@@ -159,7 +159,7 @@ def get_source_content_risk(publish_materials):
         ).strip()
         if (not isinstance(analysis_result, dict) or not analysis_result) and video_id:
             try:
-                analysis_result = (get_youtube_video_analysis(video_id) or {}).get("result") or {}
+                analysis_result = (get_youtube_video_analysis(video_id, material.get("owner_user_id")) or {}).get("result") or {}
             except Exception:
                 analysis_result = {}
         risk = analysis_result.get("contentRisk") if isinstance(analysis_result, dict) else {}

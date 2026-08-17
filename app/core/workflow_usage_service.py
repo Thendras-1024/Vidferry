@@ -20,6 +20,7 @@ def build_workflow_llm_telemetry(job, workflow_event_id, stage):
     context = {
         "workflowEventId": workflow_event_id,
         "jobId": (job or {}).get("id") or "",
+        "ownerUserId": (job or {}).get("ownerUserId"),
         "videoId": (job or {}).get("videoId") or "",
         "stage": str(stage or ""),
     }
@@ -48,11 +49,12 @@ def record_workflow_llm_usage(context, payload):
             cursor = conn.cursor()
             cursor.execute('''
             INSERT INTO youtube_workflow_llm_usage_events (
-                workflow_event_id, job_id, video_id, stage, operation, provider, model,
+                owner_user_id, workflow_event_id, job_id, video_id, stage, operation, provider, model,
                 status, attempt, prompt_tokens, completion_tokens, total_tokens,
                 latency_ms, error_message, error_category, violations, raw_output, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
+                context.get("ownerUserId"),
                 context.get("workflowEventId") or None,
                 job_id,
                 str(context.get("videoId") or ""),
@@ -69,8 +71,7 @@ def record_workflow_llm_usage(context, payload):
                 clean_display_text(str(payload.get("errorMessage") or ""))[:500],
                 str(payload.get("errorCategory") or payload.get("error_category") or "")[:80],
                 json.dumps(list(payload.get("violations") or []), ensure_ascii=False)[:4000],
-                str(payload.get("rawOutput") or payload.get("raw_output") or "")[:20000]
-                if str(payload.get("status") or "") in {"contract_failed", "soft_warning"} else "",
+                "",
                 _now_iso(),
             ))
             conn.commit()
@@ -242,12 +243,12 @@ def _stats_fetch_task_bundle(job_rows):
     return [_stats_build_task(job, events_by_job.get(job.get("id"), []), usage_by_job.get(job.get("id"), [])) for job in job_rows]
 
 
-def _stats_task_page(start, end, page, page_size):
+def _stats_task_page(start, end, page, page_size, owner_user_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        where = "COALESCE(started_at, created_at) >= ? AND COALESCE(started_at, created_at) < ?"
-        params = (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
+        where = "owner_user_id = ? AND COALESCE(started_at, created_at) >= ? AND COALESCE(started_at, created_at) < ?"
+        params = (owner_user_id, start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
         cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_workflow_jobs WHERE {where}", params)
         total = int(cursor.fetchone()["total"] or 0)
         cursor.execute(f'''SELECT * FROM youtube_workflow_jobs WHERE {where}
@@ -256,9 +257,9 @@ def _stats_task_page(start, end, page, page_size):
     return _stats_fetch_task_bundle(rows), total
 
 
-def _stats_aggregates(start, end, granularity):
-    where = "COALESCE(j.started_at, j.created_at) >= ? AND COALESCE(j.started_at, j.created_at) < ?"
-    params = (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
+def _stats_aggregates(start, end, granularity, owner_user_id):
+    where = "j.owner_user_id = ? AND COALESCE(j.started_at, j.created_at) >= ? AND COALESCE(j.started_at, j.created_at) < ?"
+    params = (owner_user_id, start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
     bucket = "%m-%d %H:00" if granularity == "hour" else "%m-%d"
     usage_cte = '''WITH all_usage AS (
             SELECT job_id, created_at, model, prompt_tokens, completion_tokens, total_tokens, latency_ms
@@ -356,11 +357,14 @@ def _stats_aggregates(start, end, granularity):
     }
 
 
-def get_workflow_task_statistics(job_id):
+def get_workflow_task_statistics(job_id, owner_user_id):
     init_youtube_workflow_table()
     with _db_connect() as conn:
         conn.row_factory = True
-        row = conn.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ?",
+            (job_id, owner_user_id),
+        ).fetchone()
     if not row:
         return None
     tasks = _stats_fetch_task_bundle([dict(row)])
@@ -369,7 +373,7 @@ def get_workflow_task_statistics(job_id):
         return None
     with _db_connect() as conn:
         conn.row_factory = True
-        rows = conn.execute("SELECT * FROM youtube_workflow_llm_usage_events WHERE job_id = ? ORDER BY created_at DESC, id DESC", (job_id,)).fetchall()
+        rows = conn.execute("SELECT * FROM youtube_workflow_llm_usage_events WHERE job_id = ? AND owner_user_id = ? ORDER BY created_at DESC, id DESC", (job_id, owner_user_id)).fetchall()
     task["requests"] = [{
         "id": item["id"], "workflowEventId": item["workflow_event_id"], "stage": item["stage"] or "",
         "stageLabel": WORKFLOW_STAGE_LABELS.get(item["stage"], item["stage"] or ""), "operation": item["operation"] or "",
@@ -381,14 +385,14 @@ def get_workflow_task_statistics(job_id):
     return task
 
 
-def get_workflow_statistics(limit=200, page=1, page_size=None, date_from=None, date_to=None, granularity="auto"):
+def get_workflow_statistics(limit=200, page=1, page_size=None, date_from=None, date_to=None, granularity="auto", owner_user_id=None):
     init_youtube_workflow_table()
     page_size = _parse_positive_int(page_size or limit, limit, 1, 100)
     page = _parse_positive_int(page, 1, 1, 100000)
     start, end, resolved_granularity = _stats_range(date_from, date_to, granularity)
-    tasks, task_total = _stats_task_page(start, end, page, page_size)
-    aggregates = _stats_aggregates(start, end, resolved_granularity)
-    legacy_events = list_workflow_events(limit, page=page, page_size=page_size)
+    tasks, task_total = _stats_task_page(start, end, page, page_size, owner_user_id)
+    aggregates = _stats_aggregates(start, end, resolved_granularity, owner_user_id)
+    legacy_events = list_workflow_events(limit, page=page, page_size=page_size, owner_user_id=owner_user_id)
     return {
         **aggregates,
         "tasks": tasks, "tasksTotal": task_total, "tasksPage": page, "tasksPageSize": page_size,

@@ -298,12 +298,12 @@
           controls
           class="preview-video"
         >
-          <source :src="getPreviewUrl(currentMaterial.file_path)" type="video/mp4">
+          <source :src="getPreviewUrl(currentMaterial.asset_id)" type="video/mp4">
           您的浏览器不支持视频播放
         </video>
         <img
           v-else-if="isImageFile(currentMaterial.filename)"
-          :src="getPreviewUrl(currentMaterial.file_path)"
+          :src="getPreviewUrl(currentMaterial.asset_id)"
           class="preview-image"
           alt=""
         >
@@ -471,11 +471,9 @@ const materialVideoId = (material) => {
 }
 
 const materialThumbnail = (material) => {
-  if (material?.localThumbnailPath) {
-    return materialApi.getMaterialPreviewUrl(material.localThumbnailPath)
-  }
   const videoId = materialVideoId(material)
   if (videoId) return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+  if (material?.asset_id) return materialApi.getMaterialPreviewUrl(material.asset_id)
   if (material?.displayThumbnail) return material.displayThumbnail
   if (material?.metadata?.thumbnail) return material.metadata.thumbnail
   return ''
@@ -654,7 +652,7 @@ const MaterialIdentity = defineComponent({
       if (props.material.source_type === 'youtube_processed' || props.material.source_type === 'youtube_download') {
         return materialThumbnail(props.material)
       }
-      return materialThumbnail(props.material) || materialApi.getMaterialPreviewUrl(props.material.file_path)
+      return materialThumbnail(props.material)
     })
 
     return () => h('div', { class: 'material-identity' }, [
@@ -1116,12 +1114,12 @@ const handleBatchDelete = async (scope = 'all') => {
   }
 }
 
-const getPreviewUrl = (filePath) => {
-  return materialApi.getMaterialPreviewUrl(filePath)
+const getPreviewUrl = (assetId) => {
+  return materialApi.getMaterialPreviewUrl(assetId)
 }
 
 const downloadFile = (material) => {
-  const url = materialApi.downloadMaterial(material.file_path)
+  const url = materialApi.downloadMaterial(material.asset_id)
   window.open(url, '_blank')
 }
 

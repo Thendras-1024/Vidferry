@@ -48,7 +48,7 @@ def postVideo():
         backend_logger.exception("publish video failed")
         return jsonify({
             "code": 500,
-            "msg": f"发布失败: {str(e)}",
+            "msg": "发布失败，请稍后重试",
             "data": None,
         }), 500
     return jsonify({
@@ -134,10 +134,11 @@ def postVideoBatch():
                 "data": {"errorCode": exc.error_code},
             })
         except Exception as exc:
+            backend_logger.exception("publish batch item failed : index = %s", index)
             batch_results.append({
                 "index": index,
                 "status": "failed",
-                "message": str(exc),
+                "message": "发布失败，请稍后重试",
                 "data": None,
             })
     failed_count = sum(

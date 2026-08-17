@@ -23,18 +23,21 @@ def _select_failed_publish_records(failed_records, target_record_ids=None):
     return selected_records
 
 
-def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
+def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_user_id=None):
     """校验失败目标并登记重发任务，供后台发布队列执行。"""
     task_id = str(publish_task_id or "").strip()
     if not task_id or task_id.startswith("legacy:"):
         raise ValueError("发布任务不存在或不支持重发")
 
-    owner_user_id = _current_account_owner_id()
+    owner_user_id = owner_user_id or _current_account_owner_id()
     init_database_tables()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM published_youtube_materials WHERE publish_task_id = ? AND deleted_at IS NULL ORDER BY id", (task_id,))
+        cursor.execute(
+            "SELECT * FROM published_youtube_materials WHERE publish_task_id = ? AND owner_user_id = ? AND deleted_at IS NULL ORDER BY id",
+            (task_id, owner_user_id),
+        )
         records = [_row_to_published_material(row) for row in cursor.fetchall()]
         if not records:
             raise LookupError("原发布任务不存在")
@@ -68,13 +71,16 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
                 stored_tags_by_platform[int(target_row["platform_type"] or 0)] = list(settings["tags"])
 
         source = records[0]
-        cursor.execute("SELECT * FROM file_records WHERE id = ?", (source.get("materialId"),))
+        cursor.execute(
+            "SELECT * FROM file_records WHERE id = ? AND owner_user_id = ?",
+            (source.get("materialId"), owner_user_id),
+        )
         material_row = cursor.fetchone()
         if not material_row:
             raise ValueError("原任务的成片素材不存在，无法重发")
         material = _row_to_material(material_row)
         file_path = material.get("file_path") or material.get("storage_key") or source.get("filePath")
-        file_list, materials = _validate_publish_processed_files([file_path])
+        file_list, materials = _validate_publish_processed_files([file_path], owner_user_id)
 
         targets = []
         for record in failed_records:
@@ -103,7 +109,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None):
             targets.append(target)
 
     _assert_publish_targets_available(materials[0], targets)
-    video = _get_youtube_video_record(source.get("videoId")) or {}
+    video = _get_youtube_video_record(source.get("videoId"), owner_user_id) or {}
     draft = video.get("publishDraft") or {}
     data = {
         "title": _strip_publish_title_meta(source.get("publishTitle")) or draft.get("title") or source.get("title") or "YouTube 视频",
@@ -152,4 +158,5 @@ def fail_failed_publish_retry_submission(tasks, message):
             retry_of_task_id=task.get("retryOfTaskId") or "",
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",
+            owner_user_id=task.get("ownerUserId"),
         )

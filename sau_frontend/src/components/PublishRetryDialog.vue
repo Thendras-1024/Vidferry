@@ -3,7 +3,7 @@
     <template v-if="task">
       <div class="retry-summary">
         <strong>{{ task.chineseTitle || '未命名发布任务' }}</strong>
-        <span>{{ task.filePath || '未记录成片路径' }}</span>
+        <span>{{ task.assetId || '未记录成片素材' }}</span>
       </div>
       <el-alert title="确认后只重发以下失败平台，已成功的平台不会再次提交。平台和账号沿用原任务且不可修改。" type="warning" :closable="false" show-icon />
       <el-checkbox-group v-model="selectedTargetIds" class="retry-targets">

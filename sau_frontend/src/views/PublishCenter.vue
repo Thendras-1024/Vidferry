@@ -1571,7 +1571,7 @@ const materialByVideoId = computed(() => {
 })
 
 const publishedMaterialCount = computed(() => {
-  return publishedVideos.value.filter(video => Boolean(video.processedFilePath)).length
+  return publishedVideos.value.filter(video => Boolean(video.processedAssetId)).length
 })
 
 const allPublishedRecords = computed(() => {
@@ -1706,8 +1706,8 @@ const loadPublishedVideos = async () => {
           publishedPlatformTypes: Array.from(new Set(records.map(record => Number(record.platformType)).filter(Boolean))),
           processVersionLabel: material ? processVersionLabel(material.processVersion) : processVersionLabel(item.processVersion),
           subtitleLanguageLabel: material?.subtitleLanguageLabel || item.subtitleLanguageLabel || '字幕语言未知',
-          processedFilePath: material?.file_path || item.processedFilePath || '',
-          processedPreviewUrl: material?.file_path ? materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()) : '',
+          processedAssetId: material?.asset_id || item.processedAssetId || '',
+          processedPreviewUrl: material?.asset_id ? materialApi.getMaterialPreviewUrl(material.asset_id) : '',
           processedFileSizeLabel: material ? formatMaterialSizeMb(material.filesize) : '',
           publishedLabel: item.updatedAt ? `状态更新时间 ${item.updatedAt}` : '已提交发布'
         }
@@ -1766,7 +1766,7 @@ const buildPublishData = (tab, targets = publishTargets(tab), includeResolvedTag
   description: tab.description,
   tags: tab.selectedTopics,
   customTags: tab.videoCustomTopics,
-  fileList: tab.fileList.map(file => file.path),
+  fileList: tab.fileList.map(file => file.assetId),
   targets: targets.map(target => ({
     platformType: target.platformType,
     accountFile: target.accountFile,
@@ -2129,7 +2129,19 @@ const confirmPublish = async (tab) => {
     await ensureSourceContentRiskConfirmation(tab)
     const publishData = buildPublishData(tab, targets)
     const endpoint = tab.scheduleEnabled ? '/publish/scheduled-tasks' : '/postVideo'
-    const data = await http.post(endpoint, publishData, { silentError: true })
+    let data
+    try {
+      data = await http.post(endpoint, publishData, { silentError: true })
+    } catch (error) {
+      const errorCode = error?.response?.data?.data?.errorCode
+      if (errorCode !== 'VF-PUBLISH-CROSS-ACCOUNT-CONFIRMATION') throw error
+      await ElMessageBox.confirm(
+        '该视频曾发布到同一平台的其他账号。继续发布可能触发平台的重复内容或账号风控。',
+        '确认跨账号重复发布风险',
+        { confirmButtonText: '仍要发布', cancelButtonText: '取消', type: 'warning' }
+      )
+      data = await http.post(endpoint, { ...publishData, confirmCrossAccountRisk: true }, { silentError: true })
+    }
     await loadAccounts()
     await loadPublishedVideos()
     if (tab.scheduleEnabled) {
@@ -2259,8 +2271,8 @@ const confirmMaterialSelection = () => {
       publishDraft: material.publishDraft || {},
       videoId: material.source_video_id || material.metadata?.videoId || '',
       materialId: material.id,
-      url: materialApi.getMaterialPreviewUrl(material.file_path.split('/').pop()),
-      path: material.file_path,
+      url: materialApi.getMaterialPreviewUrl(material.asset_id),
+      assetId: material.asset_id,
       size: material.filesize * 1024 * 1024, // 转换为字节
       type: 'video/mp4'
     }

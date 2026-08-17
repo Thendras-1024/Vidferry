@@ -7,7 +7,10 @@ from pathlib import Path
 
 
 class PublishQueueFullError(RuntimeError):
-    error_code = "VF-PUBLISH-QUEUE-FULL"
+    def __init__(self, scope="global"):
+        self.scope = scope
+        self.error_code = f"VF-{scope.upper()}-PUBLISH-QUEUE-FULL"
+        super().__init__("Publish queue is full. Try again after an active publish finishes.")
 
 
 _publish_dispatch_stop = threading.Event()
@@ -79,6 +82,7 @@ def _publish_dispatch_row(cursor, row):
         "sourceRefId": item.get("source_ref_id") or "",
         "videoId": item.get("video_id") or "",
         "materialId": item.get("material_id"),
+        "ownerUserId": item.get("owner_user_id"),
         "status": item.get("status") or "queued",
         "message": clean_display_text(item.get("message")),
         "createdAt": item.get("created_at") or "",
@@ -110,6 +114,8 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
     task_list = list(tasks or [])
     if not task_list:
         raise ValueError("No publish targets were provided.")
+    if owner_user_id is None:
+        raise PermissionError("Publish queue requires an owner.")
     job_id = str(publish_task_id or uuid.uuid4().hex)
     for task in task_list:
         task["publishTaskId"] = job_id
@@ -123,18 +129,22 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
         cursor.execute("BEGIN")
         cursor.execute("LOCK TABLE publish_dispatch_jobs IN SHARE ROW EXCLUSIVE MODE")
         cursor.execute("LOCK TABLE published_youtube_materials IN SHARE ROW EXCLUSIVE MODE")
-        queue_conditions = ["status IN ('queued', 'running', 'waiting_existing')"]
-        queue_values = []
-        if owner_user_id is not None:
-            queue_conditions.append("owner_user_id = ?")
-            queue_values.append(int(owner_user_id))
         cursor.execute(
-            "SELECT COUNT(*) AS total FROM publish_dispatch_jobs WHERE " + " AND ".join(queue_conditions),
-            queue_values,
+            "SELECT COUNT(*) AS total FROM publish_dispatch_jobs WHERE status IN ('queued', 'running', 'waiting_existing')",
         )
         if int(cursor.fetchone()["total"] or 0) >= _publish_queue_limit():
-            raise PublishQueueFullError("Publish queue is full. Try again after an active publish finishes.")
-        cursor.execute("SELECT * FROM file_records WHERE file_path = ? OR storage_key = ?", (file_path, file_path))
+            raise PublishQueueFullError("global")
+        owner_limit = int(WORKFLOW_MAX_PUBLISH_JOBS) + max(1, int(WORKFLOW_MAX_PUBLISH_QUEUED_JOBS) // 2)
+        cursor.execute(
+            "SELECT COUNT(*) AS total FROM publish_dispatch_jobs WHERE owner_user_id = ? AND status IN ('queued', 'running', 'waiting_existing')",
+            (int(owner_user_id),),
+        )
+        if int(cursor.fetchone()["total"] or 0) >= owner_limit:
+            raise PublishQueueFullError("owner")
+        cursor.execute(
+            "SELECT * FROM file_records WHERE owner_user_id = ? AND (file_path = ? OR storage_key = ?)",
+            (owner_user_id, file_path, file_path),
+        )
         material_row = cursor.fetchone()
         if not material_row:
             raise ValueError("Publish material is no longer available.")
@@ -225,7 +235,22 @@ def _claim_publish_dispatch_job():
         cursor.execute("SELECT COUNT(*) AS total FROM publish_dispatch_jobs WHERE status = 'running'")
         if int(cursor.fetchone()["total"] or 0) >= int(WORKFLOW_MAX_PUBLISH_JOBS):
             return ""
-        cursor.execute("SELECT * FROM publish_dispatch_jobs WHERE status = 'queued' ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED")
+        cursor.execute('''
+        WITH last_owner AS (
+            SELECT owner_user_id
+            FROM publish_dispatch_jobs
+            WHERE started_at IS NOT NULL
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+        )
+        SELECT * FROM publish_dispatch_jobs
+        WHERE status = 'queued'
+        ORDER BY CASE
+            WHEN owner_user_id IS DISTINCT FROM (SELECT owner_user_id FROM last_owner) THEN 0
+            ELSE 1
+        END, created_at, id
+        LIMIT 1 FOR UPDATE SKIP LOCKED
+        ''')
         row = cursor.fetchone()
         if not row:
             return ""
@@ -309,7 +334,9 @@ def _finish_dispatch_source(job, results, status, message):
         )
         finish_open_workflow_events(source_ref_id, workflow_status, message)
         if status == "confirmed":
-            update_youtube_video_artifacts(job.get("video_id") or "", publish_status=1)
+            update_youtube_video_artifacts(
+                job.get("video_id") or "", job.get("owner_user_id"), publish_status=1
+            )
 
 
 def _workflow_status_from_dispatch(status):
@@ -392,7 +419,7 @@ def run_publish_dispatch_job(job_id):
         status = _publish_dispatch_status(results)
         message = _publish_dispatch_message(results)
         cursor.execute("UPDATE publish_dispatch_jobs SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?", (status, message, now, now, job_id))
-        _reconcile_publish_material_records(cursor, job.get("video_id") or "")
+        _reconcile_publish_material_records(cursor, job.get("video_id") or "", owner_user_id=job.get("owner_user_id"))
     _finish_dispatch_source(job, results, status, message)
     _publish_dispatch_wakeup.set()
     return get_publish_dispatch_job(job_id)
@@ -407,7 +434,13 @@ def _publish_dispatch_loop():
             if not job_id:
                 break
             try:
-                _submit_background_task("publish", run_publish_dispatch_job, job_id)
+                queued_job = get_publish_dispatch_job(job_id)
+                _submit_background_task(
+                    "publish",
+                    run_publish_dispatch_job,
+                    job_id,
+                    owner_user_id=queued_job.get("ownerUserId") if queued_job else None,
+                )
                 submitted = True
             except Exception as exc:
                 now = _now_iso()

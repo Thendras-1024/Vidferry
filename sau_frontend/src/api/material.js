@@ -5,7 +5,10 @@ const apiBaseUrl = configuredApiBaseUrl && configuredApiBaseUrl !== '/'
   ? configuredApiBaseUrl.replace(/\/$/, '')
   : (import.meta.env.DEV ? '/api' : '')
 
-const fileUrl = (filename) => `${apiBaseUrl}/getFile?filename=${encodeURIComponent(filename)}`
+const fileUrl = (assetId, download = false) => {
+  const suffix = download ? '?download=1' : ''
+  return `${apiBaseUrl}/assets/${encodeURIComponent(assetId)}/content${suffix}`
+}
 
 // 素材管理API
 export const materialApi = {
@@ -58,12 +61,12 @@ export const materialApi = {
   },
   
   // 下载素材
-  downloadMaterial: (filePath) => {
-    return fileUrl(filePath)
+  downloadMaterial: (assetId) => {
+    return fileUrl(assetId, true)
   },
   
   // 获取素材预览URL
-  getMaterialPreviewUrl: (filename) => {
-    return fileUrl(filename)
+  getMaterialPreviewUrl: (assetId) => {
+    return fileUrl(assetId)
   }
 }

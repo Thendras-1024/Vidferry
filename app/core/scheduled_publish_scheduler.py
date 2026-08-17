@@ -23,6 +23,7 @@ SCHEDULED_PUBLISH_WORKERS = 1
 _scheduled_publish_stop = threading.Event()
 _scheduled_publish_thread = None
 _scheduled_publish_slots = None
+_youtube_local_cleanup_last_run = 0.0
 # 启动串行锁：确保「存活检查 + 恢复 + 信号量重建 + 起线程」原子完成，避免并发调用
 # start_scheduled_publish_scheduler 时重建信号量或起出两个调度线程（R3）。
 _scheduled_publish_start_lock = threading.Lock()
@@ -86,8 +87,13 @@ def _run_scheduled_publish_task(task_id):
 
 
 def _scheduled_publish_loop():
+    global _youtube_local_cleanup_last_run
     while not _scheduled_publish_stop.is_set():
         try:
+            now = time.time()
+            if now - _youtube_local_cleanup_last_run >= 3600:
+                _youtube_local_cleanup_last_run = now
+                run_youtube_local_cleanup_once()
             if _scheduled_publish_slots.acquire(blocking=False):
                 task_id, submitted = "", False
                 try:

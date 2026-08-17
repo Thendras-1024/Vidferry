@@ -55,7 +55,7 @@ def _publish_to_douyin(job, processed_file):
     task = _workflow_publish_task(job, processed_file, 3, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, task)
-    return " ".join(command)
+    return "platform=douyin; status=completed"
 
 
 def _publish_to_bilibili(job, processed_file):
@@ -65,7 +65,7 @@ def _publish_to_bilibili(job, processed_file):
     task = _workflow_publish_task(job, processed_file, 5, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, task)
-    return " ".join(command)
+    return "platform=bilibili; status=completed"
 
 
 def _publish_to_xiaohongshu(job, processed_file):
@@ -75,7 +75,7 @@ def _publish_to_xiaohongshu(job, processed_file):
     task = _workflow_publish_task(job, processed_file, 1, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, task)
-    return " ".join(command)
+    return "platform=xiaohongshu; status=completed"
 
 
 def _publish_to_kuaishou(job, processed_file):
@@ -85,7 +85,7 @@ def _publish_to_kuaishou(job, processed_file):
     task = _workflow_publish_task(job, processed_file, 4, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, task)
-    return " ".join(command)
+    return "platform=kuaishou; status=completed"
 
 
 def _publish_to_tencent(job, processed_file):
@@ -95,7 +95,7 @@ def _publish_to_tencent(job, processed_file):
     task = _workflow_publish_task(job, processed_file, 2, account_info)
     command = _workflow_publish_runner_command(task)
     _run_workflow_publish_command(command, task)
-    return " ".join(command)
+    return "platform=tencent; status=completed"
 
 
 def _publish_platform_account_file(platform_type, account_name, owner_user_id=None):
@@ -122,6 +122,7 @@ def _publish_workflow_platform(job, processed_file, material, platform_type, acc
             status="failed",
             message=str(exc),
             account_name=account_name,
+            owner_user_id=job.get("ownerUserId"),
         )
         return {
             "platformType": platform_type,
@@ -362,7 +363,11 @@ def _run_isolated_publish_command(command, timeout=3600):
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
-    print(f"启动平台发布子进程: {' '.join(map(str, command))}", flush=True)
+    backend_logger.info(
+        "publish subprocess started : executable = %s | argument_count = %s",
+        Path(str(command[0])).name if command else "unknown",
+        max(0, len(command) - 1),
+    )
     process = None
     try:
         process = subprocess.Popen(
@@ -384,23 +389,19 @@ def _run_isolated_publish_command(command, timeout=3600):
             line = process.stdout.readline() if process.stdout else ""
             if line:
                 output_lines.append(line)
-                print(line.rstrip(), flush=True)
             if process.poll() is not None:
                 if process.stdout:
                     rest = process.stdout.read()
                     if rest:
                         output_lines.append(rest)
-                        print(rest.rstrip(), flush=True)
                 break
             if time.time() - started_at > timeout:
                 process.kill()
-                output = "".join(output_lines).strip()
-                raise TimeoutError(output or f"平台发布超时: {' '.join(map(str, command))}")
+                raise TimeoutError("平台发布超时")
         output = "".join(output_lines)
         return subprocess.CompletedProcess(command, process.returncode, output, "")
     except subprocess.TimeoutExpired as exc:
-        output = "\n".join(part for part in [(exc.stdout or ""), (exc.stderr or "")] if part).strip()
-        raise TimeoutError(output or f"平台发布超时: {' '.join(map(str, command))}") from exc
+        raise TimeoutError("平台发布超时") from exc
     finally:
         _unregister_inflight_publish_process(process)
 
@@ -412,10 +413,9 @@ def _run_workflow_publish_command(command, task, timeout=3600):
         return result
     output = "\n".join(part for part in [(result.stderr or "").strip(), (result.stdout or "").strip()] if part)
     backend_logger.error(
-        "workflow platform publish command failed platform_type=%s returncode=%s output=%s",
+        "workflow platform publish command failed : platform_type = %s | returncode = %s | error_type = platform_command_failed",
         platform_type,
         result.returncode,
-        _publish_failure_log_text(output),
     )
     if _is_cookie_invalid_error(output):
         _mark_account_abnormal(task, output)
@@ -428,16 +428,9 @@ def _publish_command_failure(output, fallback="发布失败"):
     if _is_publish_rate_limited(lines):
         return "VF-PUBLISH-RATE-LIMIT: 平台限制该账号的上传频率，请稍后重试；无需重新下载或处理视频。"
     for line in reversed(lines):
-        marker = line.find("VF-PUBLISH-")
-        if marker >= 0:
-            return line[marker:]
-    for line in reversed(lines):
-        lowered = line.lower()
-        if any(marker in lowered for marker in ("error", "failed", "失败", "拒绝", "invalid", "forbidden", "unauthorized")):
-            return line
-    for line in reversed(lines):
-        if "释放上传锁" not in line and "upload_lock" not in line.lower():
-            return line
+        match = _re.search(r"VF-PUBLISH-[A-Z0-9-]+", line.upper())
+        if match:
+            return f"{match.group(0)}: {fallback}"
     return fallback
 
 
@@ -543,6 +536,7 @@ def _execute_publish_target(task):
             retry_of_task_id=task.get("retryOfTaskId") or "",
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",
+            owner_user_id=task.get("ownerUserId"),
         )
         running_claimed = True
         if not platform_slug:
@@ -595,6 +589,7 @@ def _execute_publish_target(task):
             retry_of_task_id=task.get("retryOfTaskId") or "",
             retry_of_record_id=task.get("retryOfRecordId"),
             retry_source=task.get("retrySource") or "",
+            owner_user_id=task.get("ownerUserId"),
         )
         result.update({
             "publishedVideoIds": published_ids,
@@ -660,6 +655,7 @@ def _execute_publish_target(task):
                     retry_of_task_id=task.get("retryOfTaskId") or "",
                     retry_of_record_id=task.get("retryOfRecordId"),
                     retry_source=task.get("retrySource") or "",
+                    owner_user_id=task.get("ownerUserId"),
                 )
             except Exception:
                 backend_logger.exception("publish final status persistence failed : platform_type=%s", platform_type)
@@ -699,6 +695,7 @@ def _build_publish_tasks(data, targets, file_list, publish_task_id=""):
             "platformName": target.get("platformName") or platform_name(platform_type),
             "accountName": target.get("accountName") or "",
             "accountId": target.get("accountId"),
+            "confirmCrossAccountRisk": bool(target.get("confirmCrossAccountRisk")),
             "accountFile": account_file,
             "accountPath": _safe_cookie_path(account_file, owner_user_id=owner_user_id),
             "ownerUserId": owner_user_id,
@@ -775,7 +772,9 @@ def _publish_payload(data):
     targets = normalize_publish_targets(data)
     _check_accounts_for_publish(targets)
     _resolve_publish_tags(targets, data.get("tags"), data.get("customTags"))
-    file_list, publish_materials = _validate_publish_processed_files(file_list)
+    file_list, publish_materials = _validate_publish_processed_files(
+        file_list, _current_account_owner_id()
+    )
     publish_material = publish_materials[0]
     # Agent 质检是可选能力；普通发布只保留来源内容风险确认。
     agent_guard = validate_prepublish_guard_or_raise(

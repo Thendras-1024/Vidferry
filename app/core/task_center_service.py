@@ -411,32 +411,37 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         for row in cursor.fetchall():
             event = _task_event(row)
             event_map.setdefault(str(row["job_id"]), []).append(event)
-        video_ids = [job.get("video_id") for job in jobs if job.get("video_id")]
+        owner_video_pairs = sorted({
+            (int(job["owner_user_id"]), str(job["video_id"]))
+            for job in jobs
+            if str(job.get("owner_user_id") or "").strip().isdigit() and job.get("video_id")
+        })
+        owner_video_where = " OR ".join("(owner_user_id = ? AND video_id = ?)" for _ in owner_video_pairs)
+        owner_video_values = [value for pair in owner_video_pairs for value in pair]
         title_translation_map = {}
-        if video_ids:
-            marks = ",".join("?" for _ in video_ids)
+        if owner_video_pairs:
             cursor.execute(f'''
-            SELECT video_id, metadata FROM youtube_workflow_events
-            WHERE video_id IN ({marks})
+            SELECT owner_user_id, video_id, metadata FROM youtube_workflow_events
+            WHERE ({owner_video_where})
               AND stage = 'source_title_translation'
               AND status = 'success'
             ORDER BY ended_at DESC, id DESC
-            ''', video_ids)
+            ''', owner_video_values)
             for row in cursor.fetchall():
-                video_id = str(row["video_id"] or "")
-                if video_id in title_translation_map:
+                key = (int(row["owner_user_id"]), str(row["video_id"] or ""))
+                if key in title_translation_map:
                     continue
                 metadata = _task_json(row["metadata"])
                 title = str(metadata.get("sourceTitleZh") or "").strip()
                 if title:
-                    title_translation_map[video_id] = title
+                    title_translation_map[key] = title
         material_map = {}
-        if video_ids:
-            marks = ",".join("?" for _ in video_ids)
-            cursor.execute(f"SELECT * FROM published_youtube_materials WHERE video_id IN ({marks}) AND deleted_at IS NULL ORDER BY COALESCE(updated_at, published_at, created_at), id", video_ids)
+        if owner_video_pairs:
+            cursor.execute(f"SELECT * FROM published_youtube_materials WHERE ({owner_video_where}) AND deleted_at IS NULL ORDER BY COALESCE(updated_at, published_at, created_at), id", owner_video_values)
             for row in cursor.fetchall():
                 item = _task_row(row)
-                material_map.setdefault(str(item.get("video_id")), []).append(item)
+                key = (int(item["owner_user_id"]), str(item.get("video_id") or ""))
+                material_map.setdefault(key, []).append(item)
         job_marks = ",".join("?" for _ in ids)
         cursor.execute(
             f"SELECT id, source_ref_id, status, message FROM publish_dispatch_jobs "
@@ -474,7 +479,8 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
             })
             job["publishProgress"] = progress
         for job in jobs:
-            job["_task_chinese_title"] = title_translation_map.get(str(job.get("video_id") or ""), "")
+            key = (int(job["owner_user_id"]), str(job.get("video_id") or ""))
+            job["_task_chinese_title"] = title_translation_map.get(key, "")
         owner_ids = sorted({
             int(job["owner_user_id"])
             for job in jobs
@@ -491,7 +497,14 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         for job in jobs:
             owner_id = job.get("owner_user_id")
             job["_task_owner_display_name"] = owner_names.get(int(owner_id)) if str(owner_id or "").strip().isdigit() else ""
-        rows = [(job, event_map.get(str(job.get("id")), []), material_map.get(str(job.get("video_id")), [])) for job in jobs]
+        rows = [
+            (
+                job,
+                event_map.get(str(job.get("id")), []),
+                material_map.get((int(job["owner_user_id"]), str(job.get("video_id") or "")), []),
+            )
+            for job in jobs
+        ]
         return (rows, total, summary) if include_meta else rows
 
 

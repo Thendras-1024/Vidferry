@@ -355,6 +355,9 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
     video_id = payload.get("videoId") or ""
+    owner_user_id = int(payload.get("ownerUserId") or 0)
+    if owner_user_id <= 0:
+        raise PermissionError("登录用户不能为空")
     _validate_burn_profile_source_resolution(video_id, burn_profile)
     if lock_scope not in {"media", "analysis"}:
         raise ValueError("任务锁范围不合法")
@@ -363,7 +366,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         if video_id and not allow_active_job:
-            active_job = _active_job_for_video(cursor, video_id)
+            active_job = _active_job_for_video(cursor, video_id, owner_user_id)
             if active_job:
                 raise WorkflowConflictError(
                     "该视频存在运行中任务，请等待任务结束后再操作。",
@@ -374,13 +377,13 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
         if video_id:
             try:
                 cursor.execute(
-                    "INSERT INTO youtube_workflow_locks (video_id, scope, job_id) VALUES (?, ?, ?)",
-                    (video_id, lock_scope, job_id),
+                    "INSERT INTO youtube_workflow_locks (video_id, scope, job_id, owner_user_id) VALUES (?, ?, ?, ?)",
+                    (video_id, lock_scope, job_id, owner_user_id),
                 )
             except DATABASE_INTEGRITY_ERRORS as exc:
                 cursor.execute(
-                    "SELECT job_id FROM youtube_workflow_locks WHERE video_id = ? AND scope = ?",
-                    (video_id, lock_scope),
+                    "SELECT job_id FROM youtube_workflow_locks WHERE video_id = ? AND scope = ? AND owner_user_id = ?",
+                    (video_id, lock_scope, owner_user_id),
                 )
                 lock = cursor.fetchone()
                 raise WorkflowConflictError(
@@ -598,15 +601,15 @@ def list_youtube_workflow_jobs(limit=50, params=None, owner_user_id=None):
         }
 
 
-def _active_job_for_video(cursor, video_id):
+def _active_job_for_video(cursor, video_id, owner_user_id):
     if not video_id:
         return None
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id = ? AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
+    WHERE video_id = ? AND owner_user_id = ? AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
-    ''', (video_id,))
+    ''', (video_id, owner_user_id))
     row = cursor.fetchone()
     return _row_to_workflow_job(row) if row else None
 
@@ -679,18 +682,18 @@ def _attach_material_workflow_state(cursor, material):
     return material
 
 
-def _latest_workflow_jobs_for_videos(cursor, video_ids):
+def _latest_workflow_jobs_for_videos(cursor, video_ids, owner_user_id):
     clean_ids = _clean_unique_list(video_ids)
     if not clean_ids:
         return {}, {}
 
     cursor.execute(f'''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id IN ({_sql_placeholders(clean_ids)})
+    WHERE owner_user_id = ? AND video_id IN ({_sql_placeholders(clean_ids)})
     ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') THEN 0 ELSE 1 END,
              updated_at DESC,
              created_at DESC
-    ''', clean_ids)
+    ''', [owner_user_id, *clean_ids])
     jobs = [_row_to_workflow_job(row) for row in cursor.fetchall()]
     jobs_by_video = {}
     jobs_by_video_version = {}
@@ -747,23 +750,23 @@ def _attach_workflow_job_to_material(material, workflow_job):
     return material
 
 
-def _active_analysis_job_for_video(cursor, video_id):
+def _active_analysis_job_for_video(cursor, video_id, owner_user_id):
     if not video_id:
         return None
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id = ?
+    WHERE video_id = ? AND owner_user_id = ?
       AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
       AND step = 'analysis'
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
-    ''', (video_id,))
+    ''', (video_id, owner_user_id))
     row = cursor.fetchone()
     return _row_to_workflow_job(row) if row else None
 
 
-def _assert_no_active_youtube_job(cursor, video_id):
-    active_job = _active_job_for_video(cursor, video_id)
+def _assert_no_active_youtube_job(cursor, video_id, owner_user_id):
+    active_job = _active_job_for_video(cursor, video_id, owner_user_id)
     if not active_job:
         return
     raise WorkflowConflictError(
@@ -985,11 +988,12 @@ def start_workflow_event(job, stage, message="", input_file_path="", metadata=No
         cursor = conn.cursor()
         cursor.execute('''
         INSERT INTO youtube_workflow_events (
-            job_id, video_id, stage, stage_label, status, message,
+            owner_user_id, job_id, video_id, stage, stage_label, status, message,
             input_file_path, input_size_mb, started_at, metadata
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         ''', (
+            job.get("ownerUserId"),
             job.get("id") or "",
             job.get("videoId") or "",
             stage,
@@ -1135,7 +1139,7 @@ def _row_to_workflow_event(row):
     }
 
 
-def list_workflow_events(limit=200, page=1, page_size=None):
+def list_workflow_events(limit=200, page=1, page_size=None, owner_user_id=None):
     init_youtube_workflow_table()
     page_size = _parse_positive_int(page_size or limit, limit, 1, 1000)
     page = _parse_positive_int(page, 1, 1, 100000)
@@ -1143,15 +1147,16 @@ def list_workflow_events(limit=200, page=1, page_size=None):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) AS total FROM youtube_workflow_events")
+        cursor.execute("SELECT COUNT(*) AS total FROM youtube_workflow_events WHERE owner_user_id = ?", (owner_user_id,))
         total = int((cursor.fetchone() or {})["total"] or 0)
         cursor.execute('''
         SELECT e.*, j.title, j.process_version, j.subtitle_language, j.burn_profile
         FROM youtube_workflow_events e
         LEFT JOIN youtube_workflow_jobs j ON j.id = e.job_id
+        WHERE e.owner_user_id = ?
         ORDER BY e.started_at DESC, e.id DESC
         LIMIT ? OFFSET ?
-        ''', (page_size, offset))
+        ''', (owner_user_id, page_size, offset))
         rows = cursor.fetchall()
         events = []
         for row in rows:
@@ -1164,7 +1169,7 @@ def list_workflow_events(limit=200, page=1, page_size=None):
         return {"items": events, "total": total, "page": page, "pageSize": page_size}
 
 
-def update_youtube_video_artifacts(video_id, **changes):
+def update_youtube_video_artifacts(video_id, owner_user_id, **changes):
     if not video_id or not changes:
         return None
     column_map = {
@@ -1192,23 +1197,33 @@ def update_youtube_video_artifacts(video_id, **changes):
         column = column_map.get(key, key)
         fields.append(f"{column} = ?")
         values.append(value)
+    if any(changes.get(key) for key in ("downloadedFilePath", "processedFilePath", "editingBodyPath")):
+        fields.extend([
+            "local_files_state = 'available'",
+            "retention_anchor_at = NULL",
+            "local_files_purged_at = NULL",
+            "purge_error = ''",
+        ])
     fields.append("updated_at = CURRENT_TIMESTAMP")
-    values.append(video_id)
+    values.extend([video_id, owner_user_id])
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''
         UPDATE youtube_videos
         SET {", ".join(fields)}
-        WHERE video_id = ?
+        WHERE video_id = ? AND owner_user_id = ?
         ''', values)
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute(
+            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (video_id, owner_user_id),
+        )
         row = cursor.fetchone()
         return _row_to_youtube_video(row) if row else None
 
 
-def update_youtube_video_analysis_status(video_id, status, result=None):
+def update_youtube_video_analysis_status(video_id, status, owner_user_id, result=None):
     if not video_id:
         raise ValueError("视频 ID 不能为空")
     init_youtube_video_table()
@@ -1217,23 +1232,26 @@ def update_youtube_video_analysis_status(video_id, status, result=None):
     if result is not None:
         fields.append("analysis_result = ?")
         values.append(json.dumps(result, ensure_ascii=False))
-    values.append(video_id)
+    values.extend([video_id, owner_user_id])
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''
         UPDATE youtube_videos
         SET {", ".join(fields)}
-        WHERE video_id = ?
+        WHERE video_id = ? AND owner_user_id = ?
         ''', values)
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute(
+            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (video_id, owner_user_id),
+        )
         return _row_to_youtube_video(cursor.fetchone())
 
 
-def save_youtube_video_analysis(video_id, result):
+def save_youtube_video_analysis(video_id, result, owner_user_id):
     if not video_id:
         raise ValueError("视频 ID 不能为空")
     init_youtube_video_table()
@@ -1242,8 +1260,8 @@ def save_youtube_video_analysis(video_id, result):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute('''
-        SELECT publish_draft FROM youtube_videos WHERE video_id = ?
-        ''', (video_id,))
+        SELECT publish_draft FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?
+        ''', (video_id, owner_user_id))
         row = cursor.fetchone()
         if not row:
             raise LookupError("视频线索不存在")
@@ -1256,8 +1274,8 @@ def save_youtube_video_analysis(video_id, result):
                 analysis_result = ?,
                 analysis_updated_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ?
-            ''', (json.dumps(result, ensure_ascii=False), video_id))
+            WHERE video_id = ? AND owner_user_id = ?
+            ''', (json.dumps(result, ensure_ascii=False), video_id, owner_user_id))
         else:
             cursor.execute('''
             UPDATE youtube_videos
@@ -1266,21 +1284,22 @@ def save_youtube_video_analysis(video_id, result):
                 publish_draft = ?,
                 analysis_updated_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ?
+            WHERE video_id = ? AND owner_user_id = ?
             ''', (
                 json.dumps(result, ensure_ascii=False),
                 json.dumps(default_draft, ensure_ascii=False),
                 video_id,
+                owner_user_id,
             ))
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
         return _row_to_youtube_video(cursor.fetchone())
 
 
-def update_youtube_video_publish_draft(video_id, payload):
-    current = get_youtube_video_analysis(video_id)
+def update_youtube_video_publish_draft(video_id, payload, owner_user_id):
+    current = get_youtube_video_analysis(video_id, owner_user_id)
     current_draft = dict(current.get("draft") or {})
     title = payload.get("title", payload.get("selectedTitle", current_draft.get("title", "")))
     description = payload.get("description", payload.get("publish_copy", current_draft.get("description", "")))
@@ -1306,20 +1325,20 @@ def update_youtube_video_publish_draft(video_id, payload):
         UPDATE youtube_videos
         SET publish_draft = ?,
             updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ?
-        ''', (json.dumps(draft, ensure_ascii=False), video_id))
+        WHERE video_id = ? AND owner_user_id = ?
+        ''', (json.dumps(draft, ensure_ascii=False), video_id, owner_user_id))
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
-    return get_youtube_video_analysis(video_id)
+    return get_youtube_video_analysis(video_id, owner_user_id)
 
 
-def update_youtube_video_analysis_result(video_id, payload):
-    return update_youtube_video_publish_draft(video_id, payload)
+def update_youtube_video_analysis_result(video_id, payload, owner_user_id):
+    return update_youtube_video_publish_draft(video_id, payload, owner_user_id)
 
 
-def ensure_youtube_publish_draft(video_id):
-    analysis = get_youtube_video_analysis(video_id)
+def ensure_youtube_publish_draft(video_id, owner_user_id):
+    analysis = get_youtube_video_analysis(video_id, owner_user_id)
     if analysis.get("draft"):
         return analysis
     result = analysis.get("result") or {}
@@ -1332,18 +1351,18 @@ def ensure_youtube_publish_draft(video_id):
         UPDATE youtube_videos
         SET publish_draft = ?,
             updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ?
-        ''', (json.dumps(draft, ensure_ascii=False), video_id))
+        WHERE video_id = ? AND owner_user_id = ?
+        ''', (json.dumps(draft, ensure_ascii=False), video_id, owner_user_id))
         conn.commit()
-    return get_youtube_video_analysis(video_id)
+    return get_youtube_video_analysis(video_id, owner_user_id)
 
 
-def get_youtube_video_analysis(video_id):
+def get_youtube_video_analysis(video_id, owner_user_id):
     init_youtube_video_table()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
         row = cursor.fetchone()
         if not row:
             raise LookupError("视频线索不存在")
