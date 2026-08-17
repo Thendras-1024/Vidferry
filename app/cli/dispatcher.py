@@ -40,7 +40,7 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
             result = await actions.login_douyin_account(args.account, headless=args.headless, cdp_url=args.cdp_url)
             if not result["success"]:
                 raise RuntimeError(result["message"])
-            print(f"Douyin login flow completed: {result['account_file']}")
+            print("Douyin login flow completed")
             return 0
 
         if args.action == "check":
@@ -92,7 +92,7 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
             result = await actions.login_kuaishou_account(args.account, headless=args.headless)
             if not result["success"]:
                 raise RuntimeError(result["message"])
-            print(f"Kuaishou login flow completed: {result['account_file']}")
+            print("Kuaishou login flow completed")
             return 0
 
         if args.action == "check":
@@ -142,7 +142,7 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
             result = await actions.login_xiaohongshu_account(args.account, headless=args.headless)
             if not result["success"]:
                 raise RuntimeError(result["message"])
-            print(f"Xiaohongshu login flow completed: {result['account_file']}")
+            print("Xiaohongshu login flow completed")
             return 0
 
         if args.action == "check":
@@ -194,7 +194,7 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
             result = await actions.login_tencent_account(args.account, headless=args.headless)
             if not result["success"]:
                 raise RuntimeError(result["message"])
-            print(f"Tencent Channels login flow completed: {result['account_file']}")
+            print("Tencent Channels login flow completed")
             return 0
 
         if args.action == "check":
@@ -229,7 +229,7 @@ async def dispatch(args: argparse.Namespace, provider: ModuleType | None = None)
             result = await actions.login_bilibili_account(args.account)
             if not result["success"]:
                 raise RuntimeError(result["message"])
-            print(f"Bilibili login flow completed: {result['account_file']}")
+            print("Bilibili login flow completed")
             return 0
 
         if args.action == "check":

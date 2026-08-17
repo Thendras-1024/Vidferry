@@ -107,9 +107,9 @@ def save_login_account(platform_type, cookie_file, user_name, status_queue, acco
             try:
                 if old_path.exists():
                     old_path.unlink()
-                    print(f"✅ 旧 Cookie 文件已删除: {old_path}")
+                    print("旧 Cookie 文件已删除")
             except Exception as e:
-                print(f"⚠️ 删除旧 Cookie 文件失败: {e}")
+                print(f"删除旧 Cookie 文件失败 : error_type = {type(e).__name__}")
 
         return True
 

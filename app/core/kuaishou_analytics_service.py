@@ -98,9 +98,9 @@ def _ksa_record(record_id, owner_user_id, selected_account_id=None):
         row = conn.execute(
             """
             SELECT p.* FROM published_youtube_materials p
-            WHERE p.id = ? AND p.platform_type = ? AND p.deleted_at IS NULL
+            WHERE p.id = ? AND p.owner_user_id = ? AND p.platform_type = ? AND p.deleted_at IS NULL
             """,
-            (record_id, _KSA_PLATFORM_TYPE),
+            (record_id, owner_user_id, _KSA_PLATFORM_TYPE),
         ).fetchone()
         if not row:
             raise ValueError("快手发布记录不存在")
@@ -133,11 +133,11 @@ def _ksa_record(record_id, owner_user_id, selected_account_id=None):
             selected = next((item for item in candidates if int(item["id"]) == selected_account_id), None)
             if not selected:
                 raise PermissionError("选择的快手账号不属于该发布记录候选")
-            conn.execute("UPDATE published_youtube_materials SET account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (selected["id"], record_id))
+            conn.execute("UPDATE published_youtube_materials SET account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?", (selected["id"], record_id, owner_user_id))
             record["account_id"] = selected["id"]
             return record, selected, None
         if len(candidates) == 1 and len(global_candidates) == 1:
-            conn.execute("UPDATE published_youtube_materials SET account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (candidates[0]["id"], record_id))
+            conn.execute("UPDATE published_youtube_materials SET account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?", (candidates[0]["id"], record_id, owner_user_id))
             record["account_id"] = candidates[0]["id"]
             return record, candidates[0], None
     choices = [{"accountId": item["id"], "accountName": item.get("userName") or "未命名账号"} for item in candidates]
@@ -339,13 +339,14 @@ def _ksa_local_context(owner_user_id, account, work):
             SELECT p.id, p.video_id, p.publish_title, p.title, p.published_at, p.platform_work_id,
                    y.analysis_result, y.publish_draft
             FROM published_youtube_materials p
-            LEFT JOIN youtube_videos y ON y.video_id = p.video_id
+            LEFT JOIN youtube_videos y ON y.video_id = p.video_id AND y.owner_user_id = p.owner_user_id
             WHERE p.platform_type = ? AND p.deleted_at IS NULL
+              AND p.owner_user_id = ?
               AND p.account_id = ?
               AND (p.platform_work_id = ? OR p.platform_work_id IS NULL)
             ORDER BY p.id DESC
             """,
-            (_KSA_PLATFORM_TYPE, account["id"], work["platformWorkId"]),
+            (_KSA_PLATFORM_TYPE, owner_user_id, account["id"], work["platformWorkId"]),
         ).fetchall()
     matches = []
     for row in rows:
@@ -363,8 +364,8 @@ def _ksa_local_context(owner_user_id, account, work):
     if not match.get("platform_work_id"):
         with _db_connect() as conn:
             conn.execute(
-                "UPDATE published_youtube_materials SET account_id = ?, platform_work_id = ?, platform_work_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (account["id"], work["platformWorkId"], work.get("platformWorkUrl") or "", match["id"]),
+                "UPDATE published_youtube_materials SET account_id = ?, platform_work_id = ?, platform_work_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?",
+                (account["id"], work["platformWorkId"], work.get("platformWorkUrl") or "", match["id"], owner_user_id),
             )
     analysis = _ksa_json_object(match.get("analysis_result"))
     draft = _ksa_json_object(match.get("publish_draft"))

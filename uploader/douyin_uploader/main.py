@@ -331,6 +331,8 @@ class DouYinBaseUploader(BaseVideoUploader):
         await description_editor.click()
         await page.keyboard.press("Control+KeyA")
         await page.keyboard.press("Delete")
+        if description:
+            await page.keyboard.type(description)
 
         for tag in tags or []:
             await page.keyboard.type(" #" + tag)
