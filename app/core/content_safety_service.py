@@ -155,10 +155,10 @@ def save_content_safety_snapshot(job, snapshot):
     with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO youtube_content_safety_audits (job_id, video_id, video_title, snapshot, status, saved_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO youtube_content_safety_audits (owner_user_id, job_id, video_id, video_title, snapshot, status, saved_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (job_id) DO UPDATE SET snapshot = EXCLUDED.snapshot, status = EXCLUDED.status, saved_at = CURRENT_TIMESTAMP
-        ''', (job.get("id") or "", job.get("videoId") or "", job.get("title") or "", json.dumps(snapshot, ensure_ascii=False), snapshot.get("status") or ""))
+        ''', (job.get("ownerUserId"), job.get("id") or "", job.get("videoId") or "", job.get("title") or "", json.dumps(snapshot, ensure_ascii=False), snapshot.get("status") or ""))
         conn.commit()
 
 

@@ -596,7 +596,7 @@ def _process_editing_plan(job, source_file, telemetry=None):
         "transcriptLanguage": language or "",
         "transcriptFilePath": str(transcript_file),
         "generatedAt": datetime.datetime.now().isoformat(timespec="seconds"),
-    })
+    }, job.get("ownerUserId"))
     return result, usage
 
 
@@ -635,7 +635,7 @@ def _run_analysis_from_transcript_job(job, source_file, telemetry=None):
         speed="",
         eta="",
     )
-    update_youtube_video_analysis_status(job.get("videoId"), 2)
+    update_youtube_video_analysis_status(job.get("videoId"), 2, job.get("ownerUserId"))
     segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir, progress_base=16, progress_done=42)
     update_youtube_workflow_job(
         job_id,
@@ -649,7 +649,7 @@ def _run_analysis_from_transcript_job(job, source_file, telemetry=None):
         "transcriptLanguage": language or "",
         "transcriptFilePath": str(transcript_file),
         "generatedAt": datetime.datetime.now().isoformat(timespec="seconds"),
-    })
+    }, job.get("ownerUserId"))
     update_youtube_workflow_job(
         job_id,
         status="success",
@@ -671,12 +671,15 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT analysis_status FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute(
+            "SELECT analysis_status FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (video_id, base_job.get("ownerUserId")),
+        )
         row = cursor.fetchone()
         if not row:
             return None
         analysis_status = int(row["analysis_status"] or 0)
-        if analysis_status == 2 or _active_analysis_job_for_video(cursor, video_id):
+        if analysis_status == 2 or _active_analysis_job_for_video(cursor, video_id, base_job.get("ownerUserId")):
             return None
         if not force and analysis_status == 1:
             return None
@@ -695,9 +698,9 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         job = create_youtube_workflow_job(payload, allow_active_job=True, lock_scope="analysis")
     except WorkflowConflictError:
         return None
-    update_youtube_video_analysis_status(video_id, 2)
+    update_youtube_video_analysis_status(video_id, 2, base_job.get("ownerUserId"))
     try:
-        _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
+        _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""), owner_user_id=job.get("ownerUserId"))
     except Exception as exc:
         message = "分析任务提交失败"
         update_youtube_workflow_job(
@@ -710,7 +713,7 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
             error_reason=message,
             error_detail=str(exc),
         )
-        update_youtube_video_analysis_status(video_id, 3, {
+        update_youtube_video_analysis_status(video_id, 3, base_job.get("ownerUserId"), {
             "error": {"code": "VF-WORKFLOW-SUBMIT-FAILED", "message": message},
         })
         raise

@@ -34,16 +34,16 @@ def save_subtitle_audit_snapshot(job, initial_segments, reviewed_segments, revie
         with _db_connect() as conn:
             conn.execute('''
                 INSERT INTO youtube_subtitle_audits (
-                    job_id, video_id, video_title, target_language, initial_segments, reviewed_segments,
+                    owner_user_id, job_id, video_id, video_title, target_language, initial_segments, reviewed_segments,
                     review_status, fallback_segment_count, review_batches, saved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     video_id = excluded.video_id, video_title = excluded.video_title,
                     target_language = excluded.target_language, initial_segments = excluded.initial_segments,
                     reviewed_segments = excluded.reviewed_segments, review_status = excluded.review_status,
                     fallback_segment_count = excluded.fallback_segment_count, review_batches = excluded.review_batches, saved_at = excluded.saved_at
             ''', (
-                job_id, str(job.get("videoId") or ""), str(job.get("title") or ""),
+                job.get("ownerUserId"), job_id, str(job.get("videoId") or ""), str(job.get("title") or ""),
                 str(job.get("subtitleLanguage") or "zh-CN"),
                 json.dumps(initial_segments or [], ensure_ascii=False),
                 json.dumps(reviewed_segments or [], ensure_ascii=False),

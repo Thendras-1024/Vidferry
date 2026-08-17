@@ -243,7 +243,7 @@ def _load_transcript_file(path):
 def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, progress_done=34):
     video_id = job.get("videoId") or ""
     job_id = job.get("id")
-    record = _get_youtube_video_record(video_id)
+    record = _get_youtube_video_record(video_id, job.get("ownerUserId"))
     cached = _load_transcript_file((record or {}).get("transcriptFilePath") or "")
     if cached:
         _update_translate_progress(job_id, progress_done, f"已复用转写缓存，识别到 {len(cached['segments'])} 段字幕")
@@ -254,6 +254,7 @@ def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, prog
     if cached:
         update_youtube_video_artifacts(
             video_id,
+            job.get("ownerUserId"),
             transcript_status=1,
             transcript_file_path=str(cached["path"]),
             transcript_language=cached["language"],
@@ -287,6 +288,7 @@ def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, prog
     if video_id:
         update_youtube_video_artifacts(
             video_id,
+            job.get("ownerUserId"),
             transcript_status=1,
             transcript_file_path=str(transcript_file),
             transcript_language=language or "",
@@ -957,7 +959,7 @@ def _resolve_comment_burn_snapshot(job, comment_future, duration):
         snapshot = {"status": "failed", "comments": [], "reason": f"评论任务异常：{str(exc)[:160]}"}
     scheduled = schedule_comment_burn(snapshot, duration, job.get("commentBurnCount"))
     signature = comment_burn_signature(job)
-    save_youtube_comment_burn_snapshot(job.get("videoId"), scheduled, signature, scheduled.get("status"))
+    save_youtube_comment_burn_snapshot(job.get("videoId"), scheduled, signature, scheduled.get("status"), job.get("ownerUserId"))
     return scheduled
 
 

@@ -157,14 +157,14 @@ def test_publish_draft_save_keeps_selected_and_video_custom_tags_separate(monkey
     backend = create_backend_module()
     database_path = Path(tmp_path) / "draft.sqlite"
     with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "CREATE TABLE youtube_videos (video_id TEXT PRIMARY KEY, publish_draft TEXT, updated_at TEXT)"
-        )
-        connection.execute("INSERT INTO youtube_videos (video_id, publish_draft) VALUES (?, ?)", ("video-1", "{}"))
+            connection.execute(
+                "CREATE TABLE youtube_videos (video_id TEXT PRIMARY KEY, owner_user_id INTEGER, publish_draft TEXT, updated_at TEXT)"
+            )
+            connection.execute("INSERT INTO youtube_videos (video_id, owner_user_id, publish_draft) VALUES (?, ?, ?)", ("video-1", 1, "{}"))
 
     calls = 0
 
-    def get_analysis(_video_id):
+    def get_analysis(_video_id, _owner_id):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -181,7 +181,7 @@ def test_publish_draft_save_keeps_selected_and_video_custom_tags_separate(monkey
     saved = backend.update_youtube_video_publish_draft("video-1", {
         "tags": ["#自动", "自动"],
         "customTags": ["#补充", "自动", "补充"],
-    })
+    }, 1)
 
     assert saved["draft"]["tags"] == ["自动"]
     assert saved["draft"]["customTags"] == ["补充"]
@@ -194,6 +194,9 @@ def test_publish_tag_limit_only_truncates_platforms_with_known_limit():
 
     assert backend.merge_publish_tags(3, ["common"], ["custom"], topics) == [
         "common", "custom", "topic-0", "topic-1", "topic-2",
+    ]
+    assert backend.merge_publish_tags(4, ["common"], ["custom"], topics) == [
+        "common", "custom", "topic-0", "topic-1",
     ]
     assert backend.merge_publish_tags(5, ["common"], ["custom"], topics) == [
         "common", "custom", *topics,
@@ -239,6 +242,7 @@ def test_publish_tag_presets_are_scoped_to_user_and_platform(monkeypatch, tmp_pa
 
     assert saved["presets"]["3"] == ["common", "custom"]
     assert saved["presets"]["5"] == ["topic-b"]
+    assert saved["limits"] == {"3": 5, "4": 4}
     assert backend.get_publish_tag_presets(11)["presets"] == saved["presets"]
     assert backend.get_publish_tag_presets(12)["presets"]["3"] == []
 
