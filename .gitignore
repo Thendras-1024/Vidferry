@@ -239,6 +239,7 @@ docs/*
 !docs/**/
 !docs/**/*.md
 tests/*
+!tests/test_youtube_local_retention.py
 !tests/test_postgres_compat.py
 !tests/test_postgres_migrations.py
 !tests/conftest.py

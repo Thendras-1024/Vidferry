@@ -274,10 +274,13 @@
       <template #header>
         <div class="panel-header">
           <div>
-            <span class="panel-kicker">线索列表</span>
-            <h2>候选视频</h2>
+            <span class="panel-kicker">{{ historyMode ? '历史线索' : '线索列表' }}</span>
+            <h2>{{ historyMode ? '已清理本地文件的视频' : '候选视频' }}</h2>
           </div>
           <div class="list-tools">
+            <el-button size="small" :icon="Clock" @click="toggleHistoryMode">
+              {{ historyMode ? '返回线索列表' : '历史线索' }}
+            </el-button>
             <el-input
               v-model="videoFilter.keyword"
               class="video-keyword-filter"
@@ -289,8 +292,8 @@
             />
             <VideoGroupSelect v-model="videoFilter.groupId" include-all class="group-filter" />
             <el-button size="small" :icon="Setting" title="管理线索分组" @click="groupManagerVisible = true" />
-            <el-dropdown :disabled="selectedVideos.length === 0" @command="moveSelectedVideos">
-              <el-button size="small" type="primary" plain :disabled="selectedVideos.length === 0">
+            <el-dropdown :disabled="historyMode || selectedVideos.length === 0" @command="moveSelectedVideos">
+              <el-button size="small" type="primary" plain :disabled="historyMode || selectedVideos.length === 0">
                 移动到分组 {{ selectedVideos.length || '' }}
               </el-button>
               <template #dropdown>
@@ -303,7 +306,7 @@
               size="small"
               type="danger"
               plain
-              :disabled="selectedVideos.length === 0"
+              :disabled="historyMode || selectedVideos.length === 0"
               :loading="batchDeleting"
               @click="batchDeleteVideos"
             >
@@ -332,6 +335,15 @@
           </div>
         </div>
       </template>
+
+      <el-alert
+        v-if="historyMode"
+        title="这些视频已发布且本地媒体文件已清理；数据库记录、处理记录和发布台账仍会保留。重新下载或处理后可再次发布。"
+        type="info"
+        :closable="false"
+        show-icon
+        class="history-leads-alert"
+      />
 
       <el-table
         :data="items"
@@ -413,7 +425,7 @@
                     size="small"
                     type="success"
                     effect="plain"
-                    :closable="Boolean(platform.recordId)"
+                    :closable="Boolean(platform.recordId) && platform.status !== 'confirmed'"
                     @close="deletePublishedPlatform(row, platform)"
                   >
                     {{ platform.name }}
@@ -471,7 +483,7 @@
                       <div class="draft-field-label"><span>标题</span><small>用于平台发布</small></div>
                       <el-select :model-value="publishDraftForm(row).customTitleEnabled ? CUSTOM_TITLE_VALUE : publishDraftForm(row).selectedTitle" placeholder="选择发布标题" filterable @change="handleTitleOptionChange(row, $event)">
                         <el-option v-for="title in publishDraftForm(row).titleOptions" :key="title" :label="title" :value="title" />
-                        <el-option label="自定义标题" :value="CUSTOM_TITLE_VALUE" />
+                        <el-option :label="publishDraftForm(row).selectedTitle || '自定义标题'" :value="CUSTOM_TITLE_VALUE" />
                       </el-select>
                     </div>
                     <div class="draft-row">
@@ -491,7 +503,7 @@
                       </el-select>
                     </div>
                     <div class="draft-row">
-                      <div class="draft-field-label"><span>本视频自定义话题</span><small>仅追加到当前视频的所有发布平台</small></div>
+                      <div class="draft-field-label"><span>本视频自定义话题</span></div>
                       <div class="tag-cloud">
                         <el-tag v-for="tag in publishDraftForm(row).customTags" :key="tag" closable @close="removeDraftCustomTag(row, tag)">#{{ tag }}</el-tag>
                         <span v-if="publishDraftForm(row).customTags.length === 0" class="empty-topic">暂无自定义话题</span>
@@ -1029,7 +1041,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ChatDotRound, Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Plus, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
+import { ChatDotRound, Clock, Delete, DocumentCopy, Download, Folder, InfoFilled, Link, Plus, Refresh, Search, Setting, VideoCamera, VideoPlay } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
@@ -1039,6 +1051,7 @@ import { useNotificationStore } from '@/stores/notification'
 import { useVideoGroupStore } from '@/stores/videoGroup'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 import VideoGroupManageDialog from '@/components/VideoGroupManageDialog.vue'
+import { cleanTopicList, normalizeDraftTopics } from '@/utils/publishDraft'
 
 const loading = ref(false)
 const searchLoading = ref(false)
@@ -1728,6 +1741,15 @@ const videoFilter = reactive({
   keyword: ''
 })
 
+const historyMode = computed(() => route.query.view === 'history')
+
+const toggleHistoryMode = () => {
+  router.replace({
+    path: route.path,
+    query: { ...route.query, view: historyMode.value ? undefined : 'history' }
+  })
+}
+
 const videoPagination = reactive({
   page: 1,
   pageSize: 20
@@ -1885,15 +1907,6 @@ const analysisActionText = (item) => {
   return '生成发布文案'
 }
 
-const cleanTopicList = (topics = []) => {
-  const values = Array.isArray(topics) ? topics : String(topics || '').split(/[，,\s]+/)
-  return Array.from(new Set(
-    values
-      .map(tag => String(tag || '').trim().replace(/^#+/, ''))
-      .filter(Boolean)
-  ))
-}
-
 const buildAnalysisDraft = (draft = {}, result = {}) => {
   const llmTitleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
   const draftTitleOptions = Array.isArray(draft.title_options) ? draft.title_options.filter(Boolean) : []
@@ -1936,7 +1949,6 @@ const normalizeVideoItem = (item) => {
 }
 
 const videoThumbnail = (item) => {
-  if (item?.localThumbnailPath) return materialApi.getMaterialPreviewUrl(item.localThumbnailPath)
   const videoId = String(item?.id || '').trim()
   return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : item?.thumbnail || ''
 }
@@ -1963,13 +1975,6 @@ const cloneAnalysisDraft = (draft = {}) => ({
   summary: draft.summary || '',
   chinaViewAngle: draft.chinaViewAngle || ''
 })
-
-const normalizeDraftTopics = (draft) => {
-  if (!draft) return
-  draft.tags = cleanTopicList(draft.tags)
-  draft.customTags = cleanTopicList(draft.customTags).filter(tag => !draft.tags.includes(tag))
-  draft.tagOptions = Array.from(new Set([...draft.tags, ...cleanTopicList(draft.tagOptions)]))
-}
 
 const addDraftTag = (item) => {
   const draft = publishDraftForm(item)
@@ -2416,6 +2421,7 @@ const loadVideos = async (showLoading = true, options = {}) => {
     pageSize: videoPagination.pageSize,
     status: videoFilter.status,
     sort: videoFilter.sort,
+    storageScope: historyMode.value ? 'history' : 'active',
     groupId: videoFilter.groupId || undefined,
     keyword: videoFilter.keyword.trim() || undefined
   }
@@ -2444,6 +2450,7 @@ const refreshVideosByIds = async (videoIds = []) => {
   try {
     const res = await youtubeApi.list({
       ids: ids.join(','),
+      storageScope: historyMode.value ? 'history' : 'active',
       page: 1,
       pageSize: Math.min(ids.length, 100)
     })
@@ -3330,6 +3337,11 @@ const handleAgentLeadsImported = () => {
   loadVideos(false, { force: true })
 }
 
+const handleAgentPublishDraftUpdated = (event) => {
+  const videoId = String(event?.detail?.videoId || '').trim()
+  if (videoId) refreshVideosByIds([videoId])
+}
+
 onMounted(async () => {
   loadingWorkflowSettings = true
   await Promise.all([loadBilibiliCategories(), loadAccounts(), loadPublishAccountGroups(), videoGroupStore.load()])
@@ -3349,6 +3361,7 @@ onMounted(async () => {
   consumeAgentStatusQuery()
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('vidferry:youtube-leads-imported', handleAgentLeadsImported)
+  window.addEventListener('vidferry:youtube-publish-draft-updated', handleAgentPublishDraftUpdated)
 })
 
 watch(() => route.query.openSettings, () => {
@@ -3363,6 +3376,12 @@ watch(() => route.query.status, () => {
   consumeAgentStatusQuery()
 })
 
+watch(historyMode, () => {
+  videoPagination.page = 1
+  selectedVideos.value = []
+  loadVideos(true, { force: true })
+})
+
 watch(() => appStore.publishRecordsRevision, () => {
   const videoId = appStore.lastChangedPublishedVideoId
   if (videoId) refreshVideosByIds([videoId])
@@ -3375,6 +3394,7 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('vidferry:youtube-leads-imported', handleAgentLeadsImported)
+  window.removeEventListener('vidferry:youtube-publish-draft-updated', handleAgentPublishDraftUpdated)
   if (jobsTimer) {
     window.clearTimeout(jobsTimer)
     jobsTimer = null
