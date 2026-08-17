@@ -118,6 +118,7 @@ def update_agent_proposal_state(
     scheduled_at="",
     result_message="",
     workflow_jobs=None,
+    proposal_updates=None,
 ):
     """Persist a confirmation result on the assistant message that created the proposal."""
     session_id = str(session_id or "").strip()
@@ -162,6 +163,8 @@ def update_agent_proposal_state(
                     for item in (workflow_jobs or [])
                     if isinstance(item, dict) and item.get("id")
                 ]
+                if isinstance(proposal_updates, dict):
+                    proposal.update(proposal_updates)
                 context[proposal_key] = proposal
                 cursor.execute(
                     "UPDATE agent_messages SET context = ? WHERE id = ?",
@@ -170,6 +173,33 @@ def update_agent_proposal_state(
                 conn.commit()
                 return True
     return False
+
+
+def update_agent_session_context(session_id, changes):
+    """在当前账号和会话范围内原子更新临时 Agent 上下文。"""
+    session_id = str(session_id or "").strip()
+    if not session_id or not isinstance(changes, dict):
+        return None
+    owner_user_id = _agent_current_user_id()
+    owner_filter, owner_values = _agent_owner_filter(owner_user_id, "owner_user_id")
+    with agent_session_guard(session_id):
+        with _db_connect(row_factory=True) as conn:
+            row = conn.execute(
+                f"SELECT context FROM agent_sessions WHERE id = ? AND deleted_at IS NULL{owner_filter}",
+                (session_id, *owner_values),
+            ).fetchone()
+            if not row:
+                return None
+            context = _agent_json_loads(row["context"], {})
+            context = dict(context) if isinstance(context, dict) else {}
+            context.update(changes)
+            now = _agent_now_iso()
+            conn.execute(
+                "UPDATE agent_sessions SET context = ?, updated_at = ? WHERE id = ?",
+                (_agent_json_dumps(context), now, session_id),
+            )
+            conn.commit()
+            return context
 
 
 def start_agent_turn(session_id="", message="", context=None):

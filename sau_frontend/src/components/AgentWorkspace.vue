@@ -15,8 +15,8 @@
               <div class="agent-context-card">
                 <div class="agent-avatar"><el-icon><ChatDotRound /></el-icon></div>
                 <div class="agent-context-copy">
-                  <strong>Vidferry 项目管家</strong>
-                  <span>视频采集、处理、素材与发布状态查询</span>
+                  <strong>Vidferry 项目助手</strong>
+                  <span>视频采集、处理、短视频拼接、素材与发布提案</span>
                 </div>
               </div>
               <div v-if="agentSessionId" class="agent-context-status">
@@ -58,12 +58,25 @@
                     </div>
                     <span v-if="message.content">{{ message.content }}</span>
                   </div>
-                  <div v-for="card in message.cards || []" :key="`${message.id}-${card.type}-${card.title}`" class="agent-result-card">
-                    <div class="agent-card-title"><span>{{ card.title }}</span><strong>{{ card.count }}</strong></div>
-                    <div v-for="item in card.items || []" :key="`${item.title}-${item.detail || item.status}`" class="agent-card-item">
-                      <strong>{{ item.title }}</strong><span>{{ item.detail || item.channel || item.status }}</span>
-                    </div>
-                  </div>
+                  <AgentTaskPlan :task-plan="message.taskPlan" />
+                  <AgentVideoStatusCard
+                    v-for="card in (message.cards || []).filter(item => item.type === 'video_status')"
+                    :key="`${message.id}-${card.cardId}`"
+                    :card="card"
+                    :selection="agentVideoSelection"
+                    :loading="agentLoading"
+                    @update:selection="updateAgentVideoSelection"
+                    @page="loadAgentVideoStatusCardPage(message, card, $event)"
+                  />
+                  <AgentResultCard v-for="card in (message.cards || []).filter(item => item.type !== 'video_status')" :key="`${message.id}-${card.type}-${card.title}`" :card="card" @select-video="selectAgentVideoCard" />
+                  <AgentCopywritingProposal
+                    v-if="message.copywritingProposal"
+                    :proposal="message.copywritingProposal"
+                    :session-id="agentSessionId"
+                    :readonly="agentSessionReadonly"
+                    @update="updateAgentCopywritingProposal(message, $event)"
+                    @saved="handleAgentCopywritingSaved(message, $event)"
+                  />
                   <section v-if="message.importProposal" class="agent-proposal">
                     <div class="agent-proposal-title">
                       <span>待确认线索</span><strong>{{ message.importProposal.items?.length || 0 }}</strong>
@@ -98,8 +111,13 @@
                   <section v-if="message.executionProposal" class="agent-proposal">
                     <div class="agent-proposal-title"><span>待确认操作</span><strong>{{ message.executionProposal.actionLabel }}</strong></div>
                     <p class="agent-proposal-description">{{ message.executionProposal.video?.title || '当前视频' }}</p>
+                    <el-checkbox-group v-if="message.executionProposal.status === 'pending'" v-model="message.selectedExecutionVideoIds" class="agent-proposal-list">
+                      <el-checkbox v-for="video in message.executionProposal.videos || []" :key="video.id" :value="video.id" class="agent-proposal-item">
+                        <span class="agent-proposal-copy"><strong>{{ video.title || video.id }}</strong><small>{{ [video.shortCode, video.channel, video.duration].filter(Boolean).join(' · ') }}</small></span>
+                      </el-checkbox>
+                    </el-checkbox-group>
                     <el-checkbox-group v-if="message.executionProposal.status === 'pending' && message.executionProposal.requiresTargets" v-model="message.selectedExecutionAccountIds" class="agent-proposal-targets" @change="normalizeExecutionAccountSelection(message)">
-                      <el-checkbox v-for="account in message.executionProposal.availableAccounts || []" :key="account.id" :value="account.id">{{ account.platformName }} · {{ account.name }}</el-checkbox>
+                      <el-checkbox v-for="account in message.executionProposal.availableAccounts || []" :key="account.id" :value="account.id" :disabled="(message.executionProposal.publishedPlatformTypes || []).includes(account.platformType)">{{ account.platformName }} · {{ account.name }}<small v-if="(message.executionProposal.publishedPlatformTypes || []).includes(account.platformType)">（已发布）</small></el-checkbox>
                     </el-checkbox-group>
                     <el-checkbox-group v-else-if="message.executionProposal.status === 'confirmed' && message.executionProposal.requiresTargets" v-model="message.selectedExecutionAccountIds" class="agent-proposal-targets is-readonly">
                       <el-checkbox v-for="account in message.executionProposal.availableAccounts || []" :key="account.id" :value="account.id" disabled>{{ account.platformName }} · {{ account.name }}</el-checkbox>
@@ -145,6 +163,10 @@
                   <span :title="agentVideoContext.title">{{ agentVideoContext.title || '未命名视频' }}</span>
                   <el-tag size="small" effect="plain">{{ agentVideoContext.publishedPlatforms?.length || 0 }} 个平台</el-tag>
                 </div>
+                <div v-if="agentVideoSelection.length" class="agent-video-selection">
+                  <span>已选 {{ agentVideoSelection.length }} 个视频</span>
+                  <el-button text size="small" :disabled="agentLoading" @click="clearAgentVideoSelection">清空</el-button>
+                </div>
                 <div class="agent-composer">
                   <el-input ref="agentInputRef" v-model="agentInput" type="textarea" :rows="3" maxlength="500" show-word-limit :disabled="agentSessionReadonly" :placeholder="agentSessionReadonly ? '飞书会话仅可查看' : '询问视频采集、处理、素材或发布状态'" @keydown="handleAgentInputKeydown" />
                   <el-button class="agent-send-button" type="primary" :loading="agentLoading" :disabled="agentSessionReadonly || !agentInput.trim()" circle aria-label="发送" @click="sendAgentMessage()">
@@ -169,7 +191,7 @@
             <strong>Vidferry Agent</strong>
           </div>
           <el-tag size="small" effect="plain" :type="agentConfigWarning ? 'warning' : 'success'">
-            只读
+            受控操作
           </el-tag>
           <el-tooltip content="历史会话" placement="bottom">
             <el-button text circle title="历史会话" aria-label="历史会话" @click="openAgentHistory">
@@ -187,6 +209,10 @@
             <el-icon><Plus /></el-icon>
             新对话
           </el-button>
+          <div v-if="agentVideoSelection.length" class="agent-video-selection">
+            <span>已选 {{ agentVideoSelection.length }} 个视频</span>
+            <el-button text size="small" :disabled="agentLoading" @click="clearAgentVideoSelection">清空</el-button>
+          </div>
           <el-input
             v-model="agentHistoryQuery"
             class="agent-session-search"
@@ -250,7 +276,7 @@
             <el-icon><ChatDotRound /></el-icon>
           </div>
           <div class="agent-context-copy">
-            <strong>只读项目管家</strong>
+            <strong>受控项目助手</strong>
             <span>{{ agentContextLabel }} · {{ agentConfigWarning ? '等待视觉模型' : '在线' }}</span>
           </div>
           <el-tag size="small" effect="plain" :type="agentSessionSource === 'feishu' ? 'success' : 'info'">
@@ -311,13 +337,25 @@
               </div>
               <span v-if="message.content">{{ message.content }}</span>
             </div>
-            <div v-for="card in message.cards || []" :key="`${message.id}-${card.type}-${card.title}`" class="agent-result-card">
-              <div class="agent-card-title"><span>{{ card.title }}</span><strong>{{ card.count }}</strong></div>
-              <div v-for="item in card.items || []" :key="`${item.title}-${item.detail || item.status}`" class="agent-card-item">
-                <strong>{{ item.title }}</strong>
-                <span>{{ item.detail || item.channel || item.status }}</span>
-              </div>
-            </div>
+            <AgentTaskPlan :task-plan="message.taskPlan" />
+            <AgentVideoStatusCard
+              v-for="card in (message.cards || []).filter(item => item.type === 'video_status')"
+              :key="`${message.id}-${card.cardId}`"
+              :card="card"
+              :selection="agentVideoSelection"
+              :loading="agentLoading"
+              @update:selection="updateAgentVideoSelection"
+              @page="loadAgentVideoStatusCardPage(message, card, $event)"
+            />
+            <AgentResultCard v-for="card in (message.cards || []).filter(item => item.type !== 'video_status')" :key="`${message.id}-${card.type}-${card.title}`" :card="card" @select-video="selectAgentVideoCard" />
+            <AgentCopywritingProposal
+              v-if="message.copywritingProposal"
+              :proposal="message.copywritingProposal"
+              :session-id="agentSessionId"
+              :readonly="agentSessionReadonly"
+              @update="updateAgentCopywritingProposal(message, $event)"
+              @saved="handleAgentCopywritingSaved(message, $event)"
+            />
             <div v-if="message.actions?.length" class="agent-actions">
               <el-button v-for="action in message.actions" :key="`${message.id}-${action.label}`" size="small" plain @click="confirmAgentAction(action)">{{ action.label }}</el-button>
             </div>
@@ -429,6 +467,10 @@
 <script setup>
 import { reactive, toRefs } from 'vue'
 import { ChatDotRound, Clock, Delete, DocumentCopy, Loading, Plus, Promotion, RefreshRight, Search } from '@element-plus/icons-vue'
+import AgentCopywritingProposal from '@/components/AgentCopywritingProposal.vue'
+import AgentResultCard from '@/components/AgentResultCard.vue'
+import AgentTaskPlan from '@/components/AgentTaskPlan.vue'
+import AgentVideoStatusCard from '@/components/AgentVideoStatusCard.vue'
 
 const props = defineProps({
   workspace: { type: Object, required: true },
@@ -440,16 +482,17 @@ const props = defineProps({
 const {
   agentDrawerVisible, agentLoading, agentInput, agentSessionId, agentMessages, agentMessagesRef,
   agentOlderMessagesLoading, agentHasOlderMessages, agentMessagesBeforeId, agentSessionRestoreLoading,
-  agentInputRef, agentRetryContext, agentVideoContext, agentIncludeVideoContext, agentHistoryVisible,
+  agentInputRef, agentRetryContext, agentVideoContext, agentIncludeVideoContext, agentVideoSelection, agentHistoryVisible,
   agentHistoryLoading, agentHistory, agentHistoryRange, agentHistorySource, agentHistoryQuery,
   agentFiltersVisible, agentCurrentSession, agentContextStats, agentContextDetailsVisible, agentCompaction, agentContextUsageLabel, agentCompactionElapsedSeconds, agentSessionSource, agentSessionSourceLabel, agentSessionReadonly,
   agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext,
   scrollAgentMessages, loadOlderAgentMessages, handleAgentMessagesScroll, newAgentConversation, startAgentConversation,
-  sendAgentMessage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
+  sendAgentMessage, selectAgentVideoCard, updateAgentVideoSelection, clearAgentVideoSelection, loadAgentVideoStatusCardPage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
   selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
   confirmAgentAction, handleAskAgentEvent,
   normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport,
   normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
+  updateAgentCopywritingProposal, handleAgentCopywritingSaved,
   agentWorkflowStatusLabel, agentWorkflowStageLabel
 } = toRefs(reactive(props.workspace))
 </script>
@@ -520,6 +563,18 @@ const {
 .agent-proposal-action {
   display: flex;
   width: 100%;
+}
+
+.agent-video-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  font-size: 12px;
 }
 
 .agent-task-progress {

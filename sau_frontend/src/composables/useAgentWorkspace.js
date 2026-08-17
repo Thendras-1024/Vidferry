@@ -43,6 +43,8 @@ export function useAgentWorkspace({ route, router }) {
   const agentRetryContext = ref(null)
   const agentVideoContext = ref(null)
   const agentIncludeVideoContext = ref(false)
+  const agentVideoSelection = ref([])
+  const agentVideoSelectionCardId = ref('')
   const agentHistoryVisible = ref(false)
   const agentHistoryLoading = ref(false)
   const agentHistory = ref([])
@@ -121,12 +123,15 @@ export function useAgentWorkspace({ route, router }) {
     if (sessionId !== agentSessionId.value || !response?.data) return
     agentCurrentSession.value = response.data
     agentContextStats.value = response.data.contextStats || null
+    agentVideoSelection.value = Array.isArray(response.data.context?.agentVideoSelection) ? response.data.context.agentVideoSelection : []
+    agentVideoSelectionCardId.value = response.data.context?.agentVideoSelectionCardId || ''
   }
 
   const currentAgentContext = computed(() => ({
     path: route.path,
     query: route.query,
-    pageTitle: PAGE_TITLES[route.path] || route.meta?.title || route.name || route.path
+    pageTitle: PAGE_TITLES[route.path] || route.meta?.title || route.name || route.path,
+    videoSelection: agentVideoSelection.value
   }))
 
   const scrollAgentMessages = async () => {
@@ -195,6 +200,7 @@ export function useAgentWorkspace({ route, router }) {
     const proposalConfirmed = importProposal?.status === 'confirmed'
     const executionProposal = message.context?.executionProposal || null
     const executionConfirmed = executionProposal?.status === 'confirmed'
+    const copywritingProposal = message.context?.copywritingProposal || null
     return {
       id: `history-${message.id}`,
       historyId: Number(message.id),
@@ -210,10 +216,13 @@ export function useAgentWorkspace({ route, router }) {
       imported: proposalConfirmed,
       importResult: proposalConfirmed ? (importProposal.resultMessage || '该确认已完成。') : '',
       executionProposal,
+      selectedExecutionVideoIds: executionConfirmed ? (executionProposal.selectedIds || []) : (executionProposal?.videoIds || []),
       selectedExecutionAccountIds: executionConfirmed ? (executionProposal.selectedAccountIds || []) : defaultExecutionAccountIds(executionProposal),
       executionScheduledAt: executionProposal?.scheduledAt || '',
       executed: executionConfirmed,
       executionResult: executionConfirmed ? (executionProposal.resultMessage || '该确认已完成。') : '',
+      copywritingProposal,
+      taskPlan: message.context?.taskPlan || null,
       agentTasks: [
         ...(importProposal?.workflowJobs || []),
         ...(executionProposal?.workflowJobs || [])
@@ -252,6 +261,10 @@ export function useAgentWorkspace({ route, router }) {
       }
       agentCurrentSession.value = sessionResponse?.data || agentCurrentSession.value
       agentContextStats.value = sessionResponse?.data?.contextStats || null
+      agentVideoSelection.value = Array.isArray(sessionResponse?.data?.context?.agentVideoSelection)
+        ? sessionResponse.data.context.agentVideoSelection
+        : []
+      agentVideoSelectionCardId.value = sessionResponse?.data?.context?.agentVideoSelectionCardId || ''
       agentMessages.value = (messagesResponse?.data?.items || []).map(mapAgentHistoryMessage)
       agentMessages.value.forEach(watchAgentWorkflowTasks)
       agentHasOlderMessages.value = Boolean(messagesResponse?.data?.hasMore)
@@ -315,6 +328,8 @@ export function useAgentWorkspace({ route, router }) {
     agentRetryContext.value = null
     agentVideoContext.value = null
     agentIncludeVideoContext.value = false
+    agentVideoSelection.value = []
+    agentVideoSelectionCardId.value = ''
     agentCurrentSession.value = null
     agentContextStats.value = null
     agentContextDetailsVisible.value = false
@@ -341,7 +356,8 @@ export function useAgentWorkspace({ route, router }) {
     if (route.path !== '/') await router.push('/')
     agentInput.value = ''
     const context = { ...currentAgentContext.value, ...(content ? {} : agentRetryContext.value || {}), ...extraContext }
-    if (agentVideoContext.value && agentIncludeVideoContext.value) context.videoContext = agentVideoContext.value
+    const selectedVideoContext = extraContext.videoContext || (agentVideoContext.value && agentIncludeVideoContext.value ? agentVideoContext.value : null)
+    if (selectedVideoContext) context.videoContext = selectedVideoContext
     else delete context.videoContext
     agentRetryContext.value = null
     pushAgentMessage('user', message, { context })
@@ -351,6 +367,7 @@ export function useAgentWorkspace({ route, router }) {
     try {
       await agentApi.chatStream({ message, sessionId: agentSessionId.value, context }, (type, payload) => {
         if (type === 'status') responseMessage.statusMessage = payload.message || '正在思考'
+        if (type === 'task_plan') responseMessage.taskPlan = payload.plan || null
         if (type === 'context_compaction') setAgentCompaction(payload)
         if (type === 'delta') {
           responseMessage.thinking = false
@@ -369,8 +386,11 @@ export function useAgentWorkspace({ route, router }) {
           responseMessage.importScheduledAt = payload.importProposal?.scheduledAt || ''
           responseMessage.agentTasks = []
           responseMessage.executionProposal = payload.executionProposal || null
+          responseMessage.selectedExecutionVideoIds = payload.executionProposal?.videoIds || []
           responseMessage.selectedExecutionAccountIds = defaultExecutionAccountIds(payload.executionProposal)
           responseMessage.executionScheduledAt = ''
+          responseMessage.copywritingProposal = payload.copywritingProposal || null
+          responseMessage.taskPlan = payload.taskPlan || responseMessage.taskPlan || null
           saveAgentSessionId(payload.sessionId)
           agentCurrentSession.value = { id: payload.sessionId, source: 'web' }
         }
@@ -388,6 +408,57 @@ export function useAgentWorkspace({ route, router }) {
       void loadAgentHistory()
       void refreshAgentSession(agentSessionId.value)
       window.setTimeout(() => { void refreshAgentSession(agentSessionId.value) }, 1200)
+    }
+  }
+
+  const selectAgentVideoCard = async videoContext => {
+    if (!videoContext?.videoId || agentLoading.value || agentSessionReadonly.value) return
+    agentVideoContext.value = videoContext
+    agentIncludeVideoContext.value = true
+    await sendAgentMessage(`查看视频“${videoContext.title || videoContext.videoId}”的完整信息和待发布稿。`, { videoContext })
+  }
+
+  const updateAgentVideoSelection = async (videoIds, cardId) => {
+    if (!agentSessionId.value || agentLoading.value || agentSessionReadonly.value) return
+    const normalized = [...new Set((videoIds || []).map(item => String(item || '').trim()).filter(Boolean))]
+    const resolvedCardId = cardId || agentVideoSelectionCardId.value
+    try {
+      const response = await agentApi.updateVideoSelection(agentSessionId.value, normalized, resolvedCardId)
+      agentVideoSelection.value = response?.data?.videoIds || normalized
+      agentVideoSelectionCardId.value = resolvedCardId
+      agentMessages.value.forEach(message => {
+        const proposal = message.copywritingProposal
+        if (proposal && ['selecting_video', 'ready'].includes(proposal.status)) {
+          proposal.status = 'expired'
+          proposal.resultMessage = '视频选择已变更，请重新生成文案提案。'
+        }
+      })
+      if (agentCurrentSession.value) {
+        agentCurrentSession.value = {
+          ...agentCurrentSession.value,
+          context: {
+            ...(agentCurrentSession.value.context || {}),
+            agentVideoSelection: agentVideoSelection.value,
+            agentVideoSelectionCardId: agentVideoSelectionCardId.value
+          }
+        }
+      }
+    } catch (error) {
+      ElMessage.error(error?.message || '保存视频选择失败')
+    }
+  }
+
+  const clearAgentVideoSelection = () => updateAgentVideoSelection([])
+
+  const loadAgentVideoStatusCardPage = async (message, card, page) => {
+    if (!message || !card?.cardId || !agentSessionId.value || agentLoading.value) return
+    try {
+      const response = await agentApi.getVideoStatusCardPage(card.cardId, { sessionId: agentSessionId.value, page })
+      const nextCard = response?.data
+      if (!nextCard) return
+      message.cards = (message.cards || []).map(item => item.cardId === card.cardId ? nextCard : item)
+    } catch (error) {
+      ElMessage.error(error?.message || '加载视频状态卡失败')
     }
   }
 
@@ -432,6 +503,8 @@ export function useAgentWorkspace({ route, router }) {
     agentRetryContext.value = null
     agentVideoContext.value = null
     agentIncludeVideoContext.value = false
+    agentVideoSelection.value = Array.isArray(session.context?.agentVideoSelection) ? session.context.agentVideoSelection : []
+    agentVideoSelectionCardId.value = session.context?.agentVideoSelectionCardId || ''
     if (route.path !== '/') await router.push('/')
     await restoreAgentMessages({ allowExternal: true })
   }
@@ -513,9 +586,10 @@ export function useAgentWorkspace({ route, router }) {
 
   const defaultImportAccountIds = proposal => {
     const hints = new Set(proposal?.platformHints || [])
+    const publishedPlatforms = new Set(proposal?.publishedPlatformTypes || [])
     const selectedPlatforms = new Set()
     return (proposal?.availableAccounts || []).reduce((ids, account) => {
-      if (!hints.has(account.platformType) || selectedPlatforms.has(account.platformType)) return ids
+      if (!hints.has(account.platformType) || publishedPlatforms.has(account.platformType) || selectedPlatforms.has(account.platformType)) return ids
       selectedPlatforms.add(account.platformType)
       ids.push(account.id)
       return ids
@@ -572,6 +646,7 @@ export function useAgentWorkspace({ route, router }) {
       message.imported = true
       proposal.status = 'confirmed'
       message.importResult = `已导入 ${data.createdCount || 0} 个线索，重复 ${data.duplicateCount || 0} 个。`
+      completeAgentTaskPlan(message, message.importResult)
       message.agentTasks = [...(data.downloadJobs || []), ...(data.workflowJobs || [])].map(mapAgentWorkflowTask)
       watchAgentWorkflowTasks(message)
       ElMessage.success(message.importResult)
@@ -605,10 +680,11 @@ export function useAgentWorkspace({ route, router }) {
 
   const normalizeExecutionAccountSelection = message => {
     const accounts = new Map((message?.executionProposal?.availableAccounts || []).map(account => [Number(account.id), account]))
+    const publishedPlatforms = new Set(message?.executionProposal?.publishedPlatformTypes || [])
     const selectedPlatforms = new Set()
     message.selectedExecutionAccountIds = (message.selectedExecutionAccountIds || []).slice().reverse().filter(accountId => {
       const account = accounts.get(Number(accountId))
-      if (!account || selectedPlatforms.has(account.platformType)) return false
+      if (!account || publishedPlatforms.has(account.platformType) || selectedPlatforms.has(account.platformType)) return false
       selectedPlatforms.add(account.platformType)
       return true
     }).reverse()
@@ -616,7 +692,7 @@ export function useAgentWorkspace({ route, router }) {
 
   const canConfirmAgentExecution = message => {
     const proposal = message?.executionProposal
-    if (!proposal?.proposalId || proposal.status !== 'pending' || message.executing || message.executed) return false
+    if (!proposal?.proposalId || proposal.status !== 'pending' || message.executing || message.executed || !(message.selectedExecutionVideoIds || []).length) return false
     if (proposal.requiresTargets && executionTargets(message).length === 0) return false
     return !proposal.requiresSchedule || Boolean(message.executionScheduledAt)
   }
@@ -625,7 +701,7 @@ export function useAgentWorkspace({ route, router }) {
     const proposal = message?.executionProposal
     if (!canConfirmAgentExecution(message) || !agentSessionId.value) return
     try {
-      await ElMessageBox.confirm(`将对“${proposal.video?.title || '当前视频'}”执行“${proposal.actionLabel}”。`, '确认执行', { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' })
+      await ElMessageBox.confirm(`将对 ${message.selectedExecutionVideoIds.length} 个视频执行“${proposal.actionLabel}”。`, '确认执行', { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' })
     } catch {
       return
     }
@@ -633,14 +709,17 @@ export function useAgentWorkspace({ route, router }) {
     try {
       const response = await agentApi.confirmExecutionProposal(proposal.proposalId, {
         sessionId: agentSessionId.value,
+        videoIds: message.selectedExecutionVideoIds,
         targets: executionTargets(message),
         scheduledAt: message.executionScheduledAt || ''
       })
       message.executed = true
       proposal.status = 'confirmed'
       message.executionResult = response?.data?.message || `${proposal.actionLabel}任务已创建。`
-      if (response?.data?.job) {
-        message.agentTasks = [mapAgentWorkflowTask(response.data.job)]
+      completeAgentTaskPlan(message, message.executionResult)
+      const jobs = response?.data?.jobs || (response?.data?.job ? [response.data.job] : [])
+      if (jobs.length) {
+        message.agentTasks = jobs.map(mapAgentWorkflowTask)
         watchAgentWorkflowTasks(message)
       }
       ElMessage.success(message.executionResult)
@@ -666,19 +745,68 @@ export function useAgentWorkspace({ route, router }) {
     agentInputRef.value?.focus()
   }
 
+  const updateAgentCopywritingProposal = (message, proposal) => {
+    if (!message || !proposal) return
+    message.copywritingProposal = proposal
+    updateCopywritingTaskPlan(message, proposal)
+  }
+
+  const handleAgentCopywritingSaved = (message, result) => {
+    if (message && result?.proposal) updateAgentCopywritingProposal(message, result.proposal)
+    if (result?.videoId) {
+      window.dispatchEvent(new CustomEvent('vidferry:youtube-publish-draft-updated', {
+        detail: { videoId: result.videoId }
+      }))
+    }
+  }
+
+  const updateCopywritingTaskPlan = (message, proposal) => {
+    const plan = message?.taskPlan
+    if (!plan || plan.kind !== 'copywriting') return
+    const completed = proposal.status === 'confirmed'
+      ? new Set(['understand', 'select_video', 'load_video', 'generate_drafts', 'save_draft'])
+      : proposal.status === 'ready'
+        ? new Set(['understand', 'select_video', 'load_video', 'generate_drafts'])
+        : new Set(['understand'])
+    const waitingId = proposal.status === 'selecting_video'
+      ? 'select_video'
+      : proposal.status === 'ready'
+        ? 'save_draft'
+        : ''
+    plan.steps = (plan.steps || []).map(step => ({
+      ...step,
+      status: completed.has(step.id) ? 'completed' : step.id === waitingId ? 'waiting_user' : 'pending'
+    }))
+    plan.status = completed ? 'completed' : waitingId ? 'waiting_user' : plan.status
+    plan.waitingFor = proposal.status === 'selecting_video'
+      ? 'video_selection'
+      : proposal.status === 'ready'
+        ? 'copywriting_selection'
+        : ''
+  }
+
+  const completeAgentTaskPlan = (message, detail) => {
+    const plan = message?.taskPlan
+    if (!plan) return
+    plan.steps = (plan.steps || []).map(step => ({ ...step, status: 'completed', detail: step.detail || detail || '' }))
+    plan.status = 'completed'
+    plan.waitingFor = ''
+  }
+
   return {
     agentDrawerVisible, agentLoading, agentInput, agentSessionId, agentMessages, agentMessagesRef,
     agentOlderMessagesLoading, agentHasOlderMessages, agentMessagesBeforeId, agentSessionRestoreLoading,
-    agentInputRef, agentRetryContext, agentVideoContext, agentIncludeVideoContext, agentHistoryVisible,
+    agentInputRef, agentRetryContext, agentVideoContext, agentIncludeVideoContext, agentVideoSelection, agentHistoryVisible,
     agentHistoryLoading, agentHistory, agentHistoryRange, agentHistorySource, agentHistoryQuery,
     agentFiltersVisible, agentCurrentSession, agentContextStats, agentContextDetailsVisible, agentCompaction, agentContextUsageLabel, agentCompactionElapsedSeconds, agentSessionSource, agentSessionSourceLabel, agentSessionReadonly,
     agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext,
     scrollAgentMessages, loadOlderAgentMessages, handleAgentMessagesScroll, newAgentConversation, startAgentConversation,
-    sendAgentMessage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
+    sendAgentMessage, selectAgentVideoCard, updateAgentVideoSelection, clearAgentVideoSelection, loadAgentVideoStatusCardPage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
     selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
     confirmAgentAction, handleAskAgentEvent,
     normalizeImportAccountSelection, canConfirmAgentImport, confirmAgentImport,
     normalizeExecutionAccountSelection, canConfirmAgentExecution, confirmAgentExecution,
+    updateAgentCopywritingProposal, handleAgentCopywritingSaved,
     agentWorkflowStatusLabel, agentWorkflowStageLabel
   }
 }

@@ -34,8 +34,19 @@ def _agent_now_iso():
     return _dt.datetime.now().isoformat(timespec="seconds")
 
 
+def _agent_json_default(value):
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
 def _agent_json_dumps(value):
-    return _json.dumps(value if value is not None else {}, ensure_ascii=False, separators=(",", ":"))
+    return _json.dumps(
+        value if value is not None else {},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=_agent_json_default,
+    )
 
 
 def _agent_json_loads(value, fallback=None):

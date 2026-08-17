@@ -222,13 +222,13 @@ def _emit_usage_telemetry(telemetry, payload):
         logging.exception("LLM 用量遥测写入失败 contract = %s", payload.get("operation") or "")
 
 
-def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None):
+def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None, profile_channel="text"):
     """调用模型并最多进行一次针对契约错误的完整重写。"""
     if not api_key or not base_url or not model:
         raise RuntimeError("模型 API Key、Base URL 或模型名称未配置。")
 
     started_at = time.time()
-    profile = llm_provider_profile(model, api_key, base_url)
+    profile = llm_provider_profile(model, api_key, base_url, profile_channel=profile_channel)
     total_usage = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0}
     current_messages = list(messages)
     last_raw = ""
@@ -747,6 +747,43 @@ def validate_agent_reply(value):
     result = {"answer": answer}
     _fail(violations)
     return result
+
+
+def validate_agent_copywriting(value):
+    violations = []
+    if not isinstance(value, dict):
+        _fail(["顶层必须是对象"])
+    _fixed_fields(value, {"options"}, "文案候选", violations)
+    options = value.get("options")
+    if not isinstance(options, list) or len(options) != 3:
+        violations.append("options 必须恰好包含 3 项")
+        options = []
+    output = []
+    for index, item in enumerate(options):
+        path = f"options[{index}]"
+        if not isinstance(item, dict):
+            violations.append(f"{path} 必须是对象")
+            continue
+        _fixed_fields(item, {"title", "description", "tags", "reason"}, path, violations)
+        title = _chinese_text(item.get("title"), f"{path}.title", violations, validate_text=False)
+        description = _chinese_text(item.get("description"), f"{path}.description", violations, validate_text=False)
+        if len(description) > 500:
+            violations.append(f"{path}.description 不能超过 500 个字符")
+        tags = [
+            tag.lstrip("#").strip()
+            for tag in _string_list(item.get("tags"), f"{path}.tags", violations, allow_empty=False, validate_text=False)
+            if tag.lstrip("#").strip()
+        ]
+        if not tags:
+            violations.append(f"{path}.tags 不能为空")
+        output.append({
+            "title": title,
+            "description": description,
+            "tags": list(dict.fromkeys(tags)),
+            "reason": _chinese_text(item.get("reason"), f"{path}.reason", violations, validate_text=False),
+        })
+    _fail(violations)
+    return {"options": output}
 
 
 def validate_agent_search_translation(value):

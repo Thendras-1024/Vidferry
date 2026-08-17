@@ -144,6 +144,58 @@ AGENT_TOOL_SPECS = [
         "readOnly": True,
     },
     {
+        "name": "prepare_video_action",
+        "description": "根据当前会话在视频卡片中已选的视频，准备下载、处理、发布或片头更新提案；只返回待确认卡片，不直接创建任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["download", "process", "workflow_publish", "publish_now", "publish_scheduled", "refresh_intro", "cover_reburn"],
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "get_workflow_settings",
+        "description": "查询当前视频处理工作流设置，不会保存或修改设置。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "readOnly": True,
+    },
+    {
+        "name": "list_short_video_projects",
+        "description": "查询当前用户的短视频拼接项目及状态，不会创建、修改或渲染项目。",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "readOnly": True,
+    },
+    {
+        "name": "get_short_video_project",
+        "description": "查询一个短视频拼接项目及候选审核状态，不会修改项目。",
+        "parameters": {
+            "type": "object",
+            "properties": {"projectId": {"type": "string"}},
+            "required": ["projectId"],
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
+        "name": "list_material_records",
+        "description": "查询素材库中的素材状态和来源，不返回绝对路径或凭证。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": AGENT_MAX_TOOL_ROWS},
+            },
+            "additionalProperties": False,
+        },
+        "readOnly": True,
+    },
+    {
         "name": "search_youtube_candidates",
         "description": "按关键词检索 YouTube 候选视频。该工具只返回候选线索，不会导入、下载或修改任何数据。",
         "parameters": {
@@ -235,10 +287,16 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
     existing_ids = set()
     if candidate_ids:
         init_youtube_video_table()
+        owner_user_id = _agent_current_user_id()
+        if owner_user_id is None:
+            raise PermissionError("Agent 检索缺少当前用户身份")
         placeholders = ",".join("?" for _ in candidate_ids)
         with _db_connect(row_factory=True) as conn:
             cursor = conn.cursor()
-            cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
+            cursor.execute(
+                f"SELECT video_id FROM youtube_videos WHERE owner_user_id = ? AND video_id IN ({placeholders})",
+                [owner_user_id, *candidate_ids],
+            )
             existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
     # yt-dlp 的搜索摘要通常没有订阅数和精确发布日期。先剔除已有线索，
     # 再对有限候选取详情，避免为不会展示的视频建立大量额外请求。
@@ -263,6 +321,9 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
         return True
     filtered = [item for item in enriched_candidates if matches(item)]
     items = filtered[:requested]
+    for item in items:
+        item["shortCode"] = f"#{item.get('id') or ''}"
+        item["description"] = str(item.get("description") or "")[:400]
     return {"query": query, "items": items, "filters": {
         "publishedAfter": cutoff, "minViews": min_views, "maxViews": max_views,
         "minDurationSeconds": min_duration_seconds, "maxDurationSeconds": max_duration_seconds,
@@ -270,9 +331,7 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
 
 
 def inspect_youtube_url(url):
-    url = str(url or "").strip()
-    if not url:
-        raise ValueError("请提供 YouTube 视频链接")
+    url = _validate_youtube_url(url)
     return {"item": _import_youtube_video_by_url(url)}
 
 
@@ -288,11 +347,16 @@ def _agent_public_path(value):
 
 
 def _agent_compact_video(item):
+    processed_versions = item.get("processedVersions") if isinstance(item.get("processedVersions"), list) else []
+    published = item.get("publishedPlatforms") if isinstance(item.get("publishedPlatforms"), list) else []
+    latest_version = processed_versions[0] if processed_versions else {}
     return {
         "id": item.get("id") or "",
+        "shortCode": f"#{item.get('id') or ''}",
         "title": item.get("title") or "",
         "channel": item.get("channel") or "",
         "duration": item.get("duration") or "",
+        "thumbnail": item.get("thumbnail") or item.get("thumbnailUrl") or "",
         "groupId": item.get("groupId"),
         "groupName": item.get("groupName") or "",
         "publishedAt": item.get("publishedAt") or "",
@@ -302,7 +366,59 @@ def _agent_compact_video(item):
         "publishStatus": int(item.get("publishStatus") or 0),
         "processedFile": _agent_public_path(item.get("processedFilePath")),
         "updatedAt": item.get("updatedAt") or "",
+        "processVersion": latest_version.get("processVersion") or "",
+        "processedVersions": [
+            {"processVersion": version.get("processVersion") or "", "updatedAt": version.get("updatedAt") or ""}
+            for version in processed_versions[:5]
+            if isinstance(version, dict)
+        ],
+        "publishedPlatforms": [
+            {
+                "platform": platform.get("name") or platform.get("platform") or "",
+                "platformType": platform.get("type") or platform.get("platformType"),
+                "accountName": platform.get("accountName") or platform.get("account") or "",
+                "status": platform.get("status") or "",
+                "publishedAt": platform.get("publishedAt") or "",
+            }
+            for platform in published[:8]
+            if isinstance(platform, dict)
+        ],
+        "hasPublishDraft": bool((item.get("publishDraft") or {}).get("title") or (item.get("publishDraft") or {}).get("description")),
     }
+
+
+def _agent_attach_latest_tasks(items):
+    items = [item for item in items if isinstance(item, dict) and item.get("id")]
+    if not items:
+        return items
+    owner_user_id = _agent_current_user_id()
+    video_ids = [str(item["id"]) for item in items]
+    placeholders = ",".join("?" for _ in video_ids)
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT video_id, process_version, operation, status, step, message, updated_at
+            FROM youtube_workflow_jobs
+            WHERE owner_user_id = ? AND video_id IN ({placeholders})
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            [owner_user_id, *video_ids],
+        )
+        latest = {}
+        for row in cursor.fetchall():
+            latest.setdefault(str(row["video_id"] or ""), dict(row))
+    for item in items:
+        task = latest.get(str(item["id"])) or {}
+        item["latestTask"] = {
+            "operation": task.get("operation") or "",
+            "processVersion": task.get("process_version") or "",
+            "status": task.get("status") or "",
+            "step": task.get("step") or "",
+            "message": clean_display_text(task.get("message") or "")[:200],
+            "updatedAt": task.get("updated_at") or "",
+        }
+    return items
 
 
 def explain_vidferry_pipeline():
@@ -320,17 +436,23 @@ def explain_vidferry_pipeline():
 
 
 def get_workflow_overview():
+    owner_user_id = _agent_current_user_id()
+    if not owner_user_id:
+        raise PermissionError("工作流概览缺少当前用户身份")
     statuses = ["initial", "downloaded", "processed", "published", "failed", "abnormal", "running"]
     counts = {status: 0 for status in statuses}
     init_youtube_video_table()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        _reconcile_youtube_statuses_with_material_records(cursor)
+        _reconcile_youtube_statuses_with_material_records(cursor, owner_user_id)
         conn.commit()
         for status in statuses:
             clause, values = _youtube_video_status_clause(status)
-            where_sql = f" WHERE {clause}" if clause else ""
-            cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_videos{where_sql}", values)
+            where_sql = f"owner_user_id = ?{f' AND {clause}' if clause else ''}"
+            cursor.execute(
+                f"SELECT COUNT(*) AS total FROM youtube_videos WHERE {where_sql}",
+                [owner_user_id, *values],
+            )
             counts[status] = int((cursor.fetchone() or {})["total"] or 0)
     return {
         "pipeline": explain_vidferry_pipeline()["steps"],
@@ -339,15 +461,81 @@ def get_workflow_overview():
     }
 
 
+def _agent_compact_short_video_project(project, include_candidates=False):
+    result = {
+        "id": project.get("id") or "",
+        "topic": project.get("topic") or "",
+        "targetCount": int(project.get("targetCount") or 0),
+        "targetDurationSeconds": int(project.get("targetDurationSeconds") or 0),
+        "transitionType": project.get("transitionType") or "",
+        "status": project.get("status") or "",
+        "message": project.get("message") or "",
+        "outputMaterialId": project.get("outputMaterialId"),
+        "updatedAt": project.get("updated_at") or project.get("updatedAt") or "",
+    }
+    if include_candidates:
+        result["candidates"] = [
+            {
+                "id": candidate.get("id") or "",
+                "title": candidate.get("title") or "",
+                "channel": candidate.get("channel") or "",
+                "licenseBasis": candidate.get("licenseBasis") or "",
+                "durationSeconds": float(candidate.get("durationSeconds") or 0),
+                "selected": bool(candidate.get("selected")),
+                "analysisStatus": candidate.get("analysisStatus") or "",
+                "analysisScore": int(candidate.get("analysisScore") or 0),
+                "analysisReason": candidate.get("analysisReason") or "",
+            }
+            for candidate in project.get("candidates") or []
+        ]
+    return result
+
+
+def agent_list_short_video_projects():
+    return {"items": [_agent_compact_short_video_project(project) for project in list_short_video_projects()]}
+
+
+def agent_get_short_video_project(project_id):
+    return _agent_compact_short_video_project(get_short_video_project(project_id), include_candidates=True)
+
+
+def agent_list_material_records(keyword="", limit=None):
+    records = list_material_records(
+        {"page": 1, "pageSize": _agent_limit(limit), "keyword": str(keyword or "").strip()},
+        _agent_current_user_id(),
+    )
+    return {
+        "total": int(records.get("total") or 0),
+        "items": [
+            {
+                "id": item.get("id"),
+                "filename": _agent_public_path(item.get("filename") or item.get("original_filename") or ""),
+                "title": item.get("displayTitle") or "",
+                "channel": item.get("displayChannel") or "",
+                "sourceType": item.get("source_type") or item.get("sourceType") or "",
+                "sourceVideoId": item.get("source_video_id") or item.get("sourceVideoId") or "",
+                "processType": item.get("processType") or "",
+                "duration": item.get("duration") or "",
+                "status": item.get("status") or "",
+                "updatedAt": item.get("updated_at") or item.get("updatedAt") or "",
+            }
+            for item in records.get("items") or []
+        ],
+    }
+
+
 def list_videos_by_status(status="initial", limit=None):
     status = str(status or "initial").strip()
     status = status if status in AGENT_VIDEO_STATUSES else "initial"
-    page = list_youtube_videos({"status": status, "page": 1, "pageSize": _agent_limit(limit)})
+    page = list_youtube_videos(
+        {"status": status, "page": 1, "pageSize": _agent_limit(limit)},
+        _agent_current_user_id(),
+    )
     return {
         "status": status,
         "label": AGENT_VIDEO_STATUSES.get(status, status),
         "total": int(page.get("total") or 0),
-        "items": [_agent_compact_video(item) for item in page.get("items") or []],
+        "items": _agent_attach_latest_tasks([_agent_compact_video(item) for item in page.get("items") or []]),
     }
 
 
@@ -358,18 +546,24 @@ def _agent_find_video(identifier):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (text,))
+        owner_user_id = _agent_current_user_id()
+        if not owner_user_id:
+            raise PermissionError("视频查询缺少当前用户身份")
+        cursor.execute(
+            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (text, owner_user_id),
+        )
         row = cursor.fetchone()
         if not row:
             like = f"%{text}%"
             cursor.execute(
                 """
                 SELECT * FROM youtube_videos
-                WHERE title LIKE ? OR channel LIKE ? OR url LIKE ?
+                WHERE owner_user_id = ? AND (title LIKE ? OR channel LIKE ? OR url LIKE ?)
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT 1
                 """,
-                (like, like, like),
+                (owner_user_id, like, like, like),
             )
             row = cursor.fetchone()
         if not row:
@@ -396,6 +590,7 @@ def get_video_detail(video_id_or_keyword):
     if not video:
         return {"found": False, "message": "未找到匹配视频"}
     detail = _agent_compact_video(video)
+    _agent_attach_latest_tasks([detail])
     detail["found"] = True
     detail["url"] = video.get("url") or ""
     detail["publishDraft"] = {
@@ -405,6 +600,7 @@ def get_video_detail(video_id_or_keyword):
         "customTags": (video.get("publishDraft") or {}).get("customTags") or [],
     }
     detail["platforms"] = get_publish_platforms(video.get("id"))
+    detail["publishedPlatforms"] = detail["platforms"].get("items") or []
     return detail
 
 
@@ -412,18 +608,21 @@ def get_publish_platforms(video_id):
     video_id = str(video_id or "").strip()
     if not video_id:
         return {"videoId": "", "items": [], "total": 0}
+    owner_user_id = _agent_current_user_id()
+    if not owner_user_id:
+        raise PermissionError("发布记录查询缺少当前用户身份")
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
             """
             SELECT * FROM published_youtube_materials
-            WHERE video_id = ?
+            WHERE video_id = ? AND owner_user_id = ?
               AND deleted_at IS NULL
-              AND COALESCE(NULLIF(status, ''), 'success') = 'success'
+              AND COALESCE(NULLIF(status, ''), 'success') IN ('confirmed', 'success', 'reused')
             ORDER BY COALESCE(updated_at, published_at, created_at) DESC, id DESC
             """,
-            (video_id,),
+            (video_id, owner_user_id),
         )
         items = [_row_to_published_material(row) for row in cursor.fetchall()]
     return {
@@ -462,7 +661,7 @@ def _agent_pending_publish_rows(limit):
         cursor.execute(
             f"""
             SELECT * FROM youtube_videos
-            WHERE {clause}
+            WHERE owner_user_id = ? AND {clause}
               AND EXISTS (
                   SELECT 1 FROM youtube_workflow_jobs job
                   WHERE job.video_id = youtube_videos.video_id
@@ -471,7 +670,7 @@ def _agent_pending_publish_rows(limit):
             ORDER BY updated_at DESC, created_at DESC
             LIMIT ?
             """,
-            (*values, int(limit)),
+            (owner_user_id, *values, owner_user_id, int(limit)),
         )
         videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
         result = []
@@ -569,21 +768,24 @@ def generate_pending_publish_plan(limit=None, now=None):
 
 
 def agent_list_publish_tasks(limit=None):
-    return {"items": list_publish_tasks(_agent_limit(limit))}
+    return {"items": list_publish_tasks(_agent_limit(limit), _agent_current_user_id())}
 
 
 def list_failed_jobs(limit=None):
+    owner_user_id = _agent_current_user_id()
+    if not owner_user_id:
+        raise PermissionError("失败任务查询缺少当前用户身份")
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
             """
             SELECT * FROM youtube_workflow_jobs
-            WHERE status IN ('failed', 'abnormal')
+            WHERE owner_user_id = ? AND status IN ('failed', 'abnormal')
             ORDER BY updated_at DESC, created_at DESC
             LIMIT ?
             """,
-            (_agent_limit(limit),),
+            (owner_user_id, _agent_limit(limit)),
         )
         return {
             "items": [
