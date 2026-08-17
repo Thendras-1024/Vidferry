@@ -448,7 +448,7 @@ def agent_copywriting_messages(request, video):
             "role": "user",
             "content": (
                 f"<user_request>\n{json.dumps(str(request or ''), ensure_ascii=False)}\n</user_request>\n"
-                f"<video_data>\n{json.dumps(video or {}, ensure_ascii=False, sort_keys=True)}\n</video_data>"
+                f"<video_data>\n{json.dumps(video or {}, ensure_ascii=False, sort_keys=True, default=str)}\n</video_data>"
             ),
         },
     ]

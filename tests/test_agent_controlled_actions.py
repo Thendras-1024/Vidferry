@@ -1,3 +1,4 @@
+import datetime
 import time
 
 import pytest
@@ -126,3 +127,12 @@ def test_published_processed_video_can_update_local_copywriting():
 
     assert backend._agent_copywriting_is_ready_video({"translateStatus": 1, "publishStatus": 1})
     assert not backend._agent_copywriting_is_ready_video({"translateStatus": 0, "publishStatus": 1})
+
+
+def test_copywriting_prompt_serializes_datetime_video_metadata():
+    messages = _backend().llm_prompts.agent_copywriting_messages(
+        "改写文案",
+        {"id": "video-1", "processedAt": datetime.datetime(2026, 8, 17, 23, 30, 28)},
+    )
+
+    assert "2026-08-17 23:30:28" in messages[1]["content"]
