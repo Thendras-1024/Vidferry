@@ -91,8 +91,6 @@ def _candidate_payload(row):
         "analysisStatus": item.get("analysis_status") or "pending",
         "analysisScore": int(item.get("analysis_score") or 0),
         "analysisReason": item.get("analysis_reason") or "",
-        "previewPath": item.get("preview_path") or "",
-        "downloadedFilePath": item.get("downloaded_file_path") or "",
     })
     return item
 
@@ -105,7 +103,6 @@ def _project_payload(cursor, row, include_candidates=True):
         "transitionType": item.get("transition_type") or "cut",
         "bgmTrackId": item.get("bgm_track_id"),
         "keepOriginalAudio": bool(item.get("keep_original_audio")),
-        "outputFilePath": item.get("output_file_path") or "",
         "outputMaterialId": item.get("output_material_id"),
     })
     if include_candidates:
@@ -254,7 +251,7 @@ def run_short_video_search(project_id, owner_id):
         _set_project_status(project_id, "reviewing", "自动初筛已完成，等待人工确认")
         return result
     except Exception as exc:
-        _set_project_status(project_id, "failed", f"检索失败: {str(exc)[:300]}")
+        _set_project_status(project_id, "failed", "检索失败，请查看服务端日志")
         _logger.exception("Short video search failed : projectId = %s", project_id)
         raise
 
@@ -579,7 +576,13 @@ def run_short_video_render(project_id, owner_id):
     _set_project_status(project_id, "rendering", "正在下载并合成短视频")
     try:
         output = _render_concat(project, candidates, bgm)
-        material = register_material(output, source_type="short_video_compilation", metadata={"projectId": project_id, "topic": project["topic"], "sourceUrls": [candidate["source_url"] for candidate in candidates]}, copy_to_library=True)
+        material = register_material(
+            output,
+            owner_user_id=_owner_id(),
+            source_type="short_video_compilation",
+            metadata={"projectId": project_id, "topic": project["topic"], "sourceUrls": [candidate["source_url"] for candidate in candidates]},
+            copy_to_library=True,
+        )
         _set_project_status(project_id, "success", "短视频拼接完成", output_file_path=str(output), output_material_id=material["id"])
         return {"projectId": project_id, "status": "success", "materialId": material["id"]}
     except Exception as exc:
@@ -600,7 +603,7 @@ def request_short_video_render(project_id, payload):
         cursor = conn.cursor()
         _project(cursor, project_id, _owner_id())
         cursor.execute("UPDATE short_video_projects SET transition_type = ?, bgm_track_id = ?, keep_original_audio = ?, status = 'queued', message = '合成任务已提交', updated_at = ? WHERE id = ?", (transition, bgm_id, int(bool(payload.get("keepOriginalAudio"))), _now(), project_id))
-    _submit_background_task("processing", run_short_video_render, project_id, _owner_id())
+    _submit_background_task("processing", run_short_video_render, project_id, _owner_id(), owner_user_id=_owner_id())
     return get_short_video_project(project_id)
 
 
