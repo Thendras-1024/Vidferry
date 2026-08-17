@@ -13,6 +13,7 @@
         <el-table v-loading="loading" :data="users">
           <el-table-column prop="username" label="用户名" min-width="140" />
           <el-table-column prop="displayName" label="姓名" min-width="140" />
+          <el-table-column label="身份来源" width="120"><template #default="{ row }">{{ providerLabel(row.loginProvider) }}</template></el-table-column>
           <el-table-column label="角色" width="110"><template #default="{ row }">{{ row.role === 'admin' ? '管理员' : '普通用户' }}</template></el-table-column>
           <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag></template></el-table-column>
           <el-table-column prop="lastLoginAt" label="最近登录" min-width="180" />
@@ -64,6 +65,7 @@ const users = ref([]), auditLogs = ref([])
 const userPage = ref(1), userTotal = ref(0), auditPage = ref(1), auditTotal = ref(0)
 const keyword = ref(''), dialogVisible = ref(false), editingUser = ref(null)
 const form = reactive({ username: '', displayName: '', password: '', role: 'user', active: true })
+const providerLabel = provider => ({ password: '用户名密码', phone: '手机号' }[provider] || String(provider || '用户名密码'))
 
 const loadUsers = async () => {
   loading.value = true

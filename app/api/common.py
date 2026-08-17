@@ -9,6 +9,7 @@ from app.config import (
     AGENT_FRAME_SCALE_WIDTH,
     AGENT_GUARD_MAX_TOKENS,
     AGENT_GUARD_TEMPERATURE,
+    AGENT_LLM_MODEL,
     AGENT_MAX_TOOL_CALLS,
     AGENT_MAX_TOOL_ROWS,
     AGENT_REACT_MAX_STEPS,
@@ -29,6 +30,7 @@ def _agent_status_payload():
     return {
         "enabled": AGENT_ENABLED,
         "textModel": TEXT_LLM_MODEL,
+        "model": AGENT_LLM_MODEL,
         "multimodalModelConfigured": bool(MULTIMODAL_LLM_API_KEY and MULTIMODAL_LLM_BASE_URL and MULTIMODAL_LLM_MODEL),
         "requirePrepublishCheck": AGENT_REQUIRE_PREPUBLISH_CHECK,
         "blockLevel": AGENT_BLOCK_LEVEL,

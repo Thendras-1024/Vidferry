@@ -415,11 +415,11 @@ def getAccounts():
                     "msg": None,
                     "data": rows_list
                 }), 200
-    except Exception as e:
-        print(f"获取账号列表时出错: {str(e)}")
+    except Exception:
+        backend_logger.exception("获取账号列表失败")
         return jsonify({
             "code": 500,
-            "msg": f"获取账号列表失败: {str(e)}",
+            "msg": "获取账号列表失败，请稍后重试",
             "data": None
         }), 500
 
@@ -533,13 +533,21 @@ def delete_account():
                     cookie_file_path = _safe_cookie_path(record['filePath'], owner_user_id=owner_user_id)
                 except ValueError as exc:
                     cookie_file_path = None
-                    print(f"⚠️ 跳过非法Cookie路径: {record['filePath']} {exc}")
+                    backend_logger.warning(
+                        "invalid cookie path skipped : account_id = %s | error_type = %s",
+                        account_id,
+                        type(exc).__name__,
+                    )
                 if cookie_file_path and cookie_file_path.exists():
                     try:
                         cookie_file_path.unlink()
-                        print(f"✅ Cookie文件已删除: {cookie_file_path}")
+                        backend_logger.info("cookie file deleted : account_id = %s", account_id)
                     except Exception as e:
-                        print(f"⚠️ 删除Cookie文件失败: {e}")
+                        backend_logger.warning(
+                            "cookie file delete failed : account_id = %s | error_type = %s",
+                            account_id,
+                            type(e).__name__,
+                        )
 
             # 删除数据库记录
             cursor.execute("DELETE FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
@@ -551,10 +559,11 @@ def delete_account():
             "data": None
         }), 200
 
-    except Exception as e:
+    except Exception:
+        backend_logger.exception("删除账号失败 : account_id = %s", account_id)
         return jsonify({
             "code": 500,
-            "msg": f"delete failed: {str(e)}",
+            "msg": "删除账号失败，请稍后重试",
             "data": None
         }), 500
 
@@ -601,9 +610,10 @@ def create_account():
             "msg": "account created successfully",
             "data": [account_id, platform_type, file_path, user_name, status]
         }), 200
-    except Exception as e:
+    except Exception:
+        backend_logger.exception("创建账号失败")
         return jsonify({
             "code": 500,
-            "msg": f"account create failed: {str(e)}",
+            "msg": "创建账号失败，请稍后重试",
             "data": None
         }), 500

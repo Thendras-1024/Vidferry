@@ -34,6 +34,13 @@ export const useUserStore = defineStore('user', () => {
     return response.data.user
   }
 
+  const phoneLogin = async credentials => {
+    const response = await userApi.phoneLogin(credentials)
+    setSession(response.data.user, response.data.csrfToken)
+    initialized.value = true
+    return response.data.user
+  }
+
   const logout = async () => {
     try {
       if (isLoggedIn.value) await userApi.logout()
@@ -52,6 +59,7 @@ export const useUserStore = defineStore('user', () => {
     isAdmin: () => userInfo.value?.role === 'admin',
     restore,
     login,
+    phoneLogin,
     logout
   }
 })

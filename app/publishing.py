@@ -9,7 +9,7 @@ PLATFORM_TYPE_TO_NAME = {
 PLATFORM_NAME_TO_TYPE = {name: value for value, name in PLATFORM_TYPE_TO_NAME.items()}
 
 # 仅记录上传适配器已经存在的限制，其他平台不新增应用层数量限制。
-PUBLISH_TAG_LIMITS = {3: 5}
+PUBLISH_TAG_LIMITS = {3: 5, 4: 4}
 
 BILIBILI_DEFAULT_TID = 21
 
@@ -131,6 +131,7 @@ def normalize_publish_targets(payload):
                 "accountFile": account_file,
                 "accountId": raw.get("accountId"),
                 "accountName": raw.get("accountName") or "",
+                "confirmCrossAccountRisk": bool(raw.get("confirmCrossAccountRisk") or payload.get("confirmCrossAccountRisk")),
                 "tags": clean_publish_tags(raw.get("selectedTags") if "selectedTags" in raw else raw.get("tags") or []),
                 "customTags": clean_publish_tags(raw.get("customTags") or []),
                 "_tagsProvided": "selectedTags" in raw or "tags" in raw,
@@ -157,6 +158,7 @@ def normalize_publish_targets(payload):
         "accountFile": account_list[0],
         "accountId": "",
         "accountName": "",
+        "confirmCrossAccountRisk": bool(payload.get("confirmCrossAccountRisk")),
         "tags": clean_publish_tags(payload.get("selectedTags") if "selectedTags" in payload else payload.get("tags") or []),
         "customTags": clean_publish_tags(payload.get("customTags") or []),
         "_tagsProvided": "selectedTags" in payload or "tags" in payload,

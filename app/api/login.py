@@ -123,7 +123,7 @@ def bilibili_cookie_gen(user_name, status_queue, account_id=None, owner_user_id=
     try:
         biliup_binary = ensure_biliup_binary(force_check=False)
     except Exception as exc:
-        print(f"B站登录准备 biliup 失败: {exc}")
+        print(f"B站登录准备 biliup 失败 : error_type = {type(exc).__name__}")
         _emit_sse_error(status_queue, f"B站登录准备 biliup 失败: {exc}")
         return
 
@@ -244,7 +244,7 @@ def login():
                 if row is None or str(row[0]) != str(type):
                     return Response("data: 500\n\n", mimetype='text/event-stream')
         except Exception as e:
-            print(f"校验重新连接账号失败: {e}")
+            print(f"校验重新连接账号失败 : error_type = {type(e).__name__}")
             return Response("data: 500\n\n", mimetype='text/event-stream')
 
     # 模拟一个用于异步通信的队列

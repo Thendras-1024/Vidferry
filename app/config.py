@@ -91,6 +91,11 @@ TEXT_LLM_API_KEY = _env_with_legacy("TEXT_LLM_API_KEY", "LLM_API_KEY")
 TEXT_LLM_BASE_URL = _env_with_legacy("TEXT_LLM_BASE_URL", "LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 TEXT_LLM_MODEL = _env_text("TEXT_LLM_MODEL") or _env_text("LLM_MODEL") or _env_text("AGENT_CHAT_MODEL", "gpt-4o-mini")
 TEXT_LLM_PROVIDER = _env_text("TEXT_LLM_PROVIDER", "auto")
+# Agent 默认复用通用文本模型的连接信息，但可独立指定更适合工具决策的模型。
+AGENT_LLM_API_KEY = _env_text("AGENT_LLM_API_KEY") or TEXT_LLM_API_KEY
+AGENT_LLM_BASE_URL = (_env_text("AGENT_LLM_BASE_URL") or TEXT_LLM_BASE_URL).rstrip("/")
+AGENT_LLM_MODEL = _env_text("AGENT_LLM_MODEL") or TEXT_LLM_MODEL
+AGENT_LLM_PROVIDER = _env_text("AGENT_LLM_PROVIDER") or TEXT_LLM_PROVIDER
 MULTIMODAL_LLM_API_KEY = _env_with_legacy("MULTIMODAL_LLM_API_KEY", "LLM_API_KEY")
 MULTIMODAL_LLM_BASE_URL = _env_with_legacy("MULTIMODAL_LLM_BASE_URL", "LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 MULTIMODAL_LLM_MODEL = _env_with_legacy("MULTIMODAL_LLM_MODEL", "AGENT_VISION_MODEL")
@@ -122,6 +127,13 @@ def _env_int(name, default, minimum=None, maximum=None):
     if maximum is not None:
         value = min(maximum, value)
     return value
+
+
+VIDEO_LOCAL_RETENTION_DAYS = _env_int("VIDEO_LOCAL_RETENTION_DAYS", 7, minimum=1, maximum=365)
+VIDEO_LOCAL_CLEANUP_BATCH_SIZE = _env_int("VIDEO_LOCAL_CLEANUP_BATCH_SIZE", 50, minimum=1, maximum=500)
+VIDEO_LOCAL_CLEANUP_MODE = _env_text("VIDEO_LOCAL_CLEANUP_MODE", "report").lower()
+if VIDEO_LOCAL_CLEANUP_MODE not in {"off", "report", "delete"}:
+    VIDEO_LOCAL_CLEANUP_MODE = "report"
 
 
 SUBTITLE_LLM_REVIEW_ENABLED = _env_bool("SUBTITLE_LLM_REVIEW_ENABLED", True)
@@ -225,6 +237,18 @@ AUTH_COOKIE_SECURE = _env_bool("VIDFERRY_AUTH_COOKIE_SECURE", False)
 AUTH_COOKIE_NAME = "__Host-vidferry_session" if AUTH_COOKIE_SECURE else "vidferry_session"
 AUTH_CSRF_SECRET = _env_text("VIDFERRY_AUTH_SECRET") or secrets.token_urlsafe(48)
 AUTH_ALLOW_COOKIE_EXPORT = _env_bool("VIDFERRY_AUTH_ALLOW_COOKIE_EXPORT", False)
+AUTH_PHONE_LOGIN_ENABLED = _env_bool("VIDFERRY_AUTH_PHONE_LOGIN_ENABLED", False)
+AUTH_PHONE_HMAC_SECRET = _env_text("VIDFERRY_AUTH_PHONE_HMAC_SECRET")
+AUTH_RATE_LIMIT_HMAC_SECRET = _env_text("VIDFERRY_AUTH_RATE_LIMIT_HMAC_SECRET") or AUTH_CSRF_SECRET
+AUTH_TENCENT_SECRET_ID = _env_text("VIDFERRY_AUTH_TENCENT_SECRET_ID")
+AUTH_TENCENT_SECRET_KEY = _env_text("VIDFERRY_AUTH_TENCENT_SECRET_KEY")
+AUTH_TENCENT_SMS_APP_ID = _env_text("VIDFERRY_AUTH_TENCENT_SMS_APP_ID")
+AUTH_TENCENT_SMS_SIGN = _env_text("VIDFERRY_AUTH_TENCENT_SMS_SIGN")
+AUTH_TENCENT_SMS_TEMPLATE_ID = _env_text("VIDFERRY_AUTH_TENCENT_SMS_TEMPLATE_ID")
+AUTH_TENCENT_CAPTCHA_APP_ID = _env_text("VIDFERRY_AUTH_TENCENT_CAPTCHA_APP_ID")
+AUTH_TENCENT_CAPTCHA_APP_SECRET_KEY = _env_text("VIDFERRY_AUTH_TENCENT_CAPTCHA_APP_SECRET_KEY")
+AUTH_TENCENT_REGION = _env_text("VIDFERRY_AUTH_TENCENT_REGION", "ap-guangzhou")
+AUTH_TRUSTED_PROXY_CIDRS = _env_csv("VIDFERRY_AUTH_TRUSTED_PROXY_CIDRS", "")
 DATABASE_URL = _env_text("DATABASE_URL")
 DATABASE_POOL_MIN_SIZE = _env_int("DATABASE_POOL_MIN_SIZE", 1, 1, 20)
 DATABASE_POOL_MAX_SIZE = _env_int("DATABASE_POOL_MAX_SIZE", 8, 1, 50)
@@ -245,6 +269,10 @@ WORKFLOW_MAX_PUBLISH_QUEUED_JOBS = _env_int("WORKFLOW_MAX_PUBLISH_QUEUED_JOBS", 
 WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS = _env_int("WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS", 4, 0, 64)
 WORKFLOW_MAX_COMMENT_QUEUED_JOBS = _env_int("WORKFLOW_MAX_COMMENT_QUEUED_JOBS", 2, 0, 64)
 WORKFLOW_MAX_SEARCH_QUEUED_JOBS = _env_int("WORKFLOW_MAX_SEARCH_QUEUED_JOBS", 4, 0, 64)
+USER_STORAGE_QUOTA_MB = _env_int("VIDFERRY_USER_STORAGE_QUOTA_MB", 20480, 256, 1048576)
+USER_UPLOAD_MAX_MB = _env_int("VIDFERRY_USER_UPLOAD_MAX_MB", 160, 1, 4096)
+USER_UPLOADS_PER_MINUTE = _env_int("VIDFERRY_USER_UPLOADS_PER_MINUTE", 10, 1, 600)
+USER_TASK_SUBMISSIONS_PER_MINUTE = _env_int("VIDFERRY_USER_TASK_SUBMISSIONS_PER_MINUTE", 30, 1, 600)
 _LLM_CONFIG_STATUS_CACHE = None
 
 
@@ -268,15 +296,18 @@ def _format_llm_probe_error(exc):
 
 
 LLM_DISABLE_THINKING = _env_bool("LLM_DISABLE_THINKING", True)
+AGENT_LLM_ENABLE_THINKING = _env_bool("AGENT_LLM_ENABLE_THINKING", True)
 
 
 def llm_disable_thinking_params(base_url, provider="auto"):
     return provider_optional_fields(normalize_provider(provider, base_url), LLM_DISABLE_THINKING, structured=False)
 
 
-def _get_model_config_status(api_key, base_url, model, provider="auto", *, multimodal=False):
-    prefix = "MULTIMODAL_LLM" if multimodal else "TEXT_LLM"
-    label = "多模态模型" if multimodal else "文本模型"
+def _get_model_config_status(api_key, base_url, model, provider="auto", *, multimodal=False, agent=False, disable_thinking=None):
+    prefix = "AGENT_LLM" if agent else "MULTIMODAL_LLM" if multimodal else "TEXT_LLM"
+    label = "Agent 模型" if agent else "多模态模型" if multimodal else "文本模型"
+    if disable_thinking is None:
+        disable_thinking = LLM_DISABLE_THINKING
     missing = []
     if not api_key:
         missing.append(f"{prefix}_API_KEY")
@@ -293,7 +324,7 @@ def _get_model_config_status(api_key, base_url, model, provider="auto", *, multi
 
     profile = probe_provider(
         model, api_key, base_url, provider, min(LLM_TIMEOUT, 10),
-        multimodal=multimodal, disable_thinking=LLM_DISABLE_THINKING,
+        multimodal=multimodal, disable_thinking=disable_thinking,
     )
     if profile["ready"]:
         return {**profile, **_build_llm_config_status(True, [], "")}
@@ -311,12 +342,17 @@ def get_llm_config_status():
     text_status = _get_model_config_status(
         TEXT_LLM_API_KEY, TEXT_LLM_BASE_URL, TEXT_LLM_MODEL, TEXT_LLM_PROVIDER,
     )
+    agent_status = _get_model_config_status(
+        AGENT_LLM_API_KEY, AGENT_LLM_BASE_URL, AGENT_LLM_MODEL, AGENT_LLM_PROVIDER,
+        agent=True, disable_thinking=not AGENT_LLM_ENABLE_THINKING,
+    )
     multimodal_status = _get_model_config_status(
         MULTIMODAL_LLM_API_KEY, MULTIMODAL_LLM_BASE_URL, MULTIMODAL_LLM_MODEL, MULTIMODAL_LLM_PROVIDER,
         multimodal=True,
     )
     _LLM_CONFIG_STATUS_CACHE = {
         "text": text_status,
+        "agent": agent_status,
         "multimodal": multimodal_status,
         "ready": text_status["ready"] and multimodal_status["ready"],
         "missing": text_status.get("missing", []),
@@ -325,8 +361,10 @@ def get_llm_config_status():
     return _LLM_CONFIG_STATUS_CACHE
 
 
-def llm_provider_profile(model, api_key, base_url, provider="auto"):
+def llm_provider_profile(model, api_key, base_url, provider="auto", profile_channel="text"):
     """业务调用使用已探测的 profile；未匹配配置时按 Provider 默认字段请求。"""
+    if profile_channel == "agent" and model == AGENT_LLM_MODEL and api_key == AGENT_LLM_API_KEY and base_url == AGENT_LLM_BASE_URL:
+        return (get_llm_config_status() or {}).get("agent") or {}
     if model == TEXT_LLM_MODEL and api_key == TEXT_LLM_API_KEY and base_url == TEXT_LLM_BASE_URL:
         return (get_llm_config_status() or {}).get("text") or {}
     if model == MULTIMODAL_LLM_MODEL and api_key == MULTIMODAL_LLM_API_KEY and base_url == MULTIMODAL_LLM_BASE_URL:

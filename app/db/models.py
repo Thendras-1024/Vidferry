@@ -80,7 +80,8 @@ def ensure_file_record_tables(cursor):
         status TEXT DEFAULT 'ready',
         duration TEXT,
         duration_seconds REAL DEFAULT 0,
-        metadata TEXT DEFAULT '{}'
+        metadata TEXT DEFAULT '{}',
+        owner_user_id INTEGER
     )
     ''')
     _add_missing_columns(cursor, "file_records", {
@@ -94,6 +95,8 @@ def ensure_file_record_tables(cursor):
         "duration": "TEXT",
         "duration_seconds": "REAL DEFAULT 0",
         "metadata": "TEXT DEFAULT '{}'",
+        "owner_user_id": "INTEGER",
+        "purged_at": "DATETIME",
     })
     cursor.execute("UPDATE file_records SET asset_id = lower(hex(randomblob(16))) WHERE asset_id IS NULL OR asset_id = ''")
     cursor.execute("UPDATE file_records SET original_filename = filename WHERE original_filename IS NULL OR original_filename = ''")
@@ -122,6 +125,7 @@ def ensure_file_record_tables(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_video_type ON file_records(source_video_id, source_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_upload_order ON file_records(upload_time DESC, id DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_status_upload ON file_records(status, upload_time DESC, id DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_records_owner_created ON file_records(owner_user_id, upload_time DESC, id DESC)")
 
 
 def ensure_agent_tables(cursor):
@@ -271,8 +275,9 @@ def ensure_scheduled_publish_tables(cursor):
         id TEXT PRIMARY KEY, video_id TEXT NOT NULL, material_id INTEGER NOT NULL, file_path TEXT NOT NULL,
         scheduled_at DATETIME NOT NULL, status TEXT NOT NULL DEFAULT 'scheduled', overdue INTEGER NOT NULL DEFAULT 0,
         message TEXT, risk_override TEXT DEFAULT '{}', created_at DATETIME NOT NULL, started_at DATETIME,
-        finished_at DATETIME, canceled_at DATETIME, updated_at DATETIME NOT NULL
+        finished_at DATETIME, canceled_at DATETIME, updated_at DATETIME NOT NULL, owner_user_id INTEGER
     )''')
+    _add_missing_columns(cursor, "scheduled_publish_tasks", {"owner_user_id": "INTEGER"})
     cursor.execute('''CREATE TABLE IF NOT EXISTS scheduled_publish_targets (
         id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, platform_type INTEGER NOT NULL,
         account_id INTEGER, account_name TEXT, settings TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'queued',
@@ -280,6 +285,7 @@ def ensure_scheduled_publish_tables(cursor):
         updated_at DATETIME NOT NULL, FOREIGN KEY(task_id) REFERENCES scheduled_publish_tasks(id) ON DELETE CASCADE
     )''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_publish_tasks_due ON scheduled_publish_tasks(status, scheduled_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_publish_tasks_owner_due ON scheduled_publish_tasks(owner_user_id, status, scheduled_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_publish_targets_task ON scheduled_publish_targets(task_id, id)")
 
 
@@ -306,6 +312,7 @@ def ensure_workflow_event_tables(cursor):
         total_tokens INTEGER DEFAULT 0,
         cloud_latency_ms REAL DEFAULT 0,
         metadata TEXT DEFAULT '{}',
+        owner_user_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
@@ -327,6 +334,7 @@ def ensure_workflow_event_tables(cursor):
         "total_tokens": "INTEGER DEFAULT 0",
         "cloud_latency_ms": "REAL DEFAULT 0",
         "metadata": "TEXT DEFAULT '{}'",
+        "owner_user_id": "INTEGER",
         "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
     })
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_job_id ON youtube_workflow_events(job_id)")
@@ -334,6 +342,7 @@ def ensure_workflow_event_tables(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_stage ON youtube_workflow_events(stage)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_started ON youtube_workflow_events(started_at, id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_job_started ON youtube_workflow_events(job_id, started_at DESC, id DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_events_owner_job ON youtube_workflow_events(owner_user_id, job_id, id)")
 
 
 def ensure_workflow_llm_usage_tables(cursor):
@@ -358,6 +367,7 @@ def ensure_workflow_llm_usage_tables(cursor):
         error_category TEXT,
         violations TEXT,
         raw_output TEXT,
+        owner_user_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
@@ -365,10 +375,12 @@ def ensure_workflow_llm_usage_tables(cursor):
         "error_category": "TEXT",
         "violations": "TEXT",
         "raw_output": "TEXT",
+        "owner_user_id": "INTEGER",
     })
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_job ON youtube_workflow_llm_usage_events(job_id, created_at DESC, id DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_event ON youtube_workflow_llm_usage_events(workflow_event_id, id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_model_time ON youtube_workflow_llm_usage_events(model, created_at, id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_workflow_llm_usage_owner_job ON youtube_workflow_llm_usage_events(owner_user_id, job_id, id)")
 
 
 def ensure_subtitle_audit_tables(cursor):
@@ -384,6 +396,7 @@ def ensure_subtitle_audit_tables(cursor):
         review_status TEXT NOT NULL DEFAULT 'unknown',
         fallback_segment_count INTEGER NOT NULL DEFAULT 0,
         review_batches TEXT NOT NULL DEFAULT '[]',
+        owner_user_id INTEGER,
         saved_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
@@ -397,9 +410,11 @@ def ensure_subtitle_audit_tables(cursor):
         "fallback_segment_count": "INTEGER NOT NULL DEFAULT 0",
         "review_batches": "TEXT NOT NULL DEFAULT '[]'",
         "saved_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+        "owner_user_id": "INTEGER",
     })
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_subtitle_audits_video_saved ON youtube_subtitle_audits(video_id, saved_at DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_subtitle_audits_saved ON youtube_subtitle_audits(saved_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_subtitle_audits_owner_saved ON youtube_subtitle_audits(owner_user_id, saved_at DESC)")
 
 
 def ensure_published_youtube_material_tables(cursor):
@@ -423,6 +438,7 @@ def ensure_published_youtube_material_tables(cursor):
         source_published_at TEXT,
         publish_title TEXT,
         metadata TEXT DEFAULT '{}',
+        owner_user_id INTEGER,
         published_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -454,6 +470,11 @@ def ensure_published_youtube_material_tables(cursor):
         "account_name": "TEXT",
         "deleted_at": "DATETIME",
         "updated_at": "DATETIME",
+        "owner_user_id": "INTEGER",
+        "account_id": "INTEGER",
+        "invalidated_at": "DATETIME",
+        "invalidated_by_user_id": "INTEGER",
+        "invalidation_reason": "TEXT",
     })
     cursor.execute("UPDATE published_youtube_materials SET status = 'confirmed' WHERE status IS NULL OR status = ''")
     cursor.execute("""
@@ -479,6 +500,7 @@ def ensure_published_youtube_material_tables(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_task ON published_youtube_materials(publish_task_id, deleted_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_status ON published_youtube_materials(status, deleted_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_updated ON published_youtube_materials(updated_at, id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_youtube_materials_owner_updated ON published_youtube_materials(owner_user_id, updated_at DESC, id DESC)")
     cursor.execute("SELECT id, platform FROM published_youtube_materials WHERE COALESCE(platform_type, 0) = 0")
     for row_id, platform in cursor.fetchall():
         inferred_platform_type = platform_type_from_name(platform)
@@ -490,7 +512,7 @@ def ensure_published_youtube_material_tables(cursor):
     cursor.execute("DROP INDEX IF EXISTS idx_published_youtube_materials_video_platform")
     cursor.execute('''
     CREATE UNIQUE INDEX IF NOT EXISTS idx_published_youtube_materials_video_platform
-    ON published_youtube_materials(video_id, platform_type)
+    ON published_youtube_materials(owner_user_id, video_id, platform_type, COALESCE(account_id, 0))
     WHERE video_id IS NOT NULL AND video_id != ''
       AND platform_type IS NOT NULL AND platform_type != 0
       AND deleted_at IS NULL
@@ -501,15 +523,24 @@ def ensure_youtube_video_group_table(cursor):
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS youtube_video_groups (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        name TEXT NOT NULL COLLATE NOCASE,
         is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+        owner_user_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    _add_missing_columns(cursor, "youtube_video_groups", {"owner_user_id": "INTEGER"})
+    cursor.execute("DROP INDEX IF EXISTS idx_youtube_video_groups_default")
     cursor.execute('''
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_video_groups_default
-    ON youtube_video_groups(is_default) WHERE is_default = 1
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_video_groups_owner_default
+    ON youtube_video_groups(owner_user_id, is_default)
+    WHERE is_default = 1 AND owner_user_id IS NOT NULL
+    ''')
+    cursor.execute('''
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_video_groups_owner_name
+    ON youtube_video_groups(owner_user_id, name COLLATE NOCASE)
+    WHERE owner_user_id IS NOT NULL
     ''')
     cursor.execute("SELECT id FROM youtube_video_groups WHERE is_default = 1 LIMIT 1")
     row = cursor.fetchone()
@@ -527,7 +558,7 @@ def ensure_youtube_video_table(cursor):
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS youtube_videos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        video_id TEXT UNIQUE NOT NULL,
+        video_id TEXT NOT NULL,
         title TEXT,
         channel TEXT,
         subscribers TEXT,
@@ -549,6 +580,7 @@ def ensure_youtube_video_table(cursor):
         publish_draft TEXT,
         analysis_updated_at DATETIME,
         group_id INTEGER,
+        owner_user_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(group_id) REFERENCES youtube_video_groups(id) ON DELETE RESTRICT
@@ -565,6 +597,12 @@ def ensure_youtube_video_table(cursor):
         "publish_draft": "TEXT",
         "analysis_updated_at": "DATETIME",
         "group_id": "INTEGER",
+        "owner_user_id": "INTEGER",
+        "local_files_state": "TEXT DEFAULT 'available'",
+        "retention_anchor_at": "DATETIME",
+        "local_files_purged_at": "DATETIME",
+        "purge_attempted_at": "DATETIME",
+        "purge_error": "TEXT",
     })
     cursor.execute(
         "UPDATE youtube_videos SET group_id = ? WHERE group_id IS NULL OR group_id NOT IN (SELECT id FROM youtube_video_groups)",
@@ -576,6 +614,8 @@ def ensure_youtube_video_table(cursor):
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_analysis_status ON youtube_videos(analysis_status)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_created ON youtube_videos(created_at, id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_group_created ON youtube_videos(group_id, created_at DESC, id DESC)')
+    cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_videos_owner_video ON youtube_videos(owner_user_id, video_id) WHERE owner_user_id IS NOT NULL')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_videos_owner_created ON youtube_videos(owner_user_id, created_at DESC, id DESC)')
     ensure_youtube_search_tables(cursor)
 
 
@@ -601,7 +641,8 @@ def ensure_youtube_search_tables(cursor):
         started_at DATETIME,
         finished_at DATETIME,
         created_at DATETIME NOT NULL,
-        updated_at DATETIME NOT NULL
+        updated_at DATETIME NOT NULL,
+        owner_user_id INTEGER
     )
     ''')
     _add_missing_columns(cursor, "youtube_search_jobs", {
@@ -610,6 +651,7 @@ def ensure_youtube_search_tables(cursor):
         "duration_min_seconds": "INTEGER",
         "duration_max_seconds": "INTEGER",
         "duration_filtered_count": "INTEGER DEFAULT 0",
+        "owner_user_id": "INTEGER",
     })
     cursor.execute("SELECT id, name FROM youtube_video_groups WHERE is_default = 1 LIMIT 1")
     default_group = cursor.fetchone()
@@ -643,18 +685,22 @@ def ensure_youtube_search_tables(cursor):
     ''')
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS youtube_video_deletions (
-        video_id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        owner_user_id INTEGER,
         deleted_at DATETIME NOT NULL
     )
     ''')
+    _add_missing_columns(cursor, "youtube_video_deletions", {"owner_user_id": "INTEGER"})
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_jobs_status ON youtube_search_jobs(status, created_at)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_jobs_group_status ON youtube_search_jobs(group_id, status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_jobs_owner_status ON youtube_search_jobs(owner_user_id, status, created_at)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_search_job_items_job ON youtube_search_job_items(job_id, ordinal)')
     cursor.execute('''
     CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_search_job_items_video
     ON youtube_search_job_items(job_id, video_id)
     WHERE video_id IS NOT NULL AND video_id != ''
     ''')
+    cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_video_deletions_owner_video ON youtube_video_deletions(owner_user_id, video_id) WHERE owner_user_id IS NOT NULL')
 
 
 def ensure_youtube_workflow_job_table(cursor):
@@ -711,6 +757,7 @@ def ensure_youtube_workflow_job_table(cursor):
         progress REAL DEFAULT 0,
         speed TEXT,
         eta TEXT,
+        owner_user_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         started_at DATETIME,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -774,8 +821,11 @@ def ensure_youtube_workflow_job_table(cursor):
         video_id TEXT NOT NULL,
         scope TEXT NOT NULL,
         job_id TEXT NOT NULL UNIQUE,
+        owner_user_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (video_id, scope)
+        UNIQUE (owner_user_id, video_id, scope)
     )
     ''')
+    _add_missing_columns(cursor, "youtube_workflow_locks", {"owner_user_id": "INTEGER"})
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_locks_job_id ON youtube_workflow_locks(job_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_workflow_locks_owner ON youtube_workflow_locks(owner_user_id, video_id, scope)")

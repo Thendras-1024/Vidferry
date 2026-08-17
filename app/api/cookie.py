@@ -90,11 +90,11 @@ def upload_cookie():
             "data": None
         }), 200
 
-    except Exception as e:
-        print(f"上传Cookie文件时出错: {str(e)}")
+    except Exception as exc:
+        backend_logger.exception("cookie upload failed : error_type = %s", type(exc).__name__)
         return jsonify({
             "code": 500,
-            "msg": f"上传Cookie文件失败: {str(e)}",
+            "msg": "上传 Cookie 文件失败",
             "data": None
         }), 500
 
@@ -138,11 +138,11 @@ def download_cookie():
             as_attachment=True
         )
 
-    except Exception as e:
-        print(f"下载Cookie文件时出错: {str(e)}")
+    except Exception as exc:
+        backend_logger.exception("cookie download failed : error_type = %s", type(exc).__name__)
         return jsonify({
             "code": 500,
-            "msg": f"下载Cookie文件失败: {str(e)}",
+            "msg": "下载 Cookie 文件失败",
             "data": None
         }), 500
 

@@ -4,7 +4,7 @@
 @app.route("/notifications/summary", methods=["GET"])
 def notifications_summary():
     try:
-        return jsonify({"code": 200, "msg": "success", "data": notification_summary()})
+        return jsonify({"code": 200, "msg": "success", "data": notification_summary(_current_account_owner_id())})
     except Exception as exc:
         backend_logger.exception("通知摘要读取失败")
         return jsonify({"code": 500, "msg": f"读取通知摘要失败: {exc}", "data": None}), 500
@@ -16,7 +16,7 @@ def notifications_list():
         state = request.args.get("state", "active")
         if state not in {"active", "history"}:
             raise ValueError("state 仅支持 active 或 history")
-        return jsonify({"code": 200, "msg": "success", "data": list_notifications(state, request.args.get("page", 1), request.args.get("pageSize", 50))})
+        return jsonify({"code": 200, "msg": "success", "data": list_notifications(state, request.args.get("page", 1), request.args.get("pageSize", 50), _current_account_owner_id())})
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as exc:
@@ -28,7 +28,7 @@ def notifications_list():
 def notifications_update(notification_id):
     try:
         payload = request.get_json(silent=True) or {}
-        return jsonify({"code": 200, "msg": "success", "data": update_notification_state(notification_id, payload.get("state"))})
+        return jsonify({"code": 200, "msg": "success", "data": update_notification_state(notification_id, payload.get("state"), _current_account_owner_id())})
     except LookupError as exc:
         return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
     except ValueError as exc:
@@ -41,7 +41,7 @@ def notifications_update(notification_id):
 @app.route("/notifications/direct-publish-failure", methods=["POST"])
 def notifications_direct_publish_failure():
     try:
-        return jsonify({"code": 200, "msg": "success", "data": create_direct_publish_failure_notification(request.get_json(silent=True) or {})})
+        return jsonify({"code": 200, "msg": "success", "data": create_direct_publish_failure_notification(request.get_json(silent=True) or {}, _current_account_owner_id())})
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as exc:

@@ -345,7 +345,7 @@
   </div>
 </template>
 <script setup>
-import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification } from 'element-plus'
 import {
@@ -388,6 +388,7 @@ const FEISHU_STATUS_POLL_INTERVAL_MS = 10 * 1000
 let accountCheckTimer = null
 let notificationSyncTimer = null
 let feishuRobotStatusTimer = null
+let authenticatedWorkspaceStarted = false
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
 const feishuRobotStatus = ref({ status: 'connecting', message: '正在读取飞书机器人状态。', updatedAt: '' })
@@ -450,9 +451,15 @@ const refreshRuntimeConfigStatus = async () => {
       llmConfigWarning.value = textStatus.message || '文本模型不可用，请检查配置并重启后端。'
     }
     const agent = res?.data?.agent
-    agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.multimodalModelConfigured
-      ? 'Agent 发布前质检已启用，但多模态模型未配置；发布会被关键帧审核阻断。'
-      : ''
+    const agentLlmStatus = llm?.agent
+    const agentWarnings = []
+    if (agent?.enabled && agentLlmStatus && !agentLlmStatus.ready) {
+      agentWarnings.push(agentLlmStatus.message || 'Agent 模型不可用，请检查配置并重启后端。')
+    }
+    if (agent?.enabled && agent?.requirePrepublishCheck && !agent?.multimodalModelConfigured) {
+      agentWarnings.push('Agent 发布前质检已启用，但多模态模型未配置；发布会被关键帧审核阻断。')
+    }
+    agentConfigWarning.value = agentWarnings.join(' ')
   } catch (error) {
     console.error('运行时配置状态检查失败:', error)
   }
@@ -523,10 +530,9 @@ const toggleNotificationHistory = async () => {
 
 const refreshNotifications = () => notificationStore.refresh({ includeHistory: showNotificationHistory.value })
 
-onMounted(() => {
-  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
-  mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
-  if (!userStore.isLoggedIn) return
+const initializeAuthenticatedWorkspace = () => {
+  if (authenticatedWorkspaceStarted || !userStore.isLoggedIn) return
+  authenticatedWorkspaceStarted = true
   void openAgentWorkbench()
   refreshRuntimeConfigStatus()
   refreshFeishuRobotStatus()
@@ -539,6 +545,14 @@ onMounted(() => {
   feishuRobotStatusTimer = window.setInterval(refreshFeishuRobotStatus, FEISHU_STATUS_POLL_INTERVAL_MS)
   window.addEventListener('focus', refreshNotifications)
   window.addEventListener('focus', refreshFeishuRobotStatus)
+}
+
+watch(() => userStore.isLoggedIn, initializeAuthenticatedWorkspace)
+
+onMounted(() => {
+  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
+  mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
+  initializeAuthenticatedWorkspace()
 })
 
 onBeforeUnmount(() => {

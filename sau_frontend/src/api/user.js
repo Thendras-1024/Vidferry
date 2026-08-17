@@ -2,6 +2,9 @@ import request from '@/utils/request'
 
 export const userApi = {
   login(data) { return request.post('/auth/login', data, { silentError: true }) },
+  authPublicConfig() { return request.get('/auth/public-config', { silentError: true }) },
+  sendPhoneCode(data) { return request.post('/auth/phone/send-code', data, { silentError: true }) },
+  phoneLogin(data) { return request.post('/auth/phone/login', data, { silentError: true }) },
   me() { return request.get('/auth/me', { silentError: true }) },
   logout() { return request.post('/auth/logout') },
   logoutAll() { return request.post('/auth/logout-all') },

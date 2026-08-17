@@ -16,10 +16,20 @@ def list_users(page=1, page_size=50, keyword=""):
     with _db_connect(row_factory=True) as conn:
         total = int(conn.execute(f"SELECT COUNT(*) FROM auth_users {where}", params).fetchone()[0])
         rows = conn.execute(
-            f"SELECT * FROM auth_users {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"""SELECT u.*, COALESCE((
+                    SELECT string_agg(i.provider, ',' ORDER BY i.provider)
+                    FROM auth_identities i WHERE i.user_id = u.id
+                ), 'password') AS login_provider
+                FROM auth_users u {where.replace('username', 'u.username').replace('display_name', 'u.display_name')}
+                ORDER BY u.created_at DESC, u.id DESC LIMIT ? OFFSET ?""",
             (*params, page_size, (page - 1) * page_size),
         ).fetchall()
-    return {"items": [public_user(row) for row in rows], "total": total, "page": page, "pageSize": page_size}
+    items = []
+    for row in rows:
+        user = public_user(row)
+        user["loginProvider"] = row["login_provider"] or "password"
+        items.append(user)
+    return {"items": items, "total": total, "page": page, "pageSize": page_size}
 
 
 def _active_admin_count(conn):

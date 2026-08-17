@@ -19,6 +19,7 @@ _REQUIRED_TABLES = (
     "youtube_subtitle_audits", "youtube_content_safety_audits", "published_youtube_materials", "publish_dispatch_jobs",
     "publish_dispatch_targets", "scheduled_publish_tasks",
     "scheduled_publish_targets", "publish_account_groups", "publish_account_group_members", "auth_sessions", "auth_audit_logs",
+    "auth_identities", "auth_phone_challenges", "auth_rate_limit_events",
     "task_acknowledgements", "platform_metric_snapshots", "platform_comment_samples",
     "short_video_projects", "short_video_candidates", "short_video_bgm_tracks", "short_video_channel_whitelist",
 )

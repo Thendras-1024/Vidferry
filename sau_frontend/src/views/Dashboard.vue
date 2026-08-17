@@ -211,8 +211,8 @@ const recentPublishTasks = computed(() => {
 })
 
 const publishedPreviewUrl = (row) => {
-  if (!row.filePath) return ''
-  return materialApi.getMaterialPreviewUrl(row.filePath)
+  if (!row.assetId) return ''
+  return materialApi.getMaterialPreviewUrl(row.assetId)
 }
 
 const navigateTo = (path) => {
