@@ -53,8 +53,8 @@ def test_video_card_snapshot_survives_backend_memory_reset(monkeypatch):
         "sessionId": session_id,
         "status": "initial",
         "label": "待处理",
-        "createdAt": time.time(),
-        "expiresAt": time.time() + 60,
+        "createdAt": time.time() - 120,
+        "expiresAt": time.time() - 60,
         "items": [{"id": "AbCdEf12345"}, {"id": "ZyXwVu98765"}],
     }
     captured = {}
@@ -71,6 +71,8 @@ def test_video_card_snapshot_survives_backend_memory_reset(monkeypatch):
     assert page["items"] == snapshot["items"]
     assert selection["videoIds"] == ["AbCdEf12345"]
     assert captured["agentVideoSelectionCardId"] == card_id
+    restored = captured["agentVideoCardSnapshots"][card_id]
+    assert restored["expiresAt"] > time.time()
 
 
 def test_prepare_action_requires_card_selection(monkeypatch):

@@ -1,11 +1,14 @@
 import json
 import sqlite3
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
 from app.backend.runtime import create_backend_module
 from app.core.error_catalog import classify_workflow_exception
+from app.core.errors import WorkflowContextError
 from app.core.highlight_review_service import _validate_text_shortlist
 from app.core.llm_harness import validate_editing_plan
 from app.core.llm_prompts import build_editing_analysis_prompt, editing_analysis_system_prompt
@@ -94,6 +97,61 @@ def test_editing_plan_keeps_all_ranked_tag_candidates_in_model_order():
     assert result["cover_title_options"] == cover_titles
 
 
+def test_editing_plan_loads_research_context_for_job_owner(monkeypatch):
+    backend = create_backend_module("test_editing_plan_research_context_backend")
+    context_calls = []
+
+    def load_context(video_id, owner_user_id):
+        context_calls.append((video_id, owner_user_id))
+        return {"title": "research title"}
+
+    monkeypatch.setattr(backend, "youtube_video_research_context", load_context)
+    monkeypatch.setattr(backend, "_format_transcript_for_model", lambda _segments: "test transcript")
+    monkeypatch.setattr(backend, "_max_transcript_seconds", lambda _segments: 120)
+    monkeypatch.setattr(backend, "_unsafe_transcript_ranges", lambda _segments: [])
+    monkeypatch.setattr(backend, "_summarize_transcript_chunks", lambda *_args: ("test transcript", {}))
+    monkeypatch.setattr(
+        backend,
+        "_call_editing_contract",
+        lambda *_args, **_kwargs: (
+            {
+                "summary": "test summary",
+                "china_view_angle": "test angle",
+                "title_options": ["test title"],
+                "cover_title_options": ["test\\ncover"],
+                "publish_copy": "test copy",
+                "tags": ["test"],
+                "highlight_segments": [],
+                "risk_notes": [],
+                "editing_focus": "test focus",
+            },
+            {"totalTokens": 0},
+            {"attemptCount": 1, "validationRetries": 0, "softWarnings": []},
+        ),
+    )
+
+    backend._generate_editing_plan_impl({"videoId": "video-1", "ownerUserId": 42}, [])
+
+    assert context_calls == [("video-1", 42)]
+
+
+def test_editing_plan_context_type_error_uses_workflow_exception(monkeypatch):
+    backend = create_backend_module("test_editing_plan_context_error_backend")
+
+    def fail_context(_video_id, _owner_user_id):
+        raise TypeError("context loader failed")
+
+    monkeypatch.setattr(backend, "youtube_video_research_context", fail_context)
+
+    with pytest.raises(WorkflowContextError) as caught:
+        backend._generate_editing_plan_impl({"videoId": "video-1", "ownerUserId": 42}, [])
+
+    assert isinstance(caught.value.__cause__, TypeError)
+    error = classify_workflow_exception(caught.value)
+    assert error["error_code"] == "VF-WORKFLOW-CONTEXT-FAILED"
+    assert error["error_type"] == "WORKFLOW_CONTEXT_FAILED"
+
+
 def test_youtube_media_stream_403_has_actionable_download_error():
     error = classify_workflow_exception(
         RuntimeError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
@@ -102,6 +160,54 @@ def test_youtube_media_stream_403_has_actionable_download_error():
     assert error["error_code"] == "VF-DOWNLOAD-YOUTUBE-FORBIDDEN"
     assert error["error_type"] == "YOUTUBE_DOWNLOAD_FORBIDDEN"
     assert "HTTP 403" in error["error_reason"]
+    assert "Android" in error["error_reason"]
+
+
+_YOUTUBE_PRIMARY_FORMAT = "bv*+ba/b"
+_YOUTUBE_EXTRACTOR_ARGS = {"youtube": {"player_client": ["android"]}}
+
+
+def _fake_yt_dlp(outcomes, calls):
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, download):
+            assert download is True
+            calls.append(self.options)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            Path(self.options["outtmpl"].replace("%(ext)s", "mp4")).write_bytes(b"video")
+
+    return types.SimpleNamespace(YoutubeDL=FakeYoutubeDL)
+
+
+def _youtube_download_job():
+    return {
+        "id": "job-1",
+        "videoId": "video-1",
+        "url": "https://www.youtube.com/watch?v=video-1",
+    }
+
+
+def test_youtube_download_uses_android_player_client(tmp_path, monkeypatch):
+    backend = create_backend_module("test_youtube_download_android_client_backend")
+    calls = []
+    monkeypatch.setattr(backend, "YOUTUBE_DOWNLOAD_DIR", tmp_path)
+    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp([None], calls))
+
+    source_file = backend._download_youtube_video(_youtube_download_job())
+
+    assert source_file == tmp_path / "video-1.mp4"
+    assert calls[0]["format"] == _YOUTUBE_PRIMARY_FORMAT
+    assert calls[0]["extractor_args"] == _YOUTUBE_EXTRACTOR_ARGS
 
 
 def test_publish_tags_fill_douyin_limit_by_common_custom_and_selected_priority(monkeypatch):

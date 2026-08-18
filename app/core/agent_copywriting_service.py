@@ -195,6 +195,19 @@ def _agent_copywriting_public_proposal(proposal):
     return {key: value for key, value in proposal.items() if key != "sessionId"}
 
 
+def _agent_copywriting_restore_proposal(proposal_id, session_id):
+    loader = globals().get("get_agent_proposal_state")
+    proposal = loader(session_id, "copywritingProposal", proposal_id) if callable(loader) else None
+    if not isinstance(proposal, dict) or proposal.get("status") not in {"selecting_video", "ready"}:
+        return None
+    return {
+        **proposal,
+        "proposalId": proposal_id,
+        "sessionId": session_id,
+        "expiresAt": _time.time() + _AGENT_COPYWRITING_PROPOSAL_TTL_SECONDS,
+    }
+
+
 def _agent_copywriting_get_proposal(proposal_id, session_id):
     proposal_id = str(proposal_id or "").strip()
     session_id = str(session_id or "").strip()
@@ -203,6 +216,10 @@ def _agent_copywriting_get_proposal(proposal_id, session_id):
     with _AGENT_COPYWRITING_PROPOSALS_LOCK:
         _agent_copywriting_cleanup_expired()
         proposal = _AGENT_COPYWRITING_PROPOSALS.get(proposal_id)
+        if not proposal:
+            proposal = _agent_copywriting_restore_proposal(proposal_id, session_id)
+            if proposal:
+                _AGENT_COPYWRITING_PROPOSALS[proposal_id] = proposal
         if not proposal or proposal.get("sessionId") != session_id:
             raise ValueError("文案提案已失效，请重新让 Agent 生成。")
         return proposal

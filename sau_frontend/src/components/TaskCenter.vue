@@ -7,10 +7,12 @@
       class="task-center-badge"
     >
       <el-popover
+        :visible="popoverVisible"
         placement="top-end"
         trigger="click"
         width="430"
         popper-class="task-center-popper"
+        @update:visible="updatePopoverVisible"
         @show="refresh"
       >
         <template #reference>
@@ -30,10 +32,8 @@
           </header>
           <div v-if="loading && !items.length" class="task-center-loading"><el-icon class="is-loading"><Loading /></el-icon> 正在读取任务</div>
           <el-empty v-else-if="!items.length" description="暂无需要关注的任务" :image-size="62" />
-          <div v-else class="task-center-groups">
-            <section v-for="group in visibleGroups" :key="group.key" v-show="group.items.length" class="task-group">
-              <div class="task-group-title"><span>{{ group.label }}</span><em>{{ group.items.length }}</em></div>
-              <article v-for="item in group.items" :key="item.taskKey" class="task-item" :class="`is-${item.status}`">
+          <div v-else class="task-center-items">
+              <article v-for="item in items" :key="item.taskKey" class="task-item" :class="`is-${item.status}`">
                 <div class="task-item-main">
                   <div class="task-item-type" :class="`is-${item.type}`">{{ item.typeLabel }}</div>
                   <div class="task-item-title" :title="item.chineseTitle || item.englishTitle">{{ item.chineseTitle || '原题中文翻译未生成' }}</div>
@@ -48,7 +48,6 @@
                   <el-button v-if="['failed', 'abnormal'].includes(item.status)" text type="danger" size="small" @click="acknowledge(item)">我知道了</el-button>
                 </div>
               </article>
-            </section>
           </div>
         </section>
       </el-popover>
@@ -59,7 +58,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { List, Loading, RefreshRight } from '@element-plus/icons-vue'
@@ -69,6 +68,7 @@ import PublishRetryDialog from './PublishRetryDialog.vue'
 
 const router = useRouter()
 const detailVisible = ref(false)
+const popoverVisible = ref(false)
 const loading = ref(false)
 const detail = ref(null)
 const retryDialogVisible = ref(false)
@@ -76,18 +76,6 @@ const retryTask = ref(null)
 const items = ref([])
 const summary = ref({ activeCount: 0, waitingCount: 0, completedCount: 0, abnormalCount: 0, badgeCount: 0 })
 let pollTimer = null
-const activeStatuses = new Set(['queued', 'running', 'waiting_confirmation', 'waiting_publish'])
-
-const visibleGroups = computed(() => {
-  const groups = summary.value.groups || {}
-  return [
-    { key: 'active', label: '正在进行', items: groups.active || [] },
-    { key: 'waitingConfirmation', label: '等待确认', items: groups.waitingConfirmation || [] },
-    { key: 'recentCompleted', label: '最近完成', items: groups.recentCompleted || [] },
-    { key: 'abnormal', label: '异常任务', items: groups.abnormal || [] },
-  ]
-})
-
 const formatTime = value => {
   if (!value) return '时间未知'
   const date = new Date(value)
@@ -97,15 +85,18 @@ const formatTime = value => {
 
 const progressStatus = status => ['failed', 'abnormal', 'partial', 'needs_verification'].includes(status) ? 'exception' : ['success', 'reused'].includes(status) ? 'success' : undefined
 
-const refresh = async ({ activeOnly = false } = {}) => {
+const updatePopoverVisible = visible => {
+  if (!visible && detailVisible.value) return
+  popoverVisible.value = visible
+}
+
+const refresh = async () => {
   if (loading.value) return
   loading.value = true
   try {
-    const response = await taskCenterApi.list(activeOnly ? { activeOnly: 1 } : {})
+    const response = await taskCenterApi.list()
     const nextItems = response?.data?.items || []
-    items.value = activeOnly
-      ? [...nextItems, ...items.value.filter(item => !activeStatuses.has(item.status))]
-      : nextItems
+    items.value = nextItems
     const groups = { active: [], waitingConfirmation: [], recentCompleted: [], abnormal: [] }
     for (const item of items.value) {
       if (['queued', 'running', 'waiting_publish'].includes(item.status)) groups.active.push(item)
@@ -160,7 +151,7 @@ const handleFocus = () => { void refresh() }
 
 onMounted(() => {
   void refresh()
-  pollTimer = window.setInterval(() => { void refresh({ activeOnly: true }) }, 5000)
+  pollTimer = window.setInterval(() => { void refresh() }, 5000)
   window.addEventListener('focus', handleFocus)
 })
 
@@ -185,9 +176,6 @@ onBeforeUnmount(() => {
 .task-center-header strong { display: block; font-size: 15px; }
 .task-center-header span { color: $text-secondary; font-size: 12px; }
 .task-center-loading { display: flex; gap: 8px; justify-content: center; padding: 28px 0; color: $text-secondary; }
-.task-group { padding-top: 12px; }
-.task-group-title { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: $text-secondary; font-size: 12px; font-weight: 600; }
-.task-group-title em { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: $bg-color-page; color: $text-secondary; font-style: normal; text-align: center; line-height: 18px; }
 .task-item { display: flex; gap: 8px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid $border-extra-light; }
 .task-item:last-child { border-bottom: 0; }
 .task-item-main { min-width: 0; flex: 1; }

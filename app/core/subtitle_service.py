@@ -1356,6 +1356,11 @@ def _download_youtube_video(job):
     ydl_opts = {
         **_base_ytdlp_opts(),
         "format": "bv*+ba/b",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+            },
+        },
         "merge_output_format": "mp4",
         "outtmpl": output_template,
         "noplaylist": True,
