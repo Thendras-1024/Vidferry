@@ -56,7 +56,7 @@ def upload_cookie():
         with _db_connect() as conn:
             conn.row_factory = True
             cursor = conn.cursor()
-            cursor.execute('SELECT type, filePath FROM user_info WHERE id = ? AND owner_user_id = ?', (account_id, owner_user_id))
+            cursor.execute('SELECT type, filePath FROM user_info WHERE id = %s AND owner_user_id = %s', (account_id, owner_user_id))
             result = cursor.fetchone()
 
             if not result:
@@ -79,7 +79,7 @@ def upload_cookie():
 
             file.save(str(cookie_file_path))
 
-            cursor.execute('UPDATE user_info SET status = ? WHERE id = ?', (1, account_id))
+            cursor.execute('UPDATE user_info SET status = %s WHERE id = %s', (1, account_id))
             conn.commit()
 
         resolve_publish_cookie_invalid_notifications(account_id, owner_user_id)
@@ -116,7 +116,7 @@ def download_cookie():
             with _db_connect() as conn:
                 conn.row_factory = True
                 row = conn.execute(
-                    'SELECT 1 FROM user_info WHERE filePath = ? AND owner_user_id = ?',
+                    'SELECT 1 FROM user_info WHERE filePath = %s AND owner_user_id = %s',
                     (_safe_cookie_filename(file_path), owner_user_id),
                 ).fetchone()
             if not row:

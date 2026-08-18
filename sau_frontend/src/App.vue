@@ -95,7 +95,7 @@
             <div class="user-dock-row">
               <el-dropdown trigger="click" placement="top-start" @command="handleUserCommand">
                 <button class="user-dock-profile" type="button">
-                  <el-avatar :size="36">{{ userInitial }}</el-avatar>
+                  <el-avatar :size="36" :src="userStore.userInfo?.avatarUrl || '/vidferry-icon.svg'">{{ userInitial }}</el-avatar>
                   <span v-show="!isCollapse" class="user-dock-copy">
                     <strong>{{ userStore.userInfo?.displayName || userStore.userInfo?.username }}</strong>
                     <small>{{ isAdmin ? '管理员' : '已登录' }}</small>
@@ -104,6 +104,7 @@
                 </button>
                 <template #dropdown>
                   <el-dropdown-menu>
+                    <el-dropdown-item command="profile">个人资料</el-dropdown-item>
                     <el-dropdown-item command="password">修改密码</el-dropdown-item>
                     <el-dropdown-item command="about">帮助与版本</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="users" divided>用户与安全</el-dropdown-item>
@@ -300,12 +301,13 @@
               </el-popover>
               <el-dropdown trigger="click" @command="handleUserCommand">
                 <div class="user-dropdown">
-                  <el-avatar :size="32">{{ userInitial }}</el-avatar>
+                  <el-avatar :size="32" :src="userStore.userInfo?.avatarUrl || '/vidferry-icon.svg'">{{ userInitial }}</el-avatar>
                   <span class="username">{{ userStore.userInfo?.displayName }}</span>
                   <el-icon><ArrowDown /></el-icon>
                 </div>
                 <template #dropdown>
                   <el-dropdown-menu>
+                    <el-dropdown-item command="profile">个人资料</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="users">用户与安全</el-dropdown-item>
                     <el-dropdown-item command="password">修改密码</el-dropdown-item>
                     <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
@@ -510,6 +512,7 @@ const handleMessageAction = (message) => {
 }
 
 const handleUserCommand = async command => {
+  if (command === 'profile') return router.push('/profile')
   if (command === 'users') return router.push('/user-management')
   if (command === 'statistics') return router.push('/workflow-statistics')
   if (command === 'audit') return router.push('/subtitle-audit')

@@ -11,7 +11,7 @@ def list_users(page=1, page_size=50, keyword=""):
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 50)))
     keyword = str(keyword or "").strip().lower()
-    where = "WHERE lower(username) LIKE ? OR lower(display_name) LIKE ?" if keyword else ""
+    where = "WHERE lower(username) ILIKE %s OR lower(display_name) ILIKE %s" if keyword else ""
     params = (f"%{keyword}%", f"%{keyword}%") if keyword else ()
     with _db_connect(row_factory=True) as conn:
         total = int(conn.execute(f"SELECT COUNT(*) FROM auth_users {where}", params).fetchone()[0])
@@ -21,7 +21,7 @@ def list_users(page=1, page_size=50, keyword=""):
                     FROM auth_identities i WHERE i.user_id = u.id
                 ), 'password') AS login_provider
                 FROM auth_users u {where.replace('username', 'u.username').replace('display_name', 'u.display_name')}
-                ORDER BY u.created_at DESC, u.id DESC LIMIT ? OFFSET ?""",
+                ORDER BY u.created_at DESC, u.id DESC LIMIT %s OFFSET %s""",
             (*params, page_size, (page - 1) * page_size),
         ).fetchall()
     items = []
@@ -46,7 +46,7 @@ def update_user(user_id, payload, actor_user_id):
     if status is not None and status not in {"active", "disabled"}:
         raise AuthError("用户状态无效")
     with _db_connect(row_factory=True) as conn:
-        row = conn.execute("SELECT * FROM auth_users WHERE id = ?", (user_id,)).fetchone()
+        row = conn.execute("SELECT * FROM auth_users WHERE id = %s", (user_id,)).fetchone()
         if not row:
             raise AuthError("用户不存在", 404, "USER_NOT_FOUND")
         current = public_user(row)
@@ -58,10 +58,10 @@ def update_user(user_id, payload, actor_user_id):
         if user_id == int(actor_user_id) and next_status != "active":
             raise AuthError("不能停用当前登录用户", 409, "CURRENT_USER")
         conn.execute(
-            "UPDATE auth_users SET display_name = ?, role = ?, status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE auth_users SET display_name = %s, role = %s, status = %s, updated_at = %s WHERE id = %s",
             (str(display_name or current["displayName"]).strip()[:80], next_role, next_status, _timestamp(), user_id),
         )
-        updated = conn.execute("SELECT * FROM auth_users WHERE id = ?", (user_id,)).fetchone()
+        updated = conn.execute("SELECT * FROM auth_users WHERE id = %s", (user_id,)).fetchone()
     if next_status != "active" or next_role != current["role"]:
         revoke_user_sessions(user_id)
     return public_user(updated)
@@ -70,13 +70,13 @@ def update_user(user_id, payload, actor_user_id):
 def reset_password(user_id, password):
     user_id = int(user_id)
     with _db_connect(row_factory=True) as conn:
-        row = conn.execute("SELECT username FROM auth_users WHERE id = ?", (user_id,)).fetchone()
+        row = conn.execute("SELECT username FROM auth_users WHERE id = %s", (user_id,)).fetchone()
         if not row:
             raise AuthError("用户不存在", 404, "USER_NOT_FOUND")
         now = _timestamp()
         conn.execute(
-            """UPDATE auth_users SET password_hash = ?, must_change_password = 1,
-               failed_login_count = 0, locked_until = NULL, password_changed_at = ?, updated_at = ? WHERE id = ?""",
+            """UPDATE auth_users SET password_hash = %s, must_change_password = 1,
+               failed_login_count = 0, locked_until = NULL, password_changed_at = %s, updated_at = %s WHERE id = %s""",
             (hash_password(password, row["username"]), now, now, user_id),
         )
     revoke_user_sessions(user_id)
@@ -85,7 +85,7 @@ def reset_password(user_id, password):
 def unlock_user(user_id):
     with _db_connect() as conn:
         cursor = conn.execute(
-            "UPDATE auth_users SET failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE auth_users SET failed_login_count = 0, locked_until = NULL, updated_at = %s WHERE id = %s",
             (_timestamp(), int(user_id)),
         )
         if not cursor.rowcount:
@@ -96,13 +96,13 @@ def list_audit_logs(page=1, page_size=50, action=""):
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 50)))
     action = str(action or "").strip()
-    where, params = ("WHERE a.action = ?", (action,)) if action else ("", ())
+    where, params = ("WHERE a.action = %s", (action,)) if action else ("", ())
     with _db_connect(row_factory=True) as conn:
         total = int(conn.execute(f"SELECT COUNT(*) FROM auth_audit_logs a {where}", params).fetchone()[0])
         rows = conn.execute(
             f"""SELECT a.*, u.username AS actor_username FROM auth_audit_logs a
                 LEFT JOIN auth_users u ON u.id = a.actor_user_id {where}
-                ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?""",
+                ORDER BY a.created_at DESC, a.id DESC LIMIT %s OFFSET %s""",
             (*params, page_size, (page - 1) * page_size),
         ).fetchall()
     items = [{

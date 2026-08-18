@@ -18,8 +18,9 @@
             <el-button class="login-button" type="primary" native-type="submit" :loading="loading">登录</el-button>
           </el-form>
         </el-tab-pane>
-        <el-tab-pane v-if="phoneLoginEnabled" label="手机号登录" name="phone">
+        <el-tab-pane v-if="phoneLoginEnabled" :label="phoneAutoRegisterEnabled ? '手机号登录 / 注册' : '手机号登录'" name="phone">
           <el-form ref="phoneFormRef" :model="phoneForm" :rules="phoneRules" label-position="top" @submit.prevent="submitPhone">
+            <p v-if="phoneAutoRegisterEnabled" class="phone-hint">首次验证手机号将自动注册。</p>
             <el-form-item label="手机号" prop="phone">
               <el-input v-model.trim="phoneForm.phone" inputmode="numeric" autocomplete="tel" />
             </el-form-item>
@@ -30,7 +31,7 @@
               </div>
             </el-form-item>
             <el-checkbox v-model="phoneForm.remember">记住登录（7 天）</el-checkbox>
-            <el-button class="login-button" type="primary" native-type="submit" :loading="loading">登录</el-button>
+            <el-button class="login-button" type="primary" native-type="submit" :loading="loading">{{ phoneAutoRegisterEnabled ? '登录 / 注册' : '登录' }}</el-button>
           </el-form>
         </el-tab-pane>
       </el-tabs>
@@ -53,13 +54,14 @@ const loginMode = ref('password')
 const loading = ref(false)
 const sendingCode = ref(false)
 const phoneLoginEnabled = ref(false)
+const phoneAutoRegisterEnabled = ref(false)
 const captchaAppId = ref('')
 const passwordCaptchaRequired = ref(false)
 const codeCooldown = ref(0)
 let cooldownTimer = null
 
 const passwordForm = reactive({ username: '', password: '', remember: false })
-const phoneForm = reactive({ phone: '', code: '', challengeId: '', remember: false })
+const phoneForm = reactive({ phone: '', code: '', challengeId: '', remember: false, idempotencyKey: '' })
 const passwordRules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
@@ -71,6 +73,13 @@ const phoneRules = {
 
 const errorMessage = error => error.response?.data?.msg || error.message || '登录失败'
 const errorCode = error => error.response?.data?.data?.errorCode || ''
+
+const createIdempotencyKey = () => {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID()
+  const bytes = new Uint8Array(16)
+  window.crypto.getRandomValues(bytes)
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+}
 
 const loadCaptchaScript = () => new Promise((resolve, reject) => {
   if (window.TencentCaptcha) return resolve()
@@ -137,11 +146,14 @@ const sendCode = async () => {
   sendingCode.value = true
   try {
     const captcha = await requestCaptcha()
-    const response = await userApi.sendPhoneCode({ phone: phoneForm.phone, ...captcha })
+    phoneForm.idempotencyKey ||= createIdempotencyKey()
+    const response = await userApi.sendPhoneCode({ phone: phoneForm.phone, idempotencyKey: phoneForm.idempotencyKey, ...captcha })
     phoneForm.challengeId = response.data.challengeId
+    phoneForm.idempotencyKey = ''
     startCooldown()
     ElMessage.success('验证码已发送')
   } catch (error) {
+    if (error.response) phoneForm.idempotencyKey = ''
     ElMessage.error(errorMessage(error))
   } finally {
     sendingCode.value = false
@@ -152,7 +164,9 @@ const submitPhone = async () => {
   await phoneFormRef.value?.validate()
   loading.value = true
   try {
-    finishLogin(await userStore.phoneLogin(phoneForm))
+    const user = await userStore.phoneLogin(phoneForm)
+    if (user.isNewUser) ElMessage.success('注册成功，欢迎使用 Vidferry')
+    finishLogin(user)
   } catch (error) {
     if (errorCode(error) !== 'CAPTCHA_REQUIRED') {
       ElMessage.error(errorMessage(error))
@@ -160,7 +174,9 @@ const submitPhone = async () => {
     }
     try {
       const captcha = await requestCaptcha()
-      finishLogin(await userStore.phoneLogin({ ...phoneForm, ...captcha }))
+      const user = await userStore.phoneLogin({ ...phoneForm, ...captcha })
+      if (user.isNewUser) ElMessage.success('注册成功，欢迎使用 Vidferry')
+      finishLogin(user)
     } catch (captchaError) {
       ElMessage.error(errorMessage(captchaError))
     }
@@ -173,9 +189,11 @@ onMounted(async () => {
   try {
     const response = await userApi.authPublicConfig()
     phoneLoginEnabled.value = Boolean(response.data.phoneLoginEnabled)
+    phoneAutoRegisterEnabled.value = Boolean(response.data.phoneAutoRegisterEnabled)
     captchaAppId.value = response.data.captchaAppId || ''
   } catch {
     phoneLoginEnabled.value = false
+    phoneAutoRegisterEnabled.value = false
   }
 })
 
@@ -191,4 +209,5 @@ onUnmounted(() => { if (cooldownTimer) window.clearInterval(cooldownTimer) })
 .brand p { margin: 3px 0 0; color: var(--vf-text-secondary); font-size: 14px; }
 .login-button { width: 100%; margin-top: 14px; }
 .code-input { display: grid; grid-template-columns: minmax(0, 1fr) 108px; gap: 8px; width: 100%; }
+.phone-hint { margin: 0 0 16px; color: var(--vf-text-secondary); font-size: 13px; }
 </style>

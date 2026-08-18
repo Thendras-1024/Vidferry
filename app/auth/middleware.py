@@ -123,6 +123,12 @@ def register_auth_middleware(app):
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+            "script-src 'self' https://turing.captcha.qcloud.com; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; connect-src 'self'; frame-src https://*.qcloud.com",
+        )
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("Pragma", "no-cache")
         if _request_uses_https():

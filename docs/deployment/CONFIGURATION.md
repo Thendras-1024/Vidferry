@@ -74,5 +74,7 @@ MULTIMODAL_LLM_MODEL=qwen-vl-max
 | `VIDFERRY_AUTH_ABSOLUTE_HOURS` | `24` | 会话绝对有效期。 |
 | `VIDFERRY_AUTH_REMEMBER_HOURS` | `168` | 勾选记住登录后的最长有效期。 |
 | `VIDFERRY_AUTH_ALLOW_COOKIE_EXPORT` | `false` | 默认禁止导出平台 Cookie。 |
+| `VIDFERRY_AUTH_PHONE_LOGIN_ENABLED` | `false` | 启用腾讯云短信验证码登录。 |
+| `VIDFERRY_AUTH_PHONE_AUTO_REGISTER_ENABLED` | `false` | 启用首次手机号验证自动注册；上线前完成短信额度与资源配额检查。 |
 
 完整部署边界见 [用户认证与部署](用户认证与部署.md)。

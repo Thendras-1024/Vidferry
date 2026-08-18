@@ -77,9 +77,9 @@ def updateUserinfo():
             # 更新数据库记录
             cursor.execute('''
                            UPDATE user_info
-                           SET type     = ?,
-                               userName = ?
-                           WHERE id = ? AND owner_user_id = ?;
+                           SET type     = %s,
+                               userName = %s
+                           WHERE id = %s AND owner_user_id = %s;
                            ''', (type, userName, user_id, owner_user_id))
             if cursor.rowcount != 1:
                 return jsonify({"code": 404, "msg": "账号不存在", "data": None}), 404

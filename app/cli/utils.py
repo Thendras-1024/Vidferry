@@ -23,8 +23,8 @@ def resolve_runtime_home() -> Path:
 
 
 def resolve_account_file(platform: str, account_name: str) -> Path:
-    account_file = resolve_runtime_home() / "cookies" / f"{platform}_{account_name}.json"
-    account_file.parent.mkdir(exist_ok=True)
+    account_file = resolve_runtime_home() / "cookiesFile" / "cli" / f"{platform}_{account_name}.json"
+    account_file.parent.mkdir(parents=True, exist_ok=True)
     return account_file
 
 

@@ -11,6 +11,7 @@ import SubtitleAudit from '../views/SubtitleAudit.vue'
 import ScheduledPublishTasks from '../views/ScheduledPublishTasks.vue'
 import Login from '../views/Login.vue'
 import ChangePassword from '../views/ChangePassword.vue'
+import Profile from '../views/Profile.vue'
 import UserManagement from '../views/UserManagement.vue'
 import ProcessingSettings from '../views/ProcessingSettings.vue'
 import ShortVideoStudio from '../views/ShortVideoStudio.vue'
@@ -28,6 +29,11 @@ const routes = [
     path: '/change-password',
     name: 'ChangePassword',
     component: ChangePassword
+  },
+  {
+    path: '/profile',
+    name: 'Profile',
+    component: Profile
   },
   {
     path: '/user-management',

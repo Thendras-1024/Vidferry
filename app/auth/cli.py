@@ -25,7 +25,7 @@ def _create_admin(args):
     except (AuthError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
     with backend._db_connect() as conn:
-        conn.execute("UPDATE agent_sessions SET owner_user_id = ? WHERE owner_user_id IS NULL", (user["id"],))
+        conn.execute("UPDATE agent_sessions SET owner_user_id = %s WHERE owner_user_id IS NULL", (user["id"],))
     print(f"admin created : username = {user['username']}")
 
 

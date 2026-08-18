@@ -90,7 +90,7 @@ const features = [
   { title: '处理统计', desc: '记录阶段耗时、视频大小，并预留云端模型 token 与延迟统计。' }
 ]
 
-const techStack = ['Vue 3', 'Element Plus', 'Pinia', 'Flask', 'SQLite', 'yt-dlp', 'FFmpeg', 'faster-whisper', 'CTranslate2']
+const techStack = ['Vue 3', 'Element Plus', 'Pinia', 'Flask', 'PostgreSQL', 'yt-dlp', 'FFmpeg', 'faster-whisper', 'CTranslate2']
 
 const acknowledgements = [
   { name: 'yt-dlp', license: 'Unlicense', version: '2026.3.17' },

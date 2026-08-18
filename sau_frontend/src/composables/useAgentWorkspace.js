@@ -530,7 +530,7 @@ export function useAgentWorkspace({ route, router }) {
     try {
       const response = await agentApi.updateVideoSelection(agentSessionId.value, normalized, resolvedCardId)
       agentVideoSelection.value = response?.data?.videoIds || normalized
-      agentVideoSelectionCardId.value = resolvedCardId
+      agentVideoSelectionCardId.value = normalized.length ? resolvedCardId : ''
       agentMessages.value.forEach(message => {
         const proposal = message.copywritingProposal
         if (proposal && ['selecting_video', 'ready'].includes(proposal.status)) {

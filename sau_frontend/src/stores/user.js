@@ -38,7 +38,13 @@ export const useUserStore = defineStore('user', () => {
     const response = await userApi.phoneLogin(credentials)
     setSession(response.data.user, response.data.csrfToken)
     initialized.value = true
-    return response.data.user
+    return { ...response.data.user, isNewUser: Boolean(response.data.isNewUser) }
+  }
+
+  const updateProfile = async profile => {
+    const response = await userApi.updateProfile(profile)
+    userInfo.value = { ...userInfo.value, ...response.data }
+    return response.data
   }
 
   const logout = async () => {
@@ -60,6 +66,7 @@ export const useUserStore = defineStore('user', () => {
     restore,
     login,
     phoneLogin,
+    updateProfile,
     logout
   }
 })

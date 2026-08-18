@@ -85,7 +85,7 @@ def _save_bilibili_login_account(user_name, account_file, status_queue, account_
         cursor = conn.cursor()
         if account_id is not None:
             cursor.execute(
-                "SELECT type FROM user_info WHERE id = ? AND owner_user_id = ?",
+                "SELECT type FROM user_info WHERE id = %s AND owner_user_id = %s",
                 (account_id, owner_user_id),
             )
             row = cursor.fetchone()
@@ -95,8 +95,8 @@ def _save_bilibili_login_account(user_name, account_file, status_queue, account_
             cursor.execute(
                 '''
                 UPDATE user_info
-                SET type = ?, filePath = ?, userName = ?, status = ?
-                WHERE id = ? AND owner_user_id = ?
+                SET type = %s, filePath = %s, userName = %s, status = %s
+                WHERE id = %s AND owner_user_id = %s
                 ''',
                 (5, relative_cookie_file, user_name, 1, account_id, owner_user_id),
             )
@@ -104,7 +104,7 @@ def _save_bilibili_login_account(user_name, account_file, status_queue, account_
             cursor.execute(
                 '''
                 INSERT INTO user_info (type, filePath, userName, status, owner_user_id)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ''',
                 (5, relative_cookie_file, user_name, 1, owner_user_id),
             )
@@ -239,7 +239,7 @@ def login():
         try:
             with _db_connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT type FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
+                cursor.execute("SELECT type FROM user_info WHERE id = %s AND owner_user_id = %s", (account_id, owner_user_id))
                 row = cursor.fetchone()
                 if row is None or str(row[0]) != str(type):
                     return Response("data: 500\n\n", mimetype='text/event-stream')

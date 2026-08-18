@@ -8,13 +8,14 @@ import hmac
 import json
 import re
 import secrets
-import threading
 import time
 import urllib.error
 import urllib.request
 
-from app.auth.service import AuthError, _now, _parse_timestamp, _timestamp, create_session, get_user, record_audit
+from app.auth.passwords import hash_password
+from app.auth.service import AuthError, _now, _parse_timestamp, _timestamp, create_session, public_user, record_audit
 from app.config import (
+    AUTH_PHONE_AUTO_REGISTER_ENABLED,
     AUTH_PHONE_HMAC_SECRET,
     AUTH_PHONE_LOGIN_ENABLED,
     AUTH_RATE_LIMIT_HMAC_SECRET,
@@ -27,13 +28,12 @@ from app.config import (
     AUTH_TENCENT_SMS_SIGN,
     AUTH_TENCENT_SMS_TEMPLATE_ID,
 )
-from app.db.base import _PostgresConnection as _PostgresRateConnection, _db_connect
+from app.db.base import _db_connect
 
 
 _PHONE_PATTERN = re.compile(r"1[3-9]\d{9}")
 _PASSWORD_CAPTCHA_WINDOW = dt.timedelta(minutes=15)
 _PHONE_CODE_WINDOW = dt.timedelta(minutes=5)
-_sqlite_rate_limit_lock = threading.Lock()
 
 
 def normalize_mainland_phone(value):
@@ -48,7 +48,8 @@ def normalize_mainland_phone(value):
 
 
 def _hash(value, secret):
-    return hmac.new(str(secret).encode("utf-8"), str(value or "").encode("utf-8"), hashlib.sha256).hexdigest()
+    key = secret if isinstance(secret, bytes) else str(secret).encode("utf-8")
+    return hmac.new(key, str(value or "").encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _phone_hash(phone):
@@ -67,6 +68,13 @@ def audit_hash(value):
 
 def _code_hash(challenge_id, code):
     return _hash(f"{challenge_id}:{code}", AUTH_PHONE_HMAC_SECRET)
+
+
+def _idempotency_key_hash(phone_hash, value):
+    key = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", key):
+        raise AuthError("请求标识无效，请刷新页面后重试", 400, "INVALID_IDEMPOTENCY_KEY")
+    return _hash(f"{phone_hash}:{key}", AUTH_RATE_LIMIT_HMAC_SECRET)
 
 
 def captcha_is_configured():
@@ -174,7 +182,7 @@ def _rate_count(scope, key_hash, since, conn=None):
         with _db_connect(row_factory=True) as active_conn:
             return _rate_count(scope, key_hash, since, active_conn)
     return int(conn.execute(
-        "SELECT COUNT(*) FROM auth_rate_limit_events WHERE scope = ? AND key_hash = ? AND created_at >= ?",
+        "SELECT COUNT(*) FROM auth_rate_limit_events WHERE scope = %s AND key_hash = %s AND created_at >= %s",
         (scope, key_hash, _timestamp(since)),
     ).fetchone()[0])
 
@@ -191,18 +199,13 @@ def _consume_rate(scope, key_hash, limit, window):
         if _rate_count(scope, key_hash, now - window, conn) >= limit:
             raise AuthError("操作过于频繁，请稍后再试", 429, "AUTH_RATE_LIMITED")
         conn.execute(
-            "INSERT INTO auth_rate_limit_events (scope, key_hash, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO auth_rate_limit_events (scope, key_hash, created_at) VALUES (%s, %s, %s)",
             (scope, key_hash, _timestamp(now)),
         )
 
     with _db_connect(row_factory=True) as conn:
-        if isinstance(conn, _PostgresRateConnection):
-            conn.execute("SELECT pg_advisory_xact_lock(?)", (_rate_lock_key(scope, key_hash),))
-            consume(conn)
-            return
-        # SQLite test fixtures do not provide PostgreSQL transaction advisory locks.
-        with _sqlite_rate_limit_lock:
-            consume(conn)
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_rate_lock_key(scope, key_hash),))
+        consume(conn)
 
 
 def password_captcha_required(username):
@@ -227,7 +230,7 @@ def record_password_login_failure(username, client_ip):
     now = _timestamp()
     with _db_connect() as conn:
         conn.cursor().executemany(
-            "INSERT INTO auth_rate_limit_events (scope, key_hash, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO auth_rate_limit_events (scope, key_hash, created_at) VALUES (%s, %s, %s)",
             (
                 ("password_login_failure", identity_hash, now),
                 ("password_login_identity_ip", _rate_hash(f"{identity}|{client_ip}"), now),
@@ -242,77 +245,119 @@ def clear_password_login_failures(username, client_ip=""):
     if client_ip:
         keys.append(("password_login_identity_ip", _rate_hash(f"{identity}|{client_ip}")))
     with _db_connect() as conn:
-        conn.cursor().executemany("DELETE FROM auth_rate_limit_events WHERE scope = ? AND key_hash = ?", keys)
+        conn.cursor().executemany("DELETE FROM auth_rate_limit_events WHERE scope = %s AND key_hash = %s", keys)
 
 
-def _challenge_row(challenge_id, phone_hash):
-    with _db_connect(row_factory=True) as conn:
-        return conn.execute(
-            "SELECT * FROM auth_phone_challenges WHERE id = ? AND phone_hash = ?",
-            (str(challenge_id or "")[:128], phone_hash),
-        ).fetchone()
+def _active_challenge_for_idempotency(conn, idempotency_hash):
+    row = conn.execute(
+        "SELECT id, status, expires_at FROM auth_phone_challenges WHERE idempotency_key_hash = %s",
+        (idempotency_hash,),
+    ).fetchone()
+    if row and row["status"] == "active" and _parse_timestamp(row["expires_at"]) > _now():
+        return {"challengeId": row["id"], "expiresIn": max(1, int((_parse_timestamp(row["expires_at"]) - _now()).total_seconds()))}
+    if row and row["status"] == "pending":
+        raise AuthError("验证码发送处理中，请稍后重试", 409, "PHONE_CODE_PENDING")
+    if row:
+        raise AuthError("验证码发送失败，请重新获取", 503, "PHONE_CODE_SEND_FAILED")
+    return None
 
 
-def _consume_phone_code(challenge_id, phone_hash, code):
-    row = _challenge_row(challenge_id, phone_hash)
-    if not row or row["consumed_at"] or _parse_timestamp(row["expires_at"]) <= _now():
-        raise AuthError("验证码无效或已过期", 400, "PHONE_CODE_INVALID")
-    if int(row["attempts"] or 0) >= int(row["max_attempts"] or 5) or not hmac.compare_digest(
-        str(row["code_hash"]), _code_hash(challenge_id, str(code or "")),
-    ):
-        with _db_connect() as conn:
-            conn.execute(
-                "UPDATE auth_phone_challenges SET attempts = attempts + 1 WHERE id = ? AND consumed_at IS NULL",
-                (str(challenge_id or "")[:128],),
-            )
-        raise AuthError("验证码无效或已过期", 400, "PHONE_CODE_INVALID")
-    with _db_connect() as conn:
-        cursor = conn.execute(
-            "UPDATE auth_phone_challenges SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL",
-            (_timestamp(), str(challenge_id or "")[:128]),
-        )
-        if not cursor.rowcount:
-            raise AuthError("验证码无效或已过期", 400, "PHONE_CODE_INVALID")
+def _consume_phone_code(conn, challenge_id, phone_hash, code):
+    challenge_id = str(challenge_id or "")[:128]
+    now = _timestamp()
+    expected_hash = _code_hash(challenge_id, str(code or ""))
+    cursor = conn.execute(
+        """UPDATE auth_phone_challenges SET consumed_at = %s, status = 'consumed'
+           WHERE id = %s AND phone_hash = %s AND status = 'active' AND consumed_at IS NULL
+             AND expires_at > %s AND attempts < max_attempts AND code_hash = %s""",
+        (now, challenge_id, phone_hash, now, expected_hash),
+    )
+    if cursor.rowcount:
+        return True
+    conn.execute(
+        """UPDATE auth_phone_challenges SET attempts = attempts + 1
+           WHERE id = %s AND phone_hash = %s AND status = 'active' AND consumed_at IS NULL
+             AND expires_at > %s AND attempts < max_attempts""",
+        (challenge_id, phone_hash, now),
+    )
+    return False
 
 
-def _identity_user_id(phone_hash):
-    with _db_connect(row_factory=True) as conn:
-        row = conn.execute(
-            "SELECT user_id FROM auth_identities WHERE provider = 'phone' AND subject_hash = ?",
-            (phone_hash,),
-        ).fetchone()
-        return int(row["user_id"]) if row else None
+def _lock_phone_identity(conn, phone_hash):
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_rate_lock_key("phone_identity", phone_hash),))
 
 
-def send_phone_code(phone, captcha_ticket, captcha_randstr, client_ip, user_agent=""):
+def _create_phone_user(conn, phone_hash):
+    username = f"phone-{secrets.token_urlsafe(24).lower()}"
+    password_hash = hash_password(secrets.token_urlsafe(32), username)
+    now = _timestamp()
+    cursor = conn.execute(
+        """INSERT INTO auth_users
+           (username, display_name, password_hash, role, status, must_change_password,
+            password_changed_at, created_at, updated_at)
+           VALUES (%s, '', %s, 'user', 'active', 0, %s, %s, %s) RETURNING id""",
+        (username, password_hash, now, now, now),
+    )
+    user_id = int(cursor.fetchone()[0])
+    display_name = f"Vidferry 用户 {user_id:06d}"
+    conn.execute("UPDATE auth_users SET display_name = %s WHERE id = %s", (display_name, user_id))
+    conn.execute(
+        """INSERT INTO auth_identities (user_id, provider, subject_hash, verified_at, created_at)
+           VALUES (%s, 'phone', %s, %s, %s)""",
+        (user_id, phone_hash, now, now),
+    )
+    return conn.execute("SELECT * FROM auth_users WHERE id = %s", (user_id,)).fetchone()
+
+
+def send_phone_code(phone, captcha_ticket, captcha_randstr, client_ip, user_agent="", *, idempotency_key=""):
     if not phone_login_is_configured():
         raise AuthError("手机号登录未配置", 503, "PHONE_LOGIN_DISABLED")
     normalized_phone = normalize_mainland_phone(phone)
     phone_hash = _phone_hash(normalized_phone)
     ip_hash = _rate_hash(client_ip)
+    idempotency_hash = _idempotency_key_hash(phone_hash, idempotency_key)
     _require_captcha(captcha_ticket, captcha_randstr, client_ip)
+    with _db_connect(row_factory=True) as conn:
+        previous = _active_challenge_for_idempotency(conn, idempotency_hash)
+        if previous:
+            return previous
     _consume_rate("phone_send_phone_minute", phone_hash, 1, dt.timedelta(minutes=1))
     _consume_rate("phone_send_phone_day", phone_hash, 5, dt.timedelta(days=1))
     _consume_rate("phone_send_ip_hour", ip_hash, 10, dt.timedelta(hours=1))
     _consume_rate("phone_send_ip_day", ip_hash, 30, dt.timedelta(days=1))
     challenge_id = secrets.token_urlsafe(24)
     code = f"{secrets.randbelow(1_000_000):06d}"
+    now = _now()
+    with _db_connect(row_factory=True) as conn:
+        previous = _active_challenge_for_idempotency(conn, idempotency_hash)
+        if previous:
+            return previous
+        conn.execute(
+            """INSERT INTO auth_phone_challenges
+               (id, phone_hash, code_hash, idempotency_key_hash, status, attempts, max_attempts, expires_at, created_at)
+               VALUES (%s, %s, %s, %s, 'pending', 0, 5, %s, %s)""",
+            (challenge_id, phone_hash, _code_hash(challenge_id, code), idempotency_hash,
+             _timestamp(now + _PHONE_CODE_WINDOW), _timestamp(now)),
+        )
     try:
         send_tencent_sms(normalized_phone, code)
     except AuthError:
-        record_audit("AUTH_PHONE_CODE_SEND", "failure", target_type="phone", target_id=phone_hash,
-                     details={"ipHash": ip_hash}, ip_address=ip_hash)
+        with _db_connect() as conn:
+            conn.execute("UPDATE auth_phone_challenges SET status = 'failed', failed_at = %s WHERE id = %s", (_timestamp(), challenge_id))
+            record_audit("AUTH_PHONE_CODE_SEND", "failure", target_type="phone", target_id=phone_hash,
+                         details={"ipHash": ip_hash}, ip_address=ip_hash, conn=conn)
         raise
-    now = _now()
     with _db_connect() as conn:
         conn.execute(
-            """INSERT INTO auth_phone_challenges
-               (id, phone_hash, code_hash, attempts, max_attempts, expires_at, created_at)
-               VALUES (?, ?, ?, 0, 5, ?, ?)""",
-            (challenge_id, phone_hash, _code_hash(challenge_id, code), _timestamp(now + _PHONE_CODE_WINDOW), _timestamp(now)),
+            "UPDATE auth_phone_challenges SET status = 'expired' WHERE phone_hash = %s AND status = 'active'",
+            (phone_hash,),
         )
-    record_audit("AUTH_PHONE_CODE_SEND", "success", target_type="phone", target_id=phone_hash,
-                 details={"ipHash": ip_hash}, ip_address=ip_hash)
+        conn.execute(
+            "UPDATE auth_phone_challenges SET status = 'active', activated_at = %s WHERE id = %s AND status = 'pending'",
+            (_timestamp(), challenge_id),
+        )
+        record_audit("AUTH_PHONE_CODE_SEND", "success", target_type="phone", target_id=phone_hash,
+                     details={"ipHash": ip_hash}, ip_address=ip_hash, conn=conn)
     return {"challengeId": challenge_id, "expiresIn": int(_PHONE_CODE_WINDOW.total_seconds())}
 
 
@@ -322,13 +367,40 @@ def authenticate_phone(phone, challenge_id, code, client_ip, user_agent="", *, r
     normalized_phone = normalize_mainland_phone(phone)
     phone_hash = _phone_hash(normalized_phone)
     ip_hash = _rate_hash(client_ip)
-    user_id = _identity_user_id(phone_hash)
-    _consume_phone_code(challenge_id, phone_hash, code)
-    user_id = user_id or _identity_user_id(phone_hash)
-    if user_id is None:
-        raise AuthError("手机号未绑定账号", 403, "PHONE_NOT_LINKED")
-    user = get_user(user_id)
-    token, csrf_token = create_session(user_id, client_ip, user_agent, remember=remember)
-    record_audit("AUTH_PHONE_LOGIN", "success", actor_user_id=user_id, target_type="phone", target_id=phone_hash,
-                 details={"ipHash": ip_hash}, ip_address=ip_hash)
-    return user, token, csrf_token
+    failure = None
+    result = None
+
+    def authenticate_in_transaction(conn):
+        nonlocal failure, result
+        _lock_phone_identity(conn, phone_hash)
+        if not _consume_phone_code(conn, challenge_id, phone_hash, code):
+            failure = AuthError("验证码无效或已过期", 400, "PHONE_CODE_INVALID")
+            return
+        identity = conn.execute(
+            "SELECT user_id FROM auth_identities WHERE provider = 'phone' AND subject_hash = %s", (phone_hash,)
+        ).fetchone()
+        is_new_user = identity is None
+        if is_new_user and not AUTH_PHONE_AUTO_REGISTER_ENABLED:
+            record_audit("AUTH_PHONE_LOGIN", "failure", target_type="phone", target_id=phone_hash,
+                         details={"ipHash": ip_hash}, ip_address=ip_hash, user_agent=user_agent, conn=conn)
+            failure = AuthError("手机号未绑定账号", 403, "PHONE_NOT_LINKED")
+            return
+        user_row = _create_phone_user(conn, phone_hash) if is_new_user else conn.execute(
+            "SELECT * FROM auth_users WHERE id = %s", (int(identity["user_id"]),)
+        ).fetchone()
+        if not user_row or user_row["status"] != "active":
+            record_audit("AUTH_PHONE_LOGIN", "failure", target_type="phone", target_id=phone_hash,
+                         details={"ipHash": ip_hash}, ip_address=ip_hash, user_agent=user_agent, conn=conn)
+            failure = AuthError("登录不可用，请联系管理员", 403, "PHONE_LOGIN_UNAVAILABLE")
+            return
+        token, csrf_token = create_session(user_row["id"], client_ip, user_agent, remember=remember, conn=conn)
+        record_audit("AUTH_PHONE_REGISTER" if is_new_user else "AUTH_PHONE_LOGIN", "success",
+                     actor_user_id=user_row["id"], target_type="phone", target_id=phone_hash,
+                     details={"ipHash": ip_hash}, ip_address=ip_hash, user_agent=user_agent, conn=conn)
+        result = (public_user(user_row), token, csrf_token, is_new_user)
+
+    with _db_connect(row_factory=True) as conn:
+        authenticate_in_transaction(conn)
+    if failure:
+        raise failure
+    return result

@@ -18,7 +18,7 @@ def _current_account_owner_id():
 
 
 def _owned_account(cursor, account_id, owner_user_id):
-    cursor.execute("SELECT * FROM user_info WHERE id = ? AND owner_user_id = ?", (int(account_id), int(owner_user_id)))
+    cursor.execute("SELECT * FROM user_info WHERE id = %s AND owner_user_id = %s", (int(account_id), int(owner_user_id)))
     return cursor.fetchone()
 
 
@@ -188,7 +188,7 @@ def _check_account_cookie_row(cursor, row, *, force=False):
         )
 
     next_status = 1 if valid else 0
-    cursor.execute("UPDATE user_info SET status = ? WHERE id = ?", (next_status, account_id))
+    cursor.execute("UPDATE user_info SET status = %s WHERE id = %s", (next_status, account_id))
     log_method = backend_logger.info if valid else backend_logger.warning
     log_method(
         "account cookie check completed : account_id = %s valid = %s previous_status = %s next_status = %s",
@@ -223,15 +223,15 @@ def _check_account_cookie_row(cursor, row, *, force=False):
 
 def _load_accounts(cursor, owner_user_id, account_ids=None):
     if account_ids:
-        placeholders = ",".join("?" for _ in account_ids)
-        cursor.execute(f"SELECT * FROM user_info WHERE owner_user_id = ? AND id IN ({placeholders})", [owner_user_id, *account_ids])
+        placeholders = ",".join("%s" for _ in account_ids)
+        cursor.execute(f"SELECT * FROM user_info WHERE owner_user_id = %s AND id IN ({placeholders})", [owner_user_id, *account_ids])
     else:
-        cursor.execute("SELECT * FROM user_info WHERE owner_user_id = ?", (owner_user_id,))
+        cursor.execute("SELECT * FROM user_info WHERE owner_user_id = %s", (owner_user_id,))
     return cursor.fetchall()
 
 
 def _list_all_accounts(cursor, owner_user_id):
-    cursor.execute("SELECT * FROM user_info WHERE owner_user_id = ?", (owner_user_id,))
+    cursor.execute("SELECT * FROM user_info WHERE owner_user_id = %s", (owner_user_id,))
     return [_account_row_to_list(row) for row in cursor.fetchall()]
 
 
@@ -249,11 +249,11 @@ def _check_accounts_for_publish(targets):
             platform_type = int(target.get("platformType") or 0)
             row = None
             if account_id:
-                cursor.execute("SELECT * FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
+                cursor.execute("SELECT * FROM user_info WHERE id = %s AND owner_user_id = %s", (account_id, owner_user_id))
                 row = cursor.fetchone()
             if not row and account_file:
                 cursor.execute(
-                    "SELECT * FROM user_info WHERE type = ? AND filePath = ? AND owner_user_id = ?",
+                    "SELECT * FROM user_info WHERE type = %s AND filePath = %s AND owner_user_id = %s",
                     (platform_type, account_file, owner_user_id),
                 )
                 row = cursor.fetchone()
@@ -281,7 +281,7 @@ def _check_named_publish_account(platform_type, account_name, owner_user_id=None
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM user_info WHERE type = ? AND userName = ? AND owner_user_id = ?",
+            "SELECT * FROM user_info WHERE type = %s AND userName = %s AND owner_user_id = %s",
             (int(platform_type), account_name, owner_user_id),
         )
         row = cursor.fetchone()
@@ -324,7 +324,7 @@ def _import_account_name(cursor, platform_type, username):
     prefix = f"{platform_name(platform_type)}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{username}"
     candidate = prefix
     suffix = 2
-    while cursor.execute("SELECT 1 FROM user_info WHERE userName = ?", (candidate,)).fetchone():
+    while cursor.execute("SELECT 1 FROM user_info WHERE userName = %s", (candidate,)).fetchone():
         candidate = f"{prefix}-{suffix}"
         suffix += 1
     return candidate
@@ -383,7 +383,7 @@ def import_cookie_account():
             cursor = conn.cursor()
             user_name = _import_account_name(cursor, platform_type, str(g.current_user.get("username") or "user"))
             cursor.execute(
-                "INSERT INTO user_info (type, filePath, userName, status, owner_user_id) VALUES (?, ?, ?, ?, ?) RETURNING id",
+                "INSERT INTO user_info (type, filePath, userName, status, owner_user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (platform_type, filename, user_name, 1, owner_user_id),
             )
             account_id = cursor.fetchone()[0]
@@ -550,7 +550,7 @@ def delete_account():
                         )
 
             # 删除数据库记录
-            cursor.execute("DELETE FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
+            cursor.execute("DELETE FROM user_info WHERE id = %s AND owner_user_id = %s", (account_id, owner_user_id))
             conn.commit()
 
         return jsonify({
@@ -599,7 +599,7 @@ def create_account():
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO user_info (type, filePath, userName, status, owner_user_id)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
             ''', (platform_type, file_path, user_name, status, owner_user_id))
             account_id = cursor.fetchone()[0]

@@ -11,16 +11,25 @@ from app.auth.phone_service import (
 )
 from app.auth.service import (
     AuthError, authenticate, change_password, csrf_token_for, record_audit,
-    revoke_session, revoke_user_sessions,
+    get_profile, profile_user, revoke_session, revoke_user_sessions, update_profile,
 )
 from app.config import (
-    AUTH_COOKIE_NAME, AUTH_COOKIE_SECURE, AUTH_REMEMBER_TIMEOUT_HOURS,
+    AUTH_COOKIE_NAME, AUTH_COOKIE_SECURE, AUTH_PHONE_AUTO_REGISTER_ENABLED, AUTH_REMEMBER_TIMEOUT_HOURS,
     AUTH_TENCENT_CAPTCHA_APP_ID, AUTH_TRUSTED_PROXY_CIDRS,
 )
 
 
 def _auth_error_response(exc):
     return jsonify({"code": exc.status, "msg": exc.message, "data": {"errorCode": exc.code, **exc.data}}), exc.status
+
+
+def _json_payload():
+    if not request.is_json:
+        raise AuthError("请求格式无效", 415, "INVALID_CONTENT_TYPE")
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise AuthError("请求格式无效", 400, "INVALID_JSON")
+    return payload
 
 
 def _set_auth_cookie(response, token, *, remember=False):
@@ -55,6 +64,7 @@ def _client_ip():
 def auth_public_config():
     return jsonify({"code": 200, "msg": "success", "data": {
         "phoneLoginEnabled": phone_login_is_configured(),
+        "phoneAutoRegisterEnabled": AUTH_PHONE_AUTO_REGISTER_ENABLED,
         "captchaAppId": AUTH_TENCENT_CAPTCHA_APP_ID if captcha_is_configured() else "",
     }})
 
@@ -80,18 +90,18 @@ def auth_login():
             exc.data["captchaRequired"] = password_captcha_required(username)
         return _auth_error_response(exc)
     clear_password_login_failures(username, client_ip)
-    response = jsonify({"code": 200, "msg": "登录成功", "data": {"user": user, "csrfToken": csrf_token}})
+    response = jsonify({"code": 200, "msg": "登录成功", "data": {"user": profile_user(user), "csrfToken": csrf_token}})
     _set_auth_cookie(response, token, remember=remember)
     return response
 
 
 @app.route("/auth/phone/send-code", methods=["POST"])
 def auth_phone_send_code():
-    payload = request.get_json(silent=True) or {}
     try:
+        payload = _json_payload()
         data = send_phone_code(
             payload.get("phone"), payload.get("captchaTicket"), payload.get("captchaRandstr"),
-            _client_ip(), request.user_agent.string,
+            _client_ip(), request.user_agent.string, idempotency_key=payload.get("idempotencyKey"),
         )
     except AuthError as exc:
         return _auth_error_response(exc)
@@ -100,17 +110,19 @@ def auth_phone_send_code():
 
 @app.route("/auth/phone/login", methods=["POST"])
 def auth_phone_login():
-    payload = request.get_json(silent=True) or {}
-    remember = payload.get("remember") is True
     try:
-        user, token, csrf_token = authenticate_phone(
+        payload = _json_payload()
+        remember = payload.get("remember") is True
+        user, token, csrf_token, is_new_user = authenticate_phone(
             payload.get("phone"), payload.get("challengeId"), payload.get("code"), _client_ip(),
             request.user_agent.string, remember=remember, captcha_ticket=payload.get("captchaTicket"),
             captcha_randstr=payload.get("captchaRandstr"),
         )
     except AuthError as exc:
         return _auth_error_response(exc)
-    response = jsonify({"code": 200, "msg": "登录成功", "data": {"user": user, "csrfToken": csrf_token}})
+    response = jsonify({"code": 200, "msg": "登录成功", "data": {
+        "user": profile_user(user), "csrfToken": csrf_token, "isNewUser": is_new_user,
+    }})
     _set_auth_cookie(response, token, remember=remember)
     return response
 
@@ -118,8 +130,24 @@ def auth_phone_login():
 @app.route("/auth/me", methods=["GET"])
 def auth_me():
     return jsonify({"code": 200, "msg": "success", "data": {
-        "user": g.current_user, "csrfToken": csrf_token_for(g.auth_token),
+        "user": profile_user(g.current_user), "csrfToken": csrf_token_for(g.auth_token),
     }})
+
+
+@app.route("/auth/profile", methods=["GET"])
+def auth_profile_get():
+    return jsonify({"code": 200, "msg": "success", "data": get_profile(g.current_user["id"])})
+
+
+@app.route("/auth/profile", methods=["PATCH"])
+def auth_profile_update():
+    try:
+        profile = update_profile(g.current_user["id"], _json_payload())
+    except AuthError as exc:
+        return _auth_error_response(exc)
+    record_audit("AUTH_PROFILE_UPDATE", "success", actor_user_id=g.current_user["id"], target_type="user",
+                 target_id=g.current_user["id"], ip_address=_client_ip(), user_agent=request.user_agent.string)
+    return jsonify({"code": 200, "msg": "资料已更新", "data": profile})
 
 
 @app.route("/auth/logout", methods=["POST"])

@@ -50,7 +50,7 @@ def _validate_uploaded_media(file_path):
 def _assert_user_storage_quota(cursor, owner_user_id, incoming_size_mb):
     cursor.execute("LOCK TABLE file_records IN SHARE ROW EXCLUSIVE MODE")
     cursor.execute(
-        "SELECT COALESCE(SUM(filesize), 0) AS total_mb FROM file_records WHERE owner_user_id = ?",
+        "SELECT COALESCE(SUM(filesize), 0) AS total_mb FROM file_records WHERE owner_user_id = %s",
         (owner_user_id,),
     )
     total_mb = float(cursor.fetchone()["total_mb"] or 0)
@@ -63,7 +63,7 @@ def _owned_asset_path(asset_id, owner_user_id):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM file_records WHERE asset_id = ? AND owner_user_id = ?",
+            "SELECT * FROM file_records WHERE asset_id = %s AND owner_user_id = %s",
             (asset_id, owner_user_id),
         )
         row = cursor.fetchone()
@@ -136,7 +136,7 @@ def upload_save():
                 owner_user_id, asset_id, filename, original_filename, filesize, file_path, storage_key,
                 storage_backend, source_type, status, duration, duration_seconds, metadata
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 owner_user_id,
                 asset_id,
