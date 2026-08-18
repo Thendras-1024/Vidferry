@@ -1120,7 +1120,6 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         return []
 
     publish_job, schedule_notice = _ensure_workflow_publish_schedule(job_id, publish_job)
-    publish_commands = []
     publish_results = []
     skipped_platforms = []
     publish_event_id = start_workflow_event(publish_job, "publish", "开始发布", input_file_path=processed_file)
@@ -1180,39 +1179,6 @@ def _publish_workflow_outputs(job_id, job, processed_file, material, workflow_ev
         backend_logger.info("workflow publish queued : job_id = %s | publish_task_id = %s", job_id, queued["publishTaskId"])
         return []
     try:
-        for platform_type, account_name, command_factory in publish_specs:
-            publishing_platform_type = platform_type
-            if platform_type in published_platform_types:
-                skipped_platforms.append(platform_name(platform_type))
-                backend_logger.info(
-                    "workflow publish skipped : job_id = %s | platform_type = %s | reason = already_published",
-                    job_id,
-                    platform_type,
-                )
-                continue
-            command = _publish_workflow_platform(publish_job, processed_file, material, platform_type, account_name, command_factory)
-            if command:
-                publish_commands.append(command)
-    except PublishResultUncertainError as exc:
-        message = str(exc)
-        finish_workflow_event(publish_event_id, "success", message, output_file_path=processed_file)
-        if workflow_event_id:
-            finish_workflow_event(workflow_event_id, "success", message, output_file_path=processed_file)
-        update_youtube_workflow_job(
-            job_id,
-            status="abnormal",
-            step="publish_confirmation",
-            message=message,
-            error_code="VF-PUBLISH-RESULT-UNCERTAIN",
-            error_type="PUBLISH_RESULT_UNCERTAIN",
-            error_reason=message,
-            error_detail="",
-            progress=100,
-            speed="",
-            eta="",
-        )
-        backend_logger.warning("workflow publish result uncertain job_id=%s platform_type=%s", job_id, publishing_platform_type)
-        return publish_commands
         for platform_type, account_name in publish_specs:
             if not account_name:
                 continue

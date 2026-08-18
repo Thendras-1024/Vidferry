@@ -73,7 +73,11 @@ def agent_policy_check(message, context=None):
     lowered = text.lower()
     context = context if isinstance(context, dict) else {}
     video_context = context.get("videoContext") if isinstance(context.get("videoContext"), dict) else {}
-    has_selected_video = bool(str(video_context.get("videoId") or video_context.get("url") or "").strip())
+    video_selection = context.get("videoSelection") if isinstance(context.get("videoSelection"), list) else []
+    has_selected_video = bool(
+        str(video_context.get("videoId") or video_context.get("url") or "").strip()
+        or any(str(video_id or "").strip() for video_id in video_selection)
+    )
     copywriting_checker = globals().get("is_agent_copywriting_request")
     is_copywriting_request = bool(callable(copywriting_checker) and copywriting_checker(text))
     if not text:

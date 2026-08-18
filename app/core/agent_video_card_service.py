@@ -226,6 +226,7 @@ def create_agent_video_status_card(session_id, status, label=""):
         _agent_video_card_cleanup(now)
         _AGENT_VIDEO_CARD_SNAPSHOTS[snapshot["cardId"]] = snapshot
     _agent_video_card_store_snapshot(snapshot)
+    update_agent_video_selection(session_id, [], snapshot["cardId"])
     return _agent_video_card_page(snapshot, 1)
 
 

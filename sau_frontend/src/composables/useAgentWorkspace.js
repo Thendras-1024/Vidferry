@@ -134,6 +134,9 @@ export function useAgentWorkspace({ route, router }) {
     pageTitle: PAGE_TITLES[route.path] || route.meta?.title || route.name || route.path,
     videoSelection: agentVideoSelection.value
   }))
+  const agentVideoSelectionForCard = card => (
+    card?.cardId === agentVideoSelectionCardId.value ? agentVideoSelection.value : []
+  )
 
   const scrollAgentMessages = async () => {
     await nextTick()
@@ -467,6 +470,11 @@ export function useAgentWorkspace({ route, router }) {
           responseMessage.error = false
           responseMessage.content = payload.answer || responseMessage.content || '我暂时没有查到结果。'
           responseMessage.cards = payload.cards || []
+          const statusCard = responseMessage.cards.find(card => card?.type === 'video_status' && card?.cardId)
+          if (statusCard) {
+            agentVideoSelection.value = []
+            agentVideoSelectionCardId.value = statusCard.cardId
+          }
           responseMessage.actions = payload.actions || []
           responseMessage.importProposal = payload.importProposal || null
           responseMessage.selectedCandidateIds = (payload.importProposal?.items || []).map(item => item.id)
@@ -934,7 +942,7 @@ export function useAgentWorkspace({ route, router }) {
     agentInputRef, agentRetryContext, agentVideoContext, agentIncludeVideoContext, agentVideoSelection, agentHistoryVisible,
     agentHistoryLoading, agentHistory, agentHistoryRange, agentHistorySource, agentHistoryQuery,
     agentFiltersVisible, agentCurrentSession, agentContextStats, agentContextDetailsVisible, agentCompaction, agentContextUsageLabel, agentCompactionElapsedSeconds, agentSessionSource, agentSessionSourceLabel, agentSessionReadonly,
-    agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext,
+    agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext, agentVideoSelectionForCard,
     scrollAgentMessages, loadOlderAgentMessages, handleAgentMessagesScroll, newAgentConversation, startAgentConversation,
     sendAgentMessage, selectAgentVideoCard, updateAgentVideoSelection, clearAgentVideoSelection, loadAgentVideoStatusCardPage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
     selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,

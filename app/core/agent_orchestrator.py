@@ -224,9 +224,21 @@ def _agent_search_filters(text):
     return {key: value for key, value in filters.items() if value is not None}
 
 
+def _agent_has_local_video_status_request(message):
+    text = str(message or "").lower()
+    return any(word in text for word in (
+        "待处理", "初始", "还没处理",
+        "已下载", "下载了",
+        "已处理", "处理后", "未发布",
+        "已发布", "发布了",
+    ))
+
+
 def _agent_search_request(message):
     text = str(message or "").strip()
     if _agent_youtube_url(text):
+        return None
+    if _agent_has_local_video_status_request(text):
         return None
     has_explicit_search = bool(_re.search(r"(?:找|搜索|搜寻|查询|查找|寻找|推荐|search|find)\s*", text, _re.I))
     has_implicit_video_search = bool(
@@ -510,6 +522,7 @@ def _agent_rule_lead_intent(message):
     return bool(
         _agent_youtube_url(message)
         or _agent_search_request(message)
+        or _agent_has_local_video_status_request(message)
         or any(word in text for word in ("工作流设置", "处理设置", "字幕设置", "短视频", "拼接项目", "合成项目", "素材库"))
     )
 
@@ -605,6 +618,8 @@ def _run_react_loop(message, context, session_id=""):
 
 def _agent_fallback_answer(message, tool_results):
     lines = ["我查到这些信息："]
+    has_local_video_status_list = False
+    has_import_candidates = False
     for item in tool_results:
         name = item.get("tool")
         result = item.get("result") or {}
@@ -626,6 +641,7 @@ def _agent_fallback_answer(message, tool_results):
             materials = result.get("items") or []
             lines.append(f"素材库共 {result.get('total', len(materials))} 条，当前展示 {len(materials)} 条。")
         elif name == "list_videos_by_status":
+            has_local_video_status_list = True
             videos = result.get("items") or []
             title_list = "；".join((video.get("title") or video.get("id") or "未命名") for video in videos[:5])
             lines.append(f"{result.get('label')}共 {result.get('total', len(videos))} 条。{title_list or '当前没有匹配视频。'}")
@@ -656,6 +672,7 @@ def _agent_fallback_answer(message, tool_results):
                 f"安全拦截 {result.get('blockedCount', 0)} 次，工具错误 {result.get('toolErrorCount', 0)} 次。"
             )
         elif name == "search_youtube_candidates":
+            has_import_candidates = True
             items = result.get("items") or []
             excluded = int(result.get("excludedExisting") or 0)
             if not items and excluded:
@@ -663,8 +680,14 @@ def _agent_fallback_answer(message, tool_results):
             else:
                 lines.append(f"已找到 {len(items)} 个与“{result.get('query') or ''}”相关的候选视频。请在下方选择后确认导入线索列表。")
         elif name == "inspect_youtube_url":
+            has_import_candidates = True
             item = result.get("item") or {}
             lines.append(f"已读取视频“{item.get('title') or '未命名视频'}”。请在下方确认是否导入线索列表。")
+    if has_local_video_status_list:
+        lines.append("可在下方勾选需要的视频，再发送“下载”“处理”或“发布”；Agent 只会对勾选项生成待确认的执行提案。")
+        return "\n".join(lines)
+    if not has_import_candidates:
+        return "\n".join(lines)
     requested_action = _agent_requested_import_action(message)
     if requested_action == "workflow_publish_scheduled":
         lines.append("请在下方选择候选视频和发布账号，并确认定时发布时间；确认后才会创建导入、下载、处理和定时发布工作流。")
@@ -814,6 +837,7 @@ def confirm_agent_import_proposal(proposal_id, session_id, selected_ids=None, ta
                 _agent_assert_not_published_platform([saved_item], resolved_targets)
             if requested_action == "download" and int(saved_item.get("downloadStatus") or 0) != 1:
                 job = create_youtube_workflow_job({
+                    "ownerUserId": _agent_current_user_id(),
                     "videoId": saved_item.get("id") or item.get("id"),
                     "url": saved_item.get("url") or item.get("url"),
                     "channel": saved_item.get("channel") or item.get("channel") or "",
@@ -1068,6 +1092,9 @@ def _create_agent_execution_proposal(session_id, message, page_context):
     if not videos:
         raise ValueError("请先在视频卡片中选择要执行操作的视频")
     video = videos[0]
+    action_label = _AGENT_EXECUTION_ACTIONS[action]
+    if action == "process" and any(int(item.get("downloadStatus") or 0) != 1 for item in videos):
+        action_label = "下载并处理视频"
     now = _time.time()
     proposal_id = _secrets.token_urlsafe(24)
     available_accounts, published_platform_types = (
@@ -1079,7 +1106,7 @@ def _create_agent_execution_proposal(session_id, message, page_context):
         "proposalId": proposal_id,
         "sessionId": session_id,
         "action": action,
-        "actionLabel": _AGENT_EXECUTION_ACTIONS[action],
+        "actionLabel": action_label,
         "videoId": video.get("id") or "",
         "video": _agent_execution_video_summary(video),
         "videoIds": [video.get("id") or "" for video in videos],
@@ -1143,7 +1170,11 @@ def _agent_execution_workflow_payload(video, targets=None, schedule=""):
     targets = targets or []
     draft = video.get("publishDraft") if isinstance(video.get("publishDraft"), dict) else {}
     settings = get_workflow_settings()
+    owner_user_id = _agent_current_user_id()
+    if owner_user_id is None:
+        raise PermissionError("Agent 执行缺少当前登录用户身份")
     payload = {
+        "ownerUserId": int(owner_user_id),
         "videoId": video.get("id") or "",
         "url": video.get("url") or "",
         "channel": video.get("channel") or "",
@@ -1241,8 +1272,6 @@ def _agent_execution_prepare_videos(action, videos, targets, scheduled_at=""):
     for video in videos:
         if action == "download" and int(video.get("downloadStatus") or 0) == 1:
             raise ValueError(f"视频“{video.get('title') or video.get('id')}”已下载，无需重复创建下载任务")
-        if action == "process" and int(video.get("downloadStatus") or 0) != 1:
-            raise ValueError(f"视频“{video.get('title') or video.get('id')}”尚未下载，无法直接处理")
         if action in {"refresh_intro", "cover_reburn"}:
             if int(video.get("translateStatus") or 0) != 1:
                 raise ValueError(f"视频“{video.get('title') or video.get('id')}”尚未有处理后成片，无法更新片头")
@@ -1270,7 +1299,8 @@ def _agent_execution_submit_one(action, video, targets, scheduled_at="", publish
         return {"videoId": video.get("id") or "", "job": job}
     if action == "process":
         job = create_youtube_workflow_job(_agent_execution_workflow_payload(video))
-        _submit_background_task("processing", run_youtube_translate_job, job["id"], owner_user_id=job.get("ownerUserId"))
+        runner = run_youtube_translate_job if int(video.get("downloadStatus") or 0) == 1 else run_youtube_workflow
+        _submit_background_task("processing", runner, job["id"], owner_user_id=job.get("ownerUserId"))
         return {"videoId": video.get("id") or "", "job": job}
     if action in {"refresh_intro", "cover_reburn"}:
         job_payload = {
@@ -1339,12 +1369,13 @@ def confirm_agent_execution_proposal(proposal_id, session_id, targets=None, sche
         "publish_now": "发布任务已提交",
         "publish_scheduled": "定时发布任务已创建",
     }
+    process_needs_download = action == "process" and any(int(video.get("downloadStatus") or 0) != 1 for video in videos)
     result = {
         "proposalId": proposal_id,
         "action": action,
         "items": submitted,
         "jobs": [item["job"] for item in submitted if isinstance(item.get("job"), dict)],
-        "message": f"{labels[action]}：{len(submitted)} 个视频。",
+        "message": f"{'下载并处理任务已创建' if process_needs_download else labels[action]}：{len(submitted)} 个视频。",
     }
     return _complete_agent_execution_proposal(
         proposal_id,

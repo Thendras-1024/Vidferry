@@ -63,7 +63,7 @@
                     v-for="card in (message.cards || []).filter(item => item.type === 'video_status')"
                     :key="`${message.id}-${card.cardId}`"
                     :card="card"
-                    :selection="agentVideoSelection"
+                    :selection="agentVideoSelectionForCard(card)"
                     :loading="agentLoading"
                     @update:selection="updateAgentVideoSelection"
                     @page="loadAgentVideoStatusCardPage(message, card, $event)"
@@ -389,7 +389,7 @@
               v-for="card in (message.cards || []).filter(item => item.type === 'video_status')"
               :key="`${message.id}-${card.cardId}`"
               :card="card"
-              :selection="agentVideoSelection"
+              :selection="agentVideoSelectionForCard(card)"
               :loading="agentLoading"
               @update:selection="updateAgentVideoSelection"
               @page="loadAgentVideoStatusCardPage(message, card, $event)"
@@ -532,7 +532,7 @@ const {
   agentInputRef, agentRetryContext, agentVideoContext, agentIncludeVideoContext, agentVideoSelection, agentHistoryVisible,
   agentHistoryLoading, agentHistory, agentHistoryRange, agentHistorySource, agentHistoryQuery,
   agentFiltersVisible, agentCurrentSession, agentContextStats, agentContextDetailsVisible, agentCompaction, agentContextUsageLabel, agentCompactionElapsedSeconds, agentSessionSource, agentSessionSourceLabel, agentSessionReadonly,
-  agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext,
+  agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext, agentVideoSelectionForCard,
   scrollAgentMessages, loadOlderAgentMessages, handleAgentMessagesScroll, newAgentConversation, startAgentConversation,
   sendAgentMessage, selectAgentVideoCard, updateAgentVideoSelection, clearAgentVideoSelection, loadAgentVideoStatusCardPage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
   selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
