@@ -303,7 +303,7 @@ def _mark_account_abnormal(task, reason=""):
                 '''
                 UPDATE user_info
                 SET status = 0
-                WHERE id = ? AND owner_user_id = ?
+                WHERE id = %s AND owner_user_id = %s
                 ''',
                 (int(account_id), int(owner_user_id)),
             )
@@ -560,9 +560,10 @@ def _execute_publish_target(task):
                     platform_work = _tencent_verified_work(process_result.stdout)
                     if not platform_work:
                         backend_logger.warning(
-                            "tencent legacy uploader completed without work id : publish_task_id = %s",
+                            "视频号发布器未确认作品编号 : publish_task_id = %s",
                             task.get("publishTaskId") or "",
                         )
+                        raise RuntimeError("VF-PUBLISH-UNVERIFIED: 视频号发布后未确认作品记录。")
 
         external_succeeded = True
         if platform_type == 4:

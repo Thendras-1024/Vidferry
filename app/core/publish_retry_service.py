@@ -35,7 +35,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM published_youtube_materials WHERE publish_task_id = ? AND owner_user_id = ? AND deleted_at IS NULL ORDER BY id",
+            "SELECT * FROM published_youtube_materials WHERE publish_task_id = %s AND owner_user_id = %s AND deleted_at IS NULL ORDER BY id",
             (task_id, owner_user_id),
         )
         records = [_row_to_published_material(row) for row in cursor.fetchall()]
@@ -60,7 +60,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_
         if not failed_records:
             raise ValueError("原发布任务没有可重发的失败平台")
         failed_records = _select_failed_publish_records(failed_records, target_record_ids)
-        cursor.execute("SELECT platform_type, settings FROM publish_dispatch_targets WHERE job_id = ?", (task_id,))
+        cursor.execute("SELECT platform_type, settings FROM publish_dispatch_targets WHERE job_id = %s", (task_id,))
         stored_tags_by_platform = {}
         for target_row in cursor.fetchall():
             try:
@@ -72,7 +72,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_
 
         source = records[0]
         cursor.execute(
-            "SELECT * FROM file_records WHERE id = ? AND owner_user_id = ?",
+            "SELECT * FROM file_records WHERE id = %s AND owner_user_id = %s",
             (source.get("materialId"), owner_user_id),
         )
         material_row = cursor.fetchone()
@@ -86,7 +86,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_
         for record in failed_records:
             platform_type = int(record["platformType"] or 0)
             cursor.execute(
-                "SELECT * FROM user_info WHERE type = ? AND filePath = ? AND owner_user_id = ?",
+                "SELECT * FROM user_info WHERE type = %s AND filePath = %s AND owner_user_id = %s",
                 (platform_type, record["accountFile"], owner_user_id),
             )
             account = cursor.fetchone()

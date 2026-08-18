@@ -56,7 +56,7 @@ def _publish_dispatch_row(cursor, row):
     if not row:
         return None
     item = dict(row)
-    cursor.execute("SELECT * FROM publish_dispatch_targets WHERE job_id = ? ORDER BY platform_type, id", (item["id"],))
+    cursor.execute("SELECT * FROM publish_dispatch_targets WHERE job_id = %s ORDER BY platform_type, id", (item["id"],))
     targets = []
     for target_row in cursor.fetchall():
         target = dict(target_row)
@@ -97,10 +97,10 @@ def get_publish_dispatch_job(job_id, owner_user_id=None):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        query = "SELECT * FROM publish_dispatch_jobs WHERE id = ?"
+        query = "SELECT * FROM publish_dispatch_jobs WHERE id = %s"
         values = [str(job_id or "")]
         if owner_user_id is not None:
-            query += " AND owner_user_id = ?"
+            query += " AND owner_user_id = %s"
             values.append(int(owner_user_id))
         cursor.execute(query, values)
         return _publish_dispatch_row(cursor, cursor.fetchone())
@@ -136,13 +136,13 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
             raise PublishQueueFullError("global")
         owner_limit = int(WORKFLOW_MAX_PUBLISH_JOBS) + max(1, int(WORKFLOW_MAX_PUBLISH_QUEUED_JOBS) // 2)
         cursor.execute(
-            "SELECT COUNT(*) AS total FROM publish_dispatch_jobs WHERE owner_user_id = ? AND status IN ('queued', 'running', 'waiting_existing')",
+            "SELECT COUNT(*) AS total FROM publish_dispatch_jobs WHERE owner_user_id = %s AND status IN ('queued', 'running', 'waiting_existing')",
             (int(owner_user_id),),
         )
         if int(cursor.fetchone()["total"] or 0) >= owner_limit:
             raise PublishQueueFullError("owner")
         cursor.execute(
-            "SELECT * FROM file_records WHERE owner_user_id = ? AND (file_path = ? OR storage_key = ?)",
+            "SELECT * FROM file_records WHERE owner_user_id = %s AND (file_path = %s OR storage_key = %s)",
             (owner_user_id, file_path, file_path),
         )
         material_row = cursor.fetchone()
@@ -171,7 +171,7 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
         dispatch_status = "queued" if has_executable else _publish_dispatch_status(decided_results)
         dispatch_message = "Queued for publish." if has_executable else _publish_dispatch_message(decided_results)
         cursor.execute(
-            "INSERT INTO publish_dispatch_jobs (id, source, source_ref_id, owner_user_id, video_id, material_id, payload, status, message, created_at, finished_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO publish_dispatch_jobs (id, source, source_ref_id, owner_user_id, video_id, material_id, payload, status, message, created_at, finished_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 job_id,
                 source,
@@ -197,7 +197,7 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
                 "historyStatus": task.get("historyStatus") or "",
             }
             cursor.execute(
-                "INSERT INTO publish_dispatch_targets (job_id, platform_type, account_id, settings, status, message, finished_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO publish_dispatch_targets (job_id, platform_type, account_id, settings, status, message, finished_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     job_id,
                     int(task.get("platformType") or 0),
@@ -210,7 +210,7 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
                 ),
             )
         conn.commit()
-        cursor.execute("SELECT * FROM publish_dispatch_jobs WHERE id = ?", (job_id,))
+        cursor.execute("SELECT * FROM publish_dispatch_jobs WHERE id = %s", (job_id,))
         result = _publish_dispatch_row(cursor, cursor.fetchone())
     if not has_executable and dispatch_status != "waiting_existing":
         _finish_dispatch_source({
@@ -254,11 +254,11 @@ def _claim_publish_dispatch_job():
         row = cursor.fetchone()
         if not row:
             return ""
-        cursor.execute("UPDATE publish_dispatch_jobs SET status = 'running', message = ?, started_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'", ("Publish is running.", now, now, row["id"]))
+        cursor.execute("UPDATE publish_dispatch_jobs SET status = 'running', message = %s, started_at = %s, updated_at = %s WHERE id = %s AND status = 'queued'", ("Publish is running.", now, now, row["id"]))
         if cursor.rowcount != 1:
             return ""
         if row.get("source") == "workflow":
-            cursor.execute("SELECT COUNT(*) AS total FROM publish_dispatch_targets WHERE job_id = ? AND status = 'queued'", (row["id"],))
+            cursor.execute("SELECT COUNT(*) AS total FROM publish_dispatch_targets WHERE job_id = %s AND status = 'queued'", (row["id"],))
             total = int(cursor.fetchone()["total"] or 0)
             workflow_update = (row["source_ref_id"], row.get("video_id") or "", total)
         claimed_job_id = row["id"]
@@ -286,7 +286,7 @@ def _publish_dispatch_target_started(job_id, platform_type):
     now = _now_iso()
     with _db_connect() as conn:
         conn.execute(
-            "UPDATE publish_dispatch_targets SET status = 'running', message = ?, started_at = ?, updated_at = ? WHERE job_id = ? AND platform_type = ? AND status = 'queued'",
+            "UPDATE publish_dispatch_targets SET status = 'running', message = %s, started_at = %s, updated_at = %s WHERE job_id = %s AND platform_type = %s AND status = 'queued'",
             ("正在发布", now, now, job_id, int(platform_type)),
         )
 
@@ -297,12 +297,12 @@ def _publish_dispatch_target_finished(job_id, result):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE publish_dispatch_targets SET status = ?, message = ?, duration_ms = ?, finished_at = ?, updated_at = ? WHERE job_id = ? AND platform_type = ?",
+            "UPDATE publish_dispatch_targets SET status = %s, message = %s, duration_ms = %s, finished_at = %s, updated_at = %s WHERE job_id = %s AND platform_type = %s",
             (result.get("status") or "failed", result.get("message") or "", int(result.get("durationMs") or 0), now, now, job_id, int(result.get("platformType") or 0)),
         )
-        cursor.execute("SELECT status FROM publish_dispatch_targets WHERE job_id = ?", (job_id,))
+        cursor.execute("SELECT status FROM publish_dispatch_targets WHERE job_id = %s", (job_id,))
         progress = _publish_dispatch_progress([dict(row) for row in cursor.fetchall()])
-        cursor.execute("SELECT source, source_ref_id FROM publish_dispatch_jobs WHERE id = ?", (job_id,))
+        cursor.execute("SELECT source, source_ref_id FROM publish_dispatch_jobs WHERE id = %s", (job_id,))
         job = cursor.fetchone()
     if job and job["source"] == "workflow":
         update_youtube_workflow_job(
@@ -347,7 +347,7 @@ def run_publish_dispatch_job(job_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM publish_dispatch_jobs WHERE id = ? AND status = 'running'", (job_id,))
+        cursor.execute("SELECT * FROM publish_dispatch_jobs WHERE id = %s AND status = 'running'", (job_id,))
         row = cursor.fetchone()
         if not row:
             return None
@@ -382,16 +382,16 @@ def run_publish_dispatch_job(job_id):
         cursor = conn.cursor()
         if execution_error:
             cursor.execute(
-                "UPDATE publish_dispatch_targets SET status = 'uncertain', message = ?, finished_at = ?, updated_at = ? WHERE job_id = ? AND status = 'running'",
+                "UPDATE publish_dispatch_targets SET status = 'uncertain', message = %s, finished_at = %s, updated_at = %s WHERE job_id = %s AND status = 'running'",
                 (execution_error, now, now, job_id),
             )
             cursor.execute(
-                "UPDATE publish_dispatch_targets SET status = 'cancelled', message = ?, finished_at = ?, updated_at = ? WHERE job_id = ? AND status = 'queued'",
+                "UPDATE publish_dispatch_targets SET status = 'cancelled', message = %s, finished_at = %s, updated_at = %s WHERE job_id = %s AND status = 'queued'",
                 ("批次异常，平台尚未执行", now, now, job_id),
             )
         for result in results:
             cursor.execute(
-                "UPDATE publish_dispatch_targets SET status = ?, message = ?, duration_ms = ?, finished_at = ?, updated_at = ? WHERE job_id = ? AND platform_type = ?",
+                "UPDATE publish_dispatch_targets SET status = %s, message = %s, duration_ms = %s, finished_at = %s, updated_at = %s WHERE job_id = %s AND platform_type = %s",
                 (result.get("status") or "failed", result.get("message") or "", int(result.get("durationMs") or 0), now, now, job_id, int(result.get("platformType") or 0)),
             )
         cursor.execute('''
@@ -399,16 +399,16 @@ def run_publish_dispatch_job(job_id):
         SET status = record.status,
             message = COALESCE(NULLIF(record.message, ''), target.message),
             duration_ms = COALESCE(record.duration_ms, target.duration_ms),
-            finished_at = COALESCE(target.finished_at, ?),
-            updated_at = ?
+            finished_at = COALESCE(target.finished_at, %s),
+            updated_at = %s
         FROM published_youtube_materials AS record
-        WHERE target.job_id = ?
-          AND record.publish_task_id = ?
+        WHERE target.job_id = %s
+          AND record.publish_task_id = %s
           AND record.platform_type = target.platform_type
           AND record.deleted_at IS NULL
           AND record.status IN ('confirmed', 'failed', 'uncertain')
         ''', (now, now, job_id, job_id))
-        cursor.execute("SELECT platform_type, status, message, duration_ms FROM publish_dispatch_targets WHERE job_id = ? ORDER BY id", (job_id,))
+        cursor.execute("SELECT platform_type, status, message, duration_ms FROM publish_dispatch_targets WHERE job_id = %s ORDER BY id", (job_id,))
         results = [{
             "platformType": int(row.get("platform_type") or 0),
             "platformName": platform_name(row.get("platform_type")),
@@ -418,7 +418,7 @@ def run_publish_dispatch_job(job_id):
         } for row in cursor.fetchall()]
         status = _publish_dispatch_status(results)
         message = _publish_dispatch_message(results)
-        cursor.execute("UPDATE publish_dispatch_jobs SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?", (status, message, now, now, job_id))
+        cursor.execute("UPDATE publish_dispatch_jobs SET status = %s, message = %s, finished_at = %s, updated_at = %s WHERE id = %s", (status, message, now, now, job_id))
         _reconcile_publish_material_records(cursor, job.get("video_id") or "", owner_user_id=job.get("owner_user_id"))
     _finish_dispatch_source(job, results, status, message)
     _publish_dispatch_wakeup.set()
@@ -445,8 +445,8 @@ def _publish_dispatch_loop():
             except Exception as exc:
                 now = _now_iso()
                 with _db_connect() as conn:
-                    conn.execute("UPDATE publish_dispatch_jobs SET status = 'queued', message = ?, started_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'", (f"Queue submit failed : {exc}", now, job_id))
-                    conn.execute("UPDATE publish_dispatch_targets SET status = 'queued', message = ?, started_at = NULL, updated_at = ? WHERE job_id = ? AND status = 'running'", ("Queued for publish.", now, job_id))
+                    conn.execute("UPDATE publish_dispatch_jobs SET status = 'queued', message = %s, started_at = NULL, updated_at = %s WHERE id = %s AND status = 'running'", (f"Queue submit failed : {exc}", now, job_id))
+                    conn.execute("UPDATE publish_dispatch_targets SET status = 'queued', message = %s, started_at = NULL, updated_at = %s WHERE job_id = %s AND status = 'running'", ("Queued for publish.", now, job_id))
                 queued_job = get_publish_dispatch_job(job_id)
                 if queued_job and queued_job.get("source") == "workflow":
                     update_youtube_workflow_job(
@@ -473,7 +473,7 @@ def _resolve_waiting_publish_dispatch_jobs():
         cursor.execute("SELECT * FROM publish_dispatch_jobs WHERE status = 'waiting_existing' ORDER BY created_at, id")
         jobs = [dict(row) for row in cursor.fetchall()]
         for job in jobs:
-            cursor.execute("SELECT * FROM publish_dispatch_targets WHERE job_id = ? ORDER BY id", (job["id"],))
+            cursor.execute("SELECT * FROM publish_dispatch_targets WHERE job_id = %s ORDER BY id", (job["id"],))
             targets = [dict(row) for row in cursor.fetchall()]
             changed = False
             for target in targets:
@@ -486,7 +486,7 @@ def _resolve_waiting_publish_dispatch_jobs():
                 history_record_id = settings.get("historyRecordId")
                 if not history_record_id:
                     continue
-                cursor.execute("SELECT status FROM published_youtube_materials WHERE id = ? AND deleted_at IS NULL", (history_record_id,))
+                cursor.execute("SELECT status FROM published_youtube_materials WHERE id = %s AND deleted_at IS NULL", (history_record_id,))
                 history = cursor.fetchone()
                 history_status = str((history or {}).get("status") or "failed")
                 resolved_status = {
@@ -498,13 +498,13 @@ def _resolve_waiting_publish_dispatch_jobs():
                     continue
                 message = _publish_duplicate_decision(history_status)[1] if history_status != "failed" else "已有发布任务执行失败"
                 cursor.execute(
-                    "UPDATE publish_dispatch_targets SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'waiting_existing'",
+                    "UPDATE publish_dispatch_targets SET status = %s, message = %s, finished_at = %s, updated_at = %s WHERE id = %s AND status = 'waiting_existing'",
                     (resolved_status, message, now, now, target["id"]),
                 )
                 changed = changed or bool(cursor.rowcount)
             if not changed:
                 continue
-            cursor.execute("SELECT platform_type, status, message, duration_ms FROM publish_dispatch_targets WHERE job_id = ? ORDER BY id", (job["id"],))
+            cursor.execute("SELECT platform_type, status, message, duration_ms FROM publish_dispatch_targets WHERE job_id = %s ORDER BY id", (job["id"],))
             resolved_results = [{
                 "platformType": int(row.get("platform_type") or 0),
                 "platformName": platform_name(row.get("platform_type")),
@@ -516,7 +516,7 @@ def _resolve_waiting_publish_dispatch_jobs():
             if status in {"queued", "running", "waiting_existing"}:
                 continue
             cursor.execute(
-                "UPDATE publish_dispatch_jobs SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE publish_dispatch_jobs SET status = %s, message = %s, finished_at = %s, updated_at = %s WHERE id = %s",
                 (status, publish_status_label(status), now, now, job["id"]),
             )
             job.update({"status": status, "message": publish_status_label(status), "resolvedResults": resolved_results})
@@ -536,19 +536,19 @@ def recover_interrupted_publish_dispatch_jobs():
         recovered_jobs = [dict(row) for row in cursor.fetchall()]
         job_ids = [row["id"] for row in recovered_jobs]
         if recovered_jobs:
-            cursor.execute("UPDATE publish_dispatch_targets SET status = 'uncertain', message = ?, finished_at = ?, updated_at = ? WHERE status = 'running'", (message, now, now))
-            cursor.execute("UPDATE publish_dispatch_targets SET status = 'cancelled', message = ?, finished_at = ?, updated_at = ? WHERE job_id IN (SELECT id FROM publish_dispatch_jobs WHERE status = 'running') AND status = 'queued'", ("后端中断前平台尚未执行", now, now))
-            marks = ",".join("?" for _ in job_ids)
+            cursor.execute("UPDATE publish_dispatch_targets SET status = 'uncertain', message = %s, finished_at = %s, updated_at = %s WHERE status = 'running'", (message, now, now))
+            cursor.execute("UPDATE publish_dispatch_targets SET status = 'cancelled', message = %s, finished_at = %s, updated_at = %s WHERE job_id IN (SELECT id FROM publish_dispatch_jobs WHERE status = 'running') AND status = 'queued'", ("后端中断前平台尚未执行", now, now))
+            marks = ",".join("%s" for _ in job_ids)
             cursor.execute(
-                f"UPDATE published_youtube_materials SET status = 'failed', message = ?, updated_at = ? WHERE publish_task_id IN ({marks}) AND status = 'queued'",
+                f"UPDATE published_youtube_materials SET status = 'failed', message = %s, updated_at = %s WHERE publish_task_id IN ({marks}) AND status = 'queued'",
                 ("后端中断前平台尚未执行", now, *job_ids),
             )
             cursor.execute(
-                f"UPDATE published_youtube_materials SET status = 'uncertain', message = ?, updated_at = ? WHERE publish_task_id IN ({marks}) AND status = 'running'",
+                f"UPDATE published_youtube_materials SET status = 'uncertain', message = %s, updated_at = %s WHERE publish_task_id IN ({marks}) AND status = 'running'",
                 (message, now, *job_ids),
             )
             for job in recovered_jobs:
-                cursor.execute("SELECT platform_type, status, message, duration_ms FROM publish_dispatch_targets WHERE job_id = ? ORDER BY id", (job["id"],))
+                cursor.execute("SELECT platform_type, status, message, duration_ms FROM publish_dispatch_targets WHERE job_id = %s ORDER BY id", (job["id"],))
                 results = [{
                     "platformType": int(target.get("platform_type") or 0),
                     "platformName": platform_name(target.get("platform_type")),
@@ -559,7 +559,7 @@ def recover_interrupted_publish_dispatch_jobs():
                 status = aggregate_publish_status(results)
                 summary = _publish_dispatch_message(results)
                 cursor.execute(
-                    "UPDATE publish_dispatch_jobs SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE publish_dispatch_jobs SET status = %s, message = %s, finished_at = %s, updated_at = %s WHERE id = %s",
                     (status, summary, now, now, job["id"]),
                 )
                 job.update({"status": status, "message": summary, "results": results})

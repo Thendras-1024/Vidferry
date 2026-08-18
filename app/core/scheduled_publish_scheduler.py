@@ -14,7 +14,7 @@
 #   对本部署并无额外收益，反而引入依赖与 misfire 语义差异；故保留「DB 轮询认领」模型。
 # - 轮询周期：_scheduled_publish_loop 每 10 秒认领一次到期任务（契约常量，改动需同步前端
 #   「最早 1 分钟 granularity」预期）。
-# - 认领原子性：_claim_due_scheduled_publish_task 用 BEGIN IMMEDIATE + UPDATE…WHERE
+# - 认领原子性：_claim_due_scheduled_publish_task 用条件 UPDATE 保证单任务只被一个调度器领取。
 #   status='scheduled' + rowcount==1 保证同一任务不会被重复认领/重复触发。
 # - 崩溃恢复：已进入持久化发布队列的任务跟随队列状态；尚未入队的任务安全恢复为 scheduled。
 # - 时间基准：scheduled_at 为 naive 本地时间，单机固定时区（无 DST），见 service 层
@@ -35,13 +35,13 @@ def fail_scheduled_publish_task(task_id, reason):
     with _db_connect() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE scheduled_publish_tasks SET status = 'failed', message = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+            "UPDATE scheduled_publish_tasks SET status = 'failed', message = %s, finished_at = %s, updated_at = %s WHERE id = %s AND status = 'running'",
             (message, now, now, task_id),
         )
         if cursor.rowcount != 1:
             return False
-        cursor.execute("UPDATE scheduled_publish_targets SET status = 'failed', message = ?, finished_at = ?, updated_at = ? WHERE task_id = ? AND status IN ('queued', 'running')", (message, now, now, task_id))
-        cursor.execute("UPDATE published_youtube_materials SET status = 'failed', message = ?, updated_at = ? WHERE publish_task_id = ? AND status IN ('queued', 'running')", (message, now, task_id))
+        cursor.execute("UPDATE scheduled_publish_targets SET status = 'failed', message = %s, finished_at = %s, updated_at = %s WHERE task_id = %s AND status IN ('queued', 'running')", (message, now, now, task_id))
+        cursor.execute("UPDATE published_youtube_materials SET status = 'failed', message = %s, updated_at = %s WHERE publish_task_id = %s AND status IN ('queued', 'running')", (message, now, task_id))
     return True
 
 
@@ -55,18 +55,18 @@ def recover_interrupted_scheduled_publish_tasks():
         recovered = []
         for task in tasks:
             dispatch = cursor.execute(
-                "SELECT status, message FROM publish_dispatch_jobs WHERE source = 'scheduled' AND source_ref_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                "SELECT status, message FROM publish_dispatch_jobs WHERE source = 'scheduled' AND source_ref_id = %s ORDER BY created_at DESC, id DESC LIMIT 1",
                 (task["id"],),
             ).fetchone()
             if dispatch:
                 cursor.execute(
-                    "UPDATE scheduled_publish_tasks SET status = ?, message = ?, finished_at = CASE WHEN ? IN ('queued', 'running', 'waiting_existing') THEN NULL ELSE COALESCE(finished_at, ?) END, updated_at = ? WHERE id = ?",
+                    "UPDATE scheduled_publish_tasks SET status = %s, message = %s, finished_at = CASE WHEN %s IN ('queued', 'running', 'waiting_existing') THEN NULL ELSE COALESCE(finished_at, %s) END, updated_at = %s WHERE id = %s",
                     (dispatch["status"], dispatch["message"] or publish_status_label(dispatch["status"]), dispatch["status"], now, now, task["id"]),
                 )
                 recovered.append(task["id"])
                 continue
             cursor.execute(
-                "UPDATE scheduled_publish_tasks SET status = 'scheduled', message = ?, started_at = NULL, finished_at = NULL, updated_at = ? WHERE id = ?",
+                "UPDATE scheduled_publish_tasks SET status = 'scheduled', message = %s, started_at = NULL, finished_at = NULL, updated_at = %s WHERE id = %s",
                 (reason, now, task["id"]),
             )
             recovered.append(task["id"])
