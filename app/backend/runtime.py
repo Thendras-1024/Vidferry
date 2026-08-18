@@ -22,6 +22,7 @@ MODULE_ORDER = [
     "app/core/workflow.py",
     "app/core/workflow_usage_service.py",
     "app/core/task_center_service.py",
+    "app/core/task_center_presenter.py",
     "app/core/subtitle_audit_service.py",
     "app/core/youtube_download_service.py",
     "app/core/settings_service.py",
