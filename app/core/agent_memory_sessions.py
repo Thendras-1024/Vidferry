@@ -3,10 +3,9 @@ def ensure_agent_session(session_id="", title="", context=None, source=""):
     now = _agent_now_iso()
     with agent_session_guard(session_id):
         with _db_connect(row_factory=True) as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             owner_user_id = _agent_current_user_id()
-            cursor.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,))
+            cursor.execute("SELECT * FROM agent_sessions WHERE id = %s", (session_id,))
             row = cursor.fetchone()
             if row and owner_user_id is not None and row["owner_user_id"] != owner_user_id:
                 session_id = _agent_new_id("session")
@@ -24,8 +23,8 @@ def ensure_agent_session(session_id="", title="", context=None, source=""):
                     cursor.execute(
                         """
                         UPDATE agent_sessions
-                        SET context = ?, updated_at = ?
-                        WHERE id = ? AND deleted_at IS NULL
+                        SET context = %s, updated_at = %s
+                        WHERE id = %s AND deleted_at IS NULL
                         """,
                         (merged_context_text, now, session_id),
                     )
@@ -38,7 +37,7 @@ def ensure_agent_session(session_id="", title="", context=None, source=""):
                         id, owner_user_id, source, title, context, summary, summary_through_id,
                         message_count, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, '{}', 0, 0, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, '{}', 0, 0, %s, %s)
                     """,
                     (
                         session_id,
@@ -60,9 +59,9 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
     cursor.execute(
         f"""
         INSERT INTO agent_messages (session_id, role, content, context, created_at)
-        SELECT ?, ?, ?, ?, ?
+        SELECT %s, %s, %s, %s, %s
         WHERE EXISTS (
-            SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL{owner_filter}
+            SELECT 1 FROM agent_sessions WHERE id = %s AND deleted_at IS NULL{owner_filter}
         )
         RETURNING id
         """,
@@ -83,12 +82,12 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
         f"""
         UPDATE agent_sessions
         SET title = CASE
-                WHEN COALESCE(message_count, 0) = 0 AND ? = 'user' THEN substr(?, 1, 64)
+                WHEN COALESCE(message_count, 0) = 0 AND %s = 'user' THEN substr(%s, 1, 64)
                 ELSE title
             END,
             message_count = COALESCE(message_count, 0) + 1,
-            updated_at = ?
-        WHERE id = ? AND deleted_at IS NULL{owner_filter}
+            updated_at = %s
+        WHERE id = %s AND deleted_at IS NULL{owner_filter}
         """,
         (role, _agent_text(content, 64) or "Vidferry Agent", _agent_now_iso(), session_id) + owner_values,
     )
@@ -101,7 +100,6 @@ def save_agent_message(session_id, role, content, context=None):
     session_id = str(session_id or "").strip()
     with agent_session_guard(session_id):
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             message_id = _insert_agent_message(conn.cursor(), session_id, role, content, context)
             conn.commit()
             return message_id
@@ -138,7 +136,7 @@ def update_agent_proposal_state(
                 SELECT m.id, m.context
                 FROM agent_messages AS m
                 JOIN agent_sessions AS s ON s.id = m.session_id
-                WHERE m.session_id = ? AND m.role = 'assistant' AND s.deleted_at IS NULL
+                WHERE m.session_id = %s AND m.role = 'assistant' AND s.deleted_at IS NULL
                   {owner_filter}
                 ORDER BY m.id DESC
                 """,
@@ -185,7 +183,7 @@ def update_agent_proposal_state(
                     proposal.update(proposal_updates)
                 context[proposal_key] = proposal
                 cursor.execute(
-                    "UPDATE agent_messages SET context = ? WHERE id = ?",
+                    "UPDATE agent_messages SET context = %s WHERE id = %s",
                     (_agent_json_dumps(context), row["id"]),
                 )
                 conn.commit()
@@ -209,7 +207,7 @@ def get_agent_proposal_state(session_id, proposal_key, proposal_id):
             SELECT m.context
             FROM agent_messages AS m
             JOIN agent_sessions AS s ON s.id = m.session_id
-            WHERE m.session_id = ? AND m.role = 'assistant' AND s.deleted_at IS NULL
+            WHERE m.session_id = %s AND m.role = 'assistant' AND s.deleted_at IS NULL
               {owner_filter}
             ORDER BY m.id DESC
             """,
@@ -233,7 +231,7 @@ def update_agent_session_context(session_id, changes):
     with agent_session_guard(session_id):
         with _db_connect(row_factory=True) as conn:
             row = conn.execute(
-                f"SELECT context FROM agent_sessions WHERE id = ? AND deleted_at IS NULL{owner_filter}",
+                f"SELECT context FROM agent_sessions WHERE id = %s AND deleted_at IS NULL{owner_filter}",
                 (session_id, *owner_values),
             ).fetchone()
             if not row:
@@ -243,7 +241,7 @@ def update_agent_session_context(session_id, changes):
             context.update(changes)
             now = _agent_now_iso()
             conn.execute(
-                "UPDATE agent_sessions SET context = ?, updated_at = ? WHERE id = ?",
+                "UPDATE agent_sessions SET context = %s, updated_at = %s WHERE id = %s",
                 (_agent_json_dumps(context), now, session_id),
             )
             conn.commit()
@@ -256,10 +254,9 @@ def start_agent_turn(session_id="", message="", context=None):
     now = _agent_now_iso()
     with agent_session_guard(session_id):
         with _db_connect(row_factory=True) as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             owner_user_id = _agent_current_user_id()
-            cursor.execute("SELECT * FROM agent_sessions WHERE id = ?", (session_id,))
+            cursor.execute("SELECT * FROM agent_sessions WHERE id = %s", (session_id,))
             row = cursor.fetchone()
             if row and owner_user_id is not None and row["owner_user_id"] != owner_user_id:
                 session_id = _agent_new_id("session")
@@ -276,7 +273,7 @@ def start_agent_turn(session_id="", message="", context=None):
                 merged_context_text = _agent_json_dumps(merged_context)
                 if merged_context_text != (row["context"] or "{}"):
                     cursor.execute(
-                        "UPDATE agent_sessions SET context = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+                        "UPDATE agent_sessions SET context = %s, updated_at = %s WHERE id = %s AND deleted_at IS NULL",
                         (merged_context_text, now, session_id),
                     )
             else:
@@ -286,7 +283,7 @@ def start_agent_turn(session_id="", message="", context=None):
                         id, owner_user_id, source, title, context, summary, summary_through_id,
                         message_count, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, '{}', 0, 0, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, '{}', 0, 0, %s, %s)
                     """,
                     (
                         session_id,
@@ -340,7 +337,7 @@ def _generate_agent_session_title(session_id, message, owner_user_id):
             with agent_session_guard(session_id):
                 with _db_connect() as conn:
                     cursor = conn.execute(
-                        "UPDATE agent_sessions SET title = ? WHERE id = ? AND title = ?",
+                        "UPDATE agent_sessions SET title = %s WHERE id = %s AND title = %s",
                         (title, session_id, _agent_text(message, 64) or "Vidferry Agent"),
                     )
                     conn.commit()
@@ -359,13 +356,13 @@ def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
     after_sql = ""
     if before_id:
         try:
-            before_sql = "AND m.id < ?"
+            before_sql = "AND m.id < %s"
             values.append(int(before_id))
         except (TypeError, ValueError):
             before_sql = ""
     if after_id:
         try:
-            after_sql = "AND m.id > ?"
+            after_sql = "AND m.id > %s"
             values.append(int(after_id))
         except (TypeError, ValueError):
             after_sql = ""
@@ -377,10 +374,10 @@ def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
             SELECT m.*
             FROM agent_messages AS m
             JOIN agent_sessions AS s ON s.id = m.session_id
-            WHERE m.session_id = ? AND s.deleted_at IS NULL
+            WHERE m.session_id = %s AND s.deleted_at IS NULL
               {owner_filter} {before_sql} {after_sql}
             ORDER BY m.id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             values,
         )
@@ -432,26 +429,26 @@ def list_agent_sessions(*, from_date="", to_date="", source="", q="", page=1, pa
     where = ["s.deleted_at IS NULL"]
     values = []
     if owner_user_id is not None:
-        where.append("s.owner_user_id = ?")
+        where.append("s.owner_user_id = %s")
         values.append(owner_user_id)
     if source:
         normalized_source = _agent_source(source)
         if str(source).strip() != normalized_source:
             raise ValueError("不支持的 Agent 会话来源。")
-        where.append("s.source = ?")
+        where.append("s.source = %s")
         values.append(normalized_source)
     if q:
         keyword = str(q).strip()
         if keyword:
-            where.append("(s.title LIKE ? OR EXISTS (SELECT 1 FROM agent_messages AS qm WHERE qm.session_id = s.id AND qm.content LIKE ?))")
+            where.append("(s.title ILIKE %s OR EXISTS (SELECT 1 FROM agent_messages AS qm WHERE qm.session_id = s.id AND qm.content ILIKE %s))")
             values.extend([f"%{keyword}%", f"%{keyword}%"])
     if from_date:
         value = str(from_date).strip()
-        where.append("s.updated_at >= ?")
+        where.append("s.updated_at >= %s")
         values.append(value if "T" in value else f"{value}T00:00:00")
     if to_date:
         value = str(to_date).strip()
-        where.append("s.updated_at <= ?")
+        where.append("s.updated_at <= %s")
         values.append(value if "T" in value else f"{value}T23:59:59")
     where_sql = " AND ".join(where)
     with _db_connect(row_factory=True) as conn:
@@ -472,7 +469,7 @@ def list_agent_sessions(*, from_date="", to_date="", source="", q="", page=1, pa
             FROM agent_sessions AS s
             WHERE {where_sql}
             ORDER BY s.updated_at DESC, s.id DESC
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
             """,
             values + [page_size, (page - 1) * page_size],
         )
@@ -500,13 +497,13 @@ def _external_session_key(source, source_key):
 
 def _upsert_agent_session_binding(cursor, source, source_key, session_id, owner_user_id, now):
     cursor.execute(
-        "DELETE FROM agent_session_bindings WHERE source = ? AND source_key = ?",
+        "DELETE FROM agent_session_bindings WHERE source = %s AND source_key = %s",
         (source, source_key),
     )
     cursor.execute(
         """
         INSERT INTO agent_session_bindings (source, source_key, session_id, owner_user_id, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
         """,
         (source, source_key, session_id, owner_user_id, now),
     )
@@ -520,15 +517,14 @@ def get_or_create_external_agent_session(source, source_key, title=""):
     lock_id = f"external-{source}-{source_key}"
     with agent_session_guard(lock_id):
         with _db_connect(row_factory=True) as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             cursor.execute(
                 """
                 SELECT s.id
                 FROM agent_session_bindings AS b
                 JOIN agent_sessions AS s ON s.id = b.session_id
-                WHERE b.source = ? AND b.source_key = ? AND b.owner_user_id = ?
-                  AND s.deleted_at IS NULL AND s.owner_user_id = ?
+                WHERE b.source = %s AND b.source_key = %s AND b.owner_user_id = %s
+                  AND s.deleted_at IS NULL AND s.owner_user_id = %s
                 """,
                 (source, source_key, owner_user_id, owner_user_id),
             )
@@ -545,7 +541,7 @@ def get_or_create_external_agent_session(source, source_key, title=""):
                     id, owner_user_id, source, source_key, title, context, summary,
                     summary_through_id, message_count, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, '{}', '{}', 0, 0, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, '{}', '{}', 0, 0, %s, %s)
                 """,
                 (session_id, owner_user_id, source, source_key, title or "手机端会话", now, now),
             )
@@ -562,7 +558,6 @@ def create_external_agent_session(source, source_key, title=""):
     lock_id = f"external-{source}-{source_key}"
     with agent_session_guard(lock_id):
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             session_id = _agent_new_id("session")
             now = _agent_now_iso()
@@ -572,7 +567,7 @@ def create_external_agent_session(source, source_key, title=""):
                     id, owner_user_id, source, source_key, title, context, summary,
                     summary_through_id, message_count, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, '{}', '{}', 0, 0, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, '{}', '{}', 0, 0, %s, %s)
                 """,
                 (session_id, owner_user_id, source, source_key, title or "手机端会话", now, now),
             )
@@ -592,10 +587,10 @@ def list_external_agent_sessions(source, source_key, limit=10):
             """
             SELECT s.*
             FROM agent_sessions AS s
-            WHERE s.source = ? AND s.source_key = ? AND s.owner_user_id = ?
+            WHERE s.source = %s AND s.source_key = %s AND s.owner_user_id = %s
               AND s.deleted_at IS NULL
             ORDER BY s.updated_at DESC, s.id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (source, source_key, owner_user_id, limit),
         ).fetchall()
@@ -615,7 +610,6 @@ def switch_external_agent_session(source, source_key, position):
     session_id = sessions[position - 1]["id"]
     with agent_session_guard(f"external-{source}-{source_key}"):
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             _upsert_agent_session_binding(conn.cursor(), source, source_key, session_id, owner_user_id, _agent_now_iso())
             conn.commit()
     return sessions[position - 1]
@@ -628,25 +622,24 @@ def delete_agent_session(session_id):
     now = _agent_now_iso()
     with agent_session_guard(session_id):
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             owner_user_id = _agent_current_user_id()
             owner_filter, owner_values = _agent_owner_filter(owner_user_id)
             cursor.execute(
-                f"SELECT id FROM agent_sessions WHERE id = ?{owner_filter}",
+                f"SELECT id FROM agent_sessions WHERE id = %s{owner_filter}",
                 (session_id,) + owner_values,
             )
             if not cursor.fetchone():
                 return False
-            cursor.execute("DELETE FROM agent_session_bindings WHERE session_id = ?", (session_id,))
-            cursor.execute("DELETE FROM agent_messages WHERE session_id = ?", (session_id,))
-            cursor.execute("DELETE FROM agent_runs WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM agent_session_bindings WHERE session_id = %s", (session_id,))
+            cursor.execute("DELETE FROM agent_messages WHERE session_id = %s", (session_id,))
+            cursor.execute("DELETE FROM agent_runs WHERE session_id = %s", (session_id,))
             cursor.execute(
                 """
                 UPDATE agent_sessions
                 SET title = '已删除会话', context = '{}', summary = '{}',
-                    summary_through_id = 0, message_count = 0, deleted_at = ?, updated_at = ?
-                WHERE id = ?
+                    summary_through_id = 0, message_count = 0, deleted_at = %s, updated_at = %s
+                WHERE id = %s
                 """,
                 (now, now, session_id),
             )

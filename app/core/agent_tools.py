@@ -350,7 +350,7 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
     existing_ids = set()
     if candidate_ids:
         init_youtube_video_table()
-        placeholders = ",".join("?" for _ in candidate_ids)
+        placeholders = ",".join("%s" for _ in candidate_ids)
         with _db_connect(row_factory=True) as conn:
             cursor = conn.cursor()
             cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
@@ -388,11 +388,11 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
         owner_user_id = _agent_current_user_id()
         if owner_user_id is None:
             raise PermissionError("Agent 检索缺少当前用户身份")
-        placeholders = ",".join("?" for _ in candidate_ids)
+        placeholders = ",".join("%s" for _ in candidate_ids)
         with _db_connect(row_factory=True) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                f"SELECT video_id FROM youtube_videos WHERE owner_user_id = ? AND video_id IN ({placeholders})",
+                f"SELECT video_id FROM youtube_videos WHERE owner_user_id = %s AND video_id IN ({placeholders})",
                 [owner_user_id, *candidate_ids],
             )
             existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
@@ -503,14 +503,14 @@ def _agent_attach_latest_tasks(items):
         return items
     owner_user_id = _agent_current_user_id()
     video_ids = [str(item["id"]) for item in items]
-    placeholders = ",".join("?" for _ in video_ids)
+    placeholders = ",".join("%s" for _ in video_ids)
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute(
             f"""
             SELECT video_id, process_version, operation, status, step, message, updated_at
             FROM youtube_workflow_jobs
-            WHERE owner_user_id = ? AND video_id IN ({placeholders})
+            WHERE owner_user_id = %s AND video_id IN ({placeholders})
             ORDER BY updated_at DESC, created_at DESC
             """,
             [owner_user_id, *video_ids],
@@ -558,7 +558,7 @@ def get_workflow_overview():
         conn.commit()
         for status in statuses:
             clause, values = _youtube_video_status_clause(status)
-            where_sql = f"owner_user_id = ?{f' AND {clause}' if clause else ''}"
+            where_sql = f"owner_user_id = %s{f' AND {clause}' if clause else ''}"
             cursor.execute(
                 f"SELECT COUNT(*) AS total FROM youtube_videos WHERE {where_sql}",
                 [owner_user_id, *values],
@@ -660,7 +660,7 @@ def _agent_find_video(identifier):
         if not owner_user_id:
             raise PermissionError("视频查询缺少当前用户身份")
         cursor.execute(
-            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
             (text, owner_user_id),
         )
         row = cursor.fetchone()
@@ -669,7 +669,7 @@ def _agent_find_video(identifier):
             cursor.execute(
                 """
                 SELECT * FROM youtube_videos
-                WHERE owner_user_id = ? AND (title LIKE ? OR channel LIKE ? OR url LIKE ?)
+                WHERE owner_user_id = %s AND (title ILIKE %s OR channel ILIKE %s OR url ILIKE %s)
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT 1
                 """,
@@ -727,7 +727,7 @@ def get_publish_platforms(video_id):
         cursor.execute(
             """
             SELECT * FROM published_youtube_materials
-            WHERE video_id = ? AND owner_user_id = ?
+            WHERE video_id = %s AND owner_user_id = %s
               AND deleted_at IS NULL
               AND COALESCE(NULLIF(status, ''), 'success') IN ('confirmed', 'success', 'reused')
             ORDER BY COALESCE(updated_at, published_at, created_at) DESC, id DESC
@@ -771,14 +771,14 @@ def _agent_pending_publish_rows(limit):
         cursor.execute(
             f"""
             SELECT * FROM youtube_videos
-            WHERE owner_user_id = ? AND {clause}
+            WHERE owner_user_id = %s AND {clause}
               AND EXISTS (
                   SELECT 1 FROM youtube_workflow_jobs job
                   WHERE job.video_id = youtube_videos.video_id
-                    AND job.owner_user_id = ?
+                    AND job.owner_user_id = %s
               )
             ORDER BY updated_at DESC, created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_user_id, *values, owner_user_id, int(limit)),
         )
@@ -788,7 +788,7 @@ def _agent_pending_publish_rows(limit):
             cursor.execute(
                 """
                 SELECT * FROM youtube_workflow_jobs
-                WHERE video_id = ? AND owner_user_id = ?
+                WHERE video_id = %s AND owner_user_id = %s
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT 1
                 """,
@@ -825,7 +825,7 @@ def _agent_publish_account_status(cursor, owner_user_id, platform_type, account_
     cursor.execute(
         """
         SELECT status FROM user_info
-        WHERE owner_user_id = ? AND type = ? AND userName = ?
+        WHERE owner_user_id = %s AND type = %s AND userName = %s
         ORDER BY id DESC LIMIT 1
         """,
         (owner_user_id, platform_type, account_name),
@@ -891,9 +891,9 @@ def list_failed_jobs(limit=None):
         cursor.execute(
             """
             SELECT * FROM youtube_workflow_jobs
-            WHERE owner_user_id = ? AND status IN ('failed', 'abnormal')
+            WHERE owner_user_id = %s AND status IN ('failed', 'abnormal')
             ORDER BY updated_at DESC, created_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (owner_user_id, _agent_limit(limit)),
         )
@@ -921,7 +921,7 @@ def get_account_status():
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT id, type, userName, status FROM user_info WHERE owner_user_id = ? ORDER BY type, id", (owner_user_id,))
+        cursor.execute("SELECT id, type, userName, status FROM user_info WHERE owner_user_id = %s ORDER BY type, id", (owner_user_id,))
         rows = cursor.fetchall()
     return {
         "items": [

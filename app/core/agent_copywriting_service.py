@@ -57,7 +57,7 @@ def _agent_copywriting_load_video(video_id):
     with _db_connect() as conn:
         conn.row_factory = True
         row = conn.execute(
-            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
             (video_id, _agent_current_user_id()),
         ).fetchone()
     return _row_to_youtube_video(row) if row else None
@@ -75,7 +75,7 @@ def _agent_copywriting_latest_processed_at(video_id):
             """
             SELECT updated_at
             FROM youtube_workflow_jobs
-            WHERE video_id = ? AND owner_user_id = ? AND status = 'success'
+            WHERE video_id = %s AND owner_user_id = %s AND status = 'success'
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 1
             """,
@@ -153,7 +153,7 @@ def list_agent_today_processed_videos(now=None):
             )
             WHERE COALESCE(video.translate_status, 0) = 1
               AND COALESCE(video.publish_status, 0) != 1
-              AND video.owner_user_id = ?
+              AND video.owner_user_id = %s
             ORDER BY job.updated_at DESC, job.created_at DESC
             """,
             (owner_user_id,),

@@ -110,6 +110,21 @@ def test_video_selection_requires_current_session_card(monkeypatch):
         backend.update_agent_video_selection(session_id, ["AbCdEf12345"], "foreign-card")
 
 
+def test_video_selection_can_clear_after_card_expires(monkeypatch):
+    backend = _backend()
+    captured = {}
+    monkeypatch.setattr(backend, "update_agent_session_context", lambda _value, context: captured.update(context) or context)
+    monkeypatch.setattr(backend, "invalidate_agent_copywriting_selection", lambda _session_id: None)
+
+    result = backend.update_agent_video_selection("session-1", [], "expired-card")
+
+    assert result["videoIds"] == []
+    assert captured == {
+        "agentVideoSelection": [],
+        "agentVideoSelectionCardId": "",
+    }
+
+
 def test_new_status_card_clears_previous_video_selection(monkeypatch):
     backend = _backend()
     session_id = "session-1"

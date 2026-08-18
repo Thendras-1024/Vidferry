@@ -107,7 +107,7 @@ def compact_agent_session(session_id, force=False):
                 """
                 SELECT id, role, content, created_at
                 FROM agent_messages
-                WHERE session_id = ? AND id > ?
+                WHERE session_id = %s AND id > %s
                 ORDER BY id ASC
                 LIMIT 2000
                 """,
@@ -159,13 +159,12 @@ def compact_agent_session(session_id, force=False):
             summary_text = _agent_json_dumps(summary)
 
         with _db_connect(row_factory=True) as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             cursor.execute(
                 """
                 UPDATE agent_sessions
-                SET summary = ?, summary_through_id = ?, updated_at = ?
-                WHERE id = ? AND deleted_at IS NULL AND summary_through_id = ?
+                SET summary = %s, summary_through_id = %s, updated_at = %s
+                WHERE id = %s AND deleted_at IS NULL AND summary_through_id = %s
                 """,
                 (
                     summary_text,
@@ -255,7 +254,7 @@ def get_agent_session_context_stats(session):
     estimated_input_tokens = min(input_budget_tokens, prompt_overhead_tokens + summary_tokens + recent_tokens)
     with _db_connect(row_factory=True) as conn:
         pending = conn.execute(
-            "SELECT COUNT(*) AS message_count, COALESCE(SUM(LENGTH(content)), 0) AS char_count FROM agent_messages WHERE session_id = ? AND id > ?",
+            "SELECT COUNT(*) AS message_count, COALESCE(SUM(LENGTH(content)), 0) AS char_count FROM agent_messages WHERE session_id = %s AND id > %s",
             (session_id, summary_through_id),
         ).fetchone()
     pending_messages = int(pending["message_count"] or 0)
@@ -306,7 +305,7 @@ def _insert_agent_run(
             id, session_id, run_type, subject_type, subject_id, status, decision, severity, content_hash,
             input_summary, output, model, duration_ms, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             run_id,
@@ -348,11 +347,10 @@ def save_agent_run(
     duration_ms = int((_time.time() - started_at) * 1000) if started_at else 0
     with agent_session_guard(session_id):
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             if session_id:
                 cursor.execute(
-                    "SELECT 1 FROM agent_sessions WHERE id = ? AND deleted_at IS NULL",
+                    "SELECT 1 FROM agent_sessions WHERE id = %s AND deleted_at IS NULL",
                     (session_id,),
                 )
                 if not cursor.fetchone():
@@ -393,7 +391,6 @@ def finalize_agent_turn(
     duration_ms = int((_time.time() - started_at) * 1000) if started_at else 0
     with agent_session_guard(session_id):
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             message_id = _insert_agent_message(
                 cursor,

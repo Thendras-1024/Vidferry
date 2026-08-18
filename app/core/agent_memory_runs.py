@@ -27,12 +27,12 @@ def get_agent_run(run_id):
         owner_filter = ""
         owner_values = ()
         if owner_user_id is not None:
-            owner_filter = " AND (r.run_type != 'chat' OR s.owner_user_id = ?)"
+            owner_filter = " AND (r.run_type != 'chat' OR s.owner_user_id = %s)"
             owner_values = (owner_user_id,)
         cursor.execute(
             f"""SELECT r.* FROM agent_runs AS r
                LEFT JOIN agent_sessions AS s ON s.id = r.session_id
-               WHERE r.id = ?{owner_filter}""",
+               WHERE r.id = %s{owner_filter}""",
             (run_id,) + owner_values,
         )
         row = cursor.fetchone()
@@ -44,7 +44,7 @@ def get_agent_run(run_id):
 def _latest_agent_session_run(session_id, run_type):
     with _db_connect(row_factory=True) as conn:
         row = conn.execute(
-            "SELECT * FROM agent_runs WHERE session_id = ? AND run_type = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT * FROM agent_runs WHERE session_id = %s AND run_type = %s ORDER BY created_at DESC, id DESC LIMIT 1",
             (str(session_id or ""), run_type),
         ).fetchone()
     return _agent_run_from_row(row) if row else None
@@ -70,7 +70,7 @@ def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_p
             cursor.execute(
                 """
                 SELECT * FROM agent_runs
-                WHERE run_type = ? AND subject_type = ? AND subject_id = ?
+                WHERE run_type = %s AND subject_type = %s AND subject_id = %s
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
@@ -86,7 +86,7 @@ def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_p
         cursor.execute(
             """
             SELECT * FROM agent_runs
-            WHERE run_type = ? AND COALESCE(subject_id, '') = ''
+            WHERE run_type = %s AND COALESCE(subject_id, '') = ''
             ORDER BY created_at DESC, id DESC
             """,
             (run_type,),
@@ -155,7 +155,7 @@ def get_agent_run_overview(limit=8):
         owner_filter = ""
         owner_values = ()
         if owner_user_id is not None:
-            owner_filter = "WHERE r.run_type != 'chat' OR s.owner_user_id = ?"
+            owner_filter = "WHERE r.run_type != 'chat' OR s.owner_user_id = %s"
             owner_values = (owner_user_id,)
         cursor.execute(
             f"""
@@ -163,7 +163,7 @@ def get_agent_run_overview(limit=8):
             LEFT JOIN agent_sessions AS s ON s.id = r.session_id
             {owner_filter}
             ORDER BY r.created_at DESC, r.id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             owner_values + (limit,),
         )
@@ -175,7 +175,7 @@ def list_agent_memory(memory_type="", limit=8):
     where = ""
     values = []
     if memory_type:
-        where = "WHERE memory_type = ?"
+        where = "WHERE memory_type = %s"
         values.append(memory_type)
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
@@ -184,7 +184,7 @@ def list_agent_memory(memory_type="", limit=8):
             SELECT * FROM agent_memory_items
             {where}
             ORDER BY updated_at DESC, id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             values + [limit],
         )

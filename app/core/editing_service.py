@@ -679,7 +679,7 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT analysis_status FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT analysis_status FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
             (video_id, base_job.get("ownerUserId")),
         )
         row = cursor.fetchone()

@@ -78,7 +78,7 @@ def _agent_video_card_status_items(status):
         cursor = conn.cursor()
         _reconcile_youtube_statuses_with_material_records(cursor, owner_user_id)
         conn.commit()
-        where_sql = f"WHERE owner_user_id = ? AND {clause}" if clause else "WHERE owner_user_id = ?"
+        where_sql = f"WHERE owner_user_id = %s AND {clause}" if clause else "WHERE owner_user_id = %s"
         cursor.execute(
             f"SELECT * FROM youtube_videos {where_sql} ORDER BY updated_at DESC, video_id DESC",
             [owner_user_id, *values],
@@ -92,7 +92,7 @@ def _agent_video_card_details(videos):
     if not videos:
         return videos
     video_ids = [str(item["id"]) for item in videos]
-    placeholders = ",".join("?" for _ in video_ids)
+    placeholders = ",".join("%s" for _ in video_ids)
     owner_user_id = _agent_current_user_id()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
@@ -100,7 +100,7 @@ def _agent_video_card_details(videos):
             f"""
             SELECT video_id, process_version, operation, status, step, message, updated_at
             FROM youtube_workflow_jobs
-            WHERE owner_user_id = ? AND video_id IN ({placeholders})
+            WHERE owner_user_id = %s AND video_id IN ({placeholders})
             ORDER BY updated_at DESC, created_at DESC
             """,
             [owner_user_id, *video_ids],
@@ -112,7 +112,7 @@ def _agent_video_card_details(videos):
             f"""
             SELECT video_id, platform, platform_type, account_name, status
             FROM published_youtube_materials
-            WHERE owner_user_id = ? AND video_id IN ({placeholders})
+            WHERE owner_user_id = %s AND video_id IN ({placeholders})
               AND deleted_at IS NULL AND invalidated_at IS NULL
               AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('confirmed', 'success', 'reused')
             ORDER BY platform_type, id
@@ -154,6 +154,7 @@ def _agent_video_card_thumbnail(video, session_id=""):
 
 def _agent_video_status_card_item(video, label="", session_id=""):
     video = video if isinstance(video, dict) else {}
+    publish_draft = video.get("publishDraft") or {}
     state = label or (
         "已发布" if int(video.get("publishStatus") or 0) else
         "已处理未发布" if int(video.get("translateStatus") or 0) in {1, 2} else
@@ -171,6 +172,9 @@ def _agent_video_status_card_item(video, label="", session_id=""):
         "latestJob": video.get("latestJob") or {},
         "publishedPlatforms": video.get("publishedPlatforms") or [],
         "hasPublishDraft": bool(video.get("hasPublishDraft")),
+        "draftTitle": publish_draft.get("title") or "",
+        "draftDescription": publish_draft.get("description") or "",
+        "draftTags": publish_draft.get("tags") or [],
         "detail": " · ".join(value for value in (video.get("channel"), video.get("duration"), state) if value),
         "videoContext": {
             "videoId": str(video.get("id") or ""),
@@ -268,8 +272,6 @@ def update_agent_video_selection(session_id, video_ids, card_id):
     card_id = str(card_id or "").strip()
     if not isinstance(video_ids, list):
         raise ValueError("视频选择格式不正确。")
-    if not card_id:
-        raise ValueError("请在视频卡片中选择视频。")
     selected = []
     for video_id in video_ids:
         normalized = str(video_id or "").strip()
@@ -277,16 +279,19 @@ def update_agent_video_selection(session_id, video_ids, card_id):
             selected.append(normalized)
     if len(selected) > 100:
         raise ValueError("一次最多选择 100 个视频。")
-    with _AGENT_VIDEO_CARD_SNAPSHOTS_LOCK:
-        snapshot = _agent_video_card_snapshot(card_id, session_id)
-        if not snapshot:
-            raise ValueError("视频选择卡已失效，请重新查询后选择。")
-        allowed = {str(item.get("id") or "") for item in snapshot.get("items") or []}
-    if any(video_id not in allowed for video_id in selected):
-        raise ValueError("所选视频不在当前视频卡片中。")
+    if selected:
+        if not card_id:
+            raise ValueError("请在视频卡片中选择视频。")
+        with _AGENT_VIDEO_CARD_SNAPSHOTS_LOCK:
+            snapshot = _agent_video_card_snapshot(card_id, session_id)
+            if not snapshot:
+                raise ValueError("视频选择卡已失效，请重新查询后选择。")
+            allowed = {str(item.get("id") or "") for item in snapshot.get("items") or []}
+        if any(video_id not in allowed for video_id in selected):
+            raise ValueError("所选视频不在当前视频卡片中。")
     context = update_agent_session_context(session_id, {
         "agentVideoSelection": selected,
-        "agentVideoSelectionCardId": card_id,
+        "agentVideoSelectionCardId": card_id if selected else "",
     })
     if context is None:
         raise ValueError("Agent 会话不存在或已失效。")
@@ -318,7 +323,7 @@ def agent_video_processed_thumbnail_path(video_id):
         cursor = conn.cursor()
         owner_user_id = _agent_current_user_id()
         video_row = cursor.execute(
-            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
             (video_id, owner_user_id),
         ).fetchone()
         material = _find_latest_youtube_material(cursor, video_id, "youtube_processed", owner_user_id)
@@ -336,7 +341,7 @@ def agent_video_processed_thumbnail_path(video_id):
 def agent_video_source_thumbnail(video_id):
     with _db_connect(row_factory=True) as conn:
         row = conn.execute(
-            "SELECT thumbnail FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT thumbnail FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
             (str(video_id or "").strip(), _agent_current_user_id()),
         ).fetchone()
     return row["thumbnail"] if row else ""

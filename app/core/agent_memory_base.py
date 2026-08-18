@@ -65,13 +65,13 @@ def _acquire_agent_session_lease(session_id):
     deadline = _time.monotonic() + _AGENT_SESSION_LOCK_WAIT_SECONDS
     while True:
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             now = _time.time()
-            conn.execute("DELETE FROM agent_session_locks WHERE expires_at <= ?", (now,))
+            conn.execute("DELETE FROM agent_session_locks WHERE expires_at <= %s", (now,))
             cursor = conn.execute(
                 """
-                INSERT OR IGNORE INTO agent_session_locks (session_id, owner_id, expires_at)
-                VALUES (?, ?, ?)
+                INSERT INTO agent_session_locks (session_id, owner_id, expires_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
                 """,
                 (session_id, owner_id, now + _AGENT_SESSION_LOCK_LEASE_SECONDS),
             )
@@ -89,9 +89,8 @@ def _release_agent_session_lease(session_id, owner_id):
         return
     try:
         with _db_connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "DELETE FROM agent_session_locks WHERE session_id = ? AND owner_id = ?",
+                "DELETE FROM agent_session_locks WHERE session_id = %s AND owner_id = %s",
                 (session_id, owner_id),
             )
             conn.commit()
@@ -108,9 +107,8 @@ def renew_agent_session_lease(session_id):
     if not owner_id:
         return True
     with _db_connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
-            "UPDATE agent_session_locks SET expires_at = ? WHERE session_id = ? AND owner_id = ?",
+            "UPDATE agent_session_locks SET expires_at = %s WHERE session_id = %s AND owner_id = %s",
             (_time.time() + _AGENT_SESSION_LOCK_LEASE_SECONDS, key, owner_id),
         )
         conn.commit()
@@ -203,14 +201,14 @@ def _agent_source_from_context(context):
 def _agent_owner_filter(owner_user_id, column="owner_user_id"):
     if owner_user_id is None:
         return "", ()
-    return f" AND {column} = ?", (owner_user_id,)
+    return f" AND {column} = %s", (owner_user_id,)
 
 
 def _active_session_row(cursor, session_id):
     owner_user_id = _agent_current_user_id()
     owner_filter, owner_values = _agent_owner_filter(owner_user_id)
     cursor.execute(
-        f"SELECT * FROM agent_sessions WHERE id = ? AND deleted_at IS NULL{owner_filter}",
+        f"SELECT * FROM agent_sessions WHERE id = %s AND deleted_at IS NULL{owner_filter}",
         (str(session_id or "").strip(),) + owner_values,
     )
     return cursor.fetchone()

@@ -995,7 +995,7 @@ def _agent_available_publish_accounts():
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, type, userName FROM user_info WHERE owner_user_id = ? AND COALESCE(status, 0) = 1 ORDER BY type, id",
+            "SELECT id, type, userName FROM user_info WHERE owner_user_id = %s AND COALESCE(status, 0) = 1 ORDER BY type, id",
             (owner_user_id,),
         )
         rows = cursor.fetchall()
@@ -1052,9 +1052,9 @@ def _agent_execution_video(video_context):
         conn.row_factory = True
         cursor = conn.cursor()
         if video_id:
-            cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+            cursor.execute("SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
         else:
-            cursor.execute("SELECT * FROM youtube_videos WHERE url = ? AND owner_user_id = ?", (url, owner_user_id))
+            cursor.execute("SELECT * FROM youtube_videos WHERE url = %s AND owner_user_id = %s", (url, owner_user_id))
         row = cursor.fetchone()
     if not row:
         raise ValueError("当前视频不在本地线索列表中，请先导入后再执行")
@@ -1148,7 +1148,7 @@ def _agent_execution_targets(targets):
         resolved = []
         for platform_type, account_id in requested:
             cursor.execute(
-                "SELECT id, type, filePath, userName, status FROM user_info WHERE id = ? AND owner_user_id = ?",
+                "SELECT id, type, filePath, userName, status FROM user_info WHERE id = %s AND owner_user_id = %s",
                 (account_id, _agent_current_user_id()),
             )
             row = cursor.fetchone()
@@ -1438,7 +1438,9 @@ def _agent_result_cards(tool_results, session_id=""):
                     "query": {"status": status_route[status]},
                 })
         elif name == "get_video_detail" and result.get("found"):
-            cards.append(create_agent_video_selection_card(session_id, [result], "视频信息"))
+            card = create_agent_video_selection_card(session_id, [result], "视频信息")
+            card["type"] = "video_detail"
+            cards.append(card)
         elif name == "list_failed_jobs":
             jobs = result.get("items") or []
             videos = []
