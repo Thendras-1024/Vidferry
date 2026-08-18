@@ -1,3 +1,8 @@
+-- These columns were introduced by a parallel migration stream before V026.
+-- Keep the multi-user migration self-contained after the streams are merged.
+ALTER TABLE youtube_workflow_jobs ADD COLUMN IF NOT EXISTS owner_user_id BIGINT;
+ALTER TABLE user_info ADD COLUMN IF NOT EXISTS owner_user_id BIGINT;
+
 ALTER TABLE file_records ADD COLUMN IF NOT EXISTS owner_user_id BIGINT;
 ALTER TABLE app_notifications ADD COLUMN IF NOT EXISTS owner_user_id BIGINT;
 ALTER TABLE youtube_video_groups ADD COLUMN IF NOT EXISTS owner_user_id BIGINT;

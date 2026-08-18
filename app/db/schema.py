@@ -40,6 +40,103 @@ def _migration_paths():
     return paths
 
 
+def _dollar_quote_delimiter_at(sql, offset):
+    if sql[offset] != "$":
+        return None
+    end = sql.find("$", offset + 1)
+    if end < 0:
+        return None
+    tag = sql[offset + 1:end]
+    if tag and (not (tag[0].isalpha() or tag[0] == "_") or not all(char.isalnum() or char == "_" for char in tag)):
+        return None
+    return sql[offset:end + 1]
+
+
+def _split_sql_statements(sql):
+    """Split SQL on statement terminators while preserving quoted PostgreSQL blocks."""
+    statements = []
+    start = 0
+    offset = 0
+    state = "normal"
+    delimiter = None
+
+    while offset < len(sql):
+        current = sql[offset]
+        following = sql[offset + 1] if offset + 1 < len(sql) else ""
+
+        if state == "line_comment":
+            if current == "\n":
+                state = "normal"
+            offset += 1
+            continue
+        if state == "block_comment":
+            if current == "*" and following == "/":
+                state = "normal"
+                offset += 2
+            else:
+                offset += 1
+            continue
+        if state == "single_quote":
+            if current == "'":
+                if following == "'":
+                    offset += 2
+                    continue
+                state = "normal"
+            offset += 1
+            continue
+        if state == "double_quote":
+            if current == '"':
+                if following == '"':
+                    offset += 2
+                    continue
+                state = "normal"
+            offset += 1
+            continue
+        if state == "dollar_quote":
+            if sql.startswith(delimiter, offset):
+                closing_delimiter = delimiter
+                state = "normal"
+                delimiter = None
+                offset += len(closing_delimiter)
+            else:
+                offset += 1
+            continue
+
+        if current == "-" and following == "-":
+            state = "line_comment"
+            offset += 2
+            continue
+        if current == "/" and following == "*":
+            state = "block_comment"
+            offset += 2
+            continue
+        if current == "'":
+            state = "single_quote"
+            offset += 1
+            continue
+        if current == '"':
+            state = "double_quote"
+            offset += 1
+            continue
+        if current == "$":
+            delimiter = _dollar_quote_delimiter_at(sql, offset)
+            if delimiter:
+                state = "dollar_quote"
+                offset += len(delimiter)
+                continue
+        if current == ";":
+            statement = sql[start:offset].strip()
+            if statement:
+                statements.append(statement)
+            start = offset + 1
+        offset += 1
+
+    statement = sql[start:].strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
 def _apply_pending_migrations(conn):
     cursor = conn.cursor()
     has_registry = bool(cursor.execute("SELECT to_regclass(?)", ("public.schema_migrations",)).fetchone()[0])
@@ -51,9 +148,8 @@ def _apply_pending_migrations(conn):
         if version in applied:
             continue
         content = path.read_text(encoding="utf-8")
-        for statement in content.split(";"):
-            if statement.strip():
-                cursor.execute(statement)
+        for statement in _split_sql_statements(content):
+            cursor.execute(statement)
         checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
         cursor.execute(
             "INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)",
