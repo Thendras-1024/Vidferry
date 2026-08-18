@@ -175,6 +175,36 @@ def update_agent_proposal_state(
     return False
 
 
+def get_agent_proposal_state(session_id, proposal_key, proposal_id):
+    """读取当前账号会话中已保存的交互提案，用于进程重启后的恢复。"""
+    session_id = str(session_id or "").strip()
+    proposal_key = str(proposal_key or "").strip()
+    proposal_id = str(proposal_id or "").strip()
+    if not session_id or not proposal_key or not proposal_id:
+        return None
+    owner_user_id = _agent_current_user_id()
+    owner_filter, owner_values = _agent_owner_filter(owner_user_id, "s.owner_user_id")
+    with _db_connect(row_factory=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT m.context
+            FROM agent_messages AS m
+            JOIN agent_sessions AS s ON s.id = m.session_id
+            WHERE m.session_id = ? AND m.role = 'assistant' AND s.deleted_at IS NULL
+              {owner_filter}
+            ORDER BY m.id DESC
+            """,
+            (session_id, *owner_values),
+        )
+        for row in cursor.fetchall():
+            context = _agent_json_loads(row["context"], {})
+            proposal = context.get(proposal_key) if isinstance(context, dict) else None
+            if isinstance(proposal, dict) and str(proposal.get("proposalId") or "") == proposal_id:
+                return dict(proposal)
+    return None
+
+
 def update_agent_session_context(session_id, changes):
     """在当前账号和会话范围内原子更新临时 Agent 上下文。"""
     session_id = str(session_id or "").strip()

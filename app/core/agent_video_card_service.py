@@ -54,7 +54,12 @@ def _agent_video_card_snapshot(card_id, session_id):
     context = session.get("context") if isinstance(session, dict) else {}
     persisted = context.get("agentVideoCardSnapshots") if isinstance(context, dict) else {}
     snapshot = persisted.get(card_id) if isinstance(persisted, dict) else None
-    if isinstance(snapshot, dict) and snapshot.get("sessionId") == session_id and float(snapshot.get("expiresAt") or 0) > _time.time():
+    if isinstance(snapshot, dict) and snapshot.get("sessionId") == session_id:
+        snapshot = dict(snapshot)
+        snapshot["cardId"] = card_id
+        if float(snapshot.get("expiresAt") or 0) <= _time.time():
+            snapshot["expiresAt"] = _time.time() + _AGENT_VIDEO_CARD_TTL_SECONDS
+            _agent_video_card_store_snapshot(snapshot)
         _AGENT_VIDEO_CARD_SNAPSHOTS[card_id] = snapshot
         return snapshot
     return None
