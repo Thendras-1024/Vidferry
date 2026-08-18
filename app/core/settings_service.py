@@ -110,7 +110,7 @@ def get_workflow_settings():
     init_database_tables()
     with _db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM app_settings WHERE key = ?", (WORKFLOW_SETTINGS_KEY,))
+        cursor.execute("SELECT value FROM app_settings WHERE key = %s", (WORKFLOW_SETTINGS_KEY,))
         row = cursor.fetchone()
     if not row:
         settings = _default_workflow_settings()
@@ -131,7 +131,7 @@ def update_workflow_settings(payload):
         cursor.execute(
             '''
             INSERT INTO app_settings (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP
@@ -170,7 +170,7 @@ def get_publish_tag_presets(owner_user_id):
     init_database_tables()
     with _db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        cursor.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
         row = cursor.fetchone()
     if not row:
         presets = _default_publish_tag_presets()
@@ -195,7 +195,7 @@ def update_publish_tag_presets(owner_user_id, payload):
         cursor.execute(
             """
             INSERT INTO app_settings (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP

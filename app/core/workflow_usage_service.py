@@ -52,7 +52,7 @@ def record_workflow_llm_usage(context, payload):
                 owner_user_id, workflow_event_id, job_id, video_id, stage, operation, provider, model,
                 status, attempt, prompt_tokens, completion_tokens, total_tokens,
                 latency_ms, error_message, error_category, violations, raw_output, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 context.get("ownerUserId"),
                 context.get("workflowEventId") or None,
@@ -228,7 +228,7 @@ def _stats_fetch_task_bundle(job_rows):
     job_ids = [str(item.get("id") or "") for item in job_rows if item.get("id")]
     if not job_ids:
         return []
-    placeholders = ",".join("?" for _ in job_ids)
+    placeholders = ",".join("%s" for _ in job_ids)
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
@@ -247,20 +247,20 @@ def _stats_task_page(start, end, page, page_size, owner_user_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        where = "owner_user_id = ? AND COALESCE(started_at, created_at) >= ? AND COALESCE(started_at, created_at) < ?"
+        where = "owner_user_id = %s AND COALESCE(started_at, created_at) >= %s AND COALESCE(started_at, created_at) < %s"
         params = (owner_user_id, start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
         cursor.execute(f"SELECT COUNT(*) AS total FROM youtube_workflow_jobs WHERE {where}", params)
         total = int(cursor.fetchone()["total"] or 0)
         cursor.execute(f'''SELECT * FROM youtube_workflow_jobs WHERE {where}
-            ORDER BY COALESCE(started_at, created_at) DESC, id DESC LIMIT ? OFFSET ?''', (*params, page_size, (page - 1) * page_size))
+            ORDER BY COALESCE(started_at, created_at) DESC, id DESC LIMIT %s OFFSET %s''', (*params, page_size, (page - 1) * page_size))
         rows = [dict(item) for item in cursor.fetchall()]
     return _stats_fetch_task_bundle(rows), total
 
 
 def _stats_aggregates(start, end, granularity, owner_user_id):
-    where = "j.owner_user_id = ? AND COALESCE(j.started_at, j.created_at) >= ? AND COALESCE(j.started_at, j.created_at) < ?"
+    where = "j.owner_user_id = %s AND COALESCE(j.started_at, j.created_at) >= %s AND COALESCE(j.started_at, j.created_at) < %s"
     params = (owner_user_id, start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"))
-    bucket = "%m-%d %H:00" if granularity == "hour" else "%m-%d"
+    bucket = "MM-DD HH24:00" if granularity == "hour" else "MM-DD"
     usage_cte = '''WITH all_usage AS (
             SELECT job_id, created_at, model, prompt_tokens, completion_tokens, total_tokens, latency_ms
             FROM youtube_workflow_llm_usage_events
@@ -333,7 +333,7 @@ def _stats_aggregates(start, end, granularity, owner_user_id):
                    "totalTokens": _usage_int(row["total_tokens"]), "requestCount": _usage_int(row["request_count"]),
                    "avgCloudLatencyMs": round(_usage_float(row["latency_total"]) / _usage_int(row["request_count"]), 2) if _usage_int(row["request_count"]) else 0} for row in cursor.fetchall()]
         cursor.execute(f'''{usage_cte}
-            SELECT strftime(?, u.created_at) AS bucket, COALESCE(SUM(u.prompt_tokens), 0) AS prompt_tokens,
+            SELECT to_char(u.created_at, %s) AS bucket, COALESCE(SUM(u.prompt_tokens), 0) AS prompt_tokens,
             COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens, COALESCE(SUM(u.total_tokens), 0) AS total_tokens, COUNT(*) AS request_count
             FROM all_usage u JOIN youtube_workflow_jobs j ON j.id = u.job_id
             WHERE {where} GROUP BY bucket ORDER BY bucket''', (bucket, *params))
@@ -362,7 +362,7 @@ def get_workflow_task_statistics(job_id, owner_user_id):
     with _db_connect() as conn:
         conn.row_factory = True
         row = conn.execute(
-            "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ?",
+            "SELECT * FROM youtube_workflow_jobs WHERE id = %s AND owner_user_id = %s",
             (job_id, owner_user_id),
         ).fetchone()
     if not row:
@@ -373,7 +373,7 @@ def get_workflow_task_statistics(job_id, owner_user_id):
         return None
     with _db_connect() as conn:
         conn.row_factory = True
-        rows = conn.execute("SELECT * FROM youtube_workflow_llm_usage_events WHERE job_id = ? AND owner_user_id = ? ORDER BY created_at DESC, id DESC", (job_id, owner_user_id)).fetchall()
+        rows = conn.execute("SELECT * FROM youtube_workflow_llm_usage_events WHERE job_id = %s AND owner_user_id = %s ORDER BY created_at DESC, id DESC", (job_id, owner_user_id)).fetchall()
     task["requests"] = [{
         "id": item["id"], "workflowEventId": item["workflow_event_id"], "stage": item["stage"] or "",
         "stageLabel": WORKFLOW_STAGE_LABELS.get(item["stage"], item["stage"] or ""), "operation": item["operation"] or "",

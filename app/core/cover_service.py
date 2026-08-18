@@ -23,7 +23,7 @@ def normalize_cover_title(value):
         source = lines[0]
         split_points = [
             index for index, char in enumerate(source)
-            if char in "，,。.!！?？:：|｜" and 3 <= index <= len(source) - 4
+            if char in "，,。.!！%s？:：|｜" and 3 <= index <= len(source) - 4
         ]
         split_at = min(split_points, key=lambda item: abs(item - len(source) / 2)) if split_points else len(source) // 2
         lines = [source[:split_at], source[split_at + 1:] if source[split_at] in "，,。.!！?？:：|｜" else source[split_at:]]

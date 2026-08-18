@@ -1,4 +1,4 @@
--- Generated from the current Vidferry SQLite schema.
+-- Initial PostgreSQL schema.
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,

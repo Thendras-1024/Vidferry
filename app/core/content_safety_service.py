@@ -156,7 +156,7 @@ def save_content_safety_snapshot(job, snapshot):
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO youtube_content_safety_audits (owner_user_id, job_id, video_id, video_title, snapshot, status, saved_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (job_id) DO UPDATE SET snapshot = EXCLUDED.snapshot, status = EXCLUDED.status, saved_at = CURRENT_TIMESTAMP
         ''', (job.get("ownerUserId"), job.get("id") or "", job.get("videoId") or "", job.get("title") or "", json.dumps(snapshot, ensure_ascii=False), snapshot.get("status") or ""))
         conn.commit()
@@ -165,7 +165,7 @@ def save_content_safety_snapshot(job, snapshot):
 def get_content_safety_snapshot(job_id):
     with _db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT snapshot FROM youtube_content_safety_audits WHERE job_id = ?", (job_id,))
+        cursor.execute("SELECT snapshot FROM youtube_content_safety_audits WHERE job_id = %s", (job_id,))
         row = cursor.fetchone()
     if not row:
         return {}
@@ -186,10 +186,10 @@ def resolve_content_safety_confirmation(job_id, decision, ranges=None, reason=""
         cursor = conn.cursor()
         cursor.execute("BEGIN")
         if owner_user_id is None:
-            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ? FOR UPDATE", (job_id,))
+            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = %s FOR UPDATE", (job_id,))
         else:
             cursor.execute(
-                "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ? FOR UPDATE",
+                "SELECT * FROM youtube_workflow_jobs WHERE id = %s AND owner_user_id = %s FOR UPDATE",
                 (job_id, int(owner_user_id)),
             )
         row = cursor.fetchone()
@@ -198,7 +198,7 @@ def resolve_content_safety_confirmation(job_id, decision, ranges=None, reason=""
         job = _row_to_workflow_job(row)
         if job.get("status") != "waiting_confirmation" or job.get("step") != "content_safety_confirm":
             raise WorkflowConflictError("该任务当前无需视频处理确认，或确认已处理。", "VF-CONTENT-SAFETY-CONFIRMATION-INVALID", "CONTENT_SAFETY_CONFIRMATION_INVALID", {"job": job})
-        cursor.execute("SELECT snapshot FROM youtube_content_safety_audits WHERE job_id = ? FOR UPDATE", (job_id,))
+        cursor.execute("SELECT snapshot FROM youtube_content_safety_audits WHERE job_id = %s FOR UPDATE", (job_id,))
         audit_row = cursor.fetchone()
         if not audit_row:
             raise WorkflowConflictError("未找到广告风险审查记录。", "VF-CONTENT-SAFETY-SNAPSHOT-MISSING", "CONTENT_SAFETY_SNAPSHOT_MISSING", {"jobId": job_id})
@@ -219,13 +219,13 @@ def resolve_content_safety_confirmation(job_id, decision, ranges=None, reason=""
         content_risk = {**(job.get("contentRisk") or {}), "contentSafety": snapshot}
         cursor.execute('''
             UPDATE youtube_content_safety_audits
-            SET snapshot = ?, status = 'confirmed', saved_at = CURRENT_TIMESTAMP
-            WHERE job_id = ?
+            SET snapshot = %s, status = 'confirmed', saved_at = CURRENT_TIMESTAMP
+            WHERE job_id = %s
         ''', (json.dumps(snapshot, ensure_ascii=False), job_id))
         cursor.execute('''
             UPDATE youtube_workflow_jobs
-            SET status = 'queued', step = ?, message = ?, content_risk = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND status = 'waiting_confirmation' AND step = 'content_safety_confirm'
+            SET status = 'queued', step = %s, message = %s, content_risk = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = 'waiting_confirmation' AND step = 'content_safety_confirm'
         ''', (
             "content_trim" if decision == "trim" else "subtitle",
             "已确认广告裁剪，正在恢复处理" if decision == "trim" else "已标记广告候选安全，正在恢复处理",

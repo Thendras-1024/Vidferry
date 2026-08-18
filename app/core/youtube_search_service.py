@@ -514,14 +514,13 @@ def create_youtube_search_job(query, requested, owner_user_id, group_id=None, du
     timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
         target_group = _resolve_youtube_group(cursor, owner_user_id, group_id)
         cursor.execute('''
         INSERT INTO youtube_search_jobs (
             id, query, requested, status, message, owner_user_id, group_id, group_name_snapshot,
             duration_min_seconds, duration_max_seconds, created_at, updated_at
         )
-        VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
             job_id, query, requested, "查询任务已提交", owner_user_id, target_group["id"], target_group["name"],
             duration_min_seconds, duration_max_seconds, timestamp, timestamp,
@@ -534,9 +533,9 @@ def get_youtube_search_job(job_id, owner_user_id=None):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         if owner_user_id is None:
-            cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+            cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = %s", (job_id,))
         else:
-            cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ? AND owner_user_id = ?", (job_id, owner_user_id))
+            cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = %s AND owner_user_id = %s", (job_id, owner_user_id))
         row = cursor.fetchone()
     if not row:
         raise LookupError("查询任务不存在")
@@ -547,15 +546,14 @@ def _claim_youtube_search_job(job_id):
     timestamp = _datetime.datetime.now().isoformat(timespec="microseconds")
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
         cursor.execute('''
         UPDATE youtube_search_jobs
-        SET status = 'running', message = ?, started_at = ?, updated_at = ?
-        WHERE id = ? AND status = 'queued'
+        SET status = 'running', message = %s, started_at = %s, updated_at = %s
+        WHERE id = %s AND status = 'queued'
         ''', ("正在向 YouTube 请求候选视频", timestamp, timestamp, job_id))
         if cursor.rowcount == 0:
             return None
-        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = %s", (job_id,))
         return _row_to_youtube_search_job(cursor.fetchone())
 
 
@@ -564,8 +562,8 @@ def _update_youtube_search_source(job_id, source):
     with _db_connect() as conn:
         conn.execute('''
         UPDATE youtube_search_jobs
-        SET source = ?, message = ?, updated_at = ?
-        WHERE id = ? AND status = 'running'
+        SET source = %s, message = %s, updated_at = %s
+        WHERE id = %s AND status = 'running'
         ''', (source, "正在逐条处理候选视频", timestamp, job_id))
 
 
@@ -573,13 +571,13 @@ def _existing_youtube_search_item(cursor, job_id, ordinal, video_id):
     if video_id:
         cursor.execute('''
         SELECT decision FROM youtube_search_job_items
-        WHERE job_id = ? AND (ordinal = ? OR video_id = ?)
+        WHERE job_id = %s AND (ordinal = %s OR video_id = %s)
         LIMIT 1
         ''', (job_id, ordinal, video_id))
     else:
         cursor.execute('''
         SELECT decision FROM youtube_search_job_items
-        WHERE job_id = ? AND ordinal = ?
+        WHERE job_id = %s AND ordinal = %s
         LIMIT 1
         ''', (job_id, ordinal))
     return cursor.fetchone()
@@ -594,7 +592,7 @@ def _record_youtube_search_item(cursor, job, ordinal, video, decision, error="",
     INSERT INTO youtube_search_job_items (
         job_id, ordinal, video_id, title, decision, error
     )
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s)
     ''', (
         job["jobId"],
         ordinal,
@@ -616,10 +614,10 @@ def _record_youtube_search_item(cursor, job, ordinal, video, decision, error="",
     UPDATE youtube_search_jobs
     SET found = found + 1,
         {count_column} = {count_column} + 1,
-        message = ?,
-        updated_at = ?
+        message = %s,
+        updated_at = %s
         {duration_filtered_sql}
-    WHERE id = ? AND status = 'running'
+    WHERE id = %s AND status = 'running'
     ''', (f"已检索 {found} / {job['requested']}", timestamp, job["jobId"]))
     return cursor.rowcount > 0
 
@@ -627,8 +625,7 @@ def _record_youtube_search_item(cursor, job, ordinal, video, decision, error="",
 def _process_youtube_search_candidate(job_id, ordinal, video):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = %s", (job_id,))
         row = cursor.fetchone()
         if not row or row["status"] != "running":
             return None
@@ -662,8 +659,7 @@ def _process_youtube_search_candidate(job_id, ordinal, video):
 def _record_youtube_search_failure(job_id, ordinal, video, error):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = %s", (job_id,))
         row = cursor.fetchone()
         if not row or row["status"] != "running":
             return False
@@ -676,8 +672,8 @@ def _finish_youtube_search_job(job_id, status, message):
     with _db_connect() as conn:
         conn.execute('''
         UPDATE youtube_search_jobs
-        SET status = ?, message = ?, finished_at = ?, updated_at = ?
-        WHERE id = ? AND status = 'running'
+        SET status = %s, message = %s, finished_at = %s, updated_at = %s
+        WHERE id = %s AND status = 'running'
         ''', (status, message, timestamp, timestamp, job_id))
 
 
@@ -686,8 +682,8 @@ def fail_youtube_search_job(job_id, message):
     with _db_connect() as conn:
         conn.execute('''
         UPDATE youtube_search_jobs
-        SET status = 'failed', message = ?, finished_at = ?, updated_at = ?
-        WHERE id = ? AND status IN ('queued', 'running')
+        SET status = 'failed', message = %s, finished_at = %s, updated_at = %s
+        WHERE id = %s AND status IN ('queued', 'running')
         ''', (str(message or "查询任务失败")[:1000], timestamp, timestamp, job_id))
     return get_youtube_search_job(job_id)
 
@@ -702,7 +698,7 @@ def recover_interrupted_youtube_search_jobs():
         if job_ids:
             cursor.execute('''
             UPDATE youtube_search_jobs
-            SET status = 'failed', message = ?, finished_at = ?, updated_at = ?
+            SET status = 'failed', message = %s, finished_at = %s, updated_at = %s
             WHERE status IN ('queued', 'running')
             ''', ("应用重启后查询任务已中断，请重新查询", timestamp, timestamp))
     return job_ids

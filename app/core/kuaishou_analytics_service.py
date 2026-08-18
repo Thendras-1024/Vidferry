@@ -71,7 +71,7 @@ def _ksa_account(account_id, owner_user_id):
         raise ValueError("accountId 必须是整数") from exc
     with _db_connect(row_factory=True) as conn:
         row = conn.execute(
-            "SELECT id, type, filePath, userName, status, owner_user_id FROM user_info WHERE id = ? AND owner_user_id = ? AND type = ?",
+            "SELECT id, type, filePath, userName, status, owner_user_id FROM user_info WHERE id = %s AND owner_user_id = %s AND type = %s",
             (account_id, owner_user_id, _KSA_PLATFORM_TYPE),
         ).fetchone()
     if not row:
@@ -98,7 +98,7 @@ def _ksa_record(record_id, owner_user_id, selected_account_id=None):
         row = conn.execute(
             """
             SELECT p.* FROM published_youtube_materials p
-            WHERE p.id = ? AND p.owner_user_id = ? AND p.platform_type = ? AND p.deleted_at IS NULL
+            WHERE p.id = %s AND p.owner_user_id = %s AND p.platform_type = %s AND p.deleted_at IS NULL
             """,
             (record_id, owner_user_id, _KSA_PLATFORM_TYPE),
         ).fetchone()
@@ -109,7 +109,7 @@ def _ksa_record(record_id, owner_user_id, selected_account_id=None):
             if selected_account_id and int(selected_account_id) != int(record["account_id"]):
                 raise ValueError("选择的账号与发布记录已绑定账号不一致")
             account = conn.execute(
-                "SELECT id, type, filePath, userName, status, owner_user_id FROM user_info WHERE id = ? AND owner_user_id = ? AND type = ?",
+                "SELECT id, type, filePath, userName, status, owner_user_id FROM user_info WHERE id = %s AND owner_user_id = %s AND type = %s",
                 (record["account_id"], owner_user_id, _KSA_PLATFORM_TYPE),
             ).fetchone()
             if not account:
@@ -118,14 +118,14 @@ def _ksa_record(record_id, owner_user_id, selected_account_id=None):
         candidates = conn.execute(
             """
             SELECT id, type, filePath, userName, status, owner_user_id FROM user_info
-            WHERE owner_user_id = ? AND type = ? AND (filePath = ? OR userName = ?)
+            WHERE owner_user_id = %s AND type = %s AND (filePath = %s OR userName = %s)
             ORDER BY id
             """,
             (owner_user_id, _KSA_PLATFORM_TYPE, record.get("account_file") or "", record.get("account_name") or ""),
         ).fetchall()
         candidates = [dict(item) for item in candidates]
         global_candidates = conn.execute(
-            "SELECT id, owner_user_id FROM user_info WHERE type = ? AND (filePath = ? OR userName = ?)",
+            "SELECT id, owner_user_id FROM user_info WHERE type = %s AND (filePath = %s OR userName = %s)",
             (_KSA_PLATFORM_TYPE, record.get("account_file") or "", record.get("account_name") or ""),
         ).fetchall()
         if selected_account_id:
@@ -133,11 +133,11 @@ def _ksa_record(record_id, owner_user_id, selected_account_id=None):
             selected = next((item for item in candidates if int(item["id"]) == selected_account_id), None)
             if not selected:
                 raise PermissionError("选择的快手账号不属于该发布记录候选")
-            conn.execute("UPDATE published_youtube_materials SET account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?", (selected["id"], record_id, owner_user_id))
+            conn.execute("UPDATE published_youtube_materials SET account_id = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND owner_user_id = %s", (selected["id"], record_id, owner_user_id))
             record["account_id"] = selected["id"]
             return record, selected, None
         if len(candidates) == 1 and len(global_candidates) == 1:
-            conn.execute("UPDATE published_youtube_materials SET account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?", (candidates[0]["id"], record_id, owner_user_id))
+            conn.execute("UPDATE published_youtube_materials SET account_id = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND owner_user_id = %s", (candidates[0]["id"], record_id, owner_user_id))
             record["account_id"] = candidates[0]["id"]
             return record, candidates[0], None
     choices = [{"accountId": item["id"], "accountName": item.get("userName") or "未命名账号"} for item in candidates]
@@ -216,8 +216,8 @@ def _ksa_bind_record(record, account, owner_user_id, selected_work_id=None):
         conn.execute(
             """
             UPDATE published_youtube_materials
-            SET account_id = ?, platform_work_id = ?, platform_work_url = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            SET account_id = %s, platform_work_id = %s, platform_work_url = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
             """,
             (account["id"], work["platformWorkId"], work["platformWorkUrl"], record["id"]),
         )
@@ -246,18 +246,18 @@ def _ksa_snapshot_row(row):
 
 
 def _ksa_latest_snapshots(owner_user_id, account_id, work_id=None, recent_only=False, from_date=None, to_date=None):
-    conditions = ["owner_user_id = ?", "platform_type = ?", "account_id = ?"]
+    conditions = ["owner_user_id = %s", "platform_type = %s", "account_id = %s"]
     params = [owner_user_id, _KSA_PLATFORM_TYPE, account_id]
     if work_id:
-        conditions.append("platform_work_id = ?")
+        conditions.append("platform_work_id = %s")
         params.append(str(work_id))
     if recent_only:
         conditions.append("captured_at >= CURRENT_TIMESTAMP - INTERVAL '10 minutes'")
     if from_date:
-        conditions.append("published_at::date >= ?")
+        conditions.append("published_at::date >= %s")
         params.append(from_date)
     if to_date:
-        conditions.append("published_at::date <= ?")
+        conditions.append("published_at::date <= %s")
         params.append(to_date)
     with _db_connect(row_factory=True) as conn:
         rows = conn.execute(
@@ -277,8 +277,8 @@ def _ksa_previous_snapshot(owner_user_id, account_id, work_id, captured_at):
         row = conn.execute(
             """
             SELECT * FROM platform_metric_snapshots
-            WHERE owner_user_id = ? AND platform_type = ? AND account_id = ?
-              AND platform_work_id = ? AND captured_at < ?
+            WHERE owner_user_id = %s AND platform_type = %s AND account_id = %s
+              AND platform_work_id = %s AND captured_at < %s
             ORDER BY captured_at DESC, id DESC LIMIT 1
             """,
             (owner_user_id, _KSA_PLATFORM_TYPE, account_id, work_id, captured_at),
@@ -293,7 +293,7 @@ def _ksa_save_snapshot(owner_user_id, account_id, work, publish_record_id=None):
             INSERT INTO platform_metric_snapshots (
                 owner_user_id, platform_type, account_id, publish_record_id, platform_work_id,
                 platform_work_url, title, published_at, source, metrics
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb)) RETURNING *
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CAST(%s AS jsonb)) RETURNING *
             """,
             (
                 owner_user_id, _KSA_PLATFORM_TYPE, account_id, publish_record_id, work["platformWorkId"],
@@ -340,10 +340,10 @@ def _ksa_local_context(owner_user_id, account, work):
                    y.analysis_result, y.publish_draft
             FROM published_youtube_materials p
             LEFT JOIN youtube_videos y ON y.video_id = p.video_id AND y.owner_user_id = p.owner_user_id
-            WHERE p.platform_type = ? AND p.deleted_at IS NULL
-              AND p.owner_user_id = ?
-              AND p.account_id = ?
-              AND (p.platform_work_id = ? OR p.platform_work_id IS NULL)
+            WHERE p.platform_type = %s AND p.deleted_at IS NULL
+              AND p.owner_user_id = %s
+              AND p.account_id = %s
+              AND (p.platform_work_id = %s OR p.platform_work_id IS NULL)
             ORDER BY p.id DESC
             """,
             (_KSA_PLATFORM_TYPE, owner_user_id, account["id"], work["platformWorkId"]),
@@ -364,7 +364,7 @@ def _ksa_local_context(owner_user_id, account, work):
     if not match.get("platform_work_id"):
         with _db_connect() as conn:
             conn.execute(
-                "UPDATE published_youtube_materials SET account_id = ?, platform_work_id = ?, platform_work_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?",
+                "UPDATE published_youtube_materials SET account_id = %s, platform_work_id = %s, platform_work_url = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND owner_user_id = %s",
                 (account["id"], work["platformWorkId"], work.get("platformWorkUrl") or "", match["id"], owner_user_id),
             )
     analysis = _ksa_json_object(match.get("analysis_result"))
@@ -524,7 +524,7 @@ def get_published_video_comments(platform, publish_record_id, limit=None):
                     INSERT INTO platform_comment_samples (
                         owner_user_id, platform_type, account_id, publish_record_id, platform_work_id,
                         platform_comment_id, body, like_count, comment_published_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (owner_user_id, platform_type, account_id, platform_work_id, platform_comment_id)
                     DO UPDATE SET body = EXCLUDED.body, like_count = EXCLUDED.like_count,
                                   comment_published_at = EXCLUDED.comment_published_at, captured_at = CURRENT_TIMESTAMP
@@ -538,8 +538,8 @@ def get_published_video_comments(platform, publish_record_id, limit=None):
                 """
                 SELECT platform_comment_id, body, like_count, comment_published_at, captured_at
                 FROM platform_comment_samples
-                WHERE owner_user_id = ? AND platform_type = ? AND account_id = ? AND platform_work_id = ?
-                ORDER BY COALESCE(like_count, 0) DESC, captured_at DESC LIMIT ?
+                WHERE owner_user_id = %s AND platform_type = %s AND account_id = %s AND platform_work_id = %s
+                ORDER BY COALESCE(like_count, 0) DESC, captured_at DESC LIMIT %s
                 """,
                 (owner_user_id, _KSA_PLATFORM_TYPE, account["id"], record["platform_work_id"], limit),
             ).fetchall()

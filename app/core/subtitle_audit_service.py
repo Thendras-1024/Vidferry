@@ -36,7 +36,7 @@ def save_subtitle_audit_snapshot(job, initial_segments, reviewed_segments, revie
                 INSERT INTO youtube_subtitle_audits (
                     owner_user_id, job_id, video_id, video_title, target_language, initial_segments, reviewed_segments,
                     review_status, fallback_segment_count, review_batches, saved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(job_id) DO UPDATE SET
                     video_id = excluded.video_id, video_title = excluded.video_title,
                     target_language = excluded.target_language, initial_segments = excluded.initial_segments,
@@ -76,13 +76,13 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
     safety_status = str(safety_status or "").strip()
     clauses, params = ["1 = 1"], []
     if keyword:
-        clauses.append("(COALESCE(a.video_title, j.title) LIKE ? OR COALESCE(a.video_id, j.video_id) LIKE ? OR j.id LIKE ?)")
+        clauses.append("(COALESCE(a.video_title, j.title) ILIKE %s OR COALESCE(a.video_id, j.video_id) ILIKE %s OR j.id ILIKE %s)")
         params.extend([f"%{keyword}%"] * 3)
     if status:
-        clauses.append("COALESCE(a.review_status, 'not_recorded') = ?")
+        clauses.append("COALESCE(a.review_status, 'not_recorded') = %s")
         params.append(status)
     if safety_status:
-        clauses.append("COALESCE(s.status, 'not_enabled') = ?")
+        clauses.append("COALESCE(s.status, 'not_enabled') = %s")
         params.append(safety_status)
     where = " AND ".join(clauses)
     order_by = _subtitle_audit_sort_sql(sort)
@@ -101,7 +101,7 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
             LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
             WHERE {where}
             ORDER BY {order_by}
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
         '''.format(where=where, order_by=order_by), [*params, page_size, (page - 1) * page_size]).fetchall()
     return {"items": [_subtitle_audit_list_item(dict(row)) for row in rows], "total": int(total), "page": page, "pageSize": page_size, "sort": str(sort or "saved_desc")}
 
@@ -115,10 +115,9 @@ def delete_subtitle_audits(job_ids):
     if len(unique_job_ids) > 100:
         raise ValueError("单次最多删除 100 条审查记录")
     init_database_tables()
-    placeholders = ", ".join("?" for _ in unique_job_ids)
+    placeholders = ", ".join("%s" for _ in unique_job_ids)
     with _db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
         rows = cursor.execute(
             f"SELECT id, video_id, status FROM youtube_workflow_jobs WHERE id IN ({placeholders})",
             unique_job_ids,
@@ -131,10 +130,10 @@ def delete_subtitle_audits(job_ids):
             cursor.execute(f"DELETE FROM {table} WHERE job_id IN ({placeholders})", unique_job_ids)
         cursor.execute(f"DELETE FROM youtube_workflow_jobs WHERE id IN ({placeholders})", unique_job_ids)
         for video_id in video_ids:
-            if cursor.execute("SELECT 1 FROM youtube_workflow_jobs WHERE video_id = ? LIMIT 1", (video_id,)).fetchone():
+            if cursor.execute("SELECT 1 FROM youtube_workflow_jobs WHERE video_id = %s LIMIT 1", (video_id,)).fetchone():
                 continue
             cursor.execute(
-                "UPDATE youtube_videos SET comment_burn_snapshot = ?, comment_burn_signature = ?, comment_burn_status = ?, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?",
+                "UPDATE youtube_videos SET comment_burn_snapshot = %s, comment_burn_signature = %s, comment_burn_status = %s, updated_at = CURRENT_TIMESTAMP WHERE video_id = %s",
                 ("{}", "", "", video_id),
             )
         conn.commit()
@@ -169,7 +168,7 @@ def get_subtitle_audit_detail(job_id):
             FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
             LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id)
             LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
-            WHERE j.id = ?
+            WHERE j.id = %s
         ''', (str(job_id or ""),)).fetchone()
         if not row:
             return None
@@ -177,12 +176,12 @@ def get_subtitle_audit_detail(job_id):
             SELECT operation, model, attempt, prompt_tokens, completion_tokens, total_tokens,
                    latency_ms, error_category, violations, raw_output, created_at
             FROM youtube_workflow_llm_usage_events
-            WHERE job_id = ? AND status IN ('contract_failed', 'soft_warning') AND raw_output <> ''
+            WHERE job_id = %s AND status IN ('contract_failed', 'soft_warning') AND raw_output <> ''
             ORDER BY created_at DESC, id DESC
         ''', (str(job_id or ""),)).fetchall()
         comment_events = conn.execute('''
             SELECT metadata FROM youtube_workflow_events
-            WHERE job_id = ? AND stage IN ('comment_review', 'comment_fetch')
+            WHERE job_id = %s AND stage IN ('comment_review', 'comment_fetch')
             ORDER BY CASE stage WHEN 'comment_review' THEN 0 ELSE 1 END, id DESC
         ''', (str(job_id or ""),)).fetchall()
     result = _subtitle_audit_list_item(dict(row))

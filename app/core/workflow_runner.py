@@ -15,10 +15,10 @@ def _get_youtube_video_record(video_id, owner_user_id=None):
         conn.row_factory = True
         cursor = conn.cursor()
         if owner_user_id is None:
-            cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+            cursor.execute("SELECT * FROM youtube_videos WHERE video_id = %s", (video_id,))
         else:
             cursor.execute(
-                "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+                "SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
                 (video_id, owner_user_id),
             )
         row = cursor.fetchone()
@@ -36,7 +36,7 @@ def _resolve_downloaded_source_file(job):
         cursor = conn.cursor()
         cursor.execute('''
         SELECT * FROM file_records
-        WHERE source_video_id = ? AND source_type = 'youtube_download' AND owner_user_id = ?
+        WHERE source_video_id = %s AND source_type = 'youtube_download' AND owner_user_id = %s
         ORDER BY upload_time DESC, id DESC
         LIMIT 1
         ''', (job.get("videoId") or "", job.get("ownerUserId")))
@@ -155,7 +155,7 @@ def _source_title_translation_from_events(video_id, owner_user_id):
         conn.row_factory = True
         rows = conn.execute('''
         SELECT metadata FROM youtube_workflow_events
-        WHERE video_id = ? AND owner_user_id = ?
+        WHERE video_id = %s AND owner_user_id = %s
           AND stage = 'source_title_translation' AND status = 'success'
         ORDER BY ended_at DESC, id DESC
         LIMIT 10

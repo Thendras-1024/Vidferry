@@ -1,6 +1,6 @@
 # Vidferry 快速部署
 
-本指南用于 Windows 本地部署 Vidferry。项目运行期使用 PostgreSQL，不再使用 SQLite 作为主库。
+本指南用于 Windows 本地部署 Vidferry。项目运行期使用 PostgreSQL。
 
 ## 1. 前置条件
 
@@ -115,10 +115,10 @@ docker compose --env-file .env -f docker-compose.postgres.yml logs postgres
 
 ### YouTube 下载或评论获取失败
 
-确认网络可访问 YouTube，Node.js 20+ 已安装，并保留 `.env` 中的 `YTDLP_REMOTE_COMPONENTS=ejs:github`。更新 yt-dlp 后重试：
+确认网络可访问 YouTube，Node.js 20+ 已安装，并保留 `.env` 中的 `YTDLP_REMOTE_COMPONENTS=ejs:github`。更新到 yt-dlp nightly 后重试；该版本包含 YouTube 当前媒体流 403 的修复，并安装默认 EJS 组件：
 
 ```powershell
-conda run -n vidferry python -m pip install -U yt-dlp
+conda run -n vidferry python -m pip install -U --pre "yt-dlp[default]"
 ```
 
 评论是否可取由视频的公开评论状态、地区限制和 yt-dlp 当前解析能力决定；评论失败只会跳过评论层。

@@ -367,18 +367,18 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         conditions = []
         values = []
         if job_id:
-            conditions.append("id = ?")
+            conditions.append("id = %s")
             values.append(job_id)
         if owner_user_id is not None:
-            conditions.append("owner_user_id = ?")
+            conditions.append("owner_user_id = %s")
             values.append(int(owner_user_id))
         if active_only:
             statuses = tuple(sorted(_TASK_ACTIVE_STATUSES))
-            marks = ",".join("?" for _ in statuses)
+            marks = ",".join("%s" for _ in statuses)
             conditions.append(f"status IN ({marks})")
             values.extend(statuses)
         elif terminal_statuses:
-            marks = ",".join("?" for _ in terminal_statuses)
+            marks = ",".join("%s" for _ in terminal_statuses)
             conditions.append(f"status IN ({marks})")
             values.extend(terminal_statuses)
         conditions.extend(query_conditions)
@@ -394,7 +394,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         limit_sql = ""
         query_params = list(values)
         if page is not None and page_size is not None:
-            limit_sql = " LIMIT ? OFFSET ?"
+            limit_sql = " LIMIT %s OFFSET %s"
             query_params.extend([int(page_size), (int(page) - 1) * int(page_size)])
         cursor.execute(
             f"SELECT * FROM youtube_workflow_jobs{where_sql} "
@@ -405,7 +405,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         if not jobs:
             return ([], total, summary) if include_meta else []
         ids = [job.get("id") for job in jobs]
-        marks = ",".join("?" for _ in ids)
+        marks = ",".join("%s" for _ in ids)
         cursor.execute(f"SELECT * FROM youtube_workflow_events WHERE job_id IN ({marks}) ORDER BY started_at, id", ids)
         event_map = {}
         for row in cursor.fetchall():
@@ -416,7 +416,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
             for job in jobs
             if str(job.get("owner_user_id") or "").strip().isdigit() and job.get("video_id")
         })
-        owner_video_where = " OR ".join("(owner_user_id = ? AND video_id = ?)" for _ in owner_video_pairs)
+        owner_video_where = " OR ".join("(owner_user_id = %s AND video_id = %s)" for _ in owner_video_pairs)
         owner_video_values = [value for pair in owner_video_pairs for value in pair]
         title_translation_map = {}
         if owner_video_pairs:
@@ -442,7 +442,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
                 item = _task_row(row)
                 key = (int(item["owner_user_id"]), str(item.get("video_id") or ""))
                 material_map.setdefault(key, []).append(item)
-        job_marks = ",".join("?" for _ in ids)
+        job_marks = ",".join("%s" for _ in ids)
         cursor.execute(
             f"SELECT id, source_ref_id, status, message FROM publish_dispatch_jobs "
             f"WHERE source = 'workflow' AND source_ref_id IN ({job_marks}) "
@@ -456,7 +456,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         dispatch_ids = [item["id"] for item in latest_dispatch_by_job.values()]
         targets_by_dispatch = {}
         if dispatch_ids:
-            dispatch_marks = ",".join("?" for _ in dispatch_ids)
+            dispatch_marks = ",".join("%s" for _ in dispatch_ids)
             cursor.execute(
                 f"SELECT platform_type, status, message, duration_ms, started_at, finished_at, job_id "
                 f"FROM publish_dispatch_targets WHERE job_id IN ({dispatch_marks}) ORDER BY platform_type, id",
@@ -490,7 +490,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         })
         owner_names = {}
         if owner_ids:
-            marks = ",".join("?" for _ in owner_ids)
+            marks = ",".join("%s" for _ in owner_ids)
             cursor.execute(f"SELECT id, display_name, username FROM auth_users WHERE id IN ({marks})", owner_ids)
             owner_names = {
                 int(row["id"]): str(row["display_name"] or row["username"] or "")
@@ -514,7 +514,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
 def _task_acknowledgements(user_id):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT task_key, acknowledged_at FROM task_acknowledgements WHERE user_id = ?", (int(user_id),))
+        cursor.execute("SELECT task_key, acknowledged_at FROM task_acknowledgements WHERE user_id = %s", (int(user_id),))
         return {str(row["task_key"]): _task_iso(row["acknowledged_at"]) for row in cursor.fetchall()}
 
 
@@ -555,21 +555,21 @@ def _task_unified_query(*, keyword="", task_type="all", status="all", updated_fr
     }
     if status_key in status_groups:
         statuses = status_groups[status_key]
-        marks = ",".join("?" for _ in statuses)
+        marks = ",".join("%s" for _ in statuses)
         conditions.append(f"status IN ({marks})")
         values.extend(statuses)
     if keyword:
         like = f"%{str(keyword).strip()}%"
         conditions.append("(" + " OR ".join(
-            "COALESCE({0}, '') LIKE ?".format(field)
+            "COALESCE({0}, '') ILIKE %s".format(field)
             for field in ("id", "video_id", "title", "message", "error_reason", "error_detail")
         ) + ")")
         values.extend([like] * 6)
     if updated_from:
-        conditions.append("COALESCE(updated_at, created_at) >= ?")
+        conditions.append("COALESCE(updated_at, created_at) >= %s")
         values.append(f"{updated_from} 00:00:00")
     if updated_to:
-        conditions.append("COALESCE(updated_at, created_at) <= ?")
+        conditions.append("COALESCE(updated_at, created_at) <= %s")
         values.append(f"{updated_to} 23:59:59")
     return conditions, values
 
@@ -716,7 +716,7 @@ def get_task_center_detail(task_key, user_id, *, is_admin=False):
     subtitle_fallback = False
     try:
         with _db_connect(row_factory=True) as conn:
-            row = conn.execute("SELECT review_status, fallback_segment_count FROM youtube_subtitle_audits WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute("SELECT review_status, fallback_segment_count FROM youtube_subtitle_audits WHERE job_id = %s", (job_id,)).fetchone()
             subtitle_fallback = bool(row and (str(row["review_status"] or "") == "partial_fallback" or int(row["fallback_segment_count"] or 0) > 0))
     except Exception:
         subtitle_fallback = False
@@ -747,7 +747,7 @@ def acknowledge_task_center_task(task_key, user_id, *, is_admin=False):
     with _db_connect() as conn:
         conn.execute("""
             INSERT INTO task_acknowledgements (user_id, task_key, acknowledged_at)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             ON CONFLICT (user_id, task_key) DO UPDATE SET acknowledged_at = EXCLUDED.acknowledged_at
         """, (int(user_id), task_key, acknowledged_at))
     detail["task"]["acknowledged"] = True

@@ -41,7 +41,7 @@ def waiting_confirmation_jobs(limit=20):
             SELECT id, video_id, title, status, step, message, updated_at, created_at
             FROM youtube_workflow_jobs
             WHERE status = 'waiting_confirmation'
-            ORDER BY updated_at DESC, created_at DESC LIMIT ?
+            ORDER BY updated_at DESC, created_at DESC LIMIT %s
             """,
             (limit,),
         ).fetchall()

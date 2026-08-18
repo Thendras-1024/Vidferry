@@ -36,7 +36,7 @@ def _refresh_youtube_video_retention(cursor, video_id, owner_user_id):
     cursor.execute('''
     SELECT status, published_at
     FROM published_youtube_materials
-    WHERE video_id = ? AND owner_user_id = ?
+    WHERE video_id = %s AND owner_user_id = %s
       AND deleted_at IS NULL AND invalidated_at IS NULL
     ORDER BY published_at DESC, id DESC
     ''', (video_id, owner_user_id))
@@ -48,8 +48,8 @@ def _refresh_youtube_video_retention(cursor, video_id, owner_user_id):
         anchor = None
     cursor.execute('''
     UPDATE youtube_videos
-    SET retention_anchor_at = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE video_id = ? AND owner_user_id = ? AND local_files_state != 'purged'
+    SET retention_anchor_at = %s, updated_at = CURRENT_TIMESTAMP
+    WHERE video_id = %s AND owner_user_id = %s AND local_files_state != 'purged'
     ''', (anchor, video_id, owner_user_id))
     return records, anchor
 
@@ -72,8 +72,8 @@ def _retention_path_shared(path, video_id, owner_user_id):
         cursor = conn.cursor()
         cursor.execute('''
         SELECT 1 FROM file_records
-        WHERE (file_path = ? OR storage_key = ?)
-          AND NOT (owner_user_id = ? AND source_video_id = ?)
+        WHERE (file_path = %s OR storage_key = %s)
+          AND NOT (owner_user_id = %s AND source_video_id = %s)
         LIMIT 1
         ''', (str(path), str(path), owner_user_id, video_id))
         return bool(cursor.fetchone())
@@ -87,7 +87,7 @@ def _purge_youtube_video_local_files(video_id, owner_user_id):
         cursor.execute("BEGIN")
         cursor.execute('''
         SELECT * FROM youtube_videos
-        WHERE video_id = ? AND owner_user_id = ?
+        WHERE video_id = %s AND owner_user_id = %s
           AND local_files_state IN ('available', 'purge_failed')
         FOR UPDATE
         ''', (video_id, owner_user_id))
@@ -97,7 +97,7 @@ def _purge_youtube_video_local_files(video_id, owner_user_id):
         _assert_no_active_youtube_job(cursor, video_id, owner_user_id)
         cursor.execute('''
         SELECT 1 FROM scheduled_publish_tasks
-        WHERE video_id = ? AND owner_user_id = ? AND status IN ('scheduled', 'queued', 'running')
+        WHERE video_id = %s AND owner_user_id = %s AND status IN ('scheduled', 'queued', 'running')
         LIMIT 1
         ''', (video_id, owner_user_id))
         if cursor.fetchone():
@@ -108,13 +108,13 @@ def _purge_youtube_video_local_files(video_id, owner_user_id):
             return {"status": "skipped", "videoId": video_id}
         cursor.execute('''
         UPDATE youtube_videos
-        SET local_files_state = 'purging', purge_attempted_at = ?, purge_error = ''
-        WHERE video_id = ? AND owner_user_id = ?
+        SET local_files_state = 'purging', purge_attempted_at = %s, purge_error = ''
+        WHERE video_id = %s AND owner_user_id = %s
         ''', (now, video_id, owner_user_id))
         cursor.execute('''
         SELECT id, file_path, storage_key
         FROM file_records
-        WHERE owner_user_id = ? AND source_video_id = ?
+        WHERE owner_user_id = %s AND source_video_id = %s
           AND source_type IN ('youtube_download', 'youtube_processed') AND status != 'purged'
         ''', (owner_user_id, video_id))
         materials = [dict(row) for row in cursor.fetchall()]
@@ -149,22 +149,22 @@ def _purge_youtube_video_local_files(video_id, owner_user_id):
         if errors:
             cursor.execute('''
             UPDATE youtube_videos
-            SET local_files_state = 'purge_failed', purge_error = ?, updated_at = ?
-            WHERE video_id = ? AND owner_user_id = ?
+            SET local_files_state = 'purge_failed', purge_error = %s, updated_at = %s
+            WHERE video_id = %s AND owner_user_id = %s
             ''', (",".join(sorted(set(errors))), now, video_id, owner_user_id))
             return {"status": "failed", "videoId": video_id, "deleted": deleted_count}
         cursor.execute('''
         UPDATE file_records
-        SET status = 'purged', purged_at = ?, file_path = '', storage_key = ''
-        WHERE owner_user_id = ? AND source_video_id = ?
+        SET status = 'purged', purged_at = %s, file_path = '', storage_key = ''
+        WHERE owner_user_id = %s AND source_video_id = %s
           AND source_type IN ('youtube_download', 'youtube_processed')
         ''', (now, owner_user_id, video_id))
         cursor.execute('''
         UPDATE youtube_videos
-        SET local_files_state = 'purged', local_files_purged_at = ?, purge_error = '',
+        SET local_files_state = 'purged', local_files_purged_at = %s, purge_error = '',
             downloaded_file_path = '', processed_file_path = '', editing_body_path = '', editing_ass_path = '',
-            download_status = 0, translate_status = 0, updated_at = ?
-        WHERE video_id = ? AND owner_user_id = ?
+            download_status = 0, translate_status = 0, updated_at = %s
+        WHERE video_id = %s AND owner_user_id = %s
         ''', (now, now, video_id, owner_user_id))
     return {"status": "purged", "videoId": video_id, "deleted": deleted_count}
 
@@ -194,7 +194,7 @@ def _youtube_local_cleanup_candidates(now=None):
               SELECT MAX(material.published_at) FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
-          ) <= ?
+          ) <= %s
           AND NOT EXISTS (
               SELECT 1 FROM scheduled_publish_tasks AS task
               WHERE task.video_id = video.video_id AND task.owner_user_id = video.owner_user_id
@@ -206,7 +206,7 @@ def _youtube_local_cleanup_candidates(now=None):
                 AND job.status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
           )
         ORDER BY video.updated_at ASC
-        LIMIT ?
+        LIMIT %s
         ''', (cutoff.isoformat(), VIDEO_LOCAL_CLEANUP_BATCH_SIZE))
         return [dict(row) for row in cursor.fetchall()]
 

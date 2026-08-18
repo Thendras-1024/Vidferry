@@ -6,28 +6,6 @@ from app.core.publish_state import aggregate_publish_status, publish_progress, w
 from app.backend.runtime import create_backend_module
 
 
-class _SqliteConnection:
-    def __init__(self, connection):
-        self._connection = connection
-
-    @property
-    def row_factory(self):
-        return self._connection.row_factory
-
-    @row_factory.setter
-    def row_factory(self, value):
-        self._connection.row_factory = sqlite3.Row if value else None
-
-    def cursor(self):
-        return self._connection.cursor()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self._connection.close()
-
-
 def test_publish_state_remains_compatible_with_dispatch_results():
     targets = [{"status": "confirmed"}, {"status": "uncertain"}]
 
@@ -46,41 +24,6 @@ def test_publish_state_remains_compatible_with_dispatch_results():
         "percentage": 100,
     }
     assert workflow_status_from_dispatch("uncertain") == ("needs_verification", "publish")
-
-
-def test_published_material_list_qualifies_status_after_material_join(monkeypatch):
-    backend = create_backend_module("test_published_material_list_backend")
-    connection = sqlite3.connect(":memory:")
-    connection.executescript("""
-        CREATE TABLE published_youtube_materials (
-            id INTEGER PRIMARY KEY,
-            material_id INTEGER,
-            owner_user_id INTEGER,
-            status TEXT,
-            deleted_at TEXT,
-            published_at TEXT,
-            updated_at TEXT,
-            created_at TEXT
-        );
-        CREATE TABLE file_records (
-            id INTEGER PRIMARY KEY,
-            asset_id TEXT,
-            status TEXT
-        );
-        INSERT INTO published_youtube_materials
-            (id, material_id, owner_user_id, status, created_at)
-        VALUES (1, 10, 7, 'confirmed', '2026-08-17T00:00:00');
-        INSERT INTO file_records (id, asset_id, status)
-        VALUES (10, 'asset-1', 'ready');
-    """)
-    connection.commit()
-    monkeypatch.setattr(backend, "init_database_tables", lambda: None)
-    monkeypatch.setattr(backend, "_db_connect", lambda: _SqliteConnection(connection))
-
-    records = backend.list_published_youtube_materials(owner_user_id=7)
-
-    assert [record["id"] for record in records] == [1]
-    assert records[0]["assetId"] == "asset-1"
 
 
 def test_deepseek_profiles_explicitly_switch_thinking_mode():

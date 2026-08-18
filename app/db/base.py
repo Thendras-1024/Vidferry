@@ -1,6 +1,7 @@
 """PostgreSQL connections shared by the application runtime."""
 
 import threading
+from collections.abc import Mapping
 from contextlib import contextmanager
 
 from app.config import (
@@ -9,7 +10,6 @@ from app.config import (
     DATABASE_POOL_TIMEOUT_SECONDS,
     DATABASE_URL,
 )
-from app.db.postgres_compat import HybridRow, normalize_postgres_params, normalize_postgres_sql
 
 try:
     import psycopg
@@ -57,17 +57,17 @@ class _PostgresCursor:
         self._row_factory = row_factory
 
     def execute(self, sql, params=None):
-        self._cursor.execute(normalize_postgres_sql(sql), normalize_postgres_params(sql, params or ()))
+        self._cursor.execute(sql, params or ())
         return self
 
     def executemany(self, sql, params_seq):
-        self._cursor.executemany(normalize_postgres_sql(sql), params_seq)
+        self._cursor.executemany(sql, params_seq)
         return self
 
     def _row(self, value):
         if value is None or not self._row_factory:
             return value
-        return HybridRow([item.name for item in self._cursor.description], value)
+        return PostgresRow([item.name for item in self._cursor.description], value)
 
     def fetchone(self):
         return self._row(self._cursor.fetchone())
@@ -80,6 +80,32 @@ class _PostgresCursor:
 
     def __getattr__(self, name):
         return getattr(self._cursor, name)
+
+
+class PostgresRow(Mapping):
+    """PostgreSQL 查询行，兼容项目现有的序号与字段名访问方式。"""
+
+    def __init__(self, columns, values):
+        self._columns = tuple(columns)
+        self._values = tuple(values)
+        self._by_name = dict(zip(self._columns, self._values))
+        self._by_name_casefold = {str(name).casefold(): value for name, value in self._by_name.items()}
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        if key in self._by_name:
+            return self._by_name[key]
+        return self._by_name_casefold[str(key).casefold()]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def keys(self):
+        return self._columns
 
 
 class _PostgresConnection:

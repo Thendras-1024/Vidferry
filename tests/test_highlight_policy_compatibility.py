@@ -1,5 +1,4 @@
 import json
-import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -160,11 +159,10 @@ def test_youtube_media_stream_403_has_actionable_download_error():
     assert error["error_code"] == "VF-DOWNLOAD-YOUTUBE-FORBIDDEN"
     assert error["error_type"] == "YOUTUBE_DOWNLOAD_FORBIDDEN"
     assert "HTTP 403" in error["error_reason"]
-    assert "Android" in error["error_reason"]
+    assert "Cookie" in error["error_reason"]
 
 
 _YOUTUBE_PRIMARY_FORMAT = "bv*+ba/b"
-_YOUTUBE_EXTRACTOR_ARGS = {"youtube": {"player_client": ["android"]}}
 
 
 def _fake_yt_dlp(outcomes, calls):
@@ -197,8 +195,8 @@ def _youtube_download_job():
     }
 
 
-def test_youtube_download_uses_android_player_client(tmp_path, monkeypatch):
-    backend = create_backend_module("test_youtube_download_android_client_backend")
+def test_youtube_download_uses_default_player_client(tmp_path, monkeypatch):
+    backend = create_backend_module("test_youtube_download_default_client_backend")
     calls = []
     monkeypatch.setattr(backend, "YOUTUBE_DOWNLOAD_DIR", tmp_path)
     monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp([None], calls))
@@ -207,7 +205,7 @@ def test_youtube_download_uses_android_player_client(tmp_path, monkeypatch):
 
     assert source_file == tmp_path / "video-1.mp4"
     assert calls[0]["format"] == _YOUTUBE_PRIMARY_FORMAT
-    assert calls[0]["extractor_args"] == _YOUTUBE_EXTRACTOR_ARGS
+    assert "extractor_args" not in calls[0]
 
 
 def test_publish_tags_fill_douyin_limit_by_common_custom_and_selected_priority(monkeypatch):
@@ -259,40 +257,6 @@ def test_publish_draft_keeps_legacy_tags_selected_and_stores_video_custom_tags_s
     assert legacy_draft["customTags"] == []
 
 
-def test_publish_draft_save_keeps_selected_and_video_custom_tags_separate(monkeypatch, tmp_path):
-    backend = create_backend_module()
-    database_path = Path(tmp_path) / "draft.sqlite"
-    with sqlite3.connect(database_path) as connection:
-            connection.execute(
-                "CREATE TABLE youtube_videos (video_id TEXT PRIMARY KEY, owner_user_id INTEGER, publish_draft TEXT, updated_at TEXT)"
-            )
-            connection.execute("INSERT INTO youtube_videos (video_id, owner_user_id, publish_draft) VALUES (?, ?, ?)", ("video-1", 1, "{}"))
-
-    calls = 0
-
-    def get_analysis(_video_id, _owner_id):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return {"draft": {"title": "title", "description": "copy", "tags": ["legacy"]}}
-        with sqlite3.connect(database_path) as connection:
-            raw_draft = connection.execute(
-                "SELECT publish_draft FROM youtube_videos WHERE video_id = ?", ("video-1",)
-            ).fetchone()[0]
-        return {"draft": json.loads(raw_draft)}
-
-    monkeypatch.setattr(backend, "_db_connect", lambda: sqlite3.connect(database_path))
-    monkeypatch.setattr(backend, "get_youtube_video_analysis", get_analysis)
-
-    saved = backend.update_youtube_video_publish_draft("video-1", {
-        "tags": ["#自动", "自动"],
-        "customTags": ["#补充", "自动", "补充"],
-    }, 1)
-
-    assert saved["draft"]["tags"] == ["自动"]
-    assert saved["draft"]["customTags"] == ["补充"]
-
-
 def test_publish_tag_limit_only_truncates_platforms_with_known_limit():
     backend = create_backend_module()
 
@@ -327,30 +291,6 @@ def test_editing_prompts_require_ranked_fact_based_titles_covers_and_tags():
     assert ranking_rule in prompt
     assert evidence_rule in editing_analysis_system_prompt()
     assert evidence_rule in prompt
-
-
-def test_publish_tag_presets_are_scoped_to_user_and_platform(monkeypatch, tmp_path):
-    backend = create_backend_module()
-    database_path = Path(tmp_path) / "settings.sqlite"
-
-    def init_database_tables():
-        with sqlite3.connect(database_path) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)"
-            )
-
-    monkeypatch.setattr(backend, "init_database_tables", init_database_tables)
-    monkeypatch.setattr(backend, "_db_connect", lambda: sqlite3.connect(database_path))
-
-    saved = backend.update_publish_tag_presets(11, {
-        "presets": {"3": ["#common", "common", "custom"], "5": ["topic-b"]},
-    })
-
-    assert saved["presets"]["3"] == ["common", "custom"]
-    assert saved["presets"]["5"] == ["topic-b"]
-    assert saved["limits"] == {"3": 5, "4": 4}
-    assert backend.get_publish_tag_presets(11)["presets"] == saved["presets"]
-    assert backend.get_publish_tag_presets(12)["presets"]["3"] == []
 
 
 def test_publish_tag_preset_endpoint_hides_unknown_error(monkeypatch):

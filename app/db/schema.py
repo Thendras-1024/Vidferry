@@ -139,7 +139,7 @@ def _split_sql_statements(sql):
 
 def _apply_pending_migrations(conn):
     cursor = conn.cursor()
-    has_registry = bool(cursor.execute("SELECT to_regclass(?)", ("public.schema_migrations",)).fetchone()[0])
+    has_registry = bool(cursor.execute("SELECT to_regclass(%s)", ("public.schema_migrations",)).fetchone()[0])
     applied = set()
     if has_registry:
         applied = {row[0] for row in cursor.execute("SELECT version FROM schema_migrations").fetchall()}
@@ -152,7 +152,7 @@ def _apply_pending_migrations(conn):
             cursor.execute(statement)
         checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
         cursor.execute(
-            "INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)",
+            "INSERT INTO schema_migrations (version, name, checksum) VALUES (%s, %s, %s)",
             (version, path.name, checksum),
         )
 
@@ -194,9 +194,9 @@ def _migrate_legacy_account_ownership(conn):
         target = (target_dir / source.name).resolve()
         if source.is_file() and not target.exists():
             shutil.move(str(source), str(target))
-    cursor.execute("UPDATE user_info SET owner_user_id = ? WHERE owner_user_id IS NULL", (owner_user_id,))
-    cursor.execute("UPDATE publish_account_groups SET owner_user_id = ? WHERE owner_user_id IS NULL", (owner_user_id,))
-    cursor.execute("UPDATE youtube_workflow_jobs SET owner_user_id = ? WHERE owner_user_id IS NULL", (owner_user_id,))
+    cursor.execute("UPDATE user_info SET owner_user_id = %s WHERE owner_user_id IS NULL", (owner_user_id,))
+    cursor.execute("UPDATE publish_account_groups SET owner_user_id = %s WHERE owner_user_id IS NULL", (owner_user_id,))
+    cursor.execute("UPDATE youtube_workflow_jobs SET owner_user_id = %s WHERE owner_user_id IS NULL", (owner_user_id,))
 
 
 def init_database_tables():

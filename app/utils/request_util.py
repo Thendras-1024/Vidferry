@@ -35,4 +35,4 @@ def _split_request_values(value):
 
 
 def _sql_placeholders(values):
-    return ",".join("?" for _ in values)
+    return ",".join("%s" for _ in values)

@@ -84,7 +84,7 @@ def _workflow_notification_issues(cursor, owner_user_id):
     SELECT id, video_id, title, status, step, message, error_code, error_type, error_reason,
            error_detail, publish_confirmation_required, updated_at
     FROM youtube_workflow_jobs
-    WHERE owner_user_id = ? AND status IN ('failed', 'abnormal', 'waiting_confirmation')
+    WHERE owner_user_id = %s AND status IN ('failed', 'abnormal', 'waiting_confirmation')
     ORDER BY updated_at DESC, id DESC
     ''', (owner_user_id,))
     grouped = {}
@@ -142,7 +142,7 @@ def _publish_target_notification_issues(cursor, owner_user_id):
            COALESCE(video.title, record.title, record.video_id) AS title
     FROM published_youtube_materials record
     LEFT JOIN youtube_videos video ON video.video_id = record.video_id AND video.owner_user_id = record.owner_user_id
-    WHERE record.owner_user_id = ? AND record.deleted_at IS NULL AND record.status IN ('failed', 'uncertain')
+    WHERE record.owner_user_id = %s AND record.deleted_at IS NULL AND record.status IN ('failed', 'uncertain')
     ORDER BY record.updated_at DESC, record.id DESC
     ''', (owner_user_id,))
     groups = {"failed": [], "uncertain": []}
@@ -175,14 +175,14 @@ def _publish_target_notification_issues(cursor, owner_user_id):
 
 
 def _account_notification_issues(cursor, owner_user_id):
-    cursor.execute("SELECT source_refs FROM app_notifications WHERE owner_user_id = ? AND notification_type = 'publish-cookie-invalid' AND source_active = 1", (owner_user_id,))
+    cursor.execute("SELECT source_refs FROM app_notifications WHERE owner_user_id = %s AND notification_type = 'publish-cookie-invalid' AND source_active = 1", (owner_user_id,))
     cookie_invalid_account_ids = {
         int(item.get("accountId"))
         for row in cursor.fetchall()
         for item in _notification_json(row["source_refs"], [])
         if isinstance(item, dict) and str(item.get("accountId") or "").isdigit()
     }
-    cursor.execute("SELECT id, type, userName, status FROM user_info WHERE owner_user_id = ? AND COALESCE(status, 0) = 0 ORDER BY id DESC", (owner_user_id,))
+    cursor.execute("SELECT id, type, userName, status FROM user_info WHERE owner_user_id = %s AND COALESCE(status, 0) = 0 ORDER BY id DESC", (owner_user_id,))
     groups = {}
     for row in cursor.fetchall():
         item = row
@@ -235,7 +235,7 @@ def resolve_publish_cookie_invalid_notifications(account_id, owner_user_id):
     now = _notification_now()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, source_refs FROM app_notifications WHERE owner_user_id = ? AND notification_type = 'publish-cookie-invalid' AND source_active = 1", (owner_user_id,))
+        cursor.execute("SELECT id, source_refs FROM app_notifications WHERE owner_user_id = %s AND notification_type = 'publish-cookie-invalid' AND source_active = 1", (owner_user_id,))
         notification_ids = [
             row["id"]
             for row in cursor.fetchall()
@@ -247,7 +247,7 @@ def resolve_publish_cookie_invalid_notifications(account_id, owner_user_id):
         ]
         if notification_ids:
             cursor.executemany(
-                "UPDATE app_notifications SET status = 'resolved', source_active = 0, resolved_at = ?, updated_at = ? WHERE id = ?",
+                "UPDATE app_notifications SET status = 'resolved', source_active = 0, resolved_at = %s, updated_at = %s WHERE id = %s",
                 [(now, now, notification_id) for notification_id in notification_ids],
             )
 
@@ -285,7 +285,7 @@ def _sync_notification_issues(issues, owner_user_id, resolve_stale=True):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         for issue in issues:
-            cursor.execute("SELECT id, status, source_active, manual_resolved, source_refs, title, content, last_seen_at, updated_at FROM app_notifications WHERE owner_user_id = ? AND aggregate_key = ?", (owner_user_id, issue["aggregateKey"]))
+            cursor.execute("SELECT id, status, source_active, manual_resolved, source_refs, title, content, last_seen_at, updated_at FROM app_notifications WHERE owner_user_id = %s AND aggregate_key = %s", (owner_user_id, issue["aggregateKey"]))
             existing = cursor.fetchone()
             values = (
                 issue["type"], issue["severity"], issue["title"], issue["content"],
@@ -301,28 +301,28 @@ def _sync_notification_issues(issues, owner_user_id, resolve_stale=True):
                 ))
                 cursor.execute('''
                 UPDATE app_notifications
-                SET notification_type = ?, severity = ?, title = ?, content = ?, action_route = ?, source_refs = ?,
-                    occurrence_count = occurrence_count + ?, status = ?, last_seen_at = ?,
-                    acknowledged_at = CASE WHEN ? THEN NULL ELSE acknowledged_at END,
-                    resolved_at = CASE WHEN ? THEN NULL ELSE resolved_at END,
-                    source_active = 1, manual_resolved = CASE WHEN ? THEN 0 ELSE manual_resolved END,
-                    updated_at = ?
-                WHERE id = ?
+                SET notification_type = %s, severity = %s, title = %s, content = %s, action_route = %s, source_refs = %s,
+                    occurrence_count = occurrence_count + %s, status = %s, last_seen_at = %s,
+                    acknowledged_at = CASE WHEN %s THEN NULL ELSE acknowledged_at END,
+                    resolved_at = CASE WHEN %s THEN NULL ELSE resolved_at END,
+                    source_active = 1, manual_resolved = CASE WHEN %s THEN 0 ELSE manual_resolved END,
+                    updated_at = %s
+                WHERE id = %s
                 ''', (*values[:6], int(changed or reopened), "active" if reopened else existing["status"], now if changed or reopened else existing["last_seen_at"], reopened, reopened, reopened, now if changed or reopened else existing["updated_at"], existing["id"]))
             else:
                 cursor.execute('''
                 INSERT INTO app_notifications (
                     owner_user_id, notification_type, severity, aggregate_key, title, content, action_route, source_refs,
                     occurrence_count, status, source_active, manual_resolved, first_seen_at, last_seen_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', 1, 0, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 'active', 1, 0, %s, %s, %s)
                 ''', (owner_user_id, issue["type"], issue["severity"], issue["aggregateKey"], *values[2:6], now, now, now))
         if resolve_stale:
-            cursor.execute("SELECT id, aggregate_key FROM app_notifications WHERE owner_user_id = ? AND source_active = 1 AND notification_type NOT IN ('direct-publish-failed', 'publish-cookie-invalid')", (owner_user_id,))
+            cursor.execute("SELECT id, aggregate_key FROM app_notifications WHERE owner_user_id = %s AND source_active = 1 AND notification_type NOT IN ('direct-publish-failed', 'publish-cookie-invalid')", (owner_user_id,))
             stale_ids = [row["id"] for row in cursor.fetchall() if row["aggregate_key"] not in active_keys]
             if stale_ids:
-                cursor.executemany("UPDATE app_notifications SET status = 'resolved', source_active = 0, resolved_at = ?, updated_at = ? WHERE id = ?", [(now, now, item_id) for item_id in stale_ids])
+                cursor.executemany("UPDATE app_notifications SET status = 'resolved', source_active = 0, resolved_at = %s, updated_at = %s WHERE id = %s", [(now, now, item_id) for item_id in stale_ids])
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=NOTIFICATION_HISTORY_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("DELETE FROM app_notifications WHERE owner_user_id = ? AND status = 'resolved' AND resolved_at IS NOT NULL AND resolved_at < ?", (owner_user_id, cutoff))
+        cursor.execute("DELETE FROM app_notifications WHERE owner_user_id = %s AND status = 'resolved' AND resolved_at IS NOT NULL AND resolved_at < %s", (owner_user_id, cutoff))
 
 
 def reconcile_notifications(owner_user_id):
@@ -341,9 +341,9 @@ def notification_summary(owner_user_id):
     reconcile_notifications(owner_user_id)
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) AS total FROM app_notifications WHERE owner_user_id = ? AND status = 'active'", (owner_user_id,))
+        cursor.execute("SELECT COUNT(*) AS total FROM app_notifications WHERE owner_user_id = %s AND status = 'active'", (owner_user_id,))
         active_count = int(cursor.fetchone()["total"] or 0)
-        cursor.execute("SELECT COUNT(*) AS total FROM app_notifications WHERE owner_user_id = ? AND status = 'active' AND acknowledged_at IS NULL", (owner_user_id,))
+        cursor.execute("SELECT COUNT(*) AS total FROM app_notifications WHERE owner_user_id = %s AND status = 'active' AND acknowledged_at IS NULL", (owner_user_id,))
         unread_count = int(cursor.fetchone()["total"] or 0)
     return {"activeCount": active_count, "unreadCount": unread_count, "badgeCount": min(unread_count, 9)}
 
@@ -356,9 +356,9 @@ def list_notifications(state="active", page=1, page_size=50, owner_user_id=None)
     status_filter = "status IN ('active', 'acknowledged')" if state == "active" else "status = 'resolved'"
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT COUNT(*) AS total FROM app_notifications WHERE owner_user_id = ? AND {status_filter}", (owner_user_id,))
+        cursor.execute(f"SELECT COUNT(*) AS total FROM app_notifications WHERE owner_user_id = %s AND {status_filter}", (owner_user_id,))
         total = int(cursor.fetchone()["total"] or 0)
-        cursor.execute(f"SELECT * FROM app_notifications WHERE owner_user_id = ? AND {status_filter} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?", (owner_user_id, page_size, offset))
+        cursor.execute(f"SELECT * FROM app_notifications WHERE owner_user_id = %s AND {status_filter} ORDER BY updated_at DESC, id DESC LIMIT %s OFFSET %s", (owner_user_id, page_size, offset))
         items = [_notification_item(row) for row in cursor.fetchall()]
     return {"items": items, "total": total, "page": page, "pageSize": page_size, "summary": notification_summary(owner_user_id)}
 
@@ -369,15 +369,15 @@ def update_notification_state(notification_id, state, owner_user_id):
     now = _notification_now()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM app_notifications WHERE id = ? AND owner_user_id = ?", (int(notification_id), owner_user_id))
+        cursor.execute("SELECT * FROM app_notifications WHERE id = %s AND owner_user_id = %s", (int(notification_id), owner_user_id))
         row = cursor.fetchone()
         if not row:
             raise LookupError("通知不存在")
         if state == "acknowledged" and row["status"] == "active":
-            cursor.execute("UPDATE app_notifications SET status = 'acknowledged', acknowledged_at = ?, updated_at = ? WHERE id = ?", (now, now, notification_id))
+            cursor.execute("UPDATE app_notifications SET status = 'acknowledged', acknowledged_at = %s, updated_at = %s WHERE id = %s", (now, now, notification_id))
         elif state == "resolved" and row["status"] != "resolved":
-            cursor.execute("UPDATE app_notifications SET status = 'resolved', manual_resolved = 1, resolved_at = ?, updated_at = ? WHERE id = ?", (now, now, notification_id))
-        cursor.execute("SELECT * FROM app_notifications WHERE id = ? AND owner_user_id = ?", (notification_id, owner_user_id))
+            cursor.execute("UPDATE app_notifications SET status = 'resolved', manual_resolved = 1, resolved_at = %s, updated_at = %s WHERE id = %s", (now, now, notification_id))
+        cursor.execute("SELECT * FROM app_notifications WHERE id = %s AND owner_user_id = %s", (notification_id, owner_user_id))
         return _notification_item(cursor.fetchone())
 
 
@@ -408,7 +408,7 @@ def create_direct_publish_failure_notification(payload, owner_user_id):
     _sync_notification_issues([issue], owner_user_id=owner_user_id, resolve_stale=False)
     with _db_connect(row_factory=True) as conn:
         row = conn.execute(
-            "SELECT * FROM app_notifications WHERE owner_user_id = ? AND aggregate_key = ?",
+            "SELECT * FROM app_notifications WHERE owner_user_id = %s AND aggregate_key = %s",
             (owner_user_id, issue["aggregateKey"]),
         ).fetchone()
     return _notification_item(row)

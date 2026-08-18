@@ -35,7 +35,7 @@ _WORKFLOW_ERROR_CONFIG = (
     (lambda _exc, text: "YOUTUBE_COOKIE_FILE_INVALID" in text or "YOUTUBE_COOKIES_BROWSER_INVALID" in text, "VF-YOUTUBE-COOKIE-CONFIG", "YOUTUBE_COOKIE_CONFIG", "YouTube Cookie 配置无效；请使用项目目录内的 Netscape Cookie 文件，或填写受支持的浏览器名称。"),
     (lambda _exc, text: "未安装 yt-dlp" in text.lower(), "VF-DOWNLOAD-DEPENDENCY-MISSING", "DOWNLOAD_DEPENDENCY_MISSING", "下载组件未安装或不可用，请检查后端依赖配置。"),
     (lambda _exc, text: "YTDLP_DOWNLOAD_STREAM_INTERRUPTED" in text, "VF-DOWNLOAD-STREAM-INTERRUPTED", "DOWNLOAD_STREAM_INTERRUPTED", "下载时网络传输被中断，系统已自动重试仍未完成；请检查网络稳定性后重试下载，无需重新导入视频。"),
-    (lambda _exc, text: "unable to download video data" in text.lower() and "http error 403" in text.lower(), "VF-DOWNLOAD-YOUTUBE-FORBIDDEN", "YOUTUBE_DOWNLOAD_FORBIDDEN", "YouTube 拒绝了媒体流下载请求（HTTP 403）。当前下载已使用 Android 客户端；若仍失败，请检查 yt-dlp 版本、网络出口或代理限制。"),
+    (lambda _exc, text: "unable to download video data" in text.lower() and "http error 403" in text.lower(), "VF-DOWNLOAD-YOUTUBE-FORBIDDEN", "YOUTUBE_DOWNLOAD_FORBIDDEN", "YouTube 拒绝了媒体流下载请求（HTTP 403）。请检查 yt-dlp 版本、网络出口、Cookie 或代理限制后重试。"),
     (lambda _exc, text: "ffmpeg 已执行，但未生成" in text.lower(), "VF-MEDIA-OUTPUT-MISSING", "MEDIA_OUTPUT_MISSING", "视频处理未生成有效输出文件，请重新处理；如持续发生，请检查磁盘空间和后端日志。"),
     (lambda _exc, text: "ffmpeg" in text.lower() or "cpb:" in text.lower(), "VF-MEDIA-PROCESS-UNCLASSIFIED", "MEDIA_PROCESS_UNCLASSIFIED", "视频处理失败，但工具输出未包含可判定原因。请查看任务编号对应的后端日志。"),
 )

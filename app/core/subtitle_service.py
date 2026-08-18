@@ -634,7 +634,7 @@ def _build_subtitle_cues(segments, language):
 def _translation_split_points(text, target_index, minimum, maximum):
     preferred = []
     for index, char in enumerate(text):
-        if minimum <= index + 1 <= maximum and char in "，。！？；：、,.!?;:":
+        if minimum <= index + 1 <= maximum and char in "，。！？；：、,.!%s;:":
             preferred.append(index + 1)
     if preferred:
         return min(preferred, key=lambda point: abs(point - target_index))
@@ -701,7 +701,7 @@ def _split_translated_subtitle(text, max_visible_chars):
         if split_at <= 0:
             split_at = 1
         remainder = text[split_at:].strip()
-        if _visible_text_length(remainder) == 1 and remainder in "，。！？；：、,.!?;:" and split_at > 1:
+        if _visible_text_length(remainder) == 1 and remainder in "，。！？；：、,.!%s;:" and split_at > 1:
             split_at -= 1
         parts.append(text[:split_at].strip())
         text = text[split_at:].strip()
@@ -1356,11 +1356,6 @@ def _download_youtube_video(job):
     ydl_opts = {
         **_base_ytdlp_opts(),
         "format": "bv*+ba/b",
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"],
-            },
-        },
         "merge_output_format": "mp4",
         "outtmpl": output_template,
         "noplaylist": True,

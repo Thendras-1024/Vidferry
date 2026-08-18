@@ -39,7 +39,7 @@ def _account_group_entries(entries):
 
 
 def _account_group_row(cursor, group_id, owner_user_id):
-    cursor.execute("SELECT id, name, created_at, updated_at FROM publish_account_groups WHERE id = ? AND owner_user_id = ?", (group_id, owner_user_id))
+    cursor.execute("SELECT id, name, created_at, updated_at FROM publish_account_groups WHERE id = %s AND owner_user_id = %s", (group_id, owner_user_id))
     return cursor.fetchone()
 
 
@@ -52,7 +52,7 @@ def _account_group_payload(cursor, row):
         SELECT m.platform_type, m.account_id, a.type, a.filePath, a.userName, a.status
         FROM publish_account_group_members m
         LEFT JOIN user_info a ON a.id = m.account_id
-        WHERE m.group_id = ? ORDER BY m.platform_type
+        WHERE m.group_id = %s ORDER BY m.platform_type
         """,
         (group_id,),
     )
@@ -90,7 +90,7 @@ def list_publish_account_groups():
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, created_at, updated_at FROM publish_account_groups WHERE owner_user_id = ? ORDER BY LOWER(name), id", (owner_user_id,))
+        cursor.execute("SELECT id, name, created_at, updated_at FROM publish_account_groups WHERE owner_user_id = %s ORDER BY LOWER(name), id", (owner_user_id,))
         return [_account_group_payload(cursor, row) for row in cursor.fetchall()]
 
 
@@ -98,7 +98,7 @@ def _validate_account_group_entries(cursor, entries, owner_user_id):
     normalized = _account_group_entries(entries)
     accounts = []
     for entry in normalized:
-        cursor.execute("SELECT id, type, filePath, userName, status FROM user_info WHERE id = ? AND owner_user_id = ?", (entry["accountId"], owner_user_id))
+        cursor.execute("SELECT id, type, filePath, userName, status FROM user_info WHERE id = %s AND owner_user_id = %s", (entry["accountId"], owner_user_id))
         account = cursor.fetchone()
         if not account:
             raise ValueError(f"account {entry['accountId']} does not exist")
@@ -117,18 +117,18 @@ def create_publish_account_group(name, entries):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM publish_account_groups WHERE owner_user_id = ? AND LOWER(name) = LOWER(?)", (owner_user_id, group_name))
+        cursor.execute("SELECT id FROM publish_account_groups WHERE owner_user_id = %s AND LOWER(name) = LOWER(%s)", (owner_user_id, group_name))
         if cursor.fetchone():
             raise WorkflowConflictError("account group name already exists", "VF-ACCOUNT-GROUP-DUPLICATE", "ACCOUNT_GROUP_DUPLICATE", {"name": group_name})
         members = _validate_account_group_entries(cursor, entries, owner_user_id)
         now = _now_iso()
         try:
-            cursor.execute("INSERT INTO publish_account_groups (name, owner_user_id, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id", (group_name, owner_user_id, now, now))
+            cursor.execute("INSERT INTO publish_account_groups (name, owner_user_id, created_at, updated_at) VALUES (%s, %s, %s, %s) RETURNING id", (group_name, owner_user_id, now, now))
         except DATABASE_INTEGRITY_ERRORS as exc:
             raise WorkflowConflictError("account group name already exists", "VF-ACCOUNT-GROUP-DUPLICATE", "ACCOUNT_GROUP_DUPLICATE", {"name": group_name}) from exc
         group_id = cursor.fetchone()[0]
         for member in members:
-            cursor.execute("INSERT INTO publish_account_group_members (group_id, account_id, platform_type) VALUES (?, ?, ?)", (group_id, member["accountId"], member["platformType"]))
+            cursor.execute("INSERT INTO publish_account_group_members (group_id, account_id, platform_type) VALUES (%s, %s, %s)", (group_id, member["accountId"], member["platformType"]))
         return _account_group_payload(cursor, _account_group_row(cursor, group_id, owner_user_id))
 
 
@@ -147,15 +147,15 @@ def update_publish_account_group(group_id, name, entries):
         cursor = conn.cursor()
         if not _account_group_row(cursor, group_id, owner_user_id):
             raise LookupError("account group does not exist")
-        cursor.execute("SELECT id FROM publish_account_groups WHERE owner_user_id = ? AND LOWER(name) = LOWER(?) AND id != ?", (owner_user_id, group_name, group_id))
+        cursor.execute("SELECT id FROM publish_account_groups WHERE owner_user_id = %s AND LOWER(name) = LOWER(%s) AND id != %s", (owner_user_id, group_name, group_id))
         if cursor.fetchone():
             raise WorkflowConflictError("account group name already exists", "VF-ACCOUNT-GROUP-DUPLICATE", "ACCOUNT_GROUP_DUPLICATE", {"name": group_name})
         members = _validate_account_group_entries(cursor, entries, owner_user_id)
         now = _now_iso()
-        cursor.execute("UPDATE publish_account_groups SET name = ?, updated_at = ? WHERE id = ?", (group_name, now, group_id))
-        cursor.execute("DELETE FROM publish_account_group_members WHERE group_id = ?", (group_id,))
+        cursor.execute("UPDATE publish_account_groups SET name = %s, updated_at = %s WHERE id = %s", (group_name, now, group_id))
+        cursor.execute("DELETE FROM publish_account_group_members WHERE group_id = %s", (group_id,))
         for member in members:
-            cursor.execute("INSERT INTO publish_account_group_members (group_id, account_id, platform_type) VALUES (?, ?, ?)", (group_id, member["accountId"], member["platformType"]))
+            cursor.execute("INSERT INTO publish_account_group_members (group_id, account_id, platform_type) VALUES (%s, %s, %s)", (group_id, member["accountId"], member["platformType"]))
         return _account_group_payload(cursor, _account_group_row(cursor, group_id, owner_user_id))
 
 
@@ -170,8 +170,8 @@ def delete_publish_account_group(group_id):
         cursor = conn.cursor()
         if not _account_group_row(cursor, group_id, owner_user_id):
             raise LookupError("account group does not exist")
-        cursor.execute("DELETE FROM publish_account_group_members WHERE group_id = ?", (group_id,))
-        cursor.execute("DELETE FROM publish_account_groups WHERE id = ?", (group_id,))
+        cursor.execute("DELETE FROM publish_account_group_members WHERE group_id = %s", (group_id,))
+        cursor.execute("DELETE FROM publish_account_groups WHERE id = %s", (group_id,))
     return {"id": group_id, "deleted": True}
 
 

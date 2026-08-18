@@ -8,6 +8,8 @@ def _material_file_path(record):
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return candidate
+    if record.get("source_type") in {"youtube_download", "youtube_processed"}:
+        return Path(BASE_DIR / candidate)
     return Path(BASE_DIR / "videoFile" / raw_path)
 
 
@@ -64,7 +66,7 @@ def _find_latest_youtube_material(cursor, video_id, source_type, owner_user_id):
         return None
     cursor.execute('''
     SELECT * FROM file_records
-    WHERE source_type = ? AND owner_user_id = ?
+    WHERE source_type = %s AND owner_user_id = %s
     ORDER BY upload_time DESC, id DESC
     ''', (source_type, owner_user_id))
     for row in cursor.fetchall():
@@ -79,7 +81,7 @@ def _find_latest_processed_material(cursor, video_id, owner_user_id, process_ver
         return None
     cursor.execute('''
     SELECT * FROM file_records
-    WHERE source_type = 'youtube_processed' AND owner_user_id = ?
+    WHERE source_type = 'youtube_processed' AND owner_user_id = %s
     ORDER BY upload_time DESC, id DESC
     ''', (owner_user_id,))
     for row in cursor.fetchall():
@@ -98,7 +100,7 @@ def _delete_replaced_processed_materials(cursor, video_id, process_version, keep
 
     cursor.execute('''
     SELECT * FROM file_records
-    WHERE source_type = 'youtube_processed' AND owner_user_id = ?
+    WHERE source_type = 'youtube_processed' AND owner_user_id = %s
     ORDER BY upload_time DESC, id DESC
     ''', (owner_user_id,))
     deleted = []
@@ -118,7 +120,7 @@ def _delete_replaced_processed_materials(cursor, video_id, process_version, keep
             "files": _delete_material_files(record),
         })
         cursor.execute(
-            "DELETE FROM file_records WHERE id = ? AND owner_user_id = ?",
+            "DELETE FROM file_records WHERE id = %s AND owner_user_id = %s",
             (record.get("id"), owner_user_id),
         )
     return deleted
@@ -134,9 +136,9 @@ def _sync_youtube_processed_state(cursor, video_id, owner_user_id):
                 WHEN translate_status IN (1, 2) THEN translate_status
                 ELSE 1
             END,
-            processed_file_path = ?,
+            processed_file_path = %s,
             updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ? AND owner_user_id = ?
+        WHERE video_id = %s AND owner_user_id = %s
         ''', (remaining_path, video_id, owner_user_id))
         return {
             "changed": cursor.rowcount > 0,
@@ -156,7 +158,7 @@ def _sync_youtube_processed_state(cursor, video_id, owner_user_id):
         publish_draft = '',
         analysis_updated_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-    WHERE video_id = ? AND owner_user_id = ?
+    WHERE video_id = %s AND owner_user_id = %s
     ''', (video_id, owner_user_id))
     return {
         "changed": cursor.rowcount > 0,
@@ -176,7 +178,7 @@ def _clear_youtube_analysis_state(cursor, video_id, owner_user_id):
         publish_draft = '',
         analysis_updated_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-    WHERE video_id = ? AND owner_user_id = ?
+    WHERE video_id = %s AND owner_user_id = %s
     ''', (video_id, owner_user_id))
     return {
         "analysisStatus": 0,
@@ -211,7 +213,7 @@ def _delete_material_files(record):
 
 
 def delete_material_record(cursor, file_id, owner_user_id):
-    cursor.execute("SELECT * FROM file_records WHERE id = ? AND owner_user_id = ?", (file_id, owner_user_id))
+    cursor.execute("SELECT * FROM file_records WHERE id = %s AND owner_user_id = %s", (file_id, owner_user_id))
     record = cursor.fetchone()
     if not record:
         raise LookupError("File not found")
@@ -222,7 +224,7 @@ def delete_material_record(cursor, file_id, owner_user_id):
         _assert_no_active_youtube_job(cursor, source_video_id, owner_user_id)
 
     deleted_files = _delete_material_files(record)
-    cursor.execute("DELETE FROM file_records WHERE id = ? AND owner_user_id = ?", (file_id, owner_user_id))
+    cursor.execute("DELETE FROM file_records WHERE id = %s AND owner_user_id = %s", (file_id, owner_user_id))
     sync_result = _sync_youtube_video_after_material_delete(cursor, record)
     return {
         "id": record["id"],
@@ -264,7 +266,7 @@ def delete_material_records(file_ids, owner_user_id):
 def _delete_youtube_download_materials_for_video(cursor, video_id, owner_user_id, video_row=None):
     cursor.execute('''
     SELECT * FROM file_records
-    WHERE source_type = 'youtube_download' AND owner_user_id = ?
+    WHERE source_type = 'youtube_download' AND owner_user_id = %s
     ORDER BY upload_time DESC, id DESC
     ''', (owner_user_id,))
     records = [
@@ -281,7 +283,7 @@ def _delete_youtube_download_materials_for_video(cursor, video_id, owner_user_id
             "files": _delete_material_files(record),
         })
         cursor.execute(
-            "DELETE FROM file_records WHERE id = ? AND owner_user_id = ?",
+            "DELETE FROM file_records WHERE id = %s AND owner_user_id = %s",
             (record.get("id"), owner_user_id),
         )
 
@@ -325,9 +327,9 @@ def _sync_youtube_video_after_material_delete(cursor, deleted_record):
             cursor.execute('''
             UPDATE youtube_videos
             SET download_status = 1,
-                downloaded_file_path = ?,
+                downloaded_file_path = %s,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ? AND owner_user_id = ?
+            WHERE video_id = %s AND owner_user_id = %s
             ''', (remaining_path, video_id, owner_user_id))
             sync_result.update({
                 "changed": cursor.rowcount > 0,
@@ -340,7 +342,7 @@ def _sync_youtube_video_after_material_delete(cursor, deleted_record):
             SET download_status = 0,
                 downloaded_file_path = '',
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ? AND owner_user_id = ?
+            WHERE video_id = %s AND owner_user_id = %s
             ''', (video_id, owner_user_id))
             sync_result.update({
                 "changed": cursor.rowcount > 0,
@@ -349,7 +351,7 @@ def _sync_youtube_video_after_material_delete(cursor, deleted_record):
             })
 
     cursor.execute(
-        "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+        "SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
         (video_id, owner_user_id),
     )
     row = cursor.fetchone()
@@ -371,7 +373,7 @@ def verify_youtube_file_consistency(owner_user_id):
         conn.row_factory = True
         cursor = conn.cursor()
 
-        cursor.execute("SELECT * FROM file_records WHERE owner_user_id = ?", (owner_user_id,))
+        cursor.execute("SELECT * FROM file_records WHERE owner_user_id = %s", (owner_user_id,))
         for row in cursor.fetchall():
             record = dict(row)
             source_type = record.get("source_type") or ""
@@ -381,7 +383,7 @@ def verify_youtube_file_consistency(owner_user_id):
             if path and path.exists():
                 continue
             cursor.execute(
-                "DELETE FROM file_records WHERE id = ? AND owner_user_id = ?",
+                "DELETE FROM file_records WHERE id = %s AND owner_user_id = %s",
                 (record.get("id"), owner_user_id),
             )
             summary["removedMaterialRecords"] += 1
@@ -394,7 +396,7 @@ def verify_youtube_file_consistency(owner_user_id):
             })
             _sync_youtube_video_after_material_delete(cursor, record)
 
-        cursor.execute("SELECT * FROM youtube_videos WHERE owner_user_id = ?", (owner_user_id,))
+        cursor.execute("SELECT * FROM youtube_videos WHERE owner_user_id = %s", (owner_user_id,))
         for row in cursor.fetchall():
             video = dict(row)
             video_id = video.get("video_id") or ""
@@ -410,8 +412,8 @@ def verify_youtube_file_consistency(owner_user_id):
                         remaining_path = str(_material_file_path(remaining) or "")
                         cursor.execute('''
                         UPDATE youtube_videos
-                        SET downloaded_file_path = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE video_id = ? AND owner_user_id = ?
+                        SET downloaded_file_path = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE video_id = %s AND owner_user_id = %s
                         ''', (remaining_path, video_id, owner_user_id))
                     else:
                         cursor.execute('''
@@ -419,7 +421,7 @@ def verify_youtube_file_consistency(owner_user_id):
                         SET download_status = 0,
                             downloaded_file_path = '',
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE video_id = ? AND owner_user_id = ?
+                        WHERE video_id = %s AND owner_user_id = %s
                         ''', (video_id, owner_user_id))
                         summary["fixedDownloadStatus"] += 1
                     summary["issues"].append({
@@ -438,8 +440,8 @@ def verify_youtube_file_consistency(owner_user_id):
                         remaining_path = str(_material_file_path(remaining) or "")
                         cursor.execute('''
                         UPDATE youtube_videos
-                        SET processed_file_path = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE video_id = ? AND owner_user_id = ?
+                        SET processed_file_path = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE video_id = %s AND owner_user_id = %s
                         ''', (remaining_path, video_id, owner_user_id))
                     else:
                         cursor.execute('''
@@ -452,7 +454,7 @@ def verify_youtube_file_consistency(owner_user_id):
                             publish_draft = '',
                             analysis_updated_at = NULL,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE video_id = ? AND owner_user_id = ?
+                        WHERE video_id = %s AND owner_user_id = %s
                         ''', (video_id, owner_user_id))
                         summary["fixedProcessStatus"] += 1
                     summary["issues"].append({
@@ -613,14 +615,14 @@ def _row_to_material_fast(row, source_video=None, analysis=None, workflow_job=No
 
 
 def _material_where(params, owner_user_id):
-    where = ["owner_user_id = ?"]
+    where = ["owner_user_id = %s"]
     values = [owner_user_id]
     source_type = str(params.get("sourceType") or params.get("source_type") or "").strip()
     video_ids = _split_request_values(params.get("videoIds") or params.get("ids"))
     if source_type == "other":
         where.append("(source_type IS NULL OR source_type NOT IN ('youtube_processed', 'youtube_download'))")
     elif source_type:
-        where.append("source_type = ?")
+        where.append("source_type = %s")
         values.append(source_type)
     if video_ids:
         metadata_conditions = []
@@ -633,7 +635,7 @@ def _material_where(params, owner_user_id):
             ])
         where.append(
             f"(source_video_id IN ({_sql_placeholders(video_ids)})"
-            f" OR metadata LIKE {' OR metadata LIKE '.join('?' for _ in metadata_conditions)})"
+            f" OR metadata ILIKE {' OR metadata ILIKE '.join('%s' for _ in metadata_conditions)})"
         )
         values.extend(video_ids + metadata_conditions)
 
@@ -641,8 +643,8 @@ def _material_where(params, owner_user_id):
     if keyword:
         like = f"%{keyword}%"
         where.append("""(
-            filename LIKE ? OR original_filename LIKE ? OR file_path LIKE ? OR
-            storage_key LIKE ? OR source_video_id LIKE ? OR metadata LIKE ?
+            filename ILIKE %s OR original_filename ILIKE %s OR file_path ILIKE %s OR
+            storage_key ILIKE %s OR source_video_id ILIKE %s OR metadata ILIKE %s
         )""")
         values.extend([like, like, like, like, like, like])
 
@@ -656,7 +658,7 @@ def _material_where(params, owner_user_id):
             SELECT 1 FROM youtube_videos source_video
             WHERE source_video.video_id = file_records.source_video_id
               AND source_video.owner_user_id = file_records.owner_user_id
-              AND source_video.group_id = ?
+              AND source_video.group_id = %s
         )''')
         values.append(normalized_group_id)
 
@@ -664,13 +666,13 @@ def _material_where(params, owner_user_id):
 
 
 def _material_summary(cursor, owner_user_id, keyword=""):
-    where = "WHERE owner_user_id = ?"
+    where = "WHERE owner_user_id = %s"
     values = [owner_user_id]
     if keyword:
         like = f"%{keyword}%"
-        where = """WHERE owner_user_id = ? AND (
-            filename LIKE ? OR original_filename LIKE ? OR file_path LIKE ? OR
-            storage_key LIKE ? OR source_video_id LIKE ? OR metadata LIKE ?
+        where = """WHERE owner_user_id = %s AND (
+            filename ILIKE %s OR original_filename ILIKE %s OR file_path ILIKE %s OR
+            storage_key ILIKE %s OR source_video_id ILIKE %s OR metadata ILIKE %s
         )"""
         values.extend([like, like, like, like, like, like])
     cursor.execute(f'''
@@ -678,19 +680,19 @@ def _material_summary(cursor, owner_user_id, keyword=""):
         COUNT(*) AS total,
         SUM(CASE WHEN source_type = 'youtube_processed' THEN 1 ELSE 0 END) AS processed,
         SUM(CASE WHEN source_type = 'youtube_download' THEN 1 ELSE 0 END) AS downloaded,
-        SUM(CASE WHEN lower(filename) LIKE '%.mp4'
-                  OR lower(filename) LIKE '%.avi'
-                  OR lower(filename) LIKE '%.mov'
-                  OR lower(filename) LIKE '%.wmv'
-                  OR lower(filename) LIKE '%.flv'
-                  OR lower(filename) LIKE '%.mkv'
+        SUM(CASE WHEN lower(filename) ILIKE '%%.mp4'
+                  OR lower(filename) ILIKE '%%.avi'
+                  OR lower(filename) ILIKE '%%.mov'
+                  OR lower(filename) ILIKE '%%.wmv'
+                  OR lower(filename) ILIKE '%%.flv'
+                  OR lower(filename) ILIKE '%%.mkv'
                  THEN 1 ELSE 0 END) AS videos,
-        SUM(CASE WHEN lower(filename) LIKE '%.jpg'
-                  OR lower(filename) LIKE '%.jpeg'
-                  OR lower(filename) LIKE '%.png'
-                  OR lower(filename) LIKE '%.gif'
-                  OR lower(filename) LIKE '%.bmp'
-                  OR lower(filename) LIKE '%.webp'
+        SUM(CASE WHEN lower(filename) ILIKE '%%.jpg'
+                  OR lower(filename) ILIKE '%%.jpeg'
+                  OR lower(filename) ILIKE '%%.png'
+                  OR lower(filename) ILIKE '%%.gif'
+                  OR lower(filename) ILIKE '%%.bmp'
+                  OR lower(filename) ILIKE '%%.webp'
                  THEN 1 ELSE 0 END) AS images,
         SUM(CASE WHEN source_type IS NULL OR source_type NOT IN ('youtube_processed', 'youtube_download') THEN 1 ELSE 0 END) AS other
     FROM file_records
@@ -725,7 +727,7 @@ def list_material_records(params=None, owner_user_id=None):
         SELECT * FROM file_records
         {where_sql}
         ORDER BY upload_time DESC, id DESC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
         ''', values + [page_size, offset])
         rows = cursor.fetchall()
         raw_items = [dict(row) for row in rows]
@@ -739,7 +741,7 @@ def list_material_records(params=None, owner_user_id=None):
                    (SELECT name FROM youtube_video_groups WHERE id = youtube_videos.group_id) AS group_name,
                    COALESCE((SELECT is_default FROM youtube_video_groups WHERE id = youtube_videos.group_id), 0) AS group_is_default
             FROM youtube_videos
-            WHERE owner_user_id = ? AND video_id IN ({_sql_placeholders(video_ids)})
+            WHERE owner_user_id = %s AND video_id IN ({_sql_placeholders(video_ids)})
             ''', [owner_user_id, *video_ids])
             for video_row in cursor.fetchall():
                 video = _row_to_youtube_video(video_row)
@@ -828,7 +830,7 @@ def list_published_youtube_materials(limit=50, record_scope="active", owner_user
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        owner_clause = " AND record.owner_user_id = ?" if owner_user_id is not None else ""
+        owner_clause = " AND record.owner_user_id = %s" if owner_user_id is not None else ""
         values = [owner_user_id, limit] if owner_user_id is not None else [limit]
         cursor.execute(f'''
         SELECT record.*, material.asset_id
@@ -836,7 +838,7 @@ def list_published_youtube_materials(limit=50, record_scope="active", owner_user
         LEFT JOIN file_records material ON material.id = record.material_id
         WHERE {where_sql}{owner_clause}
         ORDER BY COALESCE(record.published_at, record.updated_at, record.created_at) DESC, record.id DESC
-        LIMIT ?
+        LIMIT %s
         ''', values)
         return [_row_to_published_material(row) for row in cursor.fetchall()]
 
@@ -845,7 +847,7 @@ def _published_youtube_identity_sets(cursor, owner_user_id):
     cursor.execute('''
     SELECT video_id, source_url FROM published_youtube_materials
     WHERE deleted_at IS NULL
-      AND owner_user_id = ?
+      AND owner_user_id = %s
       AND COALESCE(NULLIF(status, ''), 'confirmed') = 'confirmed'
     ''', (owner_user_id,))
     published_ids = set()
@@ -936,11 +938,11 @@ def _archive_published_material(
     cursor.execute(
         """
         SELECT id, publish_task_id, status FROM published_youtube_materials
-        WHERE video_id = ? AND owner_user_id = ?
-          AND platform_type = ?
-          AND COALESCE(account_id, 0) = COALESCE(?, 0)
+        WHERE video_id = %s AND owner_user_id = %s
+          AND platform_type = %s
+          AND COALESCE(account_id, 0) = COALESCE(%s, 0)
           AND deleted_at IS NULL AND invalidated_at IS NULL
-        ORDER BY CASE WHEN publish_task_id = ? THEN 0 ELSE 1 END, id DESC
+        ORDER BY CASE WHEN publish_task_id = %s THEN 0 ELSE 1 END, id DESC
         LIMIT 1
         """,
         (video_id, owner_user_id, int(platform_type or 0), account_id, publish_task_id or ""),
@@ -949,7 +951,7 @@ def _archive_published_material(
     retry_context = bool(retry_source or retry_of_record_id or retry_of_task_id)
     if existing and _should_archive_failed_publish_record(existing.get("status"), retry_context=retry_context):
         cursor.execute(
-            "UPDATE published_youtube_materials SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE published_youtube_materials SET deleted_at = %s, updated_at = %s WHERE id = %s",
             (_now_iso(), _now_iso(), existing["id"]),
         )
         existing = None
@@ -957,36 +959,36 @@ def _archive_published_material(
         _assert_record_claimable(existing)
         cursor.execute('''
         UPDATE published_youtube_materials
-        SET source_url = ?,
-            title = ?,
-            platform = ?,
-            account_file = ?,
-            account_count = ?,
-            account_name = ?,
-            account_id = ?,
-            platform_work_id = COALESCE(NULLIF(?, ''), platform_work_id),
-            platform_work_url = COALESCE(NULLIF(?, ''), platform_work_url),
-            material_id = ?,
-            filename = ?,
-            file_path = ?,
-            filesize = ?,
-            thumbnail = ?,
-            channel = ?,
-            subscribers = ?,
-            source_published_at = ?,
-            publish_title = ?,
-            metadata = ?,
-            publish_task_id = ?,
-            status = ?,
-            message = ?,
-            duration_ms = ?,
-            retry_of_task_id = ?,
-            retry_of_record_id = ?,
-            retry_source = ?,
-            published_at = CASE WHEN ? = 'confirmed' THEN ? ELSE published_at END,
-            updated_at = ?,
+        SET source_url = %s,
+            title = %s,
+            platform = %s,
+            account_file = %s,
+            account_count = %s,
+            account_name = %s,
+            account_id = %s,
+            platform_work_id = COALESCE(NULLIF(%s, ''), platform_work_id),
+            platform_work_url = COALESCE(NULLIF(%s, ''), platform_work_url),
+            material_id = %s,
+            filename = %s,
+            file_path = %s,
+            filesize = %s,
+            thumbnail = %s,
+            channel = %s,
+            subscribers = %s,
+            source_published_at = %s,
+            publish_title = %s,
+            metadata = %s,
+            publish_task_id = %s,
+            status = %s,
+            message = %s,
+            duration_ms = %s,
+            retry_of_task_id = %s,
+            retry_of_record_id = %s,
+            retry_source = %s,
+            published_at = CASE WHEN %s = 'confirmed' THEN %s ELSE published_at END,
+            updated_at = %s,
             deleted_at = NULL
-        WHERE id = ? AND owner_user_id = ?
+        WHERE id = %s AND owner_user_id = %s
         ''', (
             source_url,
             title,
@@ -1029,7 +1031,7 @@ def _archive_published_material(
         publish_task_id, status, message, duration_ms, account_name, updated_at,
         retry_of_task_id, retry_of_record_id, retry_source, account_id, platform_work_id, platform_work_url
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (owner_user_id, video_id, platform_type, COALESCE(account_id, 0))
     WHERE video_id IS NOT NULL AND video_id != ''
       AND platform_type IS NOT NULL AND platform_type != 0
@@ -1114,7 +1116,7 @@ def register_material(
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM file_records WHERE owner_user_id = ? AND (file_path = ? OR storage_key = ?)",
+            "SELECT * FROM file_records WHERE owner_user_id = %s AND (file_path = %s OR storage_key = %s)",
             (owner_user_id, file_path_value, file_path_value),
         )
         existing = cursor.fetchone()
@@ -1125,7 +1127,7 @@ def register_material(
             asset_id, filename, original_filename, filesize, file_path, storage_key,
             storage_backend, source_type, source_video_id, status, duration, duration_seconds, metadata, owner_user_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         ''', (
             asset_id,
@@ -1145,7 +1147,7 @@ def register_material(
         ))
         conn.commit()
         file_record_id = cursor.fetchone()[0]
-        cursor.execute("SELECT * FROM file_records WHERE id = ? AND owner_user_id = ?", (file_record_id, owner_user_id))
+        cursor.execute("SELECT * FROM file_records WHERE id = %s AND owner_user_id = %s", (file_record_id, owner_user_id))
         return _row_to_material(cursor.fetchone())
 
 
@@ -1243,7 +1245,7 @@ def _validate_publish_processed_files(file_list, owner_user_id=None):
         normalized_paths = []
         for file_reference in references:
             cursor.execute(
-                "SELECT * FROM file_records WHERE owner_user_id = ? AND (asset_id = ? OR file_path = ? OR storage_key = ?)",
+                "SELECT * FROM file_records WHERE owner_user_id = %s AND (asset_id = %s OR file_path = %s OR storage_key = %s)",
                 (owner_user_id, file_reference, file_reference, file_reference),
             )
             record = cursor.fetchone()
@@ -1286,20 +1288,20 @@ def _publish_parent_reservation_status(cursor, publish_task_id, platform_type):
     task_id = str(publish_task_id or "")
     if not task_id:
         return "missing", "", ""
-    cursor.execute("SELECT status FROM publish_dispatch_jobs WHERE id = ?", (task_id,))
+    cursor.execute("SELECT status FROM publish_dispatch_jobs WHERE id = %s", (task_id,))
     dispatch = cursor.fetchone()
     if dispatch:
         cursor.execute(
-            "SELECT status FROM publish_dispatch_targets WHERE job_id = ? AND platform_type = ? ORDER BY id DESC LIMIT 1",
+            "SELECT status FROM publish_dispatch_targets WHERE job_id = %s AND platform_type = %s ORDER BY id DESC LIMIT 1",
             (task_id, int(platform_type or 0)),
         )
         target = cursor.fetchone()
         return "dispatch", dispatch.get("status") or "", (target or {}).get("status") or ""
-    cursor.execute("SELECT status FROM scheduled_publish_tasks WHERE id = ?", (task_id,))
+    cursor.execute("SELECT status FROM scheduled_publish_tasks WHERE id = %s", (task_id,))
     scheduled = cursor.fetchone()
     if scheduled:
         cursor.execute(
-            "SELECT status FROM scheduled_publish_targets WHERE task_id = ? AND platform_type = ? ORDER BY id DESC LIMIT 1",
+            "SELECT status FROM scheduled_publish_targets WHERE task_id = %s AND platform_type = %s ORDER BY id DESC LIMIT 1",
             (task_id, int(platform_type or 0)),
         )
         target = cursor.fetchone()
@@ -1314,13 +1316,13 @@ def _reconcile_publish_material_records(cursor, video_id=None, platform_type=Non
     ]
     values = []
     if video_id:
-        clauses.append("video_id = ?")
+        clauses.append("video_id = %s")
         values.append(video_id)
     if platform_type:
-        clauses.append("platform_type = ?")
+        clauses.append("platform_type = %s")
         values.append(int(platform_type))
     if owner_user_id is not None:
-        clauses.append("owner_user_id = ?")
+        clauses.append("owner_user_id = %s")
         values.append(int(owner_user_id))
     cursor.execute(
         "SELECT id, video_id, platform_type, status, publish_task_id, owner_user_id FROM published_youtube_materials WHERE "
@@ -1344,7 +1346,7 @@ def _reconcile_publish_material_records(cursor, video_id=None, platform_type=Non
             else "发布父任务已完成，已同步平台状态"
         )
         cursor.execute(
-            "UPDATE published_youtube_materials SET status = ?, message = ?, updated_at = ? WHERE id = ? AND status = ?",
+            "UPDATE published_youtube_materials SET status = %s, message = %s, updated_at = %s WHERE id = %s AND status = %s",
             (resolved, message, _now_iso(), row["id"], current),
         )
         if cursor.rowcount:
@@ -1372,8 +1374,8 @@ def _assert_publish_targets_available(material, targets):
             cursor.execute(
                 """
                 SELECT id, publish_task_id, status FROM published_youtube_materials
-                WHERE video_id = ? AND platform_type = ? AND owner_user_id = ?
-                  AND COALESCE(account_id, 0) = COALESCE(?, 0)
+                WHERE video_id = %s AND platform_type = %s AND owner_user_id = %s
+                  AND COALESCE(account_id, 0) = COALESCE(%s, 0)
                   AND deleted_at IS NULL
                   AND invalidated_at IS NULL
                   AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('queued', 'running', 'confirmed', 'uncertain')
@@ -1455,7 +1457,7 @@ def _mark_published_materials(
         cursor = conn.cursor()
         for file_path in file_list:
             cursor.execute(
-                "SELECT * FROM file_records WHERE owner_user_id = ? AND (file_path = ? OR storage_key = ?)",
+                "SELECT * FROM file_records WHERE owner_user_id = %s AND (file_path = %s OR storage_key = %s)",
                 (owner_user_id, file_path, file_path),
             )
             record = cursor.fetchone()
@@ -1493,8 +1495,8 @@ def _mark_published_materials(
                 cursor.execute(
                     """
                     UPDATE youtube_videos
-                    SET publish_status = 1, updated_at = ?
-                    WHERE video_id = ? AND owner_user_id = ?
+                    SET publish_status = 1, updated_at = %s
+                    WHERE video_id = %s AND owner_user_id = %s
                     """,
                     (published_at, video_id, owner_user_id),
                 )
@@ -1502,10 +1504,10 @@ def _mark_published_materials(
                 """
                 UPDATE youtube_workflow_jobs
                 SET step = 'publish',
-                    message = ?,
-                    publish_command = ?,
-                    updated_at = ?
-                WHERE video_id = ? AND owner_user_id = ?
+                    message = %s,
+                    publish_command = %s,
+                    updated_at = %s
+                WHERE video_id = %s AND owner_user_id = %s
                 """,
                 (
                     "发布中心已确认平台发布" if status == "confirmed" else f"发布中心记录平台状态：{message or status}",
@@ -1541,7 +1543,7 @@ def reserve_publish_tasks_pending(tasks, *, cursor=None, skip_duplicates=False):
         platform_name_value = platform_name(platform_type)
         for file_path in file_list:
             cursor.execute(
-                "SELECT * FROM file_records WHERE owner_user_id = ? AND (file_path = ? OR storage_key = ?)",
+                "SELECT * FROM file_records WHERE owner_user_id = %s AND (file_path = %s OR storage_key = %s)",
                 (owner_user_id, file_path, file_path),
             )
             record = cursor.fetchone()
@@ -1555,8 +1557,8 @@ def reserve_publish_tasks_pending(tasks, *, cursor=None, skip_duplicates=False):
             cursor.execute(
                 """
                 SELECT id, publish_task_id, status FROM published_youtube_materials
-                WHERE video_id = ? AND platform_type = ? AND owner_user_id = ?
-                  AND COALESCE(account_id, 0) = COALESCE(?, 0)
+                WHERE video_id = %s AND platform_type = %s AND owner_user_id = %s
+                  AND COALESCE(account_id, 0) = COALESCE(%s, 0)
                   AND deleted_at IS NULL
                   AND invalidated_at IS NULL
                   AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('queued', 'running', 'confirmed', 'uncertain')
@@ -1603,8 +1605,8 @@ def reserve_publish_tasks_pending(tasks, *, cursor=None, skip_duplicates=False):
             cursor.execute(
                 """
                 SELECT id, account_name, status FROM published_youtube_materials
-                WHERE video_id = ? AND platform_type = ? AND owner_user_id = ?
-                  AND COALESCE(account_id, 0) != COALESCE(?, 0)
+                WHERE video_id = %s AND platform_type = %s AND owner_user_id = %s
+                  AND COALESCE(account_id, 0) != COALESCE(%s, 0)
                   AND deleted_at IS NULL AND invalidated_at IS NULL
                   AND status IN ('confirmed', 'reused')
                 ORDER BY published_at DESC, id DESC LIMIT 1
@@ -1649,7 +1651,7 @@ def _active_success_publish_count(cursor, video_id, owner_user_id):
     cursor.execute('''
     SELECT COUNT(*) AS total
     FROM published_youtube_materials
-    WHERE video_id = ? AND owner_user_id = ?
+    WHERE video_id = %s AND owner_user_id = %s
       AND deleted_at IS NULL
       AND COALESCE(NULLIF(status, ''), 'confirmed') = 'confirmed'
     ''', (video_id, owner_user_id))
@@ -1663,8 +1665,8 @@ def _sync_video_publish_status_from_records(cursor, video_id, owner_user_id):
     success_count = _active_success_publish_count(cursor, video_id, owner_user_id)
     cursor.execute('''
     UPDATE youtube_videos
-    SET publish_status = ?, updated_at = ?
-    WHERE video_id = ? AND owner_user_id = ?
+    SET publish_status = %s, updated_at = %s
+    WHERE video_id = %s AND owner_user_id = %s
     ''', (1 if success_count else 0, _now_iso(), video_id, owner_user_id))
     return 1 if success_count else 0
 
@@ -1736,13 +1738,13 @@ def list_publish_tasks(limit=20, owner_user_id=None):
         where_sql = "deleted_at IS NULL"
         values = [fetch_limit]
         if owner_user_id is not None:
-            where_sql += " AND owner_user_id = ?"
+            where_sql += " AND owner_user_id = %s"
             values = [owner_user_id, fetch_limit]
         cursor.execute(f'''
         SELECT * FROM published_youtube_materials
         WHERE {where_sql}
         ORDER BY COALESCE(updated_at, published_at, created_at) DESC, id DESC
-        LIMIT ?
+        LIMIT %s
         ''', values)
         grouped = {}
         for row in cursor.fetchall():
@@ -1757,13 +1759,13 @@ def list_publish_tasks(limit=20, owner_user_id=None):
 def _refresh_publish_dispatch_job_status(cursor, publish_task_id):
     if not publish_task_id:
         return ""
-    cursor.execute("SELECT status FROM publish_dispatch_jobs WHERE id = ?", (publish_task_id,))
+    cursor.execute("SELECT status FROM publish_dispatch_jobs WHERE id = %s", (publish_task_id,))
     if not cursor.fetchone():
         return ""
-    cursor.execute("SELECT status FROM publish_dispatch_targets WHERE job_id = ?", (publish_task_id,))
+    cursor.execute("SELECT status FROM publish_dispatch_targets WHERE job_id = %s", (publish_task_id,))
     status = aggregate_publish_status([{"status": row.get("status")} for row in cursor.fetchall()])
     cursor.execute(
-        "UPDATE publish_dispatch_jobs SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE publish_dispatch_jobs SET status = %s, message = %s, finished_at = %s, updated_at = %s WHERE id = %s",
         (status, "已释放待核验发布占位" if status == "failed" else "部分平台结果仍待核验", _now_iso(), _now_iso(), publish_task_id),
     )
     return status
@@ -1772,13 +1774,13 @@ def _refresh_publish_dispatch_job_status(cursor, publish_task_id):
 def _refresh_scheduled_publish_task_status(cursor, publish_task_id):
     if not publish_task_id:
         return ""
-    cursor.execute("SELECT status FROM scheduled_publish_tasks WHERE id = ?", (publish_task_id,))
+    cursor.execute("SELECT status FROM scheduled_publish_tasks WHERE id = %s", (publish_task_id,))
     if not cursor.fetchone():
         return ""
-    cursor.execute("SELECT status FROM scheduled_publish_targets WHERE task_id = ?", (publish_task_id,))
+    cursor.execute("SELECT status FROM scheduled_publish_targets WHERE task_id = %s", (publish_task_id,))
     status = aggregate_publish_status([{"status": row.get("status")} for row in cursor.fetchall()])
     cursor.execute(
-        "UPDATE scheduled_publish_tasks SET status = ?, message = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE scheduled_publish_tasks SET status = %s, message = %s, finished_at = %s, updated_at = %s WHERE id = %s",
         (status, "已释放未知发布占位" if status == "failed" else "部分平台结果仍待核验", _now_iso(), _now_iso(), publish_task_id),
     )
     return status
@@ -1790,9 +1792,8 @@ def release_unknown_publish_record(record_id, reason="", owner_user_id=None):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
-            "SELECT * FROM published_youtube_materials WHERE id = ? AND owner_user_id = ?",
+            "SELECT * FROM published_youtube_materials WHERE id = %s AND owner_user_id = %s",
             (int(record_id), owner_user_id),
         )
         row = cursor.fetchone()
@@ -1811,7 +1812,7 @@ def release_unknown_publish_record(record_id, reason="", owner_user_id=None):
         if str(reason or "").strip():
             message += f"：{str(reason).strip()[:200]}"
         cursor.execute(
-            "UPDATE published_youtube_materials SET status = 'failed', message = ?, updated_at = ? WHERE id = ? AND status = 'uncertain'",
+            "UPDATE published_youtube_materials SET status = 'failed', message = %s, updated_at = %s WHERE id = %s AND status = 'uncertain'",
             (message, now, int(record_id)),
         )
         if not cursor.rowcount:
@@ -1824,12 +1825,12 @@ def release_unknown_publish_record(record_id, reason="", owner_user_id=None):
         publish_task_id = record.get("publish_task_id") or ""
         if publish_task_id:
             cursor.execute(
-                "UPDATE publish_dispatch_targets SET status = 'failed', message = ?, finished_at = ?, updated_at = ? WHERE job_id = ? AND platform_type = ? AND status = 'uncertain'",
+                "UPDATE publish_dispatch_targets SET status = 'failed', message = %s, finished_at = %s, updated_at = %s WHERE job_id = %s AND platform_type = %s AND status = 'uncertain'",
                 (message, now, now, publish_task_id, int(record.get("platform_type") or 0)),
             )
             if not _refresh_publish_dispatch_job_status(cursor, publish_task_id):
                 cursor.execute(
-                    "UPDATE scheduled_publish_targets SET status = 'failed', message = ?, finished_at = ?, updated_at = ? WHERE task_id = ? AND platform_type = ? AND status = 'uncertain'",
+                    "UPDATE scheduled_publish_targets SET status = 'failed', message = %s, finished_at = %s, updated_at = %s WHERE task_id = %s AND platform_type = %s AND status = 'uncertain'",
                     (message, now, now, publish_task_id, int(record.get("platform_type") or 0)),
                 )
                 _refresh_scheduled_publish_task_status(cursor, publish_task_id)
@@ -1851,7 +1852,7 @@ def delete_publish_target_record(record_id, owner_user_id=None):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM published_youtube_materials WHERE id = ? AND owner_user_id = ?",
+            "SELECT * FROM published_youtube_materials WHERE id = %s AND owner_user_id = %s",
             (record_id, owner_user_id),
         )
         row = cursor.fetchone()
@@ -1884,8 +1885,8 @@ def delete_publish_target_record(record_id, owner_user_id=None):
         now = _now_iso()
         cursor.execute('''
         UPDATE published_youtube_materials
-        SET deleted_at = ?, updated_at = ?
-        WHERE id = ? AND owner_user_id = ?
+        SET deleted_at = %s, updated_at = %s
+        WHERE id = %s AND owner_user_id = %s
         ''', (now, now, record_id, owner_user_id))
         publish_status = _sync_video_publish_status_from_records(cursor, record.get("video_id") or "", owner_user_id)
         conn.commit()
@@ -1907,7 +1908,7 @@ def invalidate_publish_target_record(record_id, reason, admin_user_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM published_youtube_materials WHERE id = ?", (record_id,))
+        cursor.execute("SELECT * FROM published_youtube_materials WHERE id = %s", (record_id,))
         row = cursor.fetchone()
         if not row:
             raise LookupError("发布记录不存在")
@@ -1922,8 +1923,8 @@ def invalidate_publish_target_record(record_id, reason, admin_user_id):
         now = _now_iso()
         cursor.execute('''
         UPDATE published_youtube_materials
-        SET invalidated_at = ?, invalidated_by_user_id = ?, invalidation_reason = ?, updated_at = ?
-        WHERE id = ?
+        SET invalidated_at = %s, invalidated_by_user_id = %s, invalidation_reason = %s, updated_at = %s
+        WHERE id = %s
         ''', (now, admin_user_id, reason[:500], now, record_id))
         _sync_video_publish_status_from_records(cursor, record.get("video_id") or "", record.get("owner_user_id"))
         return {"recordId": record_id, "videoId": record.get("video_id") or "", "invalidatedAt": now}

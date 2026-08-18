@@ -70,9 +70,9 @@ def get_candidate_analysis_job(job_id, session_id=""):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         values = [str(job_id or "").strip()]
-        sql = "SELECT * FROM candidate_analysis_jobs WHERE id = ?"
+        sql = "SELECT * FROM candidate_analysis_jobs WHERE id = %s"
         if session_id:
-            sql += " AND session_id = ?"
+            sql += " AND session_id = %s"
             values.append(str(session_id).strip())
         cursor.execute(sql, values)
         row = cursor.fetchone()
@@ -93,15 +93,15 @@ def _candidate_update_job(job_id, **changes):
     for key, value in changes.items():
         if key not in allowed:
             continue
-        fields.append(f"{key} = ?")
+        fields.append(f"{key} = %s")
         values.append(_json.dumps(value, ensure_ascii=False) if key == "result" else value)
     if not fields:
         return get_candidate_analysis_job(job_id)
-    fields.append("updated_at = ?")
+    fields.append("updated_at = %s")
     values.append(_candidate_now())
     values.append(str(job_id))
     with _db_connect() as conn:
-        conn.execute(f"UPDATE candidate_analysis_jobs SET {', '.join(fields)} WHERE id = ?", values)
+        conn.execute(f"UPDATE candidate_analysis_jobs SET {', '.join(fields)} WHERE id = %s", values)
         conn.commit()
     return get_candidate_analysis_job(job_id)
 
@@ -110,7 +110,7 @@ def _candidate_latest_reusable_job(cursor, video_id):
     cursor.execute(
         """
         SELECT * FROM candidate_analysis_jobs
-        WHERE video_id = ? AND analysis_version = ? AND status = 'success'
+        WHERE video_id = %s AND analysis_version = %s AND status = 'success'
         ORDER BY finished_at DESC, updated_at DESC
         LIMIT 1
         """,
@@ -123,7 +123,7 @@ def _candidate_active_job(cursor, video_id):
     cursor.execute(
         """
         SELECT * FROM candidate_analysis_jobs
-        WHERE video_id = ? AND analysis_version = ? AND status IN ('queued', 'running')
+        WHERE video_id = %s AND analysis_version = %s AND status IN ('queued', 'running')
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -187,7 +187,7 @@ def create_candidate_analysis_jobs(session_id, candidates):
                         id, session_id, video_id, source_url, title, channel, metadata_snapshot,
                         analysis_version, status, step, message, progress, transcript_file_path, result,
                         created_at, started_at, finished_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'success', 'done', ?, 100, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'success', 'done', %s, 100, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         job_id, session_id, item["id"], item["url"], item["title"], item["channel"],
@@ -216,7 +216,7 @@ def create_candidate_analysis_jobs(session_id, candidates):
                 INSERT INTO candidate_analysis_jobs (
                     id, session_id, video_id, source_url, title, channel, metadata_snapshot,
                     analysis_version, status, step, message, progress, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', ?, 0, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'queued', 'queued', %s, 0, %s, %s)
                 """,
                 (
                     job_id, session_id, item["id"], item["url"], item["title"], item["channel"],
@@ -261,8 +261,8 @@ def _candidate_claim_job(job_id):
             """
             UPDATE candidate_analysis_jobs
             SET status = 'running', step = 'audio_download', message = '正在下载音频，不会下载完整视频',
-                progress = 8, started_at = ?, updated_at = ?
-            WHERE id = ? AND status = 'queued'
+                progress = 8, started_at = %s, updated_at = %s
+            WHERE id = %s AND status = 'queued'
             """,
             (_candidate_now(), _candidate_now(), str(job_id)),
         )

@@ -11,7 +11,7 @@ from pathlib import Path as _Path
 from flask import g as _g
 from werkzeug.utils import secure_filename as _secure_filename
 
-from app.config import BASE_DIR as _BASE_DIR, BURN_PROFILES as _BURN_PROFILES, DATABASE_URL as _DATABASE_URL, DEFAULT_BURN_PROFILE as _DEFAULT_BURN_PROFILE, MULTIMODAL_LLM_API_KEY as _VISION_KEY, MULTIMODAL_LLM_BASE_URL as _VISION_URL, MULTIMODAL_LLM_MODEL as _VISION_MODEL, get_llm_config_status as _llm_status
+from app.config import BASE_DIR as _BASE_DIR, BURN_PROFILES as _BURN_PROFILES, DEFAULT_BURN_PROFILE as _DEFAULT_BURN_PROFILE, MULTIMODAL_LLM_API_KEY as _VISION_KEY, MULTIMODAL_LLM_BASE_URL as _VISION_URL, MULTIMODAL_LLM_MODEL as _VISION_MODEL, get_llm_config_status as _llm_status
 from app.core.llm_harness import call_json_contract as _call_json_contract
 from app.db.base import _db_connect
 from app.db.schema import init_database_tables
@@ -41,38 +41,10 @@ def _is_admin():
 
 def _ensure_tables():
     init_database_tables()
-    if _DATABASE_URL:
-        return
-    with _db_connect() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS short_video_projects (
-            id TEXT PRIMARY KEY, owner_user_id INTEGER NOT NULL, topic TEXT NOT NULL,
-            target_count INTEGER NOT NULL DEFAULT 10, target_duration_seconds INTEGER NOT NULL DEFAULT 45,
-            transition_type TEXT NOT NULL DEFAULT 'cut', bgm_track_id INTEGER, keep_original_audio INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'draft', message TEXT DEFAULT '', output_file_path TEXT DEFAULT '',
-            output_material_id INTEGER, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS short_video_candidates (
-            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_video_id TEXT NOT NULL, source_url TEXT NOT NULL,
-            title TEXT DEFAULT '', channel TEXT DEFAULT '', license_type TEXT DEFAULT '', license_basis TEXT DEFAULT '',
-            duration_seconds REAL DEFAULT 0, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0, thumbnail TEXT DEFAULT '',
-            metadata_status TEXT NOT NULL DEFAULT 'accepted', analysis_status TEXT NOT NULL DEFAULT 'pending',
-            analysis_score INTEGER DEFAULT 0, analysis_reason TEXT DEFAULT '', preview_path TEXT DEFAULT '', keyframes TEXT DEFAULT '[]',
-            selected INTEGER NOT NULL DEFAULT 0, ordinal INTEGER NOT NULL DEFAULT 0, clip_duration_seconds REAL DEFAULT 0,
-            transition_type TEXT DEFAULT '', downloaded_file_path TEXT DEFAULT '', created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
-            UNIQUE(project_id, source_video_id))''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS short_video_bgm_tracks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, artist TEXT NOT NULL, source_url TEXT NOT NULL,
-            license_note TEXT NOT NULL, file_path TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-            created_by_user_id INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS short_video_channel_whitelist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL UNIQUE, note TEXT DEFAULT '',
-            created_by_user_id INTEGER NOT NULL, created_at DATETIME NOT NULL)''')
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_video_projects_owner_updated ON short_video_projects(owner_user_id, updated_at DESC)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_short_video_candidates_project_ordinal ON short_video_candidates(project_id, ordinal)")
 
 
 def _project(cursor, project_id, owner_id=None):
-    cursor.execute("SELECT * FROM short_video_projects WHERE id = ?", (project_id,))
+    cursor.execute("SELECT * FROM short_video_projects WHERE id = %s", (project_id,))
     row = cursor.fetchone()
     if not row or (owner_id is not None and int(row["owner_user_id"] or 0) != int(owner_id)):
         raise LookupError("短视频项目不存在或无权访问")
@@ -106,7 +78,7 @@ def _project_payload(cursor, row, include_candidates=True):
         "outputMaterialId": item.get("output_material_id"),
     })
     if include_candidates:
-        cursor.execute("SELECT * FROM short_video_candidates WHERE project_id = ? ORDER BY ordinal, created_at", (item["id"],))
+        cursor.execute("SELECT * FROM short_video_candidates WHERE project_id = %s ORDER BY ordinal, created_at", (item["id"],))
         item["candidates"] = [_candidate_payload(candidate) for candidate in cursor.fetchall()]
     return item
 
@@ -116,7 +88,7 @@ def list_short_video_projects():
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM short_video_projects WHERE owner_user_id = ? ORDER BY updated_at DESC", (_owner_id(),))
+        cursor.execute("SELECT * FROM short_video_projects WHERE owner_user_id = %s ORDER BY updated_at DESC", (_owner_id(),))
         return [_project_payload(cursor, row, include_candidates=False) for row in cursor.fetchall()]
 
 
@@ -133,7 +105,7 @@ def create_short_video_project(payload):
         cursor = conn.cursor()
         cursor.execute('''INSERT INTO short_video_projects
             (id, owner_user_id, topic, target_count, target_duration_seconds, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)''', (project_id, _owner_id(), topic, target_count, target_duration, now, now))
+            VALUES (%s, %s, %s, %s, %s, %s, %s)''', (project_id, _owner_id(), topic, target_count, target_duration, now, now))
         return _project_payload(cursor, _project(cursor, project_id, _owner_id()), include_candidates=True)
 
 
@@ -224,16 +196,16 @@ def _search_candidates(project_id, owner_id):
         conn.row_factory = True
         cursor = conn.cursor()
         _project(cursor, project_id, owner_id)
-        cursor.execute("DELETE FROM short_video_candidates WHERE project_id = ?", (project_id,))
+        cursor.execute("DELETE FROM short_video_candidates WHERE project_id = %s", (project_id,))
         for ordinal, item in enumerate(accepted, start=1):
             cursor.execute('''INSERT INTO short_video_candidates
                 (id, project_id, source_video_id, source_url, title, channel, license_type, license_basis,
                 duration_seconds, width, height, thumbnail, ordinal, clip_duration_seconds, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                 (_uuid.uuid4().hex, project_id, item["source_video_id"], item["source_url"], item["title"], item["channel"],
                  item["license_type"], item["license_basis"], item["duration_seconds"], item["width"], item["height"], item["thumbnail"],
                  ordinal, min(8.0, item["duration_seconds"]), now, now))
-        cursor.execute("UPDATE short_video_projects SET status = 'reviewing', message = ?, updated_at = ? WHERE id = ?", (f"已筛选 {len(accepted)} 条候选", now, project_id))
+        cursor.execute("UPDATE short_video_projects SET status = 'reviewing', message = %s, updated_at = %s WHERE id = %s", (f"已筛选 {len(accepted)} 条候选", now, project_id))
     _logger.info("Short video search completed : projectId = %s | accepted = %s", project_id, len(accepted))
     return {"projectId": project_id, "status": "reviewing"}
 
@@ -244,7 +216,7 @@ def run_short_video_search(project_id, owner_id):
         with _db_connect() as conn:
             conn.row_factory = True
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM short_video_candidates WHERE project_id = ? ORDER BY ordinal LIMIT 12", (project_id,))
+            cursor.execute("SELECT id FROM short_video_candidates WHERE project_id = %s ORDER BY ordinal LIMIT 12", (project_id,))
             candidate_ids = [row["id"] for row in cursor.fetchall()]
         for candidate_id in candidate_ids:
             run_short_video_candidate_review(project_id, candidate_id, owner_id)
@@ -257,13 +229,13 @@ def run_short_video_search(project_id, owner_id):
 
 
 def _set_project_status(project_id, status, message, **updates):
-    fields, values = ["status = ?", "message = ?", "updated_at = ?"], [status, message[:500], _now()]
+    fields, values = ["status = %s", "message = %s", "updated_at = %s"], [status, message[:500], _now()]
     for column, value in updates.items():
-        fields.append(f"{column} = ?")
+        fields.append(f"{column} = %s")
         values.append(value)
     values.append(project_id)
     with _db_connect() as conn:
-        conn.execute(f"UPDATE short_video_projects SET {', '.join(fields)} WHERE id = ?", values)
+        conn.execute(f"UPDATE short_video_projects SET {', '.join(fields)} WHERE id = %s", values)
 
 
 def _download_candidate_preview(candidate):
@@ -323,7 +295,7 @@ def run_short_video_candidate_review(project_id, candidate_id, owner_id):
         conn.row_factory = True
         cursor = conn.cursor()
         project = _project(cursor, project_id, owner_id)
-        cursor.execute("SELECT * FROM short_video_candidates WHERE id = ? AND project_id = ?", (candidate_id, project_id))
+        cursor.execute("SELECT * FROM short_video_candidates WHERE id = %s AND project_id = %s", (candidate_id, project_id))
         row = cursor.fetchone()
         if not row:
             raise LookupError("候选素材不存在")
@@ -336,7 +308,7 @@ def run_short_video_candidate_review(project_id, candidate_id, owner_id):
         preview, frames, score, reason, review_status = None, [], 0, f"预览分析失败，已降级为文本初筛: {str(exc)[:240]}", "degraded"
         _logger.warning("Short video candidate review degraded : projectId = %s | candidateId = %s | reason = %s", project_id, candidate_id, str(exc)[:300])
     with _db_connect() as conn:
-        conn.execute('''UPDATE short_video_candidates SET preview_path = ?, keyframes = ?, analysis_score = ?, analysis_reason = ?, analysis_status = ?, updated_at = ? WHERE id = ?''',
+        conn.execute('''UPDATE short_video_candidates SET preview_path = %s, keyframes = %s, analysis_score = %s, analysis_reason = %s, analysis_status = %s, updated_at = %s WHERE id = %s''',
                      (str(preview) if preview else "", _json.dumps([{"timestamp": frame["timestamp"]} for frame in frames]), score, reason, review_status, _now(), candidate_id))
     return {"projectId": project_id, "candidateId": candidate_id, "status": review_status}
 
@@ -358,22 +330,22 @@ def update_short_video_candidates(project_id, candidates):
             transition = str(entry.get("transitionType") or "")
             if transition and transition not in _VALID_TRANSITIONS:
                 raise ValueError("转场类型无效")
-            cursor.execute("SELECT duration_seconds FROM short_video_candidates WHERE id = ? AND project_id = ?", (candidate_id, project_id))
+            cursor.execute("SELECT duration_seconds FROM short_video_candidates WHERE id = %s AND project_id = %s", (candidate_id, project_id))
             source = cursor.fetchone()
             if not source:
                 raise LookupError("候选素材不存在")
             source_duration = float(source.get("duration_seconds") if hasattr(source, "get") else source[0])
             if duration > source_duration:
                 raise ValueError("截取时长不能超过原视频时长")
-            cursor.execute('''UPDATE short_video_candidates SET selected = 1, ordinal = ?, clip_duration_seconds = ?, transition_type = ?, updated_at = ?
-                WHERE id = ? AND project_id = ?''', (ordinal, duration, transition, _now(), candidate_id, project_id))
+            cursor.execute('''UPDATE short_video_candidates SET selected = 1, ordinal = %s, clip_duration_seconds = %s, transition_type = %s, updated_at = %s
+                WHERE id = %s AND project_id = %s''', (ordinal, duration, transition, _now(), candidate_id, project_id))
         ids = [str(entry.get("id") or "") for entry in candidates]
-        placeholders = ",".join("?" for _ in ids)
-        cursor.execute(f"UPDATE short_video_candidates SET selected = 0 WHERE project_id = ? AND id NOT IN ({placeholders})", [project_id, *ids])
+        placeholders = ",".join("%s" for _ in ids)
+        cursor.execute(f"UPDATE short_video_candidates SET selected = 0 WHERE project_id = %s AND id NOT IN ({placeholders})", [project_id, *ids])
         total = sum(max(1.0, float(entry.get("clipDurationSeconds") or 0)) for entry in candidates)
         if not 15 <= total <= 90:
             raise ValueError("选段总时长需在 15 至 90 秒之间")
-        cursor.execute("UPDATE short_video_projects SET status = 'ready', message = '候选素材已确认', updated_at = ? WHERE id = ?", (_now(), project_id))
+        cursor.execute("UPDATE short_video_projects SET status = 'ready', message = '候选素材已确认', updated_at = %s WHERE id = %s", (_now(), project_id))
     return get_short_video_project(project_id)
 
 
@@ -406,7 +378,7 @@ def create_short_video_bgm_track(uploaded, payload):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute('''INSERT INTO short_video_bgm_tracks (title, artist, source_url, license_note, file_path, enabled, created_by_user_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?) RETURNING id''', (title, artist, source_url, license_note, str(destination), _owner_id(), now, now))
+            VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s) RETURNING id''', (title, artist, source_url, license_note, str(destination), _owner_id(), now, now))
         track_id = cursor.fetchone()[0]
     return {"id": track_id, "title": title}
 
@@ -418,7 +390,7 @@ def update_short_video_bgm_track(track_id, payload):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("UPDATE short_video_bgm_tracks SET enabled = ?, updated_at = ? WHERE id = ?", (enabled, _now(), int(track_id)))
+        cursor.execute("UPDATE short_video_bgm_tracks SET enabled = %s, updated_at = %s WHERE id = %s", (enabled, _now(), int(track_id)))
         if cursor.rowcount != 1:
             raise LookupError("BGM 不存在")
     return {"id": int(track_id), "enabled": bool(enabled)}
@@ -430,14 +402,14 @@ def delete_short_video_bgm_track(track_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM short_video_bgm_tracks WHERE id = ?", (int(track_id),))
+        cursor.execute("SELECT file_path FROM short_video_bgm_tracks WHERE id = %s", (int(track_id),))
         row = cursor.fetchone()
         if not row:
             raise LookupError("BGM 不存在")
-        cursor.execute("SELECT 1 FROM short_video_projects WHERE bgm_track_id = ? AND status IN ('queued', 'rendering') LIMIT 1", (int(track_id),))
+        cursor.execute("SELECT 1 FROM short_video_projects WHERE bgm_track_id = %s AND status IN ('queued', 'rendering') LIMIT 1", (int(track_id),))
         if cursor.fetchone():
             raise ValueError("BGM 正被运行中的合成任务使用，暂不可删除")
-        cursor.execute("DELETE FROM short_video_bgm_tracks WHERE id = ?", (int(track_id),))
+        cursor.execute("DELETE FROM short_video_bgm_tracks WHERE id = %s", (int(track_id),))
     file_path = _Path(row["file_path"] or "")
     if file_path.is_file() and file_path.resolve().is_relative_to(_BGM_ROOT.resolve()):
         file_path.unlink()
@@ -451,7 +423,7 @@ def add_short_video_channel_whitelist(payload):
     if not channel:
         raise ValueError("频道名称不能为空")
     with _db_connect() as conn:
-        conn.execute("INSERT INTO short_video_channel_whitelist (channel, note, created_by_user_id, created_at) VALUES (?, ?, ?, ?)", (channel, str((payload or {}).get("note") or "")[:500], _owner_id(), _now()))
+        conn.execute("INSERT INTO short_video_channel_whitelist (channel, note, created_by_user_id, created_at) VALUES (%s, %s, %s, %s)", (channel, str((payload or {}).get("note") or "")[:500], _owner_id(), _now()))
     return {"channel": channel}
 
 
@@ -469,7 +441,7 @@ def delete_short_video_channel_whitelist(channel_id):
         raise PermissionError("仅管理员可管理授权频道")
     with _db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM short_video_channel_whitelist WHERE id = ?", (int(channel_id),))
+        cursor.execute("DELETE FROM short_video_channel_whitelist WHERE id = %s", (int(channel_id),))
         if cursor.rowcount != 1:
             raise LookupError("授权频道不存在")
     return {"id": int(channel_id), "deleted": True}
@@ -498,7 +470,7 @@ def _render_concat(project, candidates, bgm):
         if not source.is_file():
             source = _download_selected_candidate(candidate)
             with _db_connect() as conn:
-                conn.execute("UPDATE short_video_candidates SET downloaded_file_path = ?, updated_at = ? WHERE id = ?", (str(source), _now(), candidate["id"]))
+                conn.execute("UPDATE short_video_candidates SET downloaded_file_path = %s, updated_at = %s WHERE id = %s", (str(source), _now(), candidate["id"]))
         normalized_file = project_dir / f"segment_{index:02d}.mp4"
         duration = float(candidate["clip_duration_seconds"])
         command = [_resolve_ffmpeg_command(), "-y", "-i", str(source)]
@@ -562,13 +534,13 @@ def run_short_video_render(project_id, owner_id):
         conn.row_factory = True
         cursor = conn.cursor()
         project = _project(cursor, project_id, owner_id)
-        cursor.execute("SELECT * FROM short_video_candidates WHERE project_id = ? AND selected = 1 ORDER BY ordinal", (project_id,))
+        cursor.execute("SELECT * FROM short_video_candidates WHERE project_id = %s AND selected = 1 ORDER BY ordinal", (project_id,))
         candidates = [dict(row) for row in cursor.fetchall()]
         if not 2 <= len(candidates) <= 12:
             raise ValueError("请确认 2 至 12 条素材后再渲染")
         bgm = None
         if project.get("bgm_track_id"):
-            cursor.execute("SELECT * FROM short_video_bgm_tracks WHERE id = ? AND enabled = 1", (project["bgm_track_id"],))
+            cursor.execute("SELECT * FROM short_video_bgm_tracks WHERE id = %s AND enabled = 1", (project["bgm_track_id"],))
             bgm_row = cursor.fetchone()
             if not bgm_row:
                 raise ValueError("所选 BGM 不可用")
@@ -602,7 +574,7 @@ def request_short_video_render(project_id, payload):
         conn.row_factory = True
         cursor = conn.cursor()
         _project(cursor, project_id, _owner_id())
-        cursor.execute("UPDATE short_video_projects SET transition_type = ?, bgm_track_id = ?, keep_original_audio = ?, status = 'queued', message = '合成任务已提交', updated_at = ? WHERE id = ?", (transition, bgm_id, int(bool(payload.get("keepOriginalAudio"))), _now(), project_id))
+        cursor.execute("UPDATE short_video_projects SET transition_type = %s, bgm_track_id = %s, keep_original_audio = %s, status = 'queued', message = '合成任务已提交', updated_at = %s WHERE id = %s", (transition, bgm_id, int(bool(payload.get("keepOriginalAudio"))), _now(), project_id))
     _submit_background_task("processing", run_short_video_render, project_id, _owner_id(), owner_user_id=_owner_id())
     return get_short_video_project(project_id)
 
@@ -624,7 +596,7 @@ def short_video_candidate_file(project_id, candidate_id, asset="preview", frame_
         conn.row_factory = True
         cursor = conn.cursor()
         _project(cursor, project_id, _owner_id())
-        cursor.execute("SELECT preview_path FROM short_video_candidates WHERE id = ? AND project_id = ?", (candidate_id, project_id))
+        cursor.execute("SELECT preview_path FROM short_video_candidates WHERE id = %s AND project_id = %s", (candidate_id, project_id))
         row = cursor.fetchone()
     preview = _Path((row or {}).get("preview_path") or "")
     if not preview.is_file() or not preview.resolve().is_relative_to(_PREVIEW_ROOT.resolve()):

@@ -112,7 +112,6 @@ docs/                      中文功能与运维文档
 - [快速部署](docs/deployment/QUICK_DEPLOYMENT.md)
 - [配置参考](docs/deployment/CONFIGURATION.md)
 - [用户认证与部署](docs/deployment/用户认证与部署.md)
-- [SQLite 迁移至 PostgreSQL](docs/deployment/SQLite迁移至PostgreSQL.md)
 - [处理版本二评论烧制功能说明](docs/development/处理版本二评论烧制功能需求.md)
 - [Agent 开发路线](docs/development/agent-capability-roadmap.md)
 - [优化问题清单](docs/todos/优化问题清单.md)

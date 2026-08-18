@@ -9,7 +9,7 @@
 
 ### PostgreSQL 迁移状态
 
-运行期使用 PostgreSQL。仓库提供 PostgreSQL 18 Compose、初始 schema 和停机迁移工具；已有 SQLite 数据时，必须先完成数据校验再切换。完整步骤见 [PostgreSQL 迁移方案](SQLite迁移至PostgreSQL.md)。
+运行期使用 PostgreSQL。仓库提供 PostgreSQL 18 Compose、初始 schema 和版本化迁移，应用启动时会自动执行未登记的版本。
 
 ### 1. 克隆项目
 

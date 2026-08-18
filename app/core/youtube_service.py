@@ -80,7 +80,7 @@ def get_youtube_comment_burn_snapshot(video_id, owner_user_id=None):
     with _db_connect() as conn:
         conn.row_factory = True
         row = conn.execute(
-            "SELECT comment_burn_snapshot, comment_burn_signature, comment_burn_status FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT comment_burn_snapshot, comment_burn_signature, comment_burn_status FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s",
             (video_id, owner_user_id),
         ).fetchone()
     if not row:
@@ -102,8 +102,8 @@ def save_youtube_comment_burn_snapshot(video_id, snapshot, signature="", status=
         conn.execute(
             """
             UPDATE youtube_videos
-            SET comment_burn_snapshot = ?, comment_burn_signature = ?, comment_burn_status = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ? AND owner_user_id = ?
+            SET comment_burn_snapshot = %s, comment_burn_signature = %s, comment_burn_status = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = %s AND owner_user_id = %s
             """,
             (json.dumps(value, ensure_ascii=False), str(signature or ""), str(status or value.get("status") or ""), video_id, owner_user_id),
         )
@@ -115,7 +115,6 @@ def save_new_youtube_videos(videos, query, owner_user_id, group_id=None):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
         target_group = _resolve_youtube_group(cursor, owner_user_id, group_id)
         normalized_videos = []
         seen_ids = set()
@@ -133,8 +132,8 @@ def save_new_youtube_videos(videos, query, owner_user_id, group_id=None):
             return {"items": [], "created": 0, "duplicate": 0, "requested": len(videos)}
 
         ids = [video.get("id") for video in normalized_videos]
-        placeholders = ",".join("?" for _ in ids)
-        cursor.execute(f"SELECT video_id FROM youtube_videos WHERE owner_user_id = ? AND video_id IN ({placeholders})", [owner_user_id, *ids])
+        placeholders = ",".join("%s" for _ in ids)
+        cursor.execute(f"SELECT video_id FROM youtube_videos WHERE owner_user_id = %s AND video_id IN ({placeholders})", [owner_user_id, *ids])
         existing_ids = {row["video_id"] for row in cursor.fetchall()}
         published_ids, published_urls = _published_youtube_identity_sets(cursor, owner_user_id)
         published_duplicate_count = sum(
@@ -158,7 +157,7 @@ def save_new_youtube_videos(videos, query, owner_user_id, group_id=None):
             INSERT INTO youtube_videos (
                 video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query, group_id, owner_user_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ''', (
                 video_id,
                 video.get("title") or "",
@@ -184,12 +183,12 @@ def save_new_youtube_videos(videos, query, owner_user_id, group_id=None):
             }
 
         new_ids = [video.get("id") for video in new_videos]
-        placeholders = ",".join("?" for _ in new_ids)
+        placeholders = ",".join("%s" for _ in new_ids)
         cursor.execute(f'''
-        SELECT youtube_videos.*, ? AS group_name, ? AS group_is_default
+        SELECT youtube_videos.*, %s AS group_name, %s AS group_is_default
         FROM youtube_videos
-        WHERE owner_user_id = ? AND video_id IN ({placeholders})
-        ORDER BY CASE video_id {' '.join(f'WHEN ? THEN {index}' for index, _ in enumerate(new_ids))} END
+        WHERE owner_user_id = %s AND video_id IN ({placeholders})
+        ORDER BY CASE video_id {' '.join(f'WHEN %s THEN {index}' for index, _ in enumerate(new_ids))} END
         ''', [target_group["name"], target_group["is_default"], owner_user_id, *new_ids, *new_ids])
         return {
             "items": [_row_to_youtube_video(row) for row in cursor.fetchall()],
@@ -209,7 +208,7 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job
 
     if job_created_at:
         cursor.execute(
-            "SELECT deleted_at FROM youtube_video_deletions WHERE video_id = ? AND owner_user_id = ?",
+            "SELECT deleted_at FROM youtube_video_deletions WHERE video_id = %s AND owner_user_id = %s",
             (video_id, owner_user_id),
         )
         deletion = cursor.fetchone()
@@ -221,7 +220,7 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job
     SELECT youtube_videos.*, groups.name AS group_name, groups.is_default AS group_is_default
     FROM youtube_videos
     LEFT JOIN youtube_video_groups groups ON groups.id = youtube_videos.group_id
-    WHERE youtube_videos.video_id = ? AND youtube_videos.owner_user_id = ?
+    WHERE youtube_videos.video_id = %s AND youtube_videos.owner_user_id = %s
     ''', (video_id, owner_user_id))
     existing = cursor.fetchone()
     published_ids, published_urls = _published_youtube_identity_sets(cursor, owner_user_id)
@@ -236,7 +235,7 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job
     INSERT INTO youtube_videos (
         video_id, title, channel, subscribers, published_at, url, thumbnail, duration, query, group_id, owner_user_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ''', (
         video_id,
         video.get("title") or "",
@@ -254,7 +253,7 @@ def _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job
     SELECT youtube_videos.*, groups.name AS group_name, groups.is_default AS group_is_default
     FROM youtube_videos
     LEFT JOIN youtube_video_groups groups ON groups.id = youtube_videos.group_id
-    WHERE youtube_videos.video_id = ? AND youtube_videos.owner_user_id = ?
+    WHERE youtube_videos.video_id = %s AND youtube_videos.owner_user_id = %s
     ''', (video_id, owner_user_id))
     return {"decision": "created", "item": _row_to_youtube_video(cursor.fetchone())}
 
@@ -263,7 +262,6 @@ def save_one_youtube_video(video, query, owner_user_id, job_created_at="", group
     init_youtube_video_table()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
         _resolve_youtube_group(cursor, owner_user_id, group_id)
         return _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job_created_at, group_id)
 
@@ -430,7 +428,7 @@ def _youtube_video_sort_sql(sort):
 
 
 def _youtube_video_where(params, owner_user_id):
-    where = ["owner_user_id = ?"]
+    where = ["owner_user_id = %s"]
     values = [owner_user_id]
     storage_clause, storage_values = _youtube_storage_scope_clause(params.get("storageScope"))
     where.append(storage_clause)
@@ -443,8 +441,8 @@ def _youtube_video_where(params, owner_user_id):
     if keyword:
         like = f"%{keyword}%"
         where.append("""(
-            title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?
-            OR publish_draft LIKE ?
+            title ILIKE %s OR channel ILIKE %s OR url ILIKE %s OR query ILIKE %s
+            OR publish_draft ILIKE %s
         )""")
         values.extend([like, like, like, like, like])
     status_clause, status_values = _youtube_video_status_clause(str(params.get("status") or "all"))
@@ -457,7 +455,7 @@ def _youtube_video_where(params, owner_user_id):
             values.append(int(group_id))
         except (TypeError, ValueError) as exc:
             raise ValueError("groupId 必须是整数") from exc
-        where.append("group_id = ?")
+        where.append("group_id = %s")
     return (" WHERE " + " AND ".join(where)) if where else "", values, ids
 
 
@@ -471,7 +469,7 @@ def _attach_processed_versions_for_videos(cursor, videos, owner_user_id):
     cursor.execute(f'''
     SELECT * FROM file_records
     WHERE source_type = 'youtube_processed'
-      AND owner_user_id = ?
+      AND owner_user_id = %s
       AND status != 'purged'
       AND source_video_id IN ({_sql_placeholders(video_ids)})
     ORDER BY upload_time DESC, id DESC
@@ -528,14 +526,14 @@ def _attach_processed_versions_for_videos(cursor, videos, owner_user_id):
 
 
 def _youtube_video_summary(cursor, owner_user_id, keyword="", group_id=None):
-    where_parts = ["owner_user_id = ?"]
+    where_parts = ["owner_user_id = %s"]
     values = [owner_user_id]
     if keyword:
         like = f"%{keyword}%"
-        where_parts.append("(title LIKE ? OR channel LIKE ? OR url LIKE ? OR query LIKE ?)")
+        where_parts.append("(title ILIKE %s OR channel ILIKE %s OR url ILIKE %s OR query ILIKE %s)")
         values.extend([like, like, like, like])
     if group_id not in (None, ""):
-        where_parts.append("group_id = ?")
+        where_parts.append("group_id = %s")
         values.append(int(group_id))
     where = " WHERE " + " AND ".join(where_parts) if where_parts else ""
     cursor.execute(f'''
@@ -554,12 +552,12 @@ def _youtube_video_summary(cursor, owner_user_id, keyword="", group_id=None):
     running_group_clause = ""
     running_values = []
     if group_id not in (None, ""):
-        running_group_clause = "AND video_id IN (SELECT video_id FROM youtube_videos WHERE owner_user_id = ? AND group_id = ?)"
+        running_group_clause = "AND video_id IN (SELECT video_id FROM youtube_videos WHERE owner_user_id = %s AND group_id = %s)"
         running_values.extend([owner_user_id, int(group_id)])
     cursor.execute(f'''
     SELECT COUNT(DISTINCT video_id) AS running
     FROM youtube_workflow_jobs
-    WHERE owner_user_id = ? AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') AND video_id IS NOT NULL AND video_id != ''
+    WHERE owner_user_id = %s AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') AND video_id IS NOT NULL AND video_id != ''
     {running_group_clause}
     ''', [owner_user_id, *running_values])
     running_row = cursor.fetchone() or {}
@@ -582,7 +580,7 @@ def _reconcile_youtube_statuses_with_material_records(cursor, owner_user_id):
         downloaded_file_path = '',
         updated_at = CURRENT_TIMESTAMP
     WHERE download_status = 1
-      AND youtube_videos.owner_user_id = ?
+      AND youtube_videos.owner_user_id = %s
       AND NOT EXISTS (
         SELECT 1
         FROM file_records
@@ -599,7 +597,7 @@ def _reconcile_youtube_statuses_with_material_records(cursor, owner_user_id):
         processed_file_path = '',
         updated_at = CURRENT_TIMESTAMP
     WHERE translate_status IN (1, 2)
-      AND youtube_videos.owner_user_id = ?
+      AND youtube_videos.owner_user_id = %s
       AND NOT EXISTS (
         SELECT 1
         FROM file_records
@@ -617,7 +615,7 @@ def _reconcile_youtube_generated_publish_drafts(cursor, owner_user_id):
     SELECT video_id, analysis_result, publish_draft
     FROM youtube_videos
     WHERE analysis_status = 1
-      AND owner_user_id = ?
+      AND owner_user_id = %s
       AND analysis_result IS NOT NULL AND analysis_result != ''
       AND publish_draft IS NOT NULL AND publish_draft != ''
     ''', (owner_user_id,))
@@ -637,8 +635,8 @@ def _reconcile_youtube_generated_publish_drafts(cursor, owner_user_id):
             continue
         cursor.execute('''
         UPDATE youtube_videos
-        SET publish_draft = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ? AND owner_user_id = ?
+        SET publish_draft = %s, updated_at = CURRENT_TIMESTAMP
+        WHERE video_id = %s AND owner_user_id = %s
         ''', (json.dumps(expected, ensure_ascii=False), row["video_id"], owner_user_id))
 
 
@@ -662,7 +660,7 @@ def list_youtube_videos(params=None, owner_user_id=None):
         total = int((cursor.fetchone() or {})["total"] or 0)
 
         if ids:
-            order_sql = f"CASE video_id {' '.join(f'WHEN ? THEN {index}' for index, _ in enumerate(ids))} END"
+            order_sql = f"CASE video_id {' '.join(f'WHEN %s THEN {index}' for index, _ in enumerate(ids))} END"
             query_values = values + ids + [page_size, offset]
         else:
             order_sql = sort_sql
@@ -674,18 +672,18 @@ def list_youtube_videos(params=None, owner_user_id=None):
         FROM youtube_videos
         {where_sql}
         ORDER BY {order_sql}
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
         '''.format(where_sql=where_sql, order_sql=order_sql), query_values)
         videos = [_row_to_youtube_video(row) for row in cursor.fetchall()]
         video_ids = [video["id"] for video in videos if video.get("id")]
         publish_records = {}
         if video_ids:
-            placeholders = ",".join("?" for _ in video_ids)
+            placeholders = ",".join("%s" for _ in video_ids)
             cursor.execute(f'''
             SELECT id, video_id, platform, platform_type, status, message, publish_task_id, updated_at,
                    published_at, account_id, account_name
             FROM published_youtube_materials
-            WHERE owner_user_id = ? AND video_id IN ({placeholders})
+            WHERE owner_user_id = %s AND video_id IN ({placeholders})
               AND deleted_at IS NULL
             ORDER BY platform_type
             ''', [owner_user_id, *video_ids])
@@ -742,7 +740,7 @@ def normalize_existing_youtube_subscribers():
                 normalized = _format_subscribers_w(subscribers)
                 if normalized and normalized != subscribers:
                     cursor.execute(
-                        f"UPDATE {table} SET subscribers = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        f"UPDATE {table} SET subscribers = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                         (normalized, row_id),
                     )
         conn.commit()
@@ -753,13 +751,13 @@ def update_youtube_video_status(video_id, owner_user_id, download_status=None, p
     fields = []
     values = []
     if download_status is not None:
-        fields.append("download_status = ?")
+        fields.append("download_status = %s")
         values.append(int(download_status))
     if publish_status is not None:
-        fields.append("publish_status = ?")
+        fields.append("publish_status = %s")
         values.append(int(publish_status))
     if translate_status is not None:
-        fields.append("translate_status = ?")
+        fields.append("translate_status = %s")
         values.append(int(translate_status))
     if not fields:
         raise ValueError("没有可更新的状态字段")
@@ -771,12 +769,12 @@ def update_youtube_video_status(video_id, owner_user_id, download_status=None, p
         cursor.execute(f'''
         UPDATE youtube_videos
         SET {", ".join(fields)}
-        WHERE video_id = ? AND owner_user_id = ?
+        WHERE video_id = %s AND owner_user_id = %s
         ''', values)
         if cursor.rowcount == 0:
             raise LookupError("视频记录不存在")
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
         return _row_to_youtube_video(cursor.fetchone())
 
 
@@ -795,7 +793,7 @@ def _cleanup_editing_v1_artifacts(video_record, *, cursor=None):
     if video_id and cursor is not None:
         try:
             cursor.execute(
-                "SELECT id FROM youtube_workflow_jobs WHERE video_id = ? AND owner_user_id = ?",
+                "SELECT id FROM youtube_workflow_jobs WHERE video_id = %s AND owner_user_id = %s",
                 (video_id, video_record.get("owner_user_id")),
             )
             job_ids = [str(row[0]) for row in cursor.fetchall()]
@@ -811,8 +809,7 @@ def delete_youtube_video_record(video_id, owner_user_id):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
         video = cursor.fetchone()
         if not video:
             raise LookupError("视频线索不存在")
@@ -866,18 +863,18 @@ def delete_youtube_video_record(video_id, owner_user_id):
         if not is_published_archived:
             cursor.execute('''
             DELETE FROM youtube_workflow_events
-            WHERE (video_id = ? AND owner_user_id = ?)
-               OR job_id IN (SELECT id FROM youtube_workflow_jobs WHERE video_id = ? AND owner_user_id = ?)
+            WHERE (video_id = %s AND owner_user_id = %s)
+               OR job_id IN (SELECT id FROM youtube_workflow_jobs WHERE video_id = %s AND owner_user_id = %s)
             ''', (video_id, owner_user_id, video_id, owner_user_id))
-            cursor.execute("DELETE FROM youtube_workflow_jobs WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+            cursor.execute("DELETE FROM youtube_workflow_jobs WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
 
         deleted_at = datetime.datetime.now().isoformat(timespec="microseconds")
         cursor.execute('''
         INSERT INTO youtube_video_deletions (video_id, deleted_at, owner_user_id)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
         ON CONFLICT(owner_user_id, video_id) DO UPDATE SET deleted_at = excluded.deleted_at
         ''', (video_id, deleted_at, owner_user_id))
-        cursor.execute("DELETE FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+        cursor.execute("DELETE FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
         deleted = cursor.rowcount
         conn.commit()
     if not deleted:
@@ -940,10 +937,10 @@ def _delete_youtube_transcript_cache(video):
 
 
 def _delete_reset_youtube_workflow_history(cursor, video_id, owner_user_id, process_version=""):
-    conditions = ["video_id = ?", "owner_user_id = ?", "status NOT IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')"]
+    conditions = ["video_id = %s", "owner_user_id = %s", "status NOT IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')"]
     values = [video_id, owner_user_id]
     if process_version:
-        conditions.append("process_version = ?")
+        conditions.append("process_version = %s")
         values.append(process_version)
     where_sql = " AND ".join(conditions)
     cursor.execute(f'''
@@ -966,7 +963,7 @@ def reset_youtube_video_processing(video_id, owner_user_id, delete_processed=Tru
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
         video = cursor.fetchone()
         if not video:
             raise LookupError("视频线索不存在")
@@ -974,8 +971,8 @@ def reset_youtube_video_processing(video_id, owner_user_id, delete_processed=Tru
 
         cursor.execute('''
         SELECT * FROM file_records
-        WHERE source_video_id = ? AND source_type = 'youtube_processed'
-          AND owner_user_id = ?
+        WHERE source_video_id = %s AND source_type = 'youtube_processed'
+          AND owner_user_id = %s
         ORDER BY upload_time DESC, id DESC
         ''', (video_id, owner_user_id))
         material_rows = cursor.fetchall()
@@ -999,10 +996,10 @@ def reset_youtube_video_processing(video_id, owner_user_id, delete_processed=Tru
                 })
             if process_version:
                 for record in deleted_materials:
-                    cursor.execute("DELETE FROM file_records WHERE id = ?", (record.get("id"),))
+                    cursor.execute("DELETE FROM file_records WHERE id = %s", (record.get("id"),))
             else:
                 cursor.execute(
-                    "DELETE FROM file_records WHERE source_video_id = ? AND source_type = 'youtube_processed' AND owner_user_id = ?",
+                    "DELETE FROM file_records WHERE source_video_id = %s AND source_type = 'youtube_processed' AND owner_user_id = %s",
                     (video_id, owner_user_id),
                 )
 
@@ -1014,7 +1011,7 @@ def reset_youtube_video_processing(video_id, owner_user_id, delete_processed=Tru
                 transcript_file_path = '',
                 transcript_language = '',
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ? AND owner_user_id = ?
+            WHERE video_id = %s AND owner_user_id = %s
             ''', (video_id, owner_user_id))
 
         deleted_workflow_job_count = _delete_reset_youtube_workflow_history(
@@ -1032,10 +1029,10 @@ def reset_youtube_video_processing(video_id, owner_user_id, delete_processed=Tru
             SET editing_body_path = '', editing_ass_path = '', editing_body_signature = '',
                 editing_intro_signature = '', editing_highlight_snapshot = '[]', editing_intro_status = '',
                 comment_burn_snapshot = '{}', comment_burn_signature = '', comment_burn_status = ''
-            WHERE video_id = ? AND owner_user_id = ?
+            WHERE video_id = %s AND owner_user_id = %s
             ''', (video_id, owner_user_id))
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = %s AND owner_user_id = %s", (video_id, owner_user_id))
         updated_video = _row_to_youtube_video(cursor.fetchone())
 
     return {
