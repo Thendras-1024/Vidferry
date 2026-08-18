@@ -87,6 +87,11 @@ class WorkflowConflictError(ValueError):
         self.data = data or {}
 
 
+class WorkflowContextError(RuntimeError):
+    """工作流任务上下文无法加载或缺少必要归属信息。"""
+    pass
+
+
 class BackgroundQueueFullError(RuntimeError):
     """后台资源的全局或 owner 队列准入已满。"""
 

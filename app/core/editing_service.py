@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.core.llm_harness import LLMContractError, call_json_contract, contains_profanity, validate_chunk_summary, validate_editing_plan
 from app.core.highlight_policy import HIGHLIGHT_MAX_DURATION_SECONDS, HIGHLIGHT_MIN_DURATION_SECONDS, HIGHLIGHT_MIN_START_SECONDS
+from app.core.errors import WorkflowContextError
 from app.core import llm_prompts
 from app.core.cover_service import (
     analyze_cover_layout,
@@ -517,7 +518,13 @@ def _generate_editing_plan(job, segments, telemetry=None):
 
 def _generate_editing_plan_impl(job, segments, telemetry=None):
     context_loader = globals().get("youtube_video_research_context")
-    research_context = context_loader(job.get("videoId")) if callable(context_loader) else {}
+    if callable(context_loader):
+        try:
+            research_context = context_loader(job.get("videoId"), job["ownerUserId"])
+        except (KeyError, TypeError) as exc:
+            raise WorkflowContextError("视频研究上下文加载失败") from exc
+    else:
+        research_context = {}
     job = {**job, **research_context}
     transcript_text = _format_transcript_for_model(segments)
     if not transcript_text.strip():

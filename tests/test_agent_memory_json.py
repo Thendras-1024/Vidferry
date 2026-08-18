@@ -29,3 +29,13 @@ def test_agent_stream_serializes_datetime_tool_results():
 
     event = backend._agent_sse_event("result", {"updatedAt": value})
     assert json.loads(event.split("data: ", 1)[1]) == {"updatedAt": "2026-08-17T23:11:25"}
+
+
+def test_notification_time_serializes_naive_database_time_without_utc_shift():
+    backend = create_backend_module("test_notification_time_serialization_backend")
+    local_time = datetime.datetime(2026, 8, 18, 16, 32)
+
+    item = backend._notification_item({"id": 1, "updated_at": local_time})
+
+    assert item["updatedAt"] == "2026-08-18T16:32:00"
+    assert backend.app.json.loads(backend.app.json.dumps(item))["updatedAt"] == "2026-08-18T16:32:00"

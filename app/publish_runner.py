@@ -119,7 +119,7 @@ async def _upload_bilibili(args: argparse.Namespace) -> None:
 
 
 async def _upload_tencent(args: argparse.Namespace) -> None:
-    from uploader.tencent_uploader.main import TencentVideo, format_tencent_publish_result
+    from uploader.tencent_uploader.main import TencentVideo
 
     publish_date = _parse_schedule(args.schedule)
     app = TencentVideo(
@@ -135,12 +135,7 @@ async def _upload_tencent(args: argparse.Namespace) -> None:
         debug=args.debug,
         headless=args.headless,
     )
-    result = await app.tencent_upload_video()
-    if args.draft:
-        return
-    if not result.get("platformWorkId"):
-        raise RuntimeError("VF-PUBLISH-UNVERIFIED: 视频号未返回已验证的平台作品 ID。")
-    print(format_tencent_publish_result(result))
+    await app.tencent_upload_video()
 
 
 async def _ensure_account_valid(args: argparse.Namespace) -> None:

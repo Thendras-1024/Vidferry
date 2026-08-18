@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from app.core.errors import LLM_CATEGORY_ERROR_INFO
+from app.core.errors import LLM_CATEGORY_ERROR_INFO, WorkflowContextError
 
 
 _WORKFLOW_ERROR_CONFIG = (
     (lambda exc, _text: exc.__class__.__name__ == "LLMContractError", "VF-LLM-CONTRACT-INVALID", "LLM_CONTRACT_ERROR", "模型输出未满足中文与结构化约束，系统已尝试修正但仍未通过。"),
+    (lambda exc, _text: isinstance(exc, WorkflowContextError), "VF-WORKFLOW-CONTEXT-FAILED", "WORKFLOW_CONTEXT_FAILED", "任务上下文加载失败，请重新发起处理；如持续发生，请查看后端日志。"),
     (lambda _exc, text: "AUDIO_EXTRACTION_FAILED:" in text, "VF-AUDIO-EXTRACTION-FAILED", "AUDIO_EXTRACTION_FAILED", "音频提取失败；请检查源视频音轨和 FFmpeg 配置。"),
     (lambda _exc, text: "RUNTIME_CONFIG_FAILED:WHISPER:" in text, "VF-ASR-RUNTIME-CONFIG", "ASR_RUNTIME_CONFIG", "Whisper 运行环境不可用；请按右上角消息中的配置指引修复后重试。"),
     (lambda _exc, text: "RUNTIME_CONFIG_FAILED:VIDEO_ENCODER:" in text, "VF-VIDEO-ENCODER-CONFIG", "VIDEO_ENCODER_CONFIG", "视频编码器不可用；请更新 NVIDIA 驱动以启用 NVENC，或将 VIDEO_ENCODER 改为 libx264 后重试。"),
@@ -29,7 +30,7 @@ _WORKFLOW_ERROR_CONFIG = (
     (lambda exc, _text: isinstance(exc, PermissionError), "VF-WORKFLOW-FILE-PERMISSION", "FILE_PERMISSION_ERROR", "任务文件无法访问，请确认文件未被其他程序占用且目录可写。"),
     (lambda _exc, text: "未找到已下载视频文件" in text or "no such file" in text.lower(), "VF-WORKFLOW-SOURCE-MISSING", "SOURCE_FILE_MISSING", "未找到任务所需文件，请先重新下载视频后再处理。"),
     (lambda _exc, text: "未安装 yt-dlp" in text.lower(), "VF-DOWNLOAD-DEPENDENCY-MISSING", "DOWNLOAD_DEPENDENCY_MISSING", "下载组件未安装或不可用，请检查后端依赖配置。"),
-    (lambda _exc, text: "unable to download video data" in text.lower() and "http error 403" in text.lower(), "VF-DOWNLOAD-YOUTUBE-FORBIDDEN", "YOUTUBE_DOWNLOAD_FORBIDDEN", "YouTube 拒绝了媒体流下载请求（HTTP 403）。请关闭不必要的 Google/YouTube 登录会话后重试；若多个视频持续失败，请检查当前网络出口或代理是否被限制。"),
+    (lambda _exc, text: "unable to download video data" in text.lower() and "http error 403" in text.lower(), "VF-DOWNLOAD-YOUTUBE-FORBIDDEN", "YOUTUBE_DOWNLOAD_FORBIDDEN", "YouTube 拒绝了媒体流下载请求（HTTP 403）。当前下载已使用 Android 客户端；若仍失败，请检查 yt-dlp 版本、网络出口或代理限制。"),
     (lambda _exc, text: "ffmpeg 已执行，但未生成" in text.lower(), "VF-MEDIA-OUTPUT-MISSING", "MEDIA_OUTPUT_MISSING", "视频处理未生成有效输出文件，请重新处理；如持续发生，请检查磁盘空间和后端日志。"),
     (lambda _exc, text: "ffmpeg" in text.lower() or "cpb:" in text.lower(), "VF-MEDIA-PROCESS-UNCLASSIFIED", "MEDIA_PROCESS_UNCLASSIFIED", "视频处理失败，但工具输出未包含可判定原因。请查看任务编号对应的后端日志。"),
 )

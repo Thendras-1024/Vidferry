@@ -20,6 +20,12 @@ def _notification_json(value, fallback):
     return parsed if isinstance(parsed, type(fallback)) else fallback
 
 
+def _notification_time(value):
+    if isinstance(value, datetime.datetime):
+        return value.isoformat(timespec="seconds")
+    return value or ""
+
+
 def _notification_item(row):
     item = dict(row)
     return {
@@ -33,11 +39,11 @@ def _notification_item(row):
         "sourceRefs": _notification_json(item.get("source_refs"), []),
         "occurrenceCount": int(item.get("occurrence_count") or 1),
         "status": item.get("status") or "active",
-        "firstSeenAt": item.get("first_seen_at") or "",
-        "lastSeenAt": item.get("last_seen_at") or "",
-        "acknowledgedAt": item.get("acknowledged_at") or "",
-        "resolvedAt": item.get("resolved_at") or "",
-        "updatedAt": item.get("updated_at") or item.get("last_seen_at") or "",
+        "firstSeenAt": _notification_time(item.get("first_seen_at")),
+        "lastSeenAt": _notification_time(item.get("last_seen_at")),
+        "acknowledgedAt": _notification_time(item.get("acknowledged_at")),
+        "resolvedAt": _notification_time(item.get("resolved_at")),
+        "updatedAt": _notification_time(item.get("updated_at") or item.get("last_seen_at")),
     }
 
 
