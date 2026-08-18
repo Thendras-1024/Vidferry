@@ -57,6 +57,7 @@ cover/
 
 # Django stuff:
 *.log
+logs/tencent_diagnostics/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -238,6 +239,7 @@ docs/*
 !docs/**/
 !docs/**/*.md
 tests/*
+!tests/test_youtube_local_retention.py
 !tests/test_postgres_compat.py
 !tests/test_postgres_migrations.py
 !tests/conftest.py
@@ -245,3 +247,5 @@ tests/*
 !tests/test_comment_burn_service.py
 !tests/test_feishu_robot.py
 !tests/test_agent_observability.py
+!tests/test_task_center_history.py
+!tests/test_multilingual_subtitles.py

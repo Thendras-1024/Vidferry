@@ -5,6 +5,14 @@ export const taskCenterApi = {
     return request.get('/task-center', { params, silentError: true })
   },
 
+  all(params = {}) {
+    return request.get('/task-center', { params: { view: 'all', ...params }, silentError: true })
+  },
+
+  history(params = {}) {
+    return request.get('/task-center', { params: { view: 'history', ...params }, silentError: true })
+  },
+
   detail(taskKey) {
     return request.get(`/task-center/${encodeURIComponent(taskKey)}`, { silentError: true })
   },

@@ -5,6 +5,7 @@ export * from './material'
 export * from './youtube'
 export * from './common'
 export * from './agent'
+export * from './shortVideo'
 
 // 可以在这里添加其他API模块的导出
 // export * from './product'

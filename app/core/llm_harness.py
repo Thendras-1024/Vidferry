@@ -12,6 +12,7 @@ import urllib.request
 
 from app.core.errors import LLMContractError, LLMRequestError
 from app.config import llm_provider_profile
+from app.core.highlight_policy import HIGHLIGHT_MAX_DURATION_SECONDS, HIGHLIGHT_MIN_DURATION_SECONDS, HIGHLIGHT_MIN_START_SECONDS
 from app.core.llm_provider import fallback_payloads, provider_optional_fields
 
 
@@ -125,10 +126,14 @@ def extract_json_object(value):
     if fenced:
         text = fenced.group(1)
     else:
-        start, end = text.find("{"), text.rfind("}")
-        if start >= 0 and end > start:
-            text = text[start:end + 1]
-    parsed = json.loads(_clean_json_text(text))
+        start = text.find("{")
+        if start >= 0:
+            text = text[start:]
+    cleaned = _clean_json_text(text)
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(cleaned)
+    except json.JSONDecodeError:
+        parsed = json.loads(cleaned)
     if not isinstance(parsed, dict):
         raise ValueError("顶层必须是 JSON 对象")
     return parsed
@@ -217,13 +222,13 @@ def _emit_usage_telemetry(telemetry, payload):
         logging.exception("LLM 用量遥测写入失败 contract = %s", payload.get("operation") or "")
 
 
-def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None):
+def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None, profile_channel="text"):
     """调用模型并最多进行一次针对契约错误的完整重写。"""
     if not api_key or not base_url or not model:
         raise RuntimeError("模型 API Key、Base URL 或模型名称未配置。")
 
     started_at = time.time()
-    profile = llm_provider_profile(model, api_key, base_url)
+    profile = llm_provider_profile(model, api_key, base_url, profile_channel=profile_channel)
     total_usage = {"tokens": 0, "totalTokens": 0, "promptTokens": 0, "completionTokens": 0}
     current_messages = list(messages)
     last_raw = ""
@@ -501,9 +506,9 @@ def _highlight_segments(
             item_violations.append(f"{item_path}.type 不能为空")
         reason = _chinese_text(item.get("reason"), f"{item_path}.reason", item_violations, validate_text=validate_text)
         caption = _chinese_text(item.get("suggested_caption"), f"{item_path}.suggested_caption", item_violations, validate_text=validate_text)
-        if start < 30:
-            item_violations.append(f"{item_path}.start 不得早于 30 秒")
-        if end - start < 6 or end - start > 12:
+        if start < HIGHLIGHT_MIN_START_SECONDS:
+            item_violations.append(f"{item_path}.start 不得早于 {HIGHLIGHT_MIN_START_SECONDS} 秒")
+        if end - start < HIGHLIGHT_MIN_DURATION_SECONDS or end - start > HIGHLIGHT_MAX_DURATION_SECONDS:
             item_violations.append(f"{item_path} 时长必须为 6-12 秒")
         if max_timestamp and end > max_timestamp + 0.01:
             item_violations.append(f"{item_path}.end 超出转写时长")
@@ -520,7 +525,7 @@ def _highlight_segments(
         if any(start < existing["end"] and end > existing["start"] for existing in output):
             continue
         output.append({"start": round(start, 2), "end": round(end, 2), "type": kind, "reason": reason, "suggested_caption": caption})
-    return output[:max(0, int(max_items or 0))]
+    return sorted(output, key=lambda item: (item["start"], item["end"]))[:max(0, int(max_items or 0))]
 
 
 def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_highlights=0, soft_warnings=None):
@@ -553,7 +558,7 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             if text and not item_violations:
                 risk_notes.append(text)
     if blocked_ranges:
-        review_note = "检测到明确粗口，中文字幕将以 * 替换；英文原文字幕与原声保留，请人工审核。"
+        review_note = "检测到明确粗口，中文字幕将以 * 替换；原音识别文本与原声保留，请人工审核。"
         if review_note not in risk_notes:
             risk_notes = risk_notes[:7]
             risk_notes.append(review_note)
@@ -585,10 +590,6 @@ def validate_editing_plan(value, max_timestamp=0, blocked_ranges=(), minimum_hig
             cleaned_tags.append(text)
     if not cleaned_tags:
         violations.append("tags 不能为空")
-    elif len(cleaned_tags) > 8:
-        if soft_warnings is not None:
-            soft_warnings.append("tags 超过 8 项，已截断为前 8 项")
-        cleaned_tags = cleaned_tags[:8]
     result["tags"] = cleaned_tags
     _fail(violations)
     return result
@@ -746,6 +747,43 @@ def validate_agent_reply(value):
     result = {"answer": answer}
     _fail(violations)
     return result
+
+
+def validate_agent_copywriting(value):
+    violations = []
+    if not isinstance(value, dict):
+        _fail(["顶层必须是对象"])
+    _fixed_fields(value, {"options"}, "文案候选", violations)
+    options = value.get("options")
+    if not isinstance(options, list) or len(options) != 3:
+        violations.append("options 必须恰好包含 3 项")
+        options = []
+    output = []
+    for index, item in enumerate(options):
+        path = f"options[{index}]"
+        if not isinstance(item, dict):
+            violations.append(f"{path} 必须是对象")
+            continue
+        _fixed_fields(item, {"title", "description", "tags", "reason"}, path, violations)
+        title = _chinese_text(item.get("title"), f"{path}.title", violations, validate_text=False)
+        description = _chinese_text(item.get("description"), f"{path}.description", violations, validate_text=False)
+        if len(description) > 500:
+            violations.append(f"{path}.description 不能超过 500 个字符")
+        tags = [
+            tag.lstrip("#").strip()
+            for tag in _string_list(item.get("tags"), f"{path}.tags", violations, allow_empty=False, validate_text=False)
+            if tag.lstrip("#").strip()
+        ]
+        if not tags:
+            violations.append(f"{path}.tags 不能为空")
+        output.append({
+            "title": title,
+            "description": description,
+            "tags": list(dict.fromkeys(tags)),
+            "reason": _chinese_text(item.get("reason"), f"{path}.reason", violations, validate_text=False),
+        })
+    _fail(violations)
+    return {"options": output}
 
 
 def validate_agent_search_translation(value):

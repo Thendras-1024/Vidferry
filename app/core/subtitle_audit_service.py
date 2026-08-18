@@ -8,6 +8,21 @@ def _subtitle_audit_json(value, fallback):
         return json.loads(fallback)
 
 
+def _normalize_source_language(value):
+    language = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "zh": "zh-CN", "zh-cn": "zh-CN", "zh-hans": "zh-CN",
+        "en": "en", "en-us": "en", "en-gb": "en",
+        "ja": "ja", "ja-jp": "ja",
+        "ko": "ko", "ko-kr": "ko",
+        "es": "es", "es-es": "es",
+        "fr": "fr", "fr-fr": "fr",
+        "de": "de", "de-de": "de",
+        "ru": "ru", "ru-ru": "ru",
+    }
+    return aliases.get(language, language if re.fullmatch(r"[a-z]{2,3}", language) else "")
+
+
 def save_subtitle_audit_snapshot(job, initial_segments, reviewed_segments, review_metadata=None):
     job = job or {}
     job_id = str(job.get("id") or "").strip()
@@ -19,16 +34,16 @@ def save_subtitle_audit_snapshot(job, initial_segments, reviewed_segments, revie
         with _db_connect() as conn:
             conn.execute('''
                 INSERT INTO youtube_subtitle_audits (
-                    job_id, video_id, video_title, target_language, initial_segments, reviewed_segments,
+                    owner_user_id, job_id, video_id, video_title, target_language, initial_segments, reviewed_segments,
                     review_status, fallback_segment_count, review_batches, saved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     video_id = excluded.video_id, video_title = excluded.video_title,
                     target_language = excluded.target_language, initial_segments = excluded.initial_segments,
                     reviewed_segments = excluded.reviewed_segments, review_status = excluded.review_status,
                     fallback_segment_count = excluded.fallback_segment_count, review_batches = excluded.review_batches, saved_at = excluded.saved_at
             ''', (
-                job_id, str(job.get("videoId") or ""), str(job.get("title") or ""),
+                job.get("ownerUserId"), job_id, str(job.get("videoId") or ""), str(job.get("title") or ""),
                 str(job.get("subtitleLanguage") or "zh-CN"),
                 json.dumps(initial_segments or [], ensure_ascii=False),
                 json.dumps(reviewed_segments or [], ensure_ascii=False),
@@ -75,13 +90,14 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
         conn.row_factory = True
         total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id WHERE {where}", params).fetchone()[0]
         rows = conn.execute(f'''
-            SELECT a.*, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
+            SELECT a.*, v.transcript_language AS source_language, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
                    j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.url AS workflow_url,
                    j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
                    EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j
             LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
+            LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id)
             LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
             WHERE {where}
             ORDER BY {order_by}
@@ -130,7 +146,7 @@ def _subtitle_audit_list_item(row):
     return {
         "jobId": row.get("job_id") or row.get("workflow_job_id") or "", "videoId": row.get("video_id") or row.get("workflow_video_id") or "", "url": row.get("workflow_url") or "",
         "title": row.get("video_title") or row.get("workflow_title") or row.get("video_id") or row.get("workflow_video_id") or "未命名视频",
-        "targetLanguage": row.get("target_language") or "", "reviewStatus": row.get("review_status") or "not_recorded",
+        "targetLanguage": row.get("target_language") or "", "sourceLanguage": _normalize_source_language(row.get("source_language")), "reviewStatus": row.get("review_status") or "not_recorded",
         "fallbackSegmentCount": int(row.get("fallback_segment_count") or 0),
         "savedAt": row.get("saved_at") or row.get("job_updated_at") or row.get("job_started_at") or row.get("job_created_at") or "", "jobStatus": row.get("job_status") or "",
         "jobStartedAt": row.get("job_started_at") or row.get("job_created_at") or "",
@@ -145,12 +161,13 @@ def get_subtitle_audit_detail(job_id):
     with _db_connect() as conn:
         conn.row_factory = True
         row = conn.execute('''
-            SELECT a.*, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
+            SELECT a.*, v.transcript_language AS source_language, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
                    j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.url AS workflow_url,
                    j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
                    EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
+            LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id)
             LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
             WHERE j.id = ?
         ''', (str(job_id or ""),)).fetchone()

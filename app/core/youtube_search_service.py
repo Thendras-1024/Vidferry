@@ -84,6 +84,9 @@ def _search_youtube_with_ytdlp(query, limit):
         url = item.get("webpage_url") or item.get("url")
         if video_id and (not url or not url.startswith("http")):
             url = f"https://www.youtube.com/watch?v={video_id}"
+        if not _YOUTUBE_VIDEO_ID_PATTERN.fullmatch(str(video_id or "")):
+            continue
+        url = f"https://www.youtube.com/watch?v={video_id}"
         duration_seconds = _duration_seconds(item.get("duration"))
         results.append({
             "id": video_id or "",
@@ -100,22 +103,60 @@ def _search_youtube_with_ytdlp(query, limit):
     return results
 
 
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+_YOUTUBE_VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
 def _extract_youtube_video_id(url):
-    parsed = urllib.parse.urlparse(url)
-    host = parsed.netloc.lower()
-    if "youtu.be" in host:
-        return parsed.path.strip("/").split("/")[0]
-    if "youtube.com" in host:
+    try:
+        parsed = urllib.parse.urlparse(str(url or "").strip())
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if parsed.scheme.lower() != "https" or host not in _YOUTUBE_HOSTS or port not in (None, 443):
+        return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/")[0]
+        return video_id if _YOUTUBE_VIDEO_ID_PATTERN.fullmatch(video_id) else ""
+    if host in _YOUTUBE_HOSTS:
         if parsed.path == "/watch":
-            return urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+            video_id = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+            return video_id if _YOUTUBE_VIDEO_ID_PATTERN.fullmatch(video_id) else ""
         for prefix in ("/shorts/", "/embed/", "/live/"):
             if parsed.path.startswith(prefix):
-                return parsed.path[len(prefix):].split("/")[0]
+                video_id = parsed.path[len(prefix):].split("/")[0]
+                return video_id if _YOUTUBE_VIDEO_ID_PATTERN.fullmatch(video_id) else ""
     return ""
 
 
+def _is_allowed_youtube_host_url(url):
+    try:
+        parsed = urllib.parse.urlparse(str(url or "").strip())
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and host in _YOUTUBE_HOSTS
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def _validate_youtube_url(url):
+    video_id = _extract_youtube_video_id(url)
+    if not video_id:
+        raise ValueError("仅支持标准 YouTube HTTPS 视频链接")
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def _canonical_youtube_url(url, video_id=""):
-    normalized_video_id = video_id or _extract_youtube_video_id(url or "")
+    normalized_video_id = video_id if _YOUTUBE_VIDEO_ID_PATTERN.fullmatch(str(video_id or "")) else _extract_youtube_video_id(url or "")
     if normalized_video_id:
         return f"https://www.youtube.com/watch?v={normalized_video_id}"
     return (url or "").strip()
@@ -153,7 +194,7 @@ def _ytdlp_published_at(item):
 
 
 def _channel_subscribers(channel_url):
-    if not channel_url:
+    if not channel_url or not _is_allowed_youtube_host_url(channel_url):
         return ""
     try:
         import yt_dlp
@@ -190,6 +231,9 @@ def _video_from_ytdlp_info(item, fallback_url=""):
     url = item.get("webpage_url") or item.get("original_url") or fallback_url
     if video_id and (not url or not str(url).startswith("http")):
         url = f"https://www.youtube.com/watch?v={video_id}"
+    if not _YOUTUBE_VIDEO_ID_PATTERN.fullmatch(str(video_id or "")):
+        video_id = ""
+    url = f"https://www.youtube.com/watch?v={video_id}" if video_id else ""
     subscribers = _format_subscribers_w(item.get("channel_follower_count") or item.get("uploader_follower_count"))
     creators = _co_creators(item)
     if not subscribers:
@@ -211,6 +255,7 @@ def _video_from_ytdlp_info(item, fallback_url=""):
 
 
 def _import_youtube_video_by_url(url, *, quick_metadata=False):
+    url = _validate_youtube_url(url)
     try:
         import yt_dlp
     except ImportError as exc:
@@ -394,6 +439,7 @@ def _row_to_youtube_search_job(row):
     item = dict(row)
     return {
         "jobId": item.get("id") or "",
+        "ownerUserId": int(item.get("owner_user_id") or 0),
         "query": item.get("query") or "",
         "requested": int(item.get("requested") or 0),
         "found": int(item.get("found") or 0),
@@ -461,7 +507,7 @@ def _duration_matches_search_job(video, job):
     return True
 
 
-def create_youtube_search_job(query, requested, group_id=None, duration_min_seconds=None, duration_max_seconds=None):
+def create_youtube_search_job(query, requested, owner_user_id, group_id=None, duration_min_seconds=None, duration_max_seconds=None):
     init_youtube_video_table()
     duration_min_seconds, duration_max_seconds = _normalize_duration_range(duration_min_seconds, duration_max_seconds)
     job_id = uuid.uuid4().hex
@@ -469,25 +515,28 @@ def create_youtube_search_job(query, requested, group_id=None, duration_min_seco
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
-        target_group = _resolve_youtube_group(cursor, group_id)
+        target_group = _resolve_youtube_group(cursor, owner_user_id, group_id)
         cursor.execute('''
         INSERT INTO youtube_search_jobs (
-            id, query, requested, status, message, group_id, group_name_snapshot,
+            id, query, requested, status, message, owner_user_id, group_id, group_name_snapshot,
             duration_min_seconds, duration_max_seconds, created_at, updated_at
         )
-        VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            job_id, query, requested, "查询任务已提交", target_group["id"], target_group["name"],
+            job_id, query, requested, "查询任务已提交", owner_user_id, target_group["id"], target_group["name"],
             duration_min_seconds, duration_max_seconds, timestamp, timestamp,
         ))
-    return get_youtube_search_job(job_id)
+    return get_youtube_search_job(job_id, owner_user_id)
 
 
-def get_youtube_search_job(job_id):
+def get_youtube_search_job(job_id, owner_user_id=None):
     init_youtube_video_table()
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        if owner_user_id is None:
+            cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ?", (job_id,))
+        else:
+            cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = ? AND owner_user_id = ?", (job_id, owner_user_id))
         row = cursor.fetchone()
     if not row:
         raise LookupError("查询任务不存在")
@@ -602,6 +651,7 @@ def _process_youtube_search_candidate(job_id, ordinal, video):
             cursor,
             video,
             job["query"],
+            job["ownerUserId"],
             job["createdAt"],
             job["groupId"],
         )

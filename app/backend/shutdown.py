@@ -7,12 +7,13 @@ def _mark_shutdown_once():
         return
     _shutdown_marked = True
     stop_scheduled_publish_scheduler()
+    stop_publish_dispatcher()
     try:
         interrupted = mark_shutdown_interrupted_jobs()
         if interrupted:
             print(f"已标记 {len(interrupted)} 个后端关闭中断任务")
     except Exception as exc:
-        print(f"标记后端关闭中断任务失败: {exc}")
+        print(f"标记后端关闭中断任务失败 : error_type = {type(exc).__name__}")
     close_database_pool()
 
 
@@ -35,6 +36,6 @@ def install_workflow_shutdown_handlers():
             _previous_signal_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, _handle_shutdown_signal)
         except Exception as exc:
-            print(f"注册 {signal_name} 关闭处理失败: {exc}")
+            print(f"注册 {signal_name} 关闭处理失败 : error_type = {type(exc).__name__}")
 
 

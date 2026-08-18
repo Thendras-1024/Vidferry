@@ -43,9 +43,15 @@ def _safe_cookie_filename(value):
     return filename
 
 
-def _safe_cookie_path(filename, *, must_exist=False):
+def _safe_cookie_path(filename, *, owner_user_id=None, must_exist=False):
     cookies_dir = (BASE_DIR / "cookiesFile").resolve()
-    candidate = (cookies_dir / _safe_cookie_filename(filename)).resolve()
+    owner_dir = cookies_dir
+    if owner_user_id is not None:
+        try:
+            owner_dir = cookies_dir / str(int(owner_user_id))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("非法 Cookie 所有者") from exc
+    candidate = (owner_dir / _safe_cookie_filename(filename)).resolve()
     if not candidate.is_relative_to(cookies_dir):
         raise ValueError("非法 Cookie 文件路径")
     if must_exist and not candidate.is_file():

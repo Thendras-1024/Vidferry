@@ -1,6 +1,5 @@
 <template>
-  <el-tooltip content="任务中心" placement="bottom">
-    <el-badge
+  <el-badge
       :value="summary.abnormalCount ? '!' : summary.badgeCount"
       :hidden="summary.badgeCount === 0"
       :type="summary.abnormalCount ? 'danger' : 'primary'"
@@ -8,15 +7,14 @@
       class="task-center-badge"
     >
       <el-popover
-        v-model:visible="panelVisible"
-        placement="bottom-end"
+        placement="top-end"
         trigger="click"
         width="430"
         popper-class="task-center-popper"
         @show="refresh"
       >
         <template #reference>
-          <el-button class="task-center-button" circle :icon="List" aria-label="任务中心" />
+          <el-button class="task-center-button" circle :icon="List" aria-label="任务中心" title="任务中心" />
         </template>
 
         <section class="task-center-panel" aria-label="任务中心列表">
@@ -25,7 +23,10 @@
               <strong>任务中心</strong>
               <span>{{ summary.badgeCount }} 项需要关注</span>
             </div>
-            <el-button text circle :icon="RefreshRight" aria-label="刷新任务" title="刷新任务" :loading="loading" @click="refresh" />
+            <div class="task-center-header-actions">
+              <el-button text size="small" @click="router.push('/task-center')">查看全部任务</el-button>
+              <el-button text circle :icon="RefreshRight" aria-label="刷新任务" title="刷新任务" :loading="loading" @click="refresh" />
+            </div>
           </header>
           <div v-if="loading && !items.length" class="task-center-loading"><el-icon class="is-loading"><Loading /></el-icon> 正在读取任务</div>
           <el-empty v-else-if="!items.length" description="暂无需要关注的任务" :image-size="62" />
@@ -39,10 +40,11 @@
                   <div class="task-item-english" :title="item.englishTitle">{{ item.englishTitle }}</div>
                   <div class="task-item-meta"><span class="task-status-dot" :class="`is-${item.status}`" />{{ item.currentStage }}</div>
                   <el-progress :percentage="item.progress" :show-text="false" :stroke-width="4" :status="progressStatus(item.status)" />
-                  <div class="task-item-time">{{ item.status === 'success' ? `完成于 ${formatTime(item.finishedAt)}` : formatTime(item.updatedAt) }}<span v-if="item.errorReason" class="task-error-summary">{{ item.errorReason }}</span></div>
+                  <div class="task-item-time">{{ ['success', 'reused'].includes(item.status) ? `完成于 ${formatTime(item.finishedAt)}` : formatTime(item.updatedAt) }}<span v-if="item.errorReason" class="task-error-summary">{{ item.errorReason }}</span></div>
                 </div>
                 <div class="task-item-actions">
                   <el-button text type="primary" size="small" @click="openDetail(item)">详情</el-button>
+                  <el-button v-if="item.canRetry" text type="primary" size="small" @click="openRetryDialog(item)">重新发布</el-button>
                   <el-button v-if="['failed', 'abnormal'].includes(item.status)" text type="danger" size="small" @click="acknowledge(item)">我知道了</el-button>
                 </div>
               </article>
@@ -50,27 +52,31 @@
           </div>
         </section>
       </el-popover>
-    </el-badge>
-  </el-tooltip>
+  </el-badge>
 
   <TaskFlowDialog v-model:visible="detailVisible" :detail="detail" />
+  <PublishRetryDialog v-model="retryDialogVisible" :task="retryTask" @completed="refresh" />
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { List, Loading, RefreshRight } from '@element-plus/icons-vue'
 import { taskCenterApi } from '@/api/taskCenter'
 import TaskFlowDialog from './TaskFlowDialog.vue'
+import PublishRetryDialog from './PublishRetryDialog.vue'
 
-const panelVisible = ref(false)
+const router = useRouter()
 const detailVisible = ref(false)
 const loading = ref(false)
 const detail = ref(null)
+const retryDialogVisible = ref(false)
+const retryTask = ref(null)
 const items = ref([])
 const summary = ref({ activeCount: 0, waitingCount: 0, completedCount: 0, abnormalCount: 0, badgeCount: 0 })
 let pollTimer = null
-const activeStatuses = new Set(['queued', 'running', 'waiting_confirmation'])
+const activeStatuses = new Set(['queued', 'running', 'waiting_confirmation', 'waiting_publish'])
 
 const visibleGroups = computed(() => {
   const groups = summary.value.groups || {}
@@ -89,7 +95,7 @@ const formatTime = value => {
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-const progressStatus = status => status === 'failed' || status === 'abnormal' ? 'exception' : status === 'success' ? 'success' : undefined
+const progressStatus = status => ['failed', 'abnormal', 'partial', 'needs_verification'].includes(status) ? 'exception' : ['success', 'reused'].includes(status) ? 'success' : undefined
 
 const refresh = async ({ activeOnly = false } = {}) => {
   if (loading.value) return
@@ -102,9 +108,9 @@ const refresh = async ({ activeOnly = false } = {}) => {
       : nextItems
     const groups = { active: [], waitingConfirmation: [], recentCompleted: [], abnormal: [] }
     for (const item of items.value) {
-      if (['queued', 'running'].includes(item.status)) groups.active.push(item)
+      if (['queued', 'running', 'waiting_publish'].includes(item.status)) groups.active.push(item)
       else if (item.status === 'waiting_confirmation') groups.waitingConfirmation.push(item)
-      else if (item.status === 'success') groups.recentCompleted.push(item)
+      else if (['success', 'reused'].includes(item.status)) groups.recentCompleted.push(item)
       else groups.abnormal.push(item)
     }
     summary.value = {
@@ -130,6 +136,14 @@ const openDetail = async item => {
   } catch (error) {
     ElMessage.error(error.message || '读取任务详情失败')
   }
+}
+
+const openRetryDialog = item => {
+  retryTask.value = {
+    ...item,
+    taskId: item.publishTaskId,
+  }
+  retryDialogVisible.value = true
 }
 
 const acknowledge = async item => {
@@ -165,7 +179,9 @@ onBeforeUnmount(() => {
   &:hover, &:focus { color: $primary-color; background: $bg-color-page; }
 }
 .task-center-panel { color: $text-primary; }
+:global(.task-center-popper) { max-height: calc(100vh - 80px); overflow-y: auto; }
 .task-center-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid $border-lighter; }
+.task-center-header-actions { display: flex; align-items: center; gap: 2px; }
 .task-center-header strong { display: block; font-size: 15px; }
 .task-center-header span { color: $text-secondary; font-size: 12px; }
 .task-center-loading { display: flex; gap: 8px; justify-content: center; padding: 28px 0; color: $text-secondary; }
@@ -184,7 +200,8 @@ onBeforeUnmount(() => {
 .task-error-summary { overflow: hidden; color: $danger-color; text-overflow: ellipsis; white-space: nowrap; }
 .task-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #aeb6c2; }
 .task-status-dot.is-running { background: $primary-color; }
-.task-status-dot.is-success { background: $success-color; }
+.task-status-dot.is-success, .task-status-dot.is-reused { background: $success-color; }
+.task-status-dot.is-partial, .task-status-dot.is-needs_verification { background: $warning-color; }
 .task-status-dot.is-warning { background: $warning-color; }
 .task-status-dot.is-failed, .task-status-dot.is-abnormal { background: $danger-color; }
 .task-item-actions { display: flex; flex: 0 0 auto; gap: 1px; padding-top: 16px; }

@@ -26,7 +26,7 @@ class BaseVideoUploader:
 
     @staticmethod
     async def set_upload_files(file_input, files, platform_name: str, asset_name: str) -> None:
-        """仅将已明确的浏览器上传控件超时转为稳定发布错误。"""
+        """将上传控件超时转换为可检索的发布错误。"""
         try:
             await file_input.set_input_files(files)
         except Exception as exc:

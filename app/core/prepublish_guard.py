@@ -159,7 +159,7 @@ def get_source_content_risk(publish_materials):
         ).strip()
         if (not isinstance(analysis_result, dict) or not analysis_result) and video_id:
             try:
-                analysis_result = (get_youtube_video_analysis(video_id) or {}).get("result") or {}
+                analysis_result = (get_youtube_video_analysis(video_id, material.get("owner_user_id")) or {}).get("result") or {}
             except Exception:
                 analysis_result = {}
         risk = analysis_result.get("contentRisk") if isinstance(analysis_result, dict) else {}
@@ -343,7 +343,7 @@ def validate_prepublish_guard_or_raise(
     override = (data or {}).get("riskOverride") or {}
     if source_content_risk and not override.get("sourceContentConfirmed"):
         raise AgentGuardError(
-            "检测到转写中含明确粗口，中文字幕已打码，但原声及英文字幕可能仍含风险；请确认后继续发布。",
+            "检测到转写中含明确粗口，中文字幕已打码，但原声及原音识别文本可能仍含风险；请确认后继续发布。",
             AGENT_ERROR_REQUIRES_CONFIRMATION,
             409,
             {

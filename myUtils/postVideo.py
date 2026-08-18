@@ -23,11 +23,7 @@ def post_video_tencent(title,files,tags,account_file,category=TencentZoneTypes.L
         publish_datetimes = [0 for i in range(len(files))]
     for index, file in enumerate(files):
         for cookie in account_file:
-            print(f"文件路径{str(file)}")
-            # 打印视频文件名、标题和 hashtag
-            print(f"视频文件名：{file}")
-            print(f"标题：{title}")
-            print(f"Hashtag：{tags}")
+            print(f"publish started : platform = tencent | file_index = {index}")
             app = TencentVideo(title, str(file), tags, publish_datetimes[index], cookie, category, is_draft)
             asyncio.run(app.main(), debug=False)
 
@@ -44,11 +40,7 @@ def post_video_DouYin(title,files,tags,account_file,category=TencentZoneTypes.LI
         publish_datetimes = [0 for i in range(len(files))]
     for index, file in enumerate(files):
         for cookie in account_file:
-            print(f"文件路径{str(file)}")
-            # 打印视频文件名、标题和 hashtag
-            print(f"视频文件名：{file}")
-            print(f"标题：{title}")
-            print(f"Hashtag：{tags}")
+            print(f"publish started : platform = douyin | file_index = {index}")
             app = DouYinVideo(title, str(file), tags, publish_datetimes[index], cookie, thumbnail_path, productLink, productTitle)
             asyncio.run(app.douyin_upload_video(), debug=False)
 
@@ -63,11 +55,7 @@ def post_video_ks(title,files,tags,account_file,category=TencentZoneTypes.LIFEST
         publish_datetimes = [0 for i in range(len(files))]
     for index, file in enumerate(files):
         for cookie in account_file:
-            print(f"文件路径{str(file)}")
-            # 打印视频文件名、标题和 hashtag
-            print(f"视频文件名：{file}")
-            print(f"标题：{title}")
-            print(f"Hashtag：{tags}")
+            print(f"publish started : platform = kuaishou | file_index = {index}")
             app = KSVideo(title, str(file), tags, publish_datetimes[index], cookie)
             asyncio.run(app.main(), debug=False)
 
@@ -82,10 +70,7 @@ def post_video_xhs(title,files,tags,account_file,category=TencentZoneTypes.LIFES
         publish_datetimes = 0
     for index, file in enumerate(files):
         for cookie in account_file:
-            # 打印视频文件名、标题和 hashtag
-            print(f"视频文件名：{file}")
-            print(f"标题：{title}")
-            print(f"Hashtag：{tags}")
+            print(f"publish started : platform = xiaohongshu | file_index = {index}")
             app = XiaoHongShuVideo(title, file, tags, publish_datetimes, cookie)
             asyncio.run(app.main(), debug=False)
 

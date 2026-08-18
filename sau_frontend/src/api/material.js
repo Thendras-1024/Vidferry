@@ -5,7 +5,10 @@ const apiBaseUrl = configuredApiBaseUrl && configuredApiBaseUrl !== '/'
   ? configuredApiBaseUrl.replace(/\/$/, '')
   : (import.meta.env.DEV ? '/api' : '')
 
-const fileUrl = (filename) => `${apiBaseUrl}/getFile?filename=${encodeURIComponent(filename)}`
+const fileUrl = (assetId, download = false) => {
+  const suffix = download ? '?download=1' : ''
+  return `${apiBaseUrl}/assets/${encodeURIComponent(assetId)}/content${suffix}`
+}
 
 // 素材管理API
 export const materialApi = {
@@ -37,8 +40,8 @@ export const materialApi = {
     return http.get('/publish/tasks', params)
   },
 
-  retryFailedPublishTask: (taskId) => {
-    return http.post(`/publish/tasks/${encodeURIComponent(taskId)}/retry-failed`)
+  retryFailedPublishTask: (taskId, targetRecordIds) => {
+    return http.post(`/publish/tasks/${encodeURIComponent(taskId)}/retry-failed`, { targetRecordIds })
   },
 
   getScheduledPublishTasks: (params = {}) => {
@@ -52,14 +55,18 @@ export const materialApi = {
   deletePublishTargetRecord: (id) => {
     return http.delete(`/publish/target-records/${id}`)
   },
+
+  releaseUnknownPublishRecord: (id, reason = '') => {
+    return http.post(`/publish/target-records/${id}/release-unknown`, { confirmed: true, reason })
+  },
   
   // 下载素材
-  downloadMaterial: (filePath) => {
-    return fileUrl(filePath)
+  downloadMaterial: (assetId) => {
+    return fileUrl(assetId, true)
   },
   
   // 获取素材预览URL
-  getMaterialPreviewUrl: (filename) => {
-    return fileUrl(filename)
+  getMaterialPreviewUrl: (assetId) => {
+    return fileUrl(assetId)
   }
 }

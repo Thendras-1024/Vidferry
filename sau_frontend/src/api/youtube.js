@@ -23,7 +23,7 @@ export const youtubeApi = {
   },
 
   importVideo(data) {
-    return request.post('/youtube/videos/import', data)
+    return request.post('/youtube/videos/import', data, { timeout: 30000 })
   },
 
   getVideoGroups() {
@@ -92,6 +92,14 @@ export const youtubeApi = {
 
   updatePublishDraft(videoId, data) {
     return request.patch(`/youtube/videos/${videoId}/publish-draft`, data)
+  },
+
+  getPublishTagPresets() {
+    return request.get('/publish/tag-presets')
+  },
+
+  updatePublishTagPresets(data) {
+    return request.patch('/publish/tag-presets', data)
   },
 
   listWorkflowJobs(params = {}) {

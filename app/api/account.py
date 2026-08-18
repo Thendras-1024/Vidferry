@@ -1,3 +1,6 @@
+from flask import g
+
+
 ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = 60
 _account_cookie_check_last_at = {}
 ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SECONDS = 600
@@ -7,8 +10,26 @@ ACCOUNT_COOKIE_CHECK_COOLDOWN_SECONDS = ACCOUNT_COOKIE_CHECK_SUCCESS_COOLDOWN_SE
 _account_cookie_check_state = {}
 
 
+def _current_account_owner_id():
+    user = getattr(g, "current_user", None)
+    if not user or not user.get("id"):
+        raise PermissionError("登录用户不能为空")
+    return int(user["id"])
+
+
+def _owned_account(cursor, account_id, owner_user_id):
+    cursor.execute("SELECT * FROM user_info WHERE id = ? AND owner_user_id = ?", (int(account_id), int(owner_user_id)))
+    return cursor.fetchone()
+
+
 def _account_row_to_list(row):
     return [row["id"], row["type"], row["filePath"], row["userName"], row["status"]]
+
+
+def _resolve_valid_account_cookie_notifications(results):
+    for result in results:
+        if result.get("checkStatus") == "valid":
+            resolve_publish_cookie_invalid_notifications(result["id"], result["ownerUserId"])
 
 
 def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, valid=False, check_status="unknown", message="", retry_after_seconds=0, status_override=None):
@@ -19,6 +40,7 @@ def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, 
         "platform": platform_name(row["type"]),
         "filePath": row["filePath"],
         "name": row["userName"],
+        "ownerUserId": row["owner_user_id"],
         "status": int(status_value if status_value is not None else 0),
         "checked": bool(checked),
         "skipped": bool(skipped),
@@ -30,8 +52,8 @@ def _account_check_payload(row, *, checked=False, skipped=False, blocked=False, 
     }
 
 
-def _run_bilibili_cookie_check_sync(file_path):
-    account_file = _safe_cookie_path(file_path)
+def _run_bilibili_cookie_check_sync(file_path, owner_user_id=None):
+    account_file = _safe_cookie_path(file_path, owner_user_id=owner_user_id)
     if not account_file.is_file():
         backend_logger.warning("bilibili cookie check failed : reason = cookie_file_missing")
         return False
@@ -64,19 +86,22 @@ def _run_bilibili_cookie_check_sync(file_path):
     return False
 
 
-def _run_cookie_check_sync(platform_type, file_path):
+def _run_cookie_check_sync(platform_type, file_path, owner_user_id=None):
     try:
         platform_type_value = int(platform_type)
     except (TypeError, ValueError):
         platform_type_value = 0
 
     if platform_type_value == 5:
-        return _run_bilibili_cookie_check_sync(file_path)
+        return _run_bilibili_cookie_check_sync(file_path, owner_user_id=owner_user_id)
 
     if check_cookie is None:
         raise RuntimeError("后端未加载 Cookie 检查模块，请检查依赖。")
 
     file_path = _safe_cookie_filename(file_path)
+    if owner_user_id is not None:
+        _safe_cookie_path(file_path, owner_user_id=owner_user_id, must_exist=True)
+        file_path = f"{int(owner_user_id)}/{file_path}"
 
     result = {"value": False, "error": None}
 
@@ -140,7 +165,7 @@ def _check_account_cookie_row(cursor, row, *, force=False):
         )
 
     try:
-        valid = _run_cookie_check_sync(row["type"], row["filePath"])
+        valid = _run_cookie_check_sync(row["type"], row["filePath"], row["owner_user_id"])
     except Exception as exc:
         backend_logger.exception(
             "account cookie check failed : account_id = %s reason = check_exception error_type = %s",
@@ -196,23 +221,24 @@ def _check_account_cookie_row(cursor, row, *, force=False):
     )
 
 
-def _load_accounts(cursor, account_ids=None):
+def _load_accounts(cursor, owner_user_id, account_ids=None):
     if account_ids:
         placeholders = ",".join("?" for _ in account_ids)
-        cursor.execute(f"SELECT * FROM user_info WHERE id IN ({placeholders})", account_ids)
+        cursor.execute(f"SELECT * FROM user_info WHERE owner_user_id = ? AND id IN ({placeholders})", [owner_user_id, *account_ids])
     else:
-        cursor.execute("SELECT * FROM user_info")
+        cursor.execute("SELECT * FROM user_info WHERE owner_user_id = ?", (owner_user_id,))
     return cursor.fetchall()
 
 
-def _list_all_accounts(cursor):
-    cursor.execute("SELECT * FROM user_info")
+def _list_all_accounts(cursor, owner_user_id):
+    cursor.execute("SELECT * FROM user_info WHERE owner_user_id = ?", (owner_user_id,))
     return [_account_row_to_list(row) for row in cursor.fetchall()]
 
 
 def _check_accounts_for_publish(targets):
     if not targets:
         return []
+    owner_user_id = _current_account_owner_id()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
@@ -223,33 +249,40 @@ def _check_accounts_for_publish(targets):
             platform_type = int(target.get("platformType") or 0)
             row = None
             if account_id:
-                cursor.execute("SELECT * FROM user_info WHERE id = ?", (account_id,))
+                cursor.execute("SELECT * FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
                 row = cursor.fetchone()
             if not row and account_file:
                 cursor.execute(
-                    "SELECT * FROM user_info WHERE type = ? AND filePath = ?",
-                    (platform_type, account_file),
+                    "SELECT * FROM user_info WHERE type = ? AND filePath = ? AND owner_user_id = ?",
+                    (platform_type, account_file, owner_user_id),
                 )
                 row = cursor.fetchone()
             if not row:
                 raise ValueError(f"{platform_name(platform_type)}账号不存在，请重新选择账号。")
             if int(row["status"] if row["status"] is not None else 0) != 1:
                 raise ValueError(f"{platform_name(platform_type)}账号“{row['userName']}”当前状态异常，请重新连接后再发布。")
+            target.update({
+                "accountId": row["id"],
+                "accountFile": row["filePath"],
+                "accountName": row["userName"],
+                "ownerUserId": row["owner_user_id"],
+            })
             results.append(_account_check_payload(row, skipped=True, valid=True, message="发布前跳过主动 Cookie 验证。"))
         conn.commit()
         return results
 
 
-def _check_named_publish_account(platform_type, account_name):
+def _check_named_publish_account(platform_type, account_name, owner_user_id=None):
     account_name = str(account_name or "").strip()
     if not account_name:
         return None
+    owner_user_id = int(owner_user_id) if owner_user_id is not None else _current_account_owner_id()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM user_info WHERE type = ? AND userName = ?",
-            (int(platform_type), account_name),
+            "SELECT * FROM user_info WHERE type = ? AND userName = ? AND owner_user_id = ?",
+            (int(platform_type), account_name, owner_user_id),
         )
         row = cursor.fetchone()
         if not row:
@@ -259,17 +292,122 @@ def _check_named_publish_account(platform_type, account_name):
         return _account_check_payload(row, skipped=True, valid=True, message="发布前跳过主动 Cookie 验证。")
 
 
-@app.route("/getAccounts", methods=['GET'])
-def getAccounts():
-    """快速获取所有账号信息，不进行cookie验证"""
+_COOKIE_PLATFORM_DOMAINS = {
+    1: ("xiaohongshu.com",),
+    2: ("channels.weixin.qq.com", "weixin.qq.com"),
+    3: ("douyin.com",),
+    4: ("kuaishou.com",),
+    5: ("bilibili.com",),
+}
+
+
+def _cookie_platform_candidates(payload):
+    cookies = payload.get("cookies") if isinstance(payload, dict) else None
+    domains = {
+        str(item.get("domain") or "").lower().lstrip(".")
+        for item in cookies or []
+        if isinstance(item, dict)
+    }
+    candidates = {
+        platform_type
+        for platform_type, markers in _COOKIE_PLATFORM_DOMAINS.items()
+        if any(domain == marker or domain.endswith(f".{marker}") for domain in domains for marker in markers)
+    }
+    if isinstance(payload, dict):
+        serialized_keys = json.dumps(payload, ensure_ascii=True).lower()
+        if any(key in serialized_keys for key in ('"sessdata"', '"bili_jct"', '"dedeuserid"', '"cookie_info"')):
+            candidates.add(5)
+    return sorted(candidates)
+
+
+def _import_account_name(cursor, platform_type, username):
+    prefix = f"{platform_name(platform_type)}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{username}"
+    candidate = prefix
+    suffix = 2
+    while cursor.execute("SELECT 1 FROM user_info WHERE userName = ?", (candidate,)).fetchone():
+        candidate = f"{prefix}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+@app.route("/accounts/import-cookie", methods=["POST"])
+def import_cookie_account():
+    owner_user_id = _current_account_owner_id()
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        return jsonify({"code": 400, "msg": "请选择 Cookie JSON 文件", "data": None}), 400
+    if Path(uploaded.filename).suffix.lower() != ".json":
+        return jsonify({"code": 400, "msg": "Cookie 文件必须是 JSON 格式", "data": None}), 400
+    try:
+        payload = json.load(uploaded.stream)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return jsonify({"code": 400, "msg": "Cookie 文件不是有效 JSON", "data": None}), 400
+    if not isinstance(payload, dict):
+        return jsonify({"code": 400, "msg": "Cookie 文件格式不受支持", "data": None}), 400
+
+    candidates = _cookie_platform_candidates(payload)
+    selected = request.form.get("platformType", "").strip()
+    try:
+        selected_type = int(selected) if selected else 0
+    except ValueError:
+        selected_type = 0
+    if selected_type and selected_type not in {1, 2, 3, 4, 5}:
+        return jsonify({"code": 400, "msg": "平台类型不支持", "data": None}), 400
+    if not selected_type and len(candidates) != 1:
+        return jsonify({
+            "code": 409,
+            "msg": "无法唯一识别 Cookie 所属平台，请手动选择平台",
+            "data": {"candidates": candidates},
+        }), 409
+    if selected_type and candidates and selected_type not in candidates:
+        return jsonify({"code": 400, "msg": "所选平台与 Cookie 内容不匹配", "data": {"candidates": candidates}}), 400
+    platform_type = selected_type or candidates[0]
+    filename = f"{uuid.uuid4().hex}.json"
+    destination = _safe_cookie_path(filename, owner_user_id=owner_user_id)
+    temporary = destination.with_name(f".{filename}.uploading.json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    try:
+        valid = _run_cookie_check_sync(platform_type, temporary.name, owner_user_id=owner_user_id)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        backend_logger.exception("cookie import validation failed : platform_type = %s", platform_type)
+        return jsonify({"code": 502, "msg": "Cookie 校验异常，请检查网络和平台状态后重试", "data": None}), 502
+    if not valid:
+        temporary.unlink(missing_ok=True)
+        return jsonify({"code": 400, "msg": "Cookie 已过期或不可用于所选平台", "data": None}), 400
+
     try:
         with _db_connect() as conn:
             conn.row_factory = True
             cursor = conn.cursor()
-            cursor.execute('''
-            SELECT * FROM user_info''')
-            rows = cursor.fetchall()
-            rows_list = [list(row) for row in rows]
+            user_name = _import_account_name(cursor, platform_type, str(g.current_user.get("username") or "user"))
+            cursor.execute(
+                "INSERT INTO user_info (type, filePath, userName, status, owner_user_id) VALUES (?, ?, ?, ?, ?) RETURNING id",
+                (platform_type, filename, user_name, 1, owner_user_id),
+            )
+            account_id = cursor.fetchone()[0]
+            temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+        raise
+    return jsonify({
+        "code": 200,
+        "msg": "Cookie 导入成功",
+        "data": {"id": account_id, "platformType": platform_type, "name": user_name, "filePath": filename},
+    }), 200
+
+
+@app.route("/getAccounts", methods=['GET'])
+def getAccounts():
+    """快速获取所有账号信息，不进行cookie验证"""
+    try:
+        owner_user_id = _current_account_owner_id()
+        with _db_connect() as conn:
+            conn.row_factory = True
+            cursor = conn.cursor()
+            rows_list = _list_all_accounts(cursor, owner_user_id)
 
             return jsonify(
                 {
@@ -277,25 +415,26 @@ def getAccounts():
                     "msg": None,
                     "data": rows_list
                 }), 200
-    except Exception as e:
-        print(f"获取账号列表时出错: {str(e)}")
+    except Exception:
+        backend_logger.exception("获取账号列表失败")
         return jsonify({
             "code": 500,
-            "msg": f"获取账号列表失败: {str(e)}",
+            "msg": "获取账号列表失败，请稍后重试",
             "data": None
         }), 500
 
 
 @app.route("/getValidAccounts",methods=['GET'])
 def getValidAccounts():
+    owner_user_id = _current_account_owner_id()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        rows = _load_accounts(cursor)
-        for row in rows:
-            _check_account_cookie_row(cursor, row)
+        rows = _load_accounts(cursor, owner_user_id)
+        results = [_check_account_cookie_row(cursor, row) for row in rows]
         conn.commit()
-        rows_list = _list_all_accounts(cursor)
+        _resolve_valid_account_cookie_notifications(results)
+        rows_list = _list_all_accounts(cursor, owner_user_id)
         return jsonify(
                         {
                             "code": 200,
@@ -307,6 +446,7 @@ def getValidAccounts():
 @app.route("/accounts/check-cookies", methods=["POST"])
 def check_account_cookies():
     try:
+        owner_user_id = _current_account_owner_id()
         payload = request.get_json(silent=True) or {}
         raw_ids = payload.get("accountIds") or payload.get("ids") or []
         account_ids = [
@@ -319,12 +459,13 @@ def check_account_cookies():
         with _db_connect() as conn:
             conn.row_factory = True
             cursor = conn.cursor()
-            rows = _load_accounts(cursor, None if check_all else account_ids)
+            rows = _load_accounts(cursor, owner_user_id, None if check_all else account_ids)
             found_ids = {int(row["id"]) for row in rows}
             missing_ids = [item for item in account_ids if item not in found_ids]
             results = [_check_account_cookie_row(cursor, row) for row in rows]
             conn.commit()
-            accounts = _list_all_accounts(cursor)
+            _resolve_valid_account_cookie_notifications(results)
+            accounts = _list_all_accounts(cursor, owner_user_id)
 
         invalid = [item for item in results if item.get("checkStatus") == "invalid"]
         errors = [item for item in results if item.get("checkStatus") == "error"]
@@ -370,14 +511,14 @@ def delete_account():
     account_id = int(account_id)
 
     try:
+        owner_user_id = _current_account_owner_id()
         # 获取数据库连接
         with _db_connect() as conn:
             conn.row_factory = True
             cursor = conn.cursor()
 
             # 查询要删除的记录
-            cursor.execute("SELECT * FROM user_info WHERE id = ?", (account_id,))
-            record = cursor.fetchone()
+            record = _owned_account(cursor, account_id, owner_user_id)
 
             if not record:
                 return jsonify({
@@ -389,19 +530,27 @@ def delete_account():
             # 删除关联的cookie文件
             if record.get('filePath'):
                 try:
-                    cookie_file_path = _safe_cookie_path(record['filePath'])
+                    cookie_file_path = _safe_cookie_path(record['filePath'], owner_user_id=owner_user_id)
                 except ValueError as exc:
                     cookie_file_path = None
-                    print(f"⚠️ 跳过非法Cookie路径: {record['filePath']} {exc}")
+                    backend_logger.warning(
+                        "invalid cookie path skipped : account_id = %s | error_type = %s",
+                        account_id,
+                        type(exc).__name__,
+                    )
                 if cookie_file_path and cookie_file_path.exists():
                     try:
                         cookie_file_path.unlink()
-                        print(f"✅ Cookie文件已删除: {cookie_file_path}")
+                        backend_logger.info("cookie file deleted : account_id = %s", account_id)
                     except Exception as e:
-                        print(f"⚠️ 删除Cookie文件失败: {e}")
+                        backend_logger.warning(
+                            "cookie file delete failed : account_id = %s | error_type = %s",
+                            account_id,
+                            type(e).__name__,
+                        )
 
             # 删除数据库记录
-            cursor.execute("DELETE FROM user_info WHERE id = ?", (account_id,))
+            cursor.execute("DELETE FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
             conn.commit()
 
         return jsonify({
@@ -410,10 +559,11 @@ def delete_account():
             "data": None
         }), 200
 
-    except Exception as e:
+    except Exception:
+        backend_logger.exception("删除账号失败 : account_id = %s", account_id)
         return jsonify({
             "code": 500,
-            "msg": f"delete failed: {str(e)}",
+            "msg": "删除账号失败，请稍后重试",
             "data": None
         }), 500
 
@@ -421,6 +571,7 @@ def delete_account():
 @app.route('/account', methods=['POST'])
 def create_account():
     try:
+        owner_user_id = _current_account_owner_id()
         data = request.get_json(silent=True) or {}
         platform_type = int(data.get("type") or 0)
         user_name = (data.get("userName") or data.get("name") or "").strip()
@@ -447,10 +598,10 @@ def create_account():
             conn.row_factory = True
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO user_info (type, filePath, userName, status)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO user_info (type, filePath, userName, status, owner_user_id)
+                VALUES (?, ?, ?, ?, ?)
                 RETURNING id
-            ''', (platform_type, file_path, user_name, status))
+            ''', (platform_type, file_path, user_name, status, owner_user_id))
             account_id = cursor.fetchone()[0]
             conn.commit()
 
@@ -459,9 +610,10 @@ def create_account():
             "msg": "account created successfully",
             "data": [account_id, platform_type, file_path, user_name, status]
         }), 200
-    except Exception as e:
+    except Exception:
+        backend_logger.exception("创建账号失败")
         return jsonify({
             "code": 500,
-            "msg": f"account create failed: {str(e)}",
+            "msg": "创建账号失败，请稍后重试",
             "data": None
         }), 500

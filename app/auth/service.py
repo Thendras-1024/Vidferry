@@ -14,8 +14,6 @@ from app.config import (
     AUTH_ABSOLUTE_TIMEOUT_HOURS,
     AUTH_CSRF_SECRET,
     AUTH_IDLE_TIMEOUT_MINUTES,
-    AUTH_LOCK_MINUTES,
-    AUTH_MAX_LOGIN_FAILURES,
     AUTH_REMEMBER_TIMEOUT_HOURS,
 )
 from app.db.base import DATABASE_INTEGRITY_ERRORS, _db_connect
@@ -26,11 +24,12 @@ _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(24))
 
 
 class AuthError(Exception):
-    def __init__(self, message, status=400, code="AUTH_ERROR"):
+    def __init__(self, message, status=400, code="AUTH_ERROR", data=None):
         super().__init__(message)
         self.message = message
         self.status = status
         self.code = code
+        self.data = data or {}
 
 
 def _now():
@@ -128,7 +127,7 @@ def get_user(user_id):
         return public_user(conn.execute("SELECT * FROM auth_users WHERE id = ?", (int(user_id),)).fetchone())
 
 
-def authenticate(username, password, ip_address="", user_agent="", *, remember=False):
+def authenticate(username, password, ip_address="", user_agent="", *, remember=False, audit_identity="", audit_ip_address=""):
     try:
         username = normalize_username(username)
     except AuthError:
@@ -144,10 +143,9 @@ def authenticate(username, password, ip_address="", user_agent="", *, remember=F
         if not item or item["status"] != "active" or locked or not valid:
             if item and not locked:
                 failures = int(item.get("failed_login_count") or 0) + 1
-                locked_until = _timestamp(now + dt.timedelta(minutes=AUTH_LOCK_MINUTES)) if failures >= AUTH_MAX_LOGIN_FAILURES else None
                 conn.execute(
-                    "UPDATE auth_users SET failed_login_count = ?, locked_until = ?, updated_at = ? WHERE id = ?",
-                    (failures, locked_until, _timestamp(now), item["id"]),
+                    "UPDATE auth_users SET failed_login_count = ?, updated_at = ? WHERE id = ?",
+                    (failures, _timestamp(now), item["id"]),
                 )
             failed = True
         else:
@@ -158,12 +156,12 @@ def authenticate(username, password, ip_address="", user_agent="", *, remember=F
                 (new_hash, _timestamp(now), _timestamp(now), item["id"]),
             )
     if failed:
-        record_audit("AUTH_LOGIN", "failure", target_type="user", target_id=username,
-                     ip_address=ip_address, user_agent=user_agent)
+        record_audit("AUTH_LOGIN", "failure", target_type="user", target_id=audit_identity or username,
+                     ip_address=audit_ip_address or ip_address, user_agent=user_agent)
         raise AuthError("用户名或密码错误", 401, "INVALID_CREDENTIALS")
     token, csrf_token = create_session(item["id"], ip_address, user_agent, remember=remember)
     record_audit("AUTH_LOGIN", "success", actor_user_id=item["id"], target_type="user",
-                 target_id=item["id"], ip_address=ip_address, user_agent=user_agent)
+                 target_id=audit_identity or item["id"], ip_address=audit_ip_address or ip_address, user_agent=user_agent)
     return get_user(item["id"]), token, csrf_token
 
 
@@ -187,9 +185,9 @@ def create_session(user_id, ip_address="", user_agent="", *, remember=False):
         conn.execute(
             """INSERT INTO auth_sessions
                (token_hash, user_id, created_at, last_seen_at, idle_expires_at, absolute_expires_at,
-                ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                remembered, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (_token_hash(token), user_id, _timestamp(now), _timestamp(now), _timestamp(idle_expiry),
-             _timestamp(absolute_expiry), str(ip_address or "")[:128], str(user_agent or "")[:512]),
+             _timestamp(absolute_expiry), int(bool(remember)), str(ip_address or "")[:128], str(user_agent or "")[:512]),
         )
     return token, csrf_token_for(token)
 
@@ -213,7 +211,7 @@ def resolve_session(token):
         last_seen = _parse_timestamp(item["last_seen_at"])
         if now - last_seen >= dt.timedelta(minutes=5):
             absolute_expiry = _parse_timestamp(item["absolute_expires_at"])
-            remembered = _parse_timestamp(item["idle_expires_at"]) == absolute_expiry
+            remembered = bool(item.get("remembered"))
             idle_expiry = absolute_expiry if remembered else min(
                 now + dt.timedelta(minutes=AUTH_IDLE_TIMEOUT_MINUTES),
                 absolute_expiry,

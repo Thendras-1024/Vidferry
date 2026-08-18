@@ -27,6 +27,15 @@ def _clarification_actions():
     ]
 
 
+def _reprocess_clarification_actions():
+    return [
+        {"type": "ask", "label": "完整重新处理", "message": "对已选视频执行完整重新处理"},
+        {"type": "ask", "label": "更新片头高光", "message": "对已选视频更新片头高光"},
+        {"type": "ask", "label": "重新烧制封面", "message": "对已选视频重新烧制封面"},
+        {"type": "ask", "label": "修改本地文案", "message": "修改已选视频的本地发布文案"},
+    ]
+
+
 _AGENT_POLICY_RULES = [
     (
         "secret_exfiltration",
@@ -65,6 +74,8 @@ def agent_policy_check(message, context=None):
     context = context if isinstance(context, dict) else {}
     video_context = context.get("videoContext") if isinstance(context.get("videoContext"), dict) else {}
     has_selected_video = bool(str(video_context.get("videoId") or video_context.get("url") or "").strip())
+    copywriting_checker = globals().get("is_agent_copywriting_request")
+    is_copywriting_request = bool(callable(copywriting_checker) and copywriting_checker(text))
     if not text:
         return {
             "allowed": False,
@@ -86,7 +97,7 @@ def agent_policy_check(message, context=None):
     # for the video explicitly selected in the UI. The orchestrator still
     # revalidates the video, account and prepublish state before execution.
     proposal_action = any(word in lowered for word in ("下载", "download", "处理", "转写", "字幕", "剪辑", "发布", "分发", "publish"))
-    if proposal_action and has_selected_video:
+    if proposal_action and has_selected_video and not is_copywriting_request:
         return {
             "allowed": True,
             "category": "confirmed_proposal",
@@ -95,6 +106,8 @@ def agent_policy_check(message, context=None):
         }
 
     for category, intent_words, action_words, message_text in _AGENT_POLICY_RULES:
+        if category == "unauthorized_action" and is_copywriting_request:
+            continue
         if _contains_any(lowered, intent_words) and _contains_any(lowered, action_words):
             return {
                 "allowed": False,
@@ -102,6 +115,26 @@ def agent_policy_check(message, context=None):
                 "reason": message_text,
                 "message": f"{message_text}我可以提供合规的查询、解释或风险排查建议。",
             }
+
+    if is_copywriting_request:
+        return {
+            "allowed": True,
+            "category": "copywriting_proposal",
+            "reason": "待发布稿只能通过候选提案和明确保存操作写入。",
+            "message": "",
+        }
+
+    is_ambiguous_reprocess = "重新处理" in lowered and not any(
+        word in lowered for word in ("完整", "高光", "片头", "封面", "文案")
+    )
+    if is_ambiguous_reprocess:
+        return {
+            "allowed": False,
+            "category": "needs_clarification",
+            "reason": "重新处理需要明确操作范围。",
+            "message": "请选择要执行的重新处理操作。",
+            "actions": _reprocess_clarification_actions(),
+        }
 
     return {
         "allowed": True,

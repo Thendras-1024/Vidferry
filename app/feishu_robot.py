@@ -403,13 +403,20 @@ def env_settings():
     return app_id.strip(), app_secret.strip(), allowed, owner_user_id
 
 
-def start_embedded_feishu_robot(enabled, run_agent, image_roots=(), sanitize=str, session_manager=None):
+def start_embedded_feishu_robot(enabled, run_agent, image_roots=(), sanitize=str, session_manager=None, owner_user_id=None):
     """在后端进程中启动飞书长连接，异常不影响主服务。"""
     global _embedded_robot_thread
     if not enabled:
         _set_robot_status("disabled", "飞书机器人已关闭。")
         return False
-    app_id, app_secret, allowed_open_ids, owner_user_id = env_settings()
+    app_id, app_secret, allowed_open_ids, configured_owner_user_id = env_settings()
+    if owner_user_id is None:
+        owner_user_id = configured_owner_user_id
+    else:
+        try:
+            owner_user_id = int(owner_user_id)
+        except (TypeError, ValueError):
+            owner_user_id = 0
     if not app_id or not app_secret:
         _set_robot_status("disabled", "飞书机器人未配置 App ID 或 App Secret。")
         logger.warning("Feishu robot disabled: FEISHU_APP_ID and FEISHU_APP_SECRET are missing")

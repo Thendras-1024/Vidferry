@@ -21,8 +21,8 @@ KNOWN_MOJIBAKE_FRAGMENTS = {
 
 def ensure_utf8_stdio() -> None:
     """让项目入口和子进程默认使用 UTF-8 输出，避免 Windows 控制台乱码。"""
-    os.environ.setdefault("PYTHONUTF8", "1")
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         if hasattr(stream, "reconfigure"):

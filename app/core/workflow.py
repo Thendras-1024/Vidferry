@@ -15,7 +15,10 @@ _WORKFLOW_JOB_MUTABLE_FIELDS = {
     "publish_command", "progress", "speed", "eta", "error_code", "error_type",
     "error_reason", "error_detail", "interrupted_at", "publish_confirmation_required",
     "publish_confirmation_status", "content_risk",
+    "translation_enabled", "subtitle_mask_enabled", "source_subtitle_analysis",
 }
+_WORKFLOW_ACTIVE_STATUSES = ("queued", "running", "waiting_confirmation", "waiting_publish")
+_WORKFLOW_TERMINAL_STATUSES = ("success", "reused", "partial", "needs_verification", "failed", "abnormal", "cancelled")
 
 
 def _workflow_content_risk(value):
@@ -24,6 +27,22 @@ def _workflow_content_risk(value):
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _workflow_source_subtitle_analysis(value):
+    try:
+        parsed = json.loads(value or "{}") if isinstance(value, str) else (value or {})
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_subtitle_mode(value, allow_legacy=True):
+    mode = str(value or "").strip()
+    allowed = {"auto", "force_burn", "original"}
+    if allow_legacy:
+        allowed.add("legacy")
+    return mode if mode in allowed else ("legacy" if allow_legacy else "auto")
 
 
 def _content_safety_enabled(item):
@@ -38,6 +57,8 @@ def _validate_workflow_job_changes(changes):
 
 def _row_to_workflow_job(row):
     item = dict(row)
+    content_risk = _workflow_content_risk(item.get("content_risk"))
+    source_subtitle_analysis = _workflow_source_subtitle_analysis(item.get("source_subtitle_analysis"))
     return {
         "id": item.get("id"),
         "videoId": item.get("video_id") or "",
@@ -51,6 +72,7 @@ def _row_to_workflow_job(row):
         "xiaohongshuAccount": item.get("xiaohongshu_account") or "",
         "kuaishouAccount": item.get("kuaishou_account") or "",
         "tencentAccount": item.get("tencent_account") or "",
+        "publishAccountGroupId": item.get("publish_account_group_id"),
         "publishToDouyin": int(item.get("publish_to_douyin") or 0),
         "publishToBilibili": int(item.get("publish_to_bilibili") or 0),
         "publishToXiaohongshu": int(item.get("publish_to_xiaohongshu") or 0),
@@ -68,6 +90,9 @@ def _row_to_workflow_job(row):
         "highlightIntroEnabled": bool(item.get("highlight_intro_enabled") if item.get("highlight_intro_enabled") is not None else 1),
         "coverIntroEnabled": bool(item.get("cover_intro_enabled") if item.get("cover_intro_enabled") is not None else 1),
         "commentBurnEnabled": bool(item.get("comment_burn_enabled") or 0),
+        "subtitleMaskEnabled": bool(item.get("subtitle_mask_enabled") or 0),
+        "subtitleMode": _normalize_subtitle_mode(item.get("subtitle_mode")),
+        "sourceSubtitleAnalysis": source_subtitle_analysis,
         "commentBurnCount": _normalize_comment_burn_count(item.get("comment_burn_count")),
         "commentTranslationMode": _normalize_comment_translation_mode(item.get("comment_translation_mode")),
         "coverTitle": normalize_cover_title(item.get("cover_title")),
@@ -85,7 +110,8 @@ def _row_to_workflow_job(row):
         "publishCommand": item.get("publish_command") or "",
         "publishConfirmationRequired": bool(item.get("publish_confirmation_required") or 0),
         "publishConfirmationStatus": item.get("publish_confirmation_status") or "",
-        "contentRisk": _workflow_content_risk(item.get("content_risk")),
+        "contentRisk": content_risk,
+        "ownerUserId": item.get("owner_user_id"),
         "contentSafetyReviewEnabled": _content_safety_enabled(item),
         "progress": round(float(item.get("progress") or 0), 1),
         "speed": item.get("speed") or "",
@@ -120,6 +146,9 @@ def _processing_settings_snapshot(job):
         "coverTitle": job.get("coverTitle") or "",
         "coverSignature": job.get("coverSignature") or "",
         "commentBurnEnabled": bool(job.get("commentBurnEnabled")),
+        "subtitleMaskEnabled": bool(job.get("subtitleMaskEnabled")),
+        "subtitleMode": _normalize_subtitle_mode(job.get("subtitleMode")),
+        "sourceSubtitleAnalysis": _workflow_source_subtitle_analysis(job.get("sourceSubtitleAnalysis")),
         "commentBurnCount": int(job.get("commentBurnCount") or 0),
         "commentTranslationMode": job.get("commentTranslationMode") or "",
         "contentSafetyReviewEnabled": bool(job.get("contentSafetyReviewEnabled")),
@@ -181,7 +210,7 @@ def _validate_burn_profile_source_resolution(video_id, burn_profile):
     if max(width, height) >= 2560 and min(width, height) >= 1440:
         return
     raise ValueError(
-        "2K 高清仅支持原视频不低于 2560x1440（竖屏不低于 1440x2560）。"
+        "2K 高画质（需 2K 原片）仅支持原视频不低于 2560x1440（竖屏不低于 1440x2560）。"
         f"当前下载视频为 {width}x{height}，请改用 1080p 预设后重试。"
     )
 
@@ -263,10 +292,16 @@ def _workflow_comment_burn_count(payload):
 
 def _workflow_processing_options(payload):
     saved_settings = get_workflow_settings()
-    defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False}
+    defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False, "subtitleMaskEnabled": False}
     return tuple(bool(payload[key] if key in payload else saved_settings.get(key, defaults[key])) for key in (
-        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled", "commentBurnEnabled",
+        "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled", "commentBurnEnabled", "subtitleMaskEnabled",
     ))
+
+
+def _workflow_subtitle_mode(payload):
+    saved_settings = get_workflow_settings()
+    value = payload.get("subtitleMode") if "subtitleMode" in payload else saved_settings.get("subtitleMode")
+    return _normalize_subtitle_mode(value, allow_legacy=False)
 
 
 def _normalize_process_version(value):
@@ -276,6 +311,19 @@ def _normalize_process_version(value):
 
 def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="media"):
     init_youtube_workflow_table()
+    payload = dict(payload or {})
+    account_group = resolve_publish_account_group(payload.get("publishAccountGroupId"))
+    if account_group:
+        group_accounts = {int(item["platformType"]): item["name"] for item in account_group["accounts"]}
+        platform_fields = {1: "xiaohongshuAccount", 2: "tencentAccount", 3: "account", 4: "kuaishouAccount", 5: "bilibiliAccount"}
+        platform_flags = {1: "publishToXiaohongshu", 2: "publishToTencent", 3: "publishToDouyin", 4: "publishToKuaishou", 5: "publishToBilibili"}
+        for platform_type, account_name in group_accounts.items():
+            payload[platform_fields[platform_type]] = account_name
+            payload[platform_flags[platform_type]] = True
+        for platform_type, field in platform_fields.items():
+            if platform_type not in group_accounts:
+                payload[field] = ""
+                payload[platform_flags[platform_type]] = False
     job_id = str(uuid.uuid4())
     subtitle_language = _normalize_subtitle_language(payload.get("subtitleLanguage"))
     burn_profile = _normalize_burn_profile(payload.get("burnProfile"))
@@ -285,17 +333,31 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     highlight_count = _workflow_highlight_count(payload)
     comment_burn_count = _workflow_comment_burn_count(payload)
     comment_translation_mode = _normalize_comment_translation_mode(payload.get("commentTranslationMode"))
-    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled = _workflow_processing_options(payload)
+    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, subtitle_mask_enabled = _workflow_processing_options(payload)
+    subtitle_mode = _workflow_subtitle_mode(payload)
+    if subtitle_mode == "auto":
+        translation_enabled, subtitle_mask_enabled = True, False
+    elif subtitle_mode == "force_burn":
+        translation_enabled = True
+    else:
+        translation_enabled, subtitle_mask_enabled = False, False
     cover_title, cover_signature = _workflow_cover_settings(payload)
     process_version = _normalize_process_version(payload.get("processVersion"))
     if comment_burn_enabled and process_version != PROCESS_VERSION_EDITING:
         raise ValueError("评论烧制仅支持处理版本二")
     if comment_burn_enabled and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
         raise ValueError("启用自定义字幕命令时不支持评论烧制")
+    if subtitle_mask_enabled and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
+        raise ValueError("启用自定义字幕命令时不支持字幕马赛克遮挡")
+    if subtitle_mode == "auto" and str(SUBTITLE_COMMAND_TEMPLATE or "").strip():
+        raise ValueError("启用自定义字幕命令时不支持字幕自动适配")
     tags = payload.get("tags") or []
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
     video_id = payload.get("videoId") or ""
+    owner_user_id = int(payload.get("ownerUserId") or 0)
+    if owner_user_id <= 0:
+        raise PermissionError("登录用户不能为空")
     _validate_burn_profile_source_resolution(video_id, burn_profile)
     if lock_scope not in {"media", "analysis"}:
         raise ValueError("任务锁范围不合法")
@@ -304,7 +366,7 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         if video_id and not allow_active_job:
-            active_job = _active_job_for_video(cursor, video_id)
+            active_job = _active_job_for_video(cursor, video_id, owner_user_id)
             if active_job:
                 raise WorkflowConflictError(
                     "该视频存在运行中任务，请等待任务结束后再操作。",
@@ -315,13 +377,13 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
         if video_id:
             try:
                 cursor.execute(
-                    "INSERT INTO youtube_workflow_locks (video_id, scope, job_id) VALUES (?, ?, ?)",
-                    (video_id, lock_scope, job_id),
+                    "INSERT INTO youtube_workflow_locks (video_id, scope, job_id, owner_user_id) VALUES (?, ?, ?, ?)",
+                    (video_id, lock_scope, job_id, owner_user_id),
                 )
             except DATABASE_INTEGRITY_ERRORS as exc:
                 cursor.execute(
-                    "SELECT job_id FROM youtube_workflow_locks WHERE video_id = ? AND scope = ?",
-                    (video_id, lock_scope),
+                    "SELECT job_id FROM youtube_workflow_locks WHERE video_id = ? AND scope = ? AND owner_user_id = ?",
+                    (video_id, lock_scope, owner_user_id),
                 )
                 lock = cursor.fetchone()
                 raise WorkflowConflictError(
@@ -335,13 +397,13 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             id, video_id, url, account, channel, subscribers, published_at,
             bilibili_account, bilibili_tid, xiaohongshu_account, kuaishou_account, tencent_account,
             publish_to_douyin, publish_to_bilibili, publish_to_xiaohongshu, publish_to_kuaishou, publish_to_tencent,
-            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, comment_burn_count, comment_translation_mode,
+            process_version, subtitle_language, burn_profile, subtitle_size, translator_label, watermark_enabled, watermark_text, highlight_count, translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, subtitle_mask_enabled, subtitle_mode, source_subtitle_analysis, comment_burn_count, comment_translation_mode, publish_account_group_id, owner_user_id,
             cover_title, cover_context, cover_brand_name, cover_brand_platform, operation,
             title, description, tags, schedule, status, step, message
         )
         VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         ''', (
             job_id,
@@ -373,8 +435,13 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
             int(highlight_intro_enabled),
             int(cover_intro_enabled),
             int(comment_burn_enabled),
+            int(subtitle_mask_enabled),
+            subtitle_mode,
+            "{}",
             comment_burn_count,
             comment_translation_mode,
+            account_group.get("id") if account_group else None,
+            payload.get("ownerUserId"),
             cover_title,
             "",
             cover_signature,
@@ -419,29 +486,65 @@ def claim_youtube_workflow_job(job_id, **changes):
     return get_youtube_workflow_job(job_id)
 
 
-def get_youtube_workflow_job(job_id):
+def get_youtube_workflow_job(job_id, owner_user_id=None):
     init_youtube_workflow_table()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        if owner_user_id is None:
+            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        else:
+            cursor.execute(
+                "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ?",
+                (job_id, int(owner_user_id)),
+            )
         row = cursor.fetchone()
         if not row:
             raise LookupError("任务不存在")
-        return _row_to_workflow_job(row)
+        job = _row_to_workflow_job(row)
+        publish_progress = _workflow_publish_progress(cursor, job.get("id"))
+        if publish_progress:
+            job["publishProgress"] = publish_progress
+        return job
+
+
+def _workflow_publish_progress(cursor, job_id):
+    if not job_id:
+        return None
+    cursor.execute(
+        "SELECT id, status, message FROM publish_dispatch_jobs WHERE source = 'workflow' AND source_ref_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (str(job_id),),
+    )
+    dispatch = cursor.fetchone()
+    if not dispatch:
+        return None
+    cursor.execute(
+        "SELECT platform_type, status, message, duration_ms, started_at, finished_at "
+        "FROM publish_dispatch_targets WHERE job_id = ? ORDER BY platform_type, id",
+        (dispatch["id"],),
+    )
+    targets = [dict(item) for item in cursor.fetchall()]
+    progress = _publish_dispatch_progress(targets)
+    progress.update({
+        "publishTaskId": dispatch["id"],
+        "status": dispatch["status"] or "queued",
+        "message": clean_display_text(dispatch["message"]),
+        "targets": targets,
+    })
+    return progress
 
 
 def _workflow_status_clause(status):
     if status == "running":
-        return "status IN ('queued', 'running', 'waiting_confirmation')", []
+        return "status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')", []
     if status == "recent":
         return "", []
-    if status in {"success", "failed", "abnormal"}:
+    if status in set(_WORKFLOW_TERMINAL_STATUSES):
         return "status = ?", [status]
     return "", []
 
 
-def list_youtube_workflow_jobs(limit=50, params=None):
+def list_youtube_workflow_jobs(limit=50, params=None, owner_user_id=None):
     init_youtube_workflow_table()
     params = params or {}
     page = _parse_positive_int(params.get("page"), 1, 1, 100000)
@@ -452,13 +555,16 @@ def list_youtube_workflow_jobs(limit=50, params=None):
         cursor = conn.cursor()
         where = []
         values = []
+        if owner_user_id is not None:
+            where.append("owner_user_id = ?")
+            values.append(int(owner_user_id))
         status_clause, status_values = _workflow_status_clause(str(params.get("status") or "all"))
         if status_clause:
             where.append(status_clause)
             values.extend(status_values)
         if str(params.get("status") or "") == "recent":
             where.append("""(
-                status IN ('queued', 'running', 'waiting_confirmation')
+                status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
                 OR COALESCE(updated_at, created_at) >= ?
             )""")
             values.append((datetime.datetime.now() - datetime.timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"))
@@ -475,28 +581,35 @@ def list_youtube_workflow_jobs(limit=50, params=None):
         cursor.execute('''
         SELECT * FROM youtube_workflow_jobs
         {where_sql}
-        ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0 ELSE 1 END,
+        ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') THEN 0 ELSE 1 END,
                  updated_at DESC,
                  created_at DESC
         LIMIT ? OFFSET ?
         '''.format(where_sql=where_sql), values + [page_size, offset])
+        items = []
+        for row in cursor.fetchall():
+            job = _row_to_workflow_job(row)
+            publish_progress = _workflow_publish_progress(cursor, job.get("id"))
+            if publish_progress:
+                job["publishProgress"] = publish_progress
+            items.append(job)
         return {
-            "items": [_row_to_workflow_job(row) for row in cursor.fetchall()],
+            "items": items,
             "total": total,
             "page": page,
             "pageSize": page_size,
         }
 
 
-def _active_job_for_video(cursor, video_id):
+def _active_job_for_video(cursor, video_id, owner_user_id):
     if not video_id:
         return None
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id = ? AND status IN ('queued', 'running', 'waiting_confirmation')
+    WHERE video_id = ? AND owner_user_id = ? AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
-    ''', (video_id,))
+    ''', (video_id, owner_user_id))
     row = cursor.fetchone()
     return _row_to_workflow_job(row) if row else None
 
@@ -511,7 +624,7 @@ def _latest_workflow_job_for_material(cursor, video_id, process_version=""):
         SELECT * FROM youtube_workflow_jobs
         WHERE video_id = ?
           AND process_version = ?
-          AND status IN ('queued', 'running', 'waiting_confirmation')
+        AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
         ORDER BY updated_at DESC, created_at DESC
         LIMIT 1
         ''', (video_id, normalized_version))
@@ -522,7 +635,7 @@ def _latest_workflow_job_for_material(cursor, video_id, process_version=""):
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
     WHERE video_id = ?
-      AND status IN ('queued', 'running', 'waiting_confirmation')
+      AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
     ''', (video_id,))
@@ -569,18 +682,18 @@ def _attach_material_workflow_state(cursor, material):
     return material
 
 
-def _latest_workflow_jobs_for_videos(cursor, video_ids):
+def _latest_workflow_jobs_for_videos(cursor, video_ids, owner_user_id):
     clean_ids = _clean_unique_list(video_ids)
     if not clean_ids:
         return {}, {}
 
     cursor.execute(f'''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id IN ({_sql_placeholders(clean_ids)})
-    ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0 ELSE 1 END,
+    WHERE owner_user_id = ? AND video_id IN ({_sql_placeholders(clean_ids)})
+    ORDER BY CASE WHEN status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') THEN 0 ELSE 1 END,
              updated_at DESC,
              created_at DESC
-    ''', clean_ids)
+    ''', [owner_user_id, *clean_ids])
     jobs = [_row_to_workflow_job(row) for row in cursor.fetchall()]
     jobs_by_video = {}
     jobs_by_video_version = {}
@@ -604,7 +717,7 @@ def _material_workflow_job(material, jobs_by_video, jobs_by_video_version):
         if job:
             return job
         fallback_job = jobs_by_video.get(video_id)
-        if fallback_job and fallback_job.get("status") in {"queued", "running", "waiting_confirmation"}:
+        if fallback_job and fallback_job.get("status") in {"queued", "running", "waiting_confirmation", "waiting_publish"}:
             return fallback_job
         return None
     return jobs_by_video.get(video_id)
@@ -637,23 +750,23 @@ def _attach_workflow_job_to_material(material, workflow_job):
     return material
 
 
-def _active_analysis_job_for_video(cursor, video_id):
+def _active_analysis_job_for_video(cursor, video_id, owner_user_id):
     if not video_id:
         return None
     cursor.execute('''
     SELECT * FROM youtube_workflow_jobs
-    WHERE video_id = ?
-      AND status IN ('queued', 'running', 'waiting_confirmation')
+    WHERE video_id = ? AND owner_user_id = ?
+      AND status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
       AND step = 'analysis'
     ORDER BY updated_at DESC, created_at DESC
     LIMIT 1
-    ''', (video_id,))
+    ''', (video_id, owner_user_id))
     row = cursor.fetchone()
     return _row_to_workflow_job(row) if row else None
 
 
-def _assert_no_active_youtube_job(cursor, video_id):
-    active_job = _active_job_for_video(cursor, video_id)
+def _assert_no_active_youtube_job(cursor, video_id, owner_user_id):
+    active_job = _active_job_for_video(cursor, video_id, owner_user_id)
     if not active_job:
         return
     raise WorkflowConflictError(
@@ -675,7 +788,7 @@ def update_youtube_workflow_job(job_id, **changes):
     values = []
     for key, value in changes.items():
         fields.append(f"{key} = ?")
-        values.append(json.dumps(value, ensure_ascii=False) if key == "content_risk" else value)
+        values.append(json.dumps(value, ensure_ascii=False) if key in {"content_risk", "source_subtitle_analysis"} else value)
     fields.append("updated_at = CURRENT_TIMESTAMP")
     values.append(job_id)
     with _db_connect() as conn:
@@ -685,13 +798,13 @@ def update_youtube_workflow_job(job_id, **changes):
         SET {", ".join(fields)}
         WHERE id = ?
         ''', values)
-        if changes.get("status") in {"success", "failed", "abnormal", "cancelled"}:
+        if changes.get("status") in set(_WORKFLOW_TERMINAL_STATUSES):
             cursor.execute("DELETE FROM youtube_workflow_locks WHERE job_id = ?", (job_id,))
         conn.commit()
     return get_youtube_workflow_job(job_id)
 
 
-def resolve_youtube_workflow_publish_confirmation(job_id, confirmed):
+def resolve_youtube_workflow_publish_confirmation(job_id, confirmed, owner_user_id=None):
     """原子地处理发布确认，避免并发确认重复提交同一工作流。"""
     init_youtube_workflow_table()
     if not isinstance(confirmed, bool):
@@ -701,7 +814,13 @@ def resolve_youtube_workflow_publish_confirmation(job_id, confirmed):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        if owner_user_id is None:
+            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
+        else:
+            cursor.execute(
+                "SELECT * FROM youtube_workflow_jobs WHERE id = ? AND owner_user_id = ?",
+                (job_id, int(owner_user_id)),
+            )
         row = cursor.fetchone()
         if not row:
             raise LookupError("任务不存在")
@@ -818,7 +937,7 @@ def mark_shutdown_interrupted_jobs():
 
 WORKFLOW_STAGE_LABELS = {
     "download": "下载原视频",
-    "transcript": "英文语音转写",
+    "transcript": "语音转写",
     "subtitle": "字幕翻译与修订",
     "subtitle_burn": "字幕烧制",
     "body_burn": "正片字幕烧制",
@@ -869,11 +988,12 @@ def start_workflow_event(job, stage, message="", input_file_path="", metadata=No
         cursor = conn.cursor()
         cursor.execute('''
         INSERT INTO youtube_workflow_events (
-            job_id, video_id, stage, stage_label, status, message,
+            owner_user_id, job_id, video_id, stage, stage_label, status, message,
             input_file_path, input_size_mb, started_at, metadata
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         ''', (
+            job.get("ownerUserId"),
             job.get("id") or "",
             job.get("videoId") or "",
             stage,
@@ -980,7 +1100,7 @@ def reconcile_finished_workflow_events():
         FROM youtube_workflow_events e
         LEFT JOIN youtube_workflow_jobs j ON j.id = e.job_id
         WHERE e.status = 'running'
-          AND (j.id IS NULL OR j.status NOT IN ('queued', 'running', 'waiting_confirmation'))
+          AND (j.id IS NULL OR j.status NOT IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish'))
         ''')
         job_ids = [row[0] for row in cursor.fetchall()]
     for job_id in job_ids:
@@ -1019,7 +1139,7 @@ def _row_to_workflow_event(row):
     }
 
 
-def list_workflow_events(limit=200, page=1, page_size=None):
+def list_workflow_events(limit=200, page=1, page_size=None, owner_user_id=None):
     init_youtube_workflow_table()
     page_size = _parse_positive_int(page_size or limit, limit, 1, 1000)
     page = _parse_positive_int(page, 1, 1, 100000)
@@ -1027,15 +1147,16 @@ def list_workflow_events(limit=200, page=1, page_size=None):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) AS total FROM youtube_workflow_events")
+        cursor.execute("SELECT COUNT(*) AS total FROM youtube_workflow_events WHERE owner_user_id = ?", (owner_user_id,))
         total = int((cursor.fetchone() or {})["total"] or 0)
         cursor.execute('''
         SELECT e.*, j.title, j.process_version, j.subtitle_language, j.burn_profile
         FROM youtube_workflow_events e
         LEFT JOIN youtube_workflow_jobs j ON j.id = e.job_id
+        WHERE e.owner_user_id = ?
         ORDER BY e.started_at DESC, e.id DESC
         LIMIT ? OFFSET ?
-        ''', (page_size, offset))
+        ''', (owner_user_id, page_size, offset))
         rows = cursor.fetchall()
         events = []
         for row in rows:
@@ -1048,7 +1169,7 @@ def list_workflow_events(limit=200, page=1, page_size=None):
         return {"items": events, "total": total, "page": page, "pageSize": page_size}
 
 
-def update_youtube_video_artifacts(video_id, **changes):
+def update_youtube_video_artifacts(video_id, owner_user_id, **changes):
     if not video_id or not changes:
         return None
     column_map = {
@@ -1076,23 +1197,33 @@ def update_youtube_video_artifacts(video_id, **changes):
         column = column_map.get(key, key)
         fields.append(f"{column} = ?")
         values.append(value)
+    if any(changes.get(key) for key in ("downloadedFilePath", "processedFilePath", "editingBodyPath")):
+        fields.extend([
+            "local_files_state = 'available'",
+            "retention_anchor_at = NULL",
+            "local_files_purged_at = NULL",
+            "purge_error = ''",
+        ])
     fields.append("updated_at = CURRENT_TIMESTAMP")
-    values.append(video_id)
+    values.extend([video_id, owner_user_id])
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''
         UPDATE youtube_videos
         SET {", ".join(fields)}
-        WHERE video_id = ?
+        WHERE video_id = ? AND owner_user_id = ?
         ''', values)
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute(
+            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (video_id, owner_user_id),
+        )
         row = cursor.fetchone()
         return _row_to_youtube_video(row) if row else None
 
 
-def update_youtube_video_analysis_status(video_id, status, result=None):
+def update_youtube_video_analysis_status(video_id, status, owner_user_id, result=None):
     if not video_id:
         raise ValueError("视频 ID 不能为空")
     init_youtube_video_table()
@@ -1101,23 +1232,26 @@ def update_youtube_video_analysis_status(video_id, status, result=None):
     if result is not None:
         fields.append("analysis_result = ?")
         values.append(json.dumps(result, ensure_ascii=False))
-    values.append(video_id)
+    values.extend([video_id, owner_user_id])
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute(f'''
         UPDATE youtube_videos
         SET {", ".join(fields)}
-        WHERE video_id = ?
+        WHERE video_id = ? AND owner_user_id = ?
         ''', values)
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute(
+            "SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (video_id, owner_user_id),
+        )
         return _row_to_youtube_video(cursor.fetchone())
 
 
-def save_youtube_video_analysis(video_id, result):
+def save_youtube_video_analysis(video_id, result, owner_user_id):
     if not video_id:
         raise ValueError("视频 ID 不能为空")
     init_youtube_video_table()
@@ -1126,8 +1260,8 @@ def save_youtube_video_analysis(video_id, result):
         conn.row_factory = True
         cursor = conn.cursor()
         cursor.execute('''
-        SELECT publish_draft FROM youtube_videos WHERE video_id = ?
-        ''', (video_id,))
+        SELECT publish_draft FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?
+        ''', (video_id, owner_user_id))
         row = cursor.fetchone()
         if not row:
             raise LookupError("视频线索不存在")
@@ -1140,8 +1274,8 @@ def save_youtube_video_analysis(video_id, result):
                 analysis_result = ?,
                 analysis_updated_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ?
-            ''', (json.dumps(result, ensure_ascii=False), video_id))
+            WHERE video_id = ? AND owner_user_id = ?
+            ''', (json.dumps(result, ensure_ascii=False), video_id, owner_user_id))
         else:
             cursor.execute('''
             UPDATE youtube_videos
@@ -1150,33 +1284,37 @@ def save_youtube_video_analysis(video_id, result):
                 publish_draft = ?,
                 analysis_updated_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE video_id = ?
+            WHERE video_id = ? AND owner_user_id = ?
             ''', (
                 json.dumps(result, ensure_ascii=False),
                 json.dumps(default_draft, ensure_ascii=False),
                 video_id,
+                owner_user_id,
             ))
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
         return _row_to_youtube_video(cursor.fetchone())
 
 
-def update_youtube_video_publish_draft(video_id, payload):
-    current = get_youtube_video_analysis(video_id)
+def update_youtube_video_publish_draft(video_id, payload, owner_user_id):
+    current = get_youtube_video_analysis(video_id, owner_user_id)
     current_draft = dict(current.get("draft") or {})
     title = payload.get("title", payload.get("selectedTitle", current_draft.get("title", "")))
     description = payload.get("description", payload.get("publish_copy", current_draft.get("description", "")))
     tags = payload.get("tags", current_draft.get("tags", []))
+    custom_tags = payload.get("customTags", current_draft.get("customTags", []))
     cover_title = payload.get("coverTitle", current_draft.get("coverTitle", ""))
     cover_context = payload.get("coverContext", current_draft.get("coverContext", ""))
+    selected_tags = _clean_topic_list(tags)
     draft = {
         "title": str(title or "").strip(),
         "coverTitle": normalize_cover_title(cover_title),
         "coverContext": normalize_cover_context(cover_context),
         "description": str(description or "").strip(),
-        "tags": _clean_topic_list(tags),
+        "tags": selected_tags,
+        "customTags": [tag for tag in _clean_topic_list(custom_tags) if tag not in selected_tags],
         "source": "user_saved",
         "updatedAt": _now_iso(),
     }
@@ -1187,20 +1325,20 @@ def update_youtube_video_publish_draft(video_id, payload):
         UPDATE youtube_videos
         SET publish_draft = ?,
             updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ?
-        ''', (json.dumps(draft, ensure_ascii=False), video_id))
+        WHERE video_id = ? AND owner_user_id = ?
+        ''', (json.dumps(draft, ensure_ascii=False), video_id, owner_user_id))
         if cursor.rowcount == 0:
             raise LookupError("视频线索不存在")
         conn.commit()
-    return get_youtube_video_analysis(video_id)
+    return get_youtube_video_analysis(video_id, owner_user_id)
 
 
-def update_youtube_video_analysis_result(video_id, payload):
-    return update_youtube_video_publish_draft(video_id, payload)
+def update_youtube_video_analysis_result(video_id, payload, owner_user_id):
+    return update_youtube_video_publish_draft(video_id, payload, owner_user_id)
 
 
-def ensure_youtube_publish_draft(video_id):
-    analysis = get_youtube_video_analysis(video_id)
+def ensure_youtube_publish_draft(video_id, owner_user_id):
+    analysis = get_youtube_video_analysis(video_id, owner_user_id)
     if analysis.get("draft"):
         return analysis
     result = analysis.get("result") or {}
@@ -1213,18 +1351,18 @@ def ensure_youtube_publish_draft(video_id):
         UPDATE youtube_videos
         SET publish_draft = ?,
             updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ?
-        ''', (json.dumps(draft, ensure_ascii=False), video_id))
+        WHERE video_id = ? AND owner_user_id = ?
+        ''', (json.dumps(draft, ensure_ascii=False), video_id, owner_user_id))
         conn.commit()
-    return get_youtube_video_analysis(video_id)
+    return get_youtube_video_analysis(video_id, owner_user_id)
 
 
-def get_youtube_video_analysis(video_id):
+def get_youtube_video_analysis(video_id, owner_user_id):
     init_youtube_video_table()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute("SELECT * FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?", (video_id, owner_user_id))
         row = cursor.fetchone()
         if not row:
             raise LookupError("视频线索不存在")

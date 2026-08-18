@@ -1,6 +1,7 @@
 @app.route('/uploadCookie', methods=['POST'])
 def upload_cookie():
     try:
+        owner_user_id = _current_account_owner_id()
         if 'file' not in request.files:
             return jsonify({
                 "code": 400,
@@ -55,7 +56,7 @@ def upload_cookie():
         with _db_connect() as conn:
             conn.row_factory = True
             cursor = conn.cursor()
-            cursor.execute('SELECT type, filePath FROM user_info WHERE id = ?', (account_id,))
+            cursor.execute('SELECT type, filePath FROM user_info WHERE id = ? AND owner_user_id = ?', (account_id, owner_user_id))
             result = cursor.fetchone()
 
             if not result:
@@ -73,7 +74,7 @@ def upload_cookie():
                 }), 400
 
             # 保存上传的Cookie文件到对应路径
-            cookie_file_path = _safe_cookie_path(result['filePath'])
+            cookie_file_path = _safe_cookie_path(result['filePath'], owner_user_id=owner_user_id)
             cookie_file_path.parent.mkdir(parents=True, exist_ok=True)
 
             file.save(str(cookie_file_path))
@@ -81,17 +82,19 @@ def upload_cookie():
             cursor.execute('UPDATE user_info SET status = ? WHERE id = ?', (1, account_id))
             conn.commit()
 
+        resolve_publish_cookie_invalid_notifications(account_id, owner_user_id)
+
         return jsonify({
             "code": 200,
             "msg": "Cookie文件上传成功",
             "data": None
         }), 200
 
-    except Exception as e:
-        print(f"上传Cookie文件时出错: {str(e)}")
+    except Exception as exc:
+        backend_logger.exception("cookie upload failed : error_type = %s", type(exc).__name__)
         return jsonify({
             "code": 500,
-            "msg": f"上传Cookie文件失败: {str(e)}",
+            "msg": "上传 Cookie 文件失败",
             "data": None
         }), 500
 
@@ -100,6 +103,7 @@ def upload_cookie():
 @app.route('/downloadCookie', methods=['GET'])
 def download_cookie():
     try:
+        owner_user_id = _current_account_owner_id()
         file_path = request.args.get('filePath')
         if not file_path:
             return jsonify({
@@ -109,7 +113,15 @@ def download_cookie():
             }), 400
 
         try:
-            cookie_file_path = _safe_cookie_path(file_path, must_exist=True)
+            with _db_connect() as conn:
+                conn.row_factory = True
+                row = conn.execute(
+                    'SELECT 1 FROM user_info WHERE filePath = ? AND owner_user_id = ?',
+                    (_safe_cookie_filename(file_path), owner_user_id),
+                ).fetchone()
+            if not row:
+                return jsonify({"code": 404, "msg": "Cookie 文件不存在", "data": None}), 404
+            cookie_file_path = _safe_cookie_path(file_path, owner_user_id=owner_user_id, must_exist=True)
         except ValueError:
             return jsonify({"code": 500, "msg": "非法文件路径", "data": None}), 400
         except FileNotFoundError:
@@ -126,11 +138,11 @@ def download_cookie():
             as_attachment=True
         )
 
-    except Exception as e:
-        print(f"下载Cookie文件时出错: {str(e)}")
+    except Exception as exc:
+        backend_logger.exception("cookie download failed : error_type = %s", type(exc).__name__)
         return jsonify({
             "code": 500,
-            "msg": f"下载Cookie文件失败: {str(e)}",
+            "msg": "下载 Cookie 文件失败",
             "data": None
         }), 500
 

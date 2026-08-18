@@ -1,0 +1,7 @@
+interface:
+  display_name: "快手作品数据分析"
+  short_description: "按作品或日期范围读取快手指标，并在确认后分析评论样本"
+  default_prompt: "Use $kuaishou-analytics to analyze one Kuaishou published video."
+
+policy:
+  allow_implicit_invocation: true

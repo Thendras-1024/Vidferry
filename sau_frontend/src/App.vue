@@ -8,11 +8,8 @@
             <img v-show="isCollapse" src="/vidferry-icon.svg" alt="Vidferry" class="logo-img">
             <div v-show="!isCollapse" class="logo-copy">
               <strong>Vidferry</strong>
-              <span>LOCAL VIDEO WORKSPACE</span>
+              <span>视频采集与发布工作台</span>
             </div>
-            <el-button v-if="!isCollapse" class="sidebar-collapse-button" text circle aria-label="收起侧栏" title="收起侧栏" @click="toggleSidebar">
-              <el-icon><Fold /></el-icon>
-            </el-button>
           </div>
           <section class="workspace-nav" aria-label="业务导航">
             <el-button class="new-conversation-button" :circle="isCollapse" @click="startAgentConversation">
@@ -22,6 +19,9 @@
             <el-menu :router="true" :default-active="activeMenu" :collapse="isCollapse" class="sidebar-menu">
               <el-menu-item index="/youtube-research">
                 <el-icon><Search /></el-icon><span>视频采集与处理</span>
+              </el-menu-item>
+              <el-menu-item index="/short-video-studio">
+                <el-icon><VideoPlay /></el-icon><span>短视频拼接</span>
               </el-menu-item>
               <el-menu-item v-if="isAdmin" index="/account-management">
                 <el-icon><User /></el-icon><span>账号连接</span>
@@ -109,6 +109,7 @@
                     <el-dropdown-item v-if="isAdmin" command="users" divided>用户与安全</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="statistics">处理统计</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="audit">字幕审计与诊断</el-dropdown-item>
+                    <el-dropdown-item v-if="isAdmin" command="shortVideoBgm">短视频 BGM 管理</el-dropdown-item>
                     <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -177,9 +178,6 @@
                   <el-icon><Sunny v-if="isDarkTheme" /><Moon v-else /></el-icon>
                 </el-button>
               </el-tooltip>
-              <el-button v-if="route.path !== '/'" text @click="router.push('/')">
-                <el-icon><ChatDotRound /></el-icon><span>询问 Agent</span>
-              </el-button>
             </div>
             <div v-if="false" class="header-right">
               <el-tooltip content="打开内容安全审查与模型诊断" placement="bottom">
@@ -347,13 +345,13 @@
   </div>
 </template>
 <script setup>
-import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification } from 'element-plus'
 import {
   HomeFilled, User, DataAnalysis, ArrowDown,
   Fold, Picture, Upload, Search, Bell, Setting, ChatDotRound, DocumentCopy, Loading, Plus, RefreshRight, Clock, Delete, DocumentChecked, Cpu, Moon, Sunny,
-  MoreFilled, Top, Promotion
+  MoreFilled, Top, Promotion, VideoPlay
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { commonApi } from '@/api/common'
@@ -390,6 +388,7 @@ const FEISHU_STATUS_POLL_INTERVAL_MS = 10 * 1000
 let accountCheckTimer = null
 let notificationSyncTimer = null
 let feishuRobotStatusTimer = null
+let authenticatedWorkspaceStarted = false
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
 const feishuRobotStatus = ref({ status: 'connecting', message: '正在读取飞书机器人状态。', updatedAt: '' })
@@ -452,9 +451,15 @@ const refreshRuntimeConfigStatus = async () => {
       llmConfigWarning.value = textStatus.message || '文本模型不可用，请检查配置并重启后端。'
     }
     const agent = res?.data?.agent
-    agentConfigWarning.value = agent?.enabled && agent?.requirePrepublishCheck && !agent?.multimodalModelConfigured
-      ? 'Agent 发布前质检已启用，但多模态模型未配置；发布会被关键帧审核阻断。'
-      : ''
+    const agentLlmStatus = llm?.agent
+    const agentWarnings = []
+    if (agent?.enabled && agentLlmStatus && !agentLlmStatus.ready) {
+      agentWarnings.push(agentLlmStatus.message || 'Agent 模型不可用，请检查配置并重启后端。')
+    }
+    if (agent?.enabled && agent?.requirePrepublishCheck && !agent?.multimodalModelConfigured) {
+      agentWarnings.push('Agent 发布前质检已启用，但多模态模型未配置；发布会被关键帧审核阻断。')
+    }
+    agentConfigWarning.value = agentWarnings.join(' ')
   } catch (error) {
     console.error('运行时配置状态检查失败:', error)
   }
@@ -508,6 +513,7 @@ const handleUserCommand = async command => {
   if (command === 'users') return router.push('/user-management')
   if (command === 'statistics') return router.push('/workflow-statistics')
   if (command === 'audit') return router.push('/subtitle-audit')
+  if (command === 'shortVideoBgm') return router.push('/short-video-bgm')
   if (command === 'about') return router.push('/about')
   if (command === 'password') return router.push('/change-password')
   if (command === 'logout') {
@@ -524,10 +530,9 @@ const toggleNotificationHistory = async () => {
 
 const refreshNotifications = () => notificationStore.refresh({ includeHistory: showNotificationHistory.value })
 
-onMounted(() => {
-  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
-  mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
-  if (!userStore.isLoggedIn) return
+const initializeAuthenticatedWorkspace = () => {
+  if (authenticatedWorkspaceStarted || !userStore.isLoggedIn) return
+  authenticatedWorkspaceStarted = true
   void openAgentWorkbench()
   refreshRuntimeConfigStatus()
   refreshFeishuRobotStatus()
@@ -540,6 +545,14 @@ onMounted(() => {
   feishuRobotStatusTimer = window.setInterval(refreshFeishuRobotStatus, FEISHU_STATUS_POLL_INTERVAL_MS)
   window.addEventListener('focus', refreshNotifications)
   window.addEventListener('focus', refreshFeishuRobotStatus)
+}
+
+watch(() => userStore.isLoggedIn, initializeAuthenticatedWorkspace)
+
+onMounted(() => {
+  window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
+  mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
+  initializeAuthenticatedWorkspace()
 })
 
 onBeforeUnmount(() => {

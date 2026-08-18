@@ -73,6 +73,8 @@ def _base_ytdlp_opts(include_ffmpeg=False):
         "proxy": YTDLP_PROXY,
     }
     opts.update(_youtube_cookie_options())
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
     if YTDLP_REMOTE_COMPONENTS:
         opts["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
     if include_ffmpeg:

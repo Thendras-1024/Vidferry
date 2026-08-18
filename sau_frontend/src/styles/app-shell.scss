@@ -942,16 +942,10 @@
 .workspace-heading span,
 .agent-drawer-kicker {
   color: var(--vf-text-secondary);
-  font-family: Inter, system-ui, sans-serif;
+  font-family: Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0;
-}
-
-.sidebar-collapse-button {
-  display: none;
-  margin-left: auto;
-  color: var(--vf-text-regular);
 }
 
 .workspace-nav {
@@ -1514,10 +1508,6 @@
 
   .workspace-aside + .el-container {
     margin-left: 72px;
-  }
-
-  .sidebar-collapse-button {
-    display: inline-flex;
   }
 
   .agent-page .agent-quick-actions {

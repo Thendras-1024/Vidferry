@@ -8,6 +8,9 @@ PLATFORM_TYPE_TO_NAME = {
 
 PLATFORM_NAME_TO_TYPE = {name: value for value, name in PLATFORM_TYPE_TO_NAME.items()}
 
+# 仅记录上传适配器已经存在的限制，其他平台不新增应用层数量限制。
+PUBLISH_TAG_LIMITS = {3: 5, 4: 4}
+
 BILIBILI_DEFAULT_TID = 21
 
 BILIBILI_CATEGORIES = [
@@ -85,6 +88,23 @@ def clean_unique_list(values):
     return cleaned
 
 
+def clean_publish_tags(values):
+    if isinstance(values, str):
+        values = [values]
+    parts = []
+    for value in values or []:
+        parts.extend(str(value or "").replace("，", ",").split(","))
+    return clean_unique_list(str(value or "").strip().lstrip("#") for value in parts)
+
+
+def merge_publish_tags(platform_type, common_tags=None, custom_tags=None, selected_tags=None):
+    """按发布优先级合并标签，并遵守平台已有的标签数量限制。"""
+    values = [*(common_tags or []), *(custom_tags or []), *(selected_tags or [])]
+    tags = clean_publish_tags(values)
+    limit = PUBLISH_TAG_LIMITS.get(int(platform_type or 0))
+    return tags[:limit] if limit is not None else tags
+
+
 def normalize_publish_targets(payload):
     raw_targets = payload.get("targets")
     if isinstance(raw_targets, list) and raw_targets:
@@ -111,7 +131,11 @@ def normalize_publish_targets(payload):
                 "accountFile": account_file,
                 "accountId": raw.get("accountId"),
                 "accountName": raw.get("accountName") or "",
-                "tags": clean_unique_list(raw.get("tags") or []),
+                "confirmCrossAccountRisk": bool(raw.get("confirmCrossAccountRisk") or payload.get("confirmCrossAccountRisk")),
+                "tags": clean_publish_tags(raw.get("selectedTags") if "selectedTags" in raw else raw.get("tags") or []),
+                "customTags": clean_publish_tags(raw.get("customTags") or []),
+                "_tagsProvided": "selectedTags" in raw or "tags" in raw,
+                "_customTagsProvided": "customTags" in raw,
                 "bilibiliTid": normalize_bilibili_tid(raw.get("bilibiliTid") or payload.get("bilibiliTid")) if platform_type == 5 else "",
                 "productLink": str(raw.get("productLink") or payload.get("productLink") or "").strip() if platform_type == 3 else "",
                 "productTitle": str(raw.get("productTitle") or payload.get("productTitle") or "").strip() if platform_type == 3 else "",
@@ -134,7 +158,11 @@ def normalize_publish_targets(payload):
         "accountFile": account_list[0],
         "accountId": "",
         "accountName": "",
-        "tags": clean_unique_list(payload.get("tags") or []),
+        "confirmCrossAccountRisk": bool(payload.get("confirmCrossAccountRisk")),
+        "tags": clean_publish_tags(payload.get("selectedTags") if "selectedTags" in payload else payload.get("tags") or []),
+        "customTags": clean_publish_tags(payload.get("customTags") or []),
+        "_tagsProvided": "selectedTags" in payload or "tags" in payload,
+        "_customTagsProvided": "customTags" in payload,
         "bilibiliTid": normalize_bilibili_tid(payload.get("bilibiliTid")) if platform_type == 5 else "",
         "productLink": str(payload.get("productLink") or "").strip() if platform_type == 3 else "",
         "productTitle": str(payload.get("productTitle") or "").strip() if platform_type == 3 else "",

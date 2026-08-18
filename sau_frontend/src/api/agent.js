@@ -132,6 +132,22 @@ export const agentApi = {
     return request.post('/agents/prepublish-check/latest', data, { silentError: true })
   },
 
+  generateCopywritingProposal(proposalId, data) {
+    return request.post(`/agents/copywriting-proposals/${encodeURIComponent(proposalId)}/generate`, data)
+  },
+
+  applyCopywritingProposal(proposalId, data) {
+    return request.post(`/agents/copywriting-proposals/${encodeURIComponent(proposalId)}/apply`, data)
+  },
+
+  getVideoStatusCardPage(cardId, data) {
+    return request.post(`/agents/video-status-cards/${encodeURIComponent(cardId)}/page`, data)
+  },
+
+  updateVideoSelection(sessionId, videoIds, cardId) {
+    return request.put(`/agents/sessions/${encodeURIComponent(sessionId)}/video-selection`, { videoIds, cardId })
+  },
+
   getRun(runId) {
     return request.get(`/agents/runs/${runId}`)
   }

@@ -35,7 +35,9 @@ from app.utils.text_util import clean_display_text, ensure_utf8_stdio
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command, video_encode_args
 from app.publishing import (
     BILIBILI_DEFAULT_TID,
+    PUBLISH_TAG_LIMITS,
     bilibili_categories,
+    merge_publish_tags,
     normalize_bilibili_tid,
     normalize_publish_targets,
     platform_name,
@@ -58,6 +60,11 @@ from app.config import (
     AGENT_FRAME_SCALE_WIDTH,
     AGENT_GUARD_MAX_TOKENS,
     AGENT_GUARD_TEMPERATURE,
+    AGENT_LLM_API_KEY,
+    AGENT_LLM_BASE_URL,
+    AGENT_LLM_ENABLE_THINKING,
+    AGENT_LLM_MODEL,
+    AGENT_LLM_PROVIDER,
     AGENT_HIGH_RISK_KEYWORDS,
     AGENT_MAX_TOOL_ROWS,
     AGENT_MAX_TOOL_CALLS,
@@ -106,6 +113,8 @@ from app.config import (
     WORKFLOW_MAX_PUBLISH_QUEUED_JOBS,
     WORKFLOW_MAX_SEARCH_JOBS,
     WORKFLOW_MAX_SEARCH_QUEUED_JOBS,
+    USER_STORAGE_QUOTA_MB,
+    USER_UPLOAD_MAX_MB,
     WORKFLOW_ERROR_BOOT_INTERRUPTED,
     WORKFLOW_ERROR_DELETE_DOWNLOAD_EXISTS,
     WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,
@@ -119,6 +128,9 @@ from app.config import (
     YOUTUBE_DEFAULT_GROUP_NAME,
     YOUTUBE_DOWNLOAD_DIR,
     YOUTUBE_LEGACY_DEFAULT_QUERY,
+    VIDEO_LOCAL_CLEANUP_BATCH_SIZE,
+    VIDEO_LOCAL_CLEANUP_MODE,
+    VIDEO_LOCAL_RETENTION_DAYS,
     YOUTUBE_PROCESSED_DIR,
     YOUTUBE_TRANSCRIPT_DIR,
     YTDLP_JS_RUNTIME,
@@ -192,7 +204,7 @@ def reject_cross_origin_writes():
 
 register_auth_middleware(app)
 
-# 限制上传文件大小为160MB
-app.config['MAX_CONTENT_LENGTH'] = 160 * 1024 * 1024
+# 上传请求体硬限制，早于媒体解析和磁盘配额校验生效。
+app.config['MAX_CONTENT_LENGTH'] = USER_UPLOAD_MAX_MB * 1024 * 1024
 
 

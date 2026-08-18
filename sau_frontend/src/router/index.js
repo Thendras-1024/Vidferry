@@ -5,6 +5,7 @@ import MaterialManagement from '../views/MaterialManagement.vue'
 import PublishCenter from '../views/PublishCenter.vue'
 import YoutubeResearch from '../views/YoutubeResearch.vue'
 import WorkflowStatistics from '../views/WorkflowStatistics.vue'
+import TaskCenter from '../views/TaskHistory.vue'
 import About from '../views/About.vue'
 import SubtitleAudit from '../views/SubtitleAudit.vue'
 import ScheduledPublishTasks from '../views/ScheduledPublishTasks.vue'
@@ -12,6 +13,8 @@ import Login from '../views/Login.vue'
 import ChangePassword from '../views/ChangePassword.vue'
 import UserManagement from '../views/UserManagement.vue'
 import ProcessingSettings from '../views/ProcessingSettings.vue'
+import ShortVideoStudio from '../views/ShortVideoStudio.vue'
+import ShortVideoBgmAdmin from '../views/ShortVideoBgmAdmin.vue'
 import pinia, { useUserStore } from '../stores'
 
 const routes = [
@@ -64,9 +67,25 @@ const routes = [
     component: WorkflowStatistics
   },
   {
+    path: '/task-center',
+    name: 'TaskCenter',
+    component: TaskCenter
+  },
+  {
     path: '/youtube-research',
     name: 'YoutubeResearch',
     component: YoutubeResearch
+  },
+  {
+    path: '/short-video-studio',
+    name: 'ShortVideoStudio',
+    component: ShortVideoStudio
+  },
+  {
+    path: '/short-video-bgm',
+    name: 'ShortVideoBgmAdmin',
+    component: ShortVideoBgmAdmin,
+    meta: { requiresAdmin: true }
   },
   {
     path: '/workflow-settings',

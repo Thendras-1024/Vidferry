@@ -87,6 +87,18 @@ class WorkflowConflictError(ValueError):
         self.data = data or {}
 
 
+class BackgroundQueueFullError(RuntimeError):
+    """后台资源的全局或 owner 队列准入已满。"""
+
+    def __init__(self, resource, scope="global"):
+        self.resource = str(resource or "unknown")
+        self.scope = str(scope or "global")
+        self.error_code = (
+            f"VF-{self.scope.upper()}-{self.resource.upper()}-QUEUE-FULL"
+        )
+        super().__init__("任务队列已满，请稍后重试")
+
+
 class NoSpeechDetectedError(RuntimeError):
     """ASR 未识别到可用人声，字幕处理应跳过而非失败。"""
     pass

@@ -19,7 +19,7 @@ from app.core.llm_harness import call_json_contract, contains_profanity
 
 _logger = logging.getLogger("vidferry.backend")
 
-COMMENT_BURN_VERSION = 5
+COMMENT_BURN_VERSION = 6
 COMMENT_LIMIT = 100
 COMMENT_SELECTED_LIMIT = 30
 COMMENT_SELECTED_LIMIT_MIN = 20
@@ -30,8 +30,8 @@ COMMENT_SCREEN_CONCURRENCY = 2
 COMMENT_SCREEN_TIMEOUT_SECONDS = min(LLM_TIMEOUT, 60)
 COMMENT_AVATAR_DOWNLOAD_CONCURRENCY = 4
 COMMENT_START_SECONDS = 25
-COMMENT_DURATION_SECONDS = 11
-COMMENT_GAP_SECONDS = 3
+COMMENT_DURATION_SECONDS = 18
+COMMENT_GAP_SECONDS = 10
 _URL_ONLY_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.I)
 _LOW_INFORMATION_RE = re.compile(
     r"^(?:wow+|omg+|lol+|lmao+|haha+|ha+|哇+|哇哦+|哇塞+|哈哈+|呵呵+|厉害+|牛+|棒+|大?赞+|대박+|헐+|와+|와우+)[!！?？~*…。.、\s]*$",
@@ -222,27 +222,41 @@ def _is_chinese_comment(text):
 
 
 def _validate_comment_screen(value, candidates):
-    if not isinstance(value, dict) or set(value) != {"comments"}:
-        raise ValueError("评论初筛结果字段不合法")
-    known, seen, selected = {str(index + 1): item for index, item in enumerate(candidates)}, set(), []
-    for index, item in enumerate(value.get("comments") or []):
-        if not isinstance(item, dict) or set(item) != {"no", "keep", "reasonCode"}:
-            raise ValueError(f"comments[{index}] 字段不合法")
+    if not isinstance(value, dict) or set(value) != {"keep"}:
+        raise ValueError("评论初筛结果必须只包含 keep")
+    known = {str(index + 1): item for index, item in enumerate(candidates)}
+    seen, selected = set(), []
+    keep_values = value.get("keep")
+    if not isinstance(keep_values, list):
+        raise ValueError("评论初筛 keep 必须是数组")
+    for index, comment_no in enumerate(keep_values):
+        comment_no = str(comment_no).strip()
+        comment_id = known.get(comment_no, {}).get("id")
+        if not comment_id or comment_id in seen:
+            raise ValueError(f"评论初筛 keep[{index}] 序号无效或重复")
+        selected.append({**known[comment_no], "_keep": True, "_filterCode": ""})
+        seen.add(comment_id)
+    return selected
+
+
+def _validate_comment_selection(value, candidates):
+    if not isinstance(value, dict) or set(value) != {"remove"}:
+        raise ValueError("评论终筛结果必须只包含 remove")
+    known = {str(index + 1): item for index, item in enumerate(candidates)}
+    seen, removed = set(), []
+    for index, item in enumerate(value.get("remove") or []):
+        if not isinstance(item, dict) or set(item) != {"no", "reasonCode"}:
+            raise ValueError(f"评论终筛 remove[{index}] 字段不合法")
         comment_no = str(item.get("no") or "").strip()
         comment_id = known.get(comment_no, {}).get("id")
-        keep = item.get("keep")
         reason_code = str(item.get("reasonCode") or "").strip()
-        if not comment_id or comment_id in seen or not isinstance(keep, bool):
-            raise ValueError(f"comments[{index}] 不合法")
-        if keep and reason_code:
-            raise ValueError(f"comments[{index}].reasonCode 不应存在")
-        if not keep and reason_code not in COMMENT_FILTER_REASON_CODES:
-            raise ValueError(f"comments[{index}].reasonCode 不合法")
-        selected.append({**known[comment_no], "_keep": keep, "_filterCode": reason_code})
+        if not comment_id or comment_id in seen:
+            raise ValueError(f"评论终筛 remove[{index}] 序号无效或重复")
+        if reason_code not in COMMENT_FILTER_REASON_CODES:
+            raise ValueError(f"评论终筛 remove[{index}] 原因码不合法")
+        removed.append({**known[comment_no], "_keep": False, "_filterCode": reason_code})
         seen.add(comment_id)
-    if len(selected) != len(candidates):
-        raise ValueError("评论初筛必须逐条返回所有输入评论")
-    return selected
+    return removed
 
 
 def _empty_usage():
@@ -338,6 +352,8 @@ def build_comment_review_items(review_items, generation_meta, comments):
     failed_batch_ids = set(generation_meta.get("failedBatchIds") or [])
     google_failed_ids = set((generation_meta.get("translation") or {}).get("googleFailedIds") or [])
     llm_filter_codes = generation_meta.get("llmFilterCodes") or {}
+    initial_screen_ids = set(generation_meta.get("initialScreenIds") or [])
+    failure_code = generation_meta.get("failureCode") or ""
     burned_by_id = {str(item.get("id") or ""): item for item in comments or []}
     result = []
     for original in review_items or []:
@@ -355,12 +371,18 @@ def build_comment_review_items(review_items, generation_meta, comments):
             item.update(status="rejected", filterReason="翻译未生成，无法烧制")
         elif comment_id in llm_filter_codes:
             item.update(status="rejected", filterReason=COMMENT_FILTER_REASON_CODES.get(llm_filter_codes[comment_id], "LLM 过滤"), filterCode=llm_filter_codes[comment_id])
-        elif comment_id in screened_ids:
-            item.update(status="rejected", filterReason="最终筛选未入选")
         elif comment_id in failed_batch_ids:
             item.update(status="rejected", filterReason="初筛批次失败")
+        elif comment_id in screened_ids and comment_id not in initial_screen_ids:
+            item.update(status="rejected", filterReason="LLM 初筛未保留", filterCode="LLM_SCREENED_OUT")
+        elif comment_id in screened_ids:
+            item.update(status="rejected", filterReason="最终筛选未入选")
         else:
-            item.update(status="rejected", filterReason="初筛未入选")
+            item.update(
+                status="rejected",
+                filterReason="模型输出格式错误，请重试" if failure_code == "LLM_OUTPUT_FORMAT_ERROR" else "LLM 初筛未保留",
+                filterCode=failure_code or "LLM_SCREENED_OUT",
+            )
         result.append(item)
     return result
 
@@ -388,38 +410,58 @@ def review_youtube_comment_candidates_v2(job, candidates, telemetry=None):
                 batch_details[index] = {"status": "failed", "candidateCount": len(batch), "reason": str(exc)[:160]}
                 _logger.warning("comment batch failed job_id=%s batch=%s error=%s", job.get("id") or "", index + 1, exc.__class__.__name__)
     reviewed = [item for batch in reviewed_batches for item in batch]
-    if not reviewed:
-        raise RuntimeError("all comment batches failed")
-    kept = [item for item in reviewed if item.get("_keep")]
+    successful_batches = sum(1 for detail in batch_details if detail.get("status") == "success")
+    if not successful_batches:
+        return [], usage, {
+            "screenBatches": batch_details,
+            "screenedCount": 0,
+            "screenedIds": [],
+            "failedBatchIds": [item["id"] for batch in batches for item in batch],
+            "selectedIds": [],
+            "initialScreenIds": [],
+            "initialScreenRejectedIds": [item["id"] for item in candidates],
+            "finalRemovedIds": [],
+            "finalSelectionFallback": False,
+            "llmFilterCodes": {},
+            "translation": {"googleFailedCount": 0, "googleFailedIds": [], "llmFallbackCount": 0},
+            "failureCode": "LLM_OUTPUT_FORMAT_ERROR",
+        }
+    kept = reviewed
     final_reviewed = []
     final_fallback = False
-    try:
-        result, final_usage, _ = call_json_contract(
-            messages=[
-                {"role": "system", "content": llm_prompts.comment_selection_system_prompt()},
-                {"role": "user", "content": llm_prompts.build_comment_selection_prompt(job, kept)},
-            ],
-            contract_id="comment_selection",
-            validator=lambda value: _validate_comment_screen(value, kept),
-            model=TEXT_LLM_MODEL, api_key=TEXT_LLM_API_KEY, base_url=TEXT_LLM_BASE_URL,
-            timeout=LLM_TIMEOUT, temperature=0.1, max_tokens=1200,
-            prompt_version=llm_prompts.COMMENT_BURN_PROMPT_VERSION, telemetry=telemetry,
-        )
-        _add_usage(usage, final_usage)
-        final_reviewed = result
-        kept = [item for item in result if item.get("_keep")]
-    except Exception as exc:
-        final_fallback = True
-        _logger.warning("cross-batch comment review failed job_id=%s error=%s", job.get("id") or "", exc.__class__.__name__)
+    if kept:
+        try:
+            result, final_usage, _ = call_json_contract(
+                messages=[
+                    {"role": "system", "content": llm_prompts.comment_selection_system_prompt()},
+                    {"role": "user", "content": llm_prompts.build_comment_selection_prompt(job, kept)},
+                ],
+                contract_id="comment_selection",
+                validator=lambda value: _validate_comment_selection(value, kept),
+                model=TEXT_LLM_MODEL, api_key=TEXT_LLM_API_KEY, base_url=TEXT_LLM_BASE_URL,
+                timeout=LLM_TIMEOUT, temperature=0.1, max_tokens=1200,
+                prompt_version=llm_prompts.COMMENT_BURN_PROMPT_VERSION, telemetry=telemetry,
+            )
+            _add_usage(usage, final_usage)
+            final_reviewed = result
+            removed_ids = {item["id"] for item in result}
+            kept = [item for item in kept if item["id"] not in removed_ids]
+        except Exception as exc:
+            final_fallback = True
+            _logger.warning("cross-batch comment review failed job_id=%s error=%s", job.get("id") or "", exc.__class__.__name__)
     selected_limit = _normalized_comment_selected_limit((job or {}).get("commentBurnCount"))
     selected = [{key: value for key, value in item.items() if not key.startswith("_")} for item in kept[:selected_limit]]
     comments, translation_meta = _translate_selected_comments(job, selected, telemetry)
     return comments, usage, {
         "screenBatches": batch_details,
         "screenedCount": len(reviewed),
-        "screenedIds": [item["id"] for item in reviewed],
+        "screenedIds": [item["id"] for item in candidates],
         "failedBatchIds": [item["id"] for index, batch in enumerate(batches) if batch_details[index].get("status") == "failed" for item in batch],
         "selectedIds": [item["id"] for item in selected],
+        "initialScreenIds": [item["id"] for item in reviewed],
+        "initialScreenRejectedIds": [item["id"] for item in candidates if item["id"] not in {entry["id"] for entry in reviewed}],
+        "finalRemovedIds": [item["id"] for item in final_reviewed if not item.get("_keep")],
+        "failureCode": "" if successful_batches else "LLM_OUTPUT_FORMAT_ERROR",
         "selectedCount": len(selected),
         "translatedCount": len(comments),
         "finalSelectionFallback": final_fallback,

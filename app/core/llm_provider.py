@@ -49,6 +49,9 @@ def provider_optional_fields(provider, disable_thinking=True, structured=True):
     fields = {}
     if structured and provider != "longcat":
         fields["response_format"] = {"type": "json_object"}
+    if provider == "deepseek":
+        fields["thinking"] = {"type": "disabled" if disable_thinking else "enabled"}
+        return fields
     if not disable_thinking:
         return fields
     if provider == "dashscope":

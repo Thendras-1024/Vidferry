@@ -129,6 +129,7 @@ let pollTimer = null
 const summaryItems = computed(() => [
   { label: '全部', value: 'all', count: summary.value.all || 0 },
   { label: '未执行', value: 'pending', count: summary.value.pending || 0 },
+  { label: '排队中', value: 'queued', count: summary.value.queued || 0 },
   { label: '平台已排期', value: 'scheduled', count: summary.value.scheduled || 0 },
   { label: '执行中', value: 'running', count: summary.value.running || 0 },
   { label: '已完成', value: 'success', count: summary.value.success || 0 },
@@ -138,12 +139,14 @@ const summaryItems = computed(() => [
 
 const statusLabel = (status) => ({
   pending: '未执行', running: '执行中', success: '已完成', partial: '部分失败',
+  pending: '未执行', queued: '排队中', running: '执行中', success: '已完成', partial: '部分失败',
   failed: '执行失败', timeout: '执行超时', unknown: '待核验', canceled: '已取消',
   scheduled: '已提交平台定时'
 }[status] || status || '-')
 
 const statusType = (status) => ({
   pending: 'info', running: 'primary', success: 'success', partial: 'warning',
+  pending: 'info', queued: 'primary', running: 'primary', success: 'success', partial: 'warning',
   failed: 'danger', timeout: 'danger', unknown: 'warning', canceled: 'info', scheduled: 'primary'
 }[status] || 'info')
 
@@ -153,7 +156,7 @@ const formatDuration = (value) => Number(value || 0) > 0 ? `${(Number(value) / 1
 const workflowScheduledTask = (job) => {
   const workflowStatus = job.status === 'failed' || job.status === 'abnormal'
     ? 'failed'
-    : ['queued', 'running', 'waiting_confirmation'].includes(job.status) ? 'running' : 'scheduled'
+    : ['queued', 'running', 'waiting_confirmation', 'waiting_publish'].includes(job.status) ? 'running' : 'scheduled'
   const targetSpecs = [
     [3, '抖音', 'account'], [5, 'B站', 'bilibiliAccount'], [1, '小红书', 'xiaohongshuAccount'],
     [4, '快手', 'kuaishouAccount'], [2, '视频号', 'tencentAccount']
@@ -247,7 +250,7 @@ const cancelTask = async (task) => {
 onMounted(() => {
   loadTasks()
   pollTimer = window.setInterval(() => {
-    if ((summary.value.pending || 0) + (summary.value.running || 0) > 0) loadTasks()
+    if ((summary.value.pending || 0) + (summary.value.queued || 0) + (summary.value.running || 0) > 0) loadTasks()
   }, 10000)
 })
 

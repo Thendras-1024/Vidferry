@@ -428,11 +428,11 @@ function formatDate(value) {
 }
 
 function taskStatusText(status) {
-  return ({ queued: '排队中', running: '处理中', success: '成功', failed: '失败', waiting_confirmation: '待确认' })[status] || status || '-'
+  return ({ queued: '排队中', running: '处理中', waiting_publish: '发布排队中', success: '成功', failed: '失败', waiting_confirmation: '待确认' })[status] || status || '-'
 }
 
 function taskStatusType(status) {
-  return ({ queued: 'info', running: 'warning', success: 'success', failed: 'danger', waiting_confirmation: 'warning' })[status] || 'info'
+  return ({ queued: 'info', running: 'warning', waiting_publish: 'warning', success: 'success', failed: 'danger', waiting_confirmation: 'warning' })[status] || 'info'
 }
 
 function requestStatusText(status) {

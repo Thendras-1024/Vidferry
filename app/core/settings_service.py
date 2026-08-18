@@ -1,11 +1,15 @@
 """工作流默认设置的读写与归一化(存储在 app_settings 键值表)。"""
 
+import json
 
 from app.core.cover_service import DEFAULT_COVER_SIGNATURE, normalize_cover_signature
+from app.publishing import PLATFORM_TYPE_TO_NAME, PUBLISH_TAG_LIMITS, clean_publish_tags
 
 
 WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
+PUBLISH_TAG_PRESETS_KEY_PREFIX = "publish_tag_presets:"
 COMMENT_BURN_COUNT_OPTIONS = {20, 25, 30, 35, 40, 45, 50}
+SUBTITLE_MODES = {"auto", "force_burn", "original"}
 
 
 def _normalize_highlight_count(value):
@@ -37,9 +41,11 @@ def _default_workflow_settings():
         "coverSignature": DEFAULT_COVER_SIGNATURE,
         "highlightCount": 3,
         "translationEnabled": True,
+        "subtitleMode": "auto",
         "highlightIntroEnabled": True,
         "coverIntroEnabled": True,
         "commentBurnEnabled": False,
+        "subtitleMaskEnabled": False,
         "commentBurnCount": 30,
         "contentSafetyReviewEnabled": False,
     }
@@ -85,9 +91,15 @@ def _normalize_workflow_settings(payload=None):
     settings["coverSignature"] = normalize_cover_signature(payload.get("coverSignature", payload.get("coverBrandName")))
     settings["highlightCount"] = _normalize_highlight_count(payload.get("highlightCount", settings["highlightCount"]))
     settings["translationEnabled"] = bool(payload.get("translationEnabled", True))
+    subtitle_mode = str(payload.get("subtitleMode") or "auto").strip()
+    settings["subtitleMode"] = subtitle_mode if subtitle_mode in SUBTITLE_MODES else "auto"
     settings["highlightIntroEnabled"] = bool(payload.get("highlightIntroEnabled", True))
     settings["coverIntroEnabled"] = bool(payload.get("coverIntroEnabled", True))
     settings["commentBurnEnabled"] = bool(payload.get("commentBurnEnabled", False)) and settings["processVersion"] == PROCESS_VERSION_EDITING and _comment_burn_available()
+    settings["subtitleMaskEnabled"] = bool(payload.get("subtitleMaskEnabled", False)) and not str(SUBTITLE_COMMAND_TEMPLATE or "").strip()
+    if settings["subtitleMode"] == "original":
+        settings["translationEnabled"] = False
+        settings["subtitleMaskEnabled"] = False
     settings["commentBurnCount"] = _normalize_comment_burn_count(payload.get("commentBurnCount", settings["commentBurnCount"]))
     settings["contentSafetyReviewEnabled"] = bool(payload.get("contentSafetyReviewEnabled", False))
 
@@ -102,12 +114,12 @@ def get_workflow_settings():
         row = cursor.fetchone()
     if not row:
         settings = _default_workflow_settings()
-        return {**settings, "commentBurnAvailable": _comment_burn_available()}
+        return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
     try:
         settings = _normalize_workflow_settings(json.loads(row[0]))
     except Exception:
         settings = _default_workflow_settings()
-    return {**settings, "commentBurnAvailable": _comment_burn_available()}
+    return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
 
 
 def update_workflow_settings(payload):
@@ -127,4 +139,68 @@ def update_workflow_settings(payload):
             (WORKFLOW_SETTINGS_KEY, json.dumps(settings, ensure_ascii=False)),
         )
         conn.commit()
-    return {**settings, "commentBurnAvailable": _comment_burn_available()}
+    return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
+
+
+def _default_publish_tag_presets():
+    return {str(platform_type): [] for platform_type in PLATFORM_TYPE_TO_NAME}
+
+
+def _normalize_publish_tag_presets(payload):
+    raw = payload.get("presets") if isinstance(payload, dict) and "presets" in payload else payload
+    if not isinstance(raw, dict):
+        raise ValueError("通用标签配置格式错误")
+    presets = _default_publish_tag_presets()
+    for key, values in raw.items():
+        try:
+            platform_type = int(key)
+        except (TypeError, ValueError):
+            raise ValueError("通用标签配置包含无效平台") from None
+        if platform_type not in PLATFORM_TYPE_TO_NAME:
+            raise ValueError("通用标签配置包含不支持的平台")
+        if not isinstance(values, list):
+            raise ValueError(f"{PLATFORM_TYPE_TO_NAME[platform_type]}通用标签必须是数组")
+        presets[str(platform_type)] = clean_publish_tags(values)
+    return presets
+
+
+def get_publish_tag_presets(owner_user_id):
+    owner_user_id = int(owner_user_id)
+    key = f"{PUBLISH_TAG_PRESETS_KEY_PREFIX}{owner_user_id}"
+    init_database_tables()
+    with _db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+    if not row:
+        presets = _default_publish_tag_presets()
+    else:
+        try:
+            presets = _normalize_publish_tag_presets(json.loads(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            presets = _default_publish_tag_presets()
+    return {
+        "presets": presets,
+        "limits": {str(platform_type): limit for platform_type, limit in PUBLISH_TAG_LIMITS.items()},
+    }
+
+
+def update_publish_tag_presets(owner_user_id, payload):
+    owner_user_id = int(owner_user_id)
+    presets = _normalize_publish_tag_presets(payload)
+    key = f"{PUBLISH_TAG_PRESETS_KEY_PREFIX}{owner_user_id}"
+    init_database_tables()
+    with _db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, json.dumps(presets, ensure_ascii=False)),
+        )
+        conn.commit()
+    return get_publish_tag_presets(owner_user_id)

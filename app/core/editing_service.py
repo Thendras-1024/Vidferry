@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from app.core.llm_harness import LLMContractError, call_json_contract, contains_profanity, validate_chunk_summary, validate_editing_plan
+from app.core.highlight_policy import HIGHLIGHT_MAX_DURATION_SECONDS, HIGHLIGHT_MIN_DURATION_SECONDS, HIGHLIGHT_MIN_START_SECONDS
 from app.core import llm_prompts
 from app.core.cover_service import (
     analyze_cover_layout,
@@ -23,7 +24,7 @@ from app.core.cover_service import (
 _logger = logging.getLogger("vidferry.backend")
 
 
-EDITING_INTRO_MIN_START_SECONDS = 30
+EDITING_INTRO_MIN_START_SECONDS = HIGHLIGHT_MIN_START_SECONDS
 EDITING_COVER_DURATION_SECONDS = 2.0
 
 
@@ -48,7 +49,7 @@ def _select_intro_highlight_segments(analysis_result, max_segments=3):
             end = max(start + 1, float(segment.get("end") or 0))
         except (TypeError, ValueError):
             continue
-        if start < EDITING_INTRO_MIN_START_SECONDS or not 6 <= end - start <= 12:
+        if start < EDITING_INTRO_MIN_START_SECONDS or not HIGHLIGHT_MIN_DURATION_SECONDS <= end - start <= HIGHLIGHT_MAX_DURATION_SECONDS:
             continue
         if any(start < item["end"] and end > item["start"] for item in selected):
             continue
@@ -195,6 +196,9 @@ def editing_body_signature(job):
     return _editing_signature({
         **_editing_body_signature_payload(job),
         "translationEnabled": bool(job.get("translationEnabled", True)),
+        "subtitleMaskEnabled": bool(job.get("subtitleMaskEnabled")),
+        "subtitleMode": job.get("subtitleMode") or "legacy",
+        "sourceSubtitleAnalysis": job.get("sourceSubtitleAnalysis") or {},
         "commentBurnEnabled": bool(job.get("commentBurnEnabled", False)),
     })
 
@@ -292,11 +296,26 @@ def render_editing_intro_assets(job, source_file, ass_file, analysis_result, wor
         overlay_ass = _write_editing_up_next_overlay_ass(work_dir / f"highlight_{index}_up_next.ass", width, height, end - start)
         clip_file = work_dir / f"highlight_{index}.mp4"
         filters = [f"scale={width}:{height}:flags=lanczos", "setsar=1"]
+        clip_ass = None
         if ass_file and Path(ass_file).is_file():
             clip_ass = _write_clip_ass(ass_file, work_dir / f"highlight_{index}.ass", start, end, include_comments=False)
-            filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
-        filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
-        _run_command([ffmpeg, "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source_file), "-vf", ",".join(filters),
+        if job.get("subtitleMaskEnabled"):
+            mask_graph = _subtitle_mask_filter("highlight_mask_input", "highlight_masked", width, height, _subtitle_mask_region(job))
+            overlay_filters = []
+            if clip_ass:
+                overlay_filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
+            overlay_filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
+            filter_args = [
+                "-filter_complex",
+                f"[0:v]{','.join(filters)}[highlight_mask_input];{mask_graph};[highlight_masked]{','.join(overlay_filters)}[highlight_output]",
+                "-map", "[highlight_output]", "-map", "0:a?",
+            ]
+        else:
+            if clip_ass:
+                filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")
+            filters.append(f"subtitles='{_ffmpeg_subtitle_path(overlay_ass)}'")
+            filter_args = ["-vf", ",".join(filters)]
+        _run_command([ffmpeg, "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source_file), *filter_args,
                       "-fps_mode", "cfr", "-r", f"{fps:.3f}".rstrip("0").rstrip("."), *video_encode_args(burn_config),
                       "-maxrate", burn_config["maxrate"], "-bufsize", burn_config["bufsize"], "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", burn_config.get("h264_level", "4.1"),
                       "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-af", "aresample=async=1:first_pts=0", "-movflags", "+faststart", str(clip_file)], cwd=BASE_DIR)
@@ -456,12 +475,12 @@ def _normalize_highlight_segments(segments):
         if start < EDITING_INTRO_MIN_START_SECONDS:
             continue
         if end <= start:
-            end = start + 6
+            end = start + HIGHLIGHT_MIN_DURATION_SECONDS
         duration = end - start
-        if duration < 6:
-            end = start + 6
-        elif duration > 12:
-            end = start + 12
+        if duration < HIGHLIGHT_MIN_DURATION_SECONDS:
+            end = start + HIGHLIGHT_MIN_DURATION_SECONDS
+        elif duration > HIGHLIGHT_MAX_DURATION_SECONDS:
+            end = start + HIGHLIGHT_MAX_DURATION_SECONDS
         normalized.append({
             **segment,
             "start": round(start, 2),
@@ -545,7 +564,7 @@ def _generate_editing_plan_impl(job, segments, telemetry=None):
         "excludedHighlightCount": int(highlight_filter_summary.get("blockedByContentRisk") or 0),
         "availableHighlightCount": len(result["highlight_segments"]),
         "message": (
-            "检测到转写中含明确粗口，中文字幕已使用 * 替换；原声及英文字幕可能仍含风险，发布前需要人工确认。"
+            "检测到转写中含明确粗口，中文字幕已使用 * 替换；原声及原音识别文本可能仍含风险，发布前需要人工确认。"
             if has_explicit_profanity else ""
         ),
     }
@@ -577,7 +596,7 @@ def _process_editing_plan(job, source_file, telemetry=None):
         "transcriptLanguage": language or "",
         "transcriptFilePath": str(transcript_file),
         "generatedAt": datetime.datetime.now().isoformat(timespec="seconds"),
-    })
+    }, job.get("ownerUserId"))
     return result, usage
 
 
@@ -616,7 +635,7 @@ def _run_analysis_from_transcript_job(job, source_file, telemetry=None):
         speed="",
         eta="",
     )
-    update_youtube_video_analysis_status(job.get("videoId"), 2)
+    update_youtube_video_analysis_status(job.get("videoId"), 2, job.get("ownerUserId"))
     segments, language, transcript_file = _get_or_create_transcript(job, source_file, work_dir, progress_base=16, progress_done=42)
     update_youtube_workflow_job(
         job_id,
@@ -630,7 +649,7 @@ def _run_analysis_from_transcript_job(job, source_file, telemetry=None):
         "transcriptLanguage": language or "",
         "transcriptFilePath": str(transcript_file),
         "generatedAt": datetime.datetime.now().isoformat(timespec="seconds"),
-    })
+    }, job.get("ownerUserId"))
     update_youtube_workflow_job(
         job_id,
         status="success",
@@ -652,12 +671,15 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute("SELECT analysis_status FROM youtube_videos WHERE video_id = ?", (video_id,))
+        cursor.execute(
+            "SELECT analysis_status FROM youtube_videos WHERE video_id = ? AND owner_user_id = ?",
+            (video_id, base_job.get("ownerUserId")),
+        )
         row = cursor.fetchone()
         if not row:
             return None
         analysis_status = int(row["analysis_status"] or 0)
-        if analysis_status == 2 or _active_analysis_job_for_video(cursor, video_id):
+        if analysis_status == 2 or _active_analysis_job_for_video(cursor, video_id, base_job.get("ownerUserId")):
             return None
         if not force and analysis_status == 1:
             return None
@@ -676,9 +698,9 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
         job = create_youtube_workflow_job(payload, allow_active_job=True, lock_scope="analysis")
     except WorkflowConflictError:
         return None
-    update_youtube_video_analysis_status(video_id, 2)
+    update_youtube_video_analysis_status(video_id, 2, base_job.get("ownerUserId"))
     try:
-        _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""))
+        _submit_background_task("analysis", run_youtube_analysis_job, job["id"], str(source_file or ""), owner_user_id=job.get("ownerUserId"))
     except Exception as exc:
         message = "分析任务提交失败"
         update_youtube_workflow_job(
@@ -691,7 +713,7 @@ def maybe_start_youtube_analysis_job(base_job, source_file=None, force=False):
             error_reason=message,
             error_detail=str(exc),
         )
-        update_youtube_video_analysis_status(video_id, 3, {
+        update_youtube_video_analysis_status(video_id, 3, base_job.get("ownerUserId"), {
             "error": {"code": "VF-WORKFLOW-SUBMIT-FAILED", "message": message},
         })
         raise

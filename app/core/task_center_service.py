@@ -2,31 +2,17 @@
 
 import datetime
 import json
-
-
 _TASK_SUCCESS_RETENTION_HOURS = 12
-_TASK_ACTIVE_STATUSES = {"queued", "running", "waiting_confirmation"}
-_TASK_TERMINAL_STATUSES = {"success", "failed", "abnormal"}
+_TASK_ACTIVE_STATUSES = {"queued", "running", "waiting_confirmation", "waiting_publish"}
+_TASK_TERMINAL_STATUSES = {"success", "reused", "partial", "needs_verification", "failed", "abnormal", "cancelled"}
 _TASK_RECOVERABLE_STAGES = {"comment_fetch", "comment_review", "comment_render", "subtitle", "highlight_render"}
 _TASK_STAGE_LABELS = {
-    "workflow": "工作流",
-    "download": "下载",
-    "transcript": "转写",
-    "analysis": "内容分析",
-    "content_safety_detect": "内容安全检测",
-    "content_safety_confirm": "风险确认",
-    "content_trim": "风险裁剪",
-    "subtitle": "字幕处理",
-    "subtitle_burn": "字幕烧制",
-    "body_burn": "正片烧制",
-    "comment_fetch": "评论获取",
-    "comment_review": "评论筛选",
-    "comment_render": "评论烧制",
-    "cover_render": "封面片头",
-    "highlight_render": "高光生成",
-    "editing_concat": "正片拼接",
-    "editing": "视频编辑",
-    "publish": "发布",
+    "workflow": "工作流", "download": "下载", "transcript": "转写", "analysis": "内容分析",
+    "content_safety_detect": "内容安全检测", "content_safety_confirm": "风险确认", "content_trim": "风险裁剪",
+    "subtitle": "字幕处理", "subtitle_burn": "字幕烧制", "body_burn": "正片烧制",
+    "comment_fetch": "评论获取", "comment_review": "评论筛选", "comment_render": "评论烧制",
+    "cover_render": "封面片头", "highlight_render": "高光生成", "editing_concat": "正片拼接",
+    "editing": "视频编辑", "publish": "发布",
 }
 _TASK_PLATFORMS = (
     (3, "抖音", "publish_to_douyin", "account"),
@@ -35,12 +21,8 @@ _TASK_PLATFORMS = (
     (4, "快手", "publish_to_kuaishou", "kuaishou_account"),
     (2, "腾讯视频", "publish_to_tencent", "tencent_account"),
 )
-
-
 def _task_now():
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-
-
 def _task_datetime(value):
     if not value:
         return None
@@ -50,13 +32,9 @@ def _task_datetime(value):
         return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
     except (TypeError, ValueError):
         return None
-
-
 def _task_iso(value):
     parsed = _task_datetime(value)
     return parsed.isoformat(timespec="seconds") if parsed else ""
-
-
 def _task_json(value):
     if isinstance(value, dict):
         return value
@@ -74,8 +52,8 @@ def _task_type_label(scope, job, events):
         return "发布"
     operation = str(job.get("operation") or "").lower()
     stages = {event.get("stage") for event in events}
-    if operation in {"intro_refresh", "editing_intro"}:
-        return "片头更新"
+    if operation in {"intro_refresh", "editing_intro", "cover_reburn"}:
+        return "封面更新" if operation == "cover_reburn" else "片头更新"
     if stages and stages <= {"workflow", "analysis"}:
         return "内容分析"
     return "剪辑处理"
@@ -98,14 +76,16 @@ def _task_option(job, name, default=False):
 
 def _task_status(status):
     status = str(status or "pending").lower()
-    return status if status in {"queued", "running", "waiting_confirmation", "success", "reused", "failed", "abnormal", "warning"} else "pending"
+    return status if status in {"queued", "running", "waiting_existing", "waiting_confirmation", "waiting_publish", "success", "confirmed", "reused", "partial", "uncertain", "needs_verification", "failed", "abnormal", "cancelled", "warning"} else "pending"
 
 
 def _task_status_label(status):
+    if status == "waiting_publish":
+        return "发布排队中"
     return {
         "queued": "排队中", "running": "进行中", "waiting_confirmation": "等待确认",
-        "success": "已完成", "failed": "失败", "abnormal": "异常", "warning": "已降级继续",
-        "reused": "已复用", "pending": "未开始", "waiting": "等待分支",
+        "success": "已完成", "confirmed": "已确认发布", "failed": "失败", "abnormal": "异常", "cancelled": "已取消", "warning": "已降级继续",
+        "reused": "已复用", "partial": "部分完成", "uncertain": "待核验", "needs_verification": "待核验", "waiting_existing": "等待已有任务", "pending": "未开始", "waiting": "等待分支",
     }.get(status, status)
 
 
@@ -203,22 +183,27 @@ def _task_publish_graph(job, events, material_rows):
         "errorReason": message if status == "failed" else "", "inferred": not bool(publish_event), "synthetic": False,
     }
     nodes.append(parent)
+    dispatch_targets = {
+        int(item.get("platform_type") or 0): item
+        for item in (job.get("publishProgress") or {}).get("targets") or []
+        if str(item.get("platform_type") or "").strip()
+    }
     for target in _task_targets(job, material_rows):
         lane_id = f"publish-{target['type']}"
         lanes.append({"id": lane_id, "label": target["label"]})
-        record = target["records"][-1] if target["records"] else {}
+        record = dispatch_targets.get(target["type"]) or (target["records"][-1] if target["records"] else {})
         target_status = _task_status(record.get("status")) if record else ("running" if status == "running" else "pending")
         nodes.append({
             "id": lane_id, "stage": "publish", "label": target["label"], "laneId": lane_id, "column": 1,
             "status": target_status, "statusLabel": _task_status_label(target_status),
             "message": str(record.get("message") or target.get("account") or "等待发布"),
-            "startedAt": _task_iso(record.get("started_at")), "endedAt": _task_iso(record.get("published_at") or record.get("updated_at")),
+            "startedAt": _task_iso(record.get("started_at")), "endedAt": _task_iso(record.get("finished_at") or record.get("published_at") or record.get("updated_at")),
             "durationSeconds": float(record.get("duration_ms") or 0) / 1000, "dependencies": ["publish"],
             "parallelGroup": "publish-platforms", "platform": target["label"], "fallbackReason": "",
             "errorReason": str(record.get("message") or "") if target_status == "failed" else "",
             "inferred": not bool(record), "synthetic": True,
         })
-        edges.append({"from": "publish", "to": lane_id, "kind": "parallel", "status": "failed" if target_status == "failed" else "running" if target_status == "running" else "reused" if target_status == "reused" else "success" if status == "success" and target_status == "success" else "pending"})
+        edges.append({"from": "publish", "to": lane_id, "kind": "parallel", "status": "failed" if target_status == "failed" else "warning" if target_status in {"uncertain", "needs_verification", "cancelled"} else "running" if target_status in {"running", "queued", "waiting_existing"} else "reused" if target_status == "reused" else "success" if target_status in {"success", "confirmed"} else "pending"})
     return {"lanes": lanes, "nodes": nodes, "edges": edges, "inferred": True}
 
 
@@ -358,7 +343,7 @@ def _task_graph(job, events, material_rows, subtitle_fallback=False, scope="full
             elif any(item in {"running", "warning"} for item in dependencies):
                 node["status"] = "waiting" if any(item == "running" for item in dependencies) else "warning"
                 node["message"] = "等待并行分支完成" if node["status"] == "waiting" else "分支已降级后汇合"
-            elif all(item in {"success", "reused"} for item in dependencies):
+            elif all(item in {"success", "confirmed", "reused"} for item in dependencies):
                 node["status"] = "success"
             node["statusLabel"] = _task_status_label(node["status"])
             node["dependencySummary"] = {
@@ -376,26 +361,49 @@ def _task_graph(job, events, material_rows, subtitle_fallback=False, scope="full
     return {"lanes": lanes, "nodes": nodes, "edges": edges, "inferred": True}
 
 
-def _task_load(job_id=None, *, active_only=False):
+def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_statuses=(), query_conditions=(), query_values=(), order_by="", page=None, page_size=None, include_meta=False):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
+        conditions = []
+        values = []
         if job_id:
-            cursor.execute("SELECT * FROM youtube_workflow_jobs WHERE id = ?", (job_id,))
-            job = _task_row(cursor.fetchone())
-            jobs = [job] if job else []
-        elif active_only:
+            conditions.append("id = ?")
+            values.append(job_id)
+        if owner_user_id is not None:
+            conditions.append("owner_user_id = ?")
+            values.append(int(owner_user_id))
+        if active_only:
             statuses = tuple(sorted(_TASK_ACTIVE_STATUSES))
             marks = ",".join("?" for _ in statuses)
-            cursor.execute(
-                f"SELECT * FROM youtube_workflow_jobs WHERE status IN ({marks}) ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC",
-                statuses,
-            )
-            jobs = [_task_row(row) for row in cursor.fetchall()]
-        else:
-            cursor.execute("SELECT * FROM youtube_workflow_jobs ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC")
-            jobs = [_task_row(row) for row in cursor.fetchall()]
+            conditions.append(f"status IN ({marks})")
+            values.extend(statuses)
+        elif terminal_statuses:
+            marks = ",".join("?" for _ in terminal_statuses)
+            conditions.append(f"status IN ({marks})")
+            values.extend(terminal_statuses)
+        conditions.extend(query_conditions)
+        values.extend(query_values)
+        where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        total = 0
+        summary = {}
+        if include_meta:
+            cursor.execute(f"SELECT status, COUNT(*) AS total FROM youtube_workflow_jobs{where_sql} GROUP BY status", values)
+            summary = {str(row["status"] or "pending"): int(row["total"] or 0) for row in cursor.fetchall()}
+            total = sum(summary.values())
+        order_sql = order_by or "COALESCE(updated_at, created_at) DESC, created_at DESC"
+        limit_sql = ""
+        query_params = list(values)
+        if page is not None and page_size is not None:
+            limit_sql = " LIMIT ? OFFSET ?"
+            query_params.extend([int(page_size), (int(page) - 1) * int(page_size)])
+        cursor.execute(
+            f"SELECT * FROM youtube_workflow_jobs{where_sql} "
+            f"ORDER BY {order_sql}{limit_sql}",
+            query_params,
+        )
+        jobs = [_task_row(row) for row in cursor.fetchall()]
         if not jobs:
-            return []
+            return ([], total, summary) if include_meta else []
         ids = [job.get("id") for job in jobs]
         marks = ",".join("?" for _ in ids)
         cursor.execute(f"SELECT * FROM youtube_workflow_events WHERE job_id IN ({marks}) ORDER BY started_at, id", ids)
@@ -403,35 +411,101 @@ def _task_load(job_id=None, *, active_only=False):
         for row in cursor.fetchall():
             event = _task_event(row)
             event_map.setdefault(str(row["job_id"]), []).append(event)
-        video_ids = [job.get("video_id") for job in jobs if job.get("video_id")]
+        owner_video_pairs = sorted({
+            (int(job["owner_user_id"]), str(job["video_id"]))
+            for job in jobs
+            if str(job.get("owner_user_id") or "").strip().isdigit() and job.get("video_id")
+        })
+        owner_video_where = " OR ".join("(owner_user_id = ? AND video_id = ?)" for _ in owner_video_pairs)
+        owner_video_values = [value for pair in owner_video_pairs for value in pair]
         title_translation_map = {}
-        if video_ids:
-            marks = ",".join("?" for _ in video_ids)
+        if owner_video_pairs:
             cursor.execute(f'''
-            SELECT video_id, metadata FROM youtube_workflow_events
-            WHERE video_id IN ({marks})
+            SELECT owner_user_id, video_id, metadata FROM youtube_workflow_events
+            WHERE ({owner_video_where})
               AND stage = 'source_title_translation'
               AND status = 'success'
             ORDER BY ended_at DESC, id DESC
-            ''', video_ids)
+            ''', owner_video_values)
             for row in cursor.fetchall():
-                video_id = str(row["video_id"] or "")
-                if video_id in title_translation_map:
+                key = (int(row["owner_user_id"]), str(row["video_id"] or ""))
+                if key in title_translation_map:
                     continue
                 metadata = _task_json(row["metadata"])
                 title = str(metadata.get("sourceTitleZh") or "").strip()
                 if title:
-                    title_translation_map[video_id] = title
+                    title_translation_map[key] = title
         material_map = {}
-        if video_ids:
-            marks = ",".join("?" for _ in video_ids)
-            cursor.execute(f"SELECT * FROM published_youtube_materials WHERE video_id IN ({marks}) AND deleted_at IS NULL ORDER BY COALESCE(updated_at, published_at, created_at), id", video_ids)
+        if owner_video_pairs:
+            cursor.execute(f"SELECT * FROM published_youtube_materials WHERE ({owner_video_where}) AND deleted_at IS NULL ORDER BY COALESCE(updated_at, published_at, created_at), id", owner_video_values)
             for row in cursor.fetchall():
                 item = _task_row(row)
-                material_map.setdefault(str(item.get("video_id")), []).append(item)
+                key = (int(item["owner_user_id"]), str(item.get("video_id") or ""))
+                material_map.setdefault(key, []).append(item)
+        job_marks = ",".join("?" for _ in ids)
+        cursor.execute(
+            f"SELECT id, source_ref_id, status, message FROM publish_dispatch_jobs "
+            f"WHERE source = 'workflow' AND source_ref_id IN ({job_marks}) "
+            "ORDER BY source_ref_id, created_at DESC, id DESC",
+            ids,
+        )
+        dispatch_rows = [dict(row) for row in cursor.fetchall()]
+        latest_dispatch_by_job = {}
+        for dispatch in dispatch_rows:
+            latest_dispatch_by_job.setdefault(str(dispatch.get("source_ref_id") or ""), dispatch)
+        dispatch_ids = [item["id"] for item in latest_dispatch_by_job.values()]
+        targets_by_dispatch = {}
+        if dispatch_ids:
+            dispatch_marks = ",".join("?" for _ in dispatch_ids)
+            cursor.execute(
+                f"SELECT platform_type, status, message, duration_ms, started_at, finished_at, job_id "
+                f"FROM publish_dispatch_targets WHERE job_id IN ({dispatch_marks}) ORDER BY platform_type, id",
+                dispatch_ids,
+            )
+            for row in cursor.fetchall():
+                target = _task_row(row)
+                targets_by_dispatch.setdefault(str(target.get("job_id") or ""), []).append(target)
         for job in jobs:
-            job["_task_chinese_title"] = title_translation_map.get(str(job.get("video_id") or ""), "")
-        return [(job, event_map.get(str(job.get("id")), []), material_map.get(str(job.get("video_id")), [])) for job in jobs]
+            dispatch = latest_dispatch_by_job.get(str(job.get("id") or ""))
+            if not dispatch:
+                continue
+            targets = targets_by_dispatch.get(str(dispatch["id"]), [])
+            progress = _publish_dispatch_progress(targets)
+            progress.update({
+                "publishTaskId": dispatch["id"],
+                "status": dispatch.get("status") or "pending",
+                "message": clean_display_text(dispatch.get("message")),
+                "targets": targets,
+            })
+            job["publishProgress"] = progress
+        for job in jobs:
+            key = (int(job["owner_user_id"]), str(job.get("video_id") or ""))
+            job["_task_chinese_title"] = title_translation_map.get(key, "")
+        owner_ids = sorted({
+            int(job["owner_user_id"])
+            for job in jobs
+            if str(job.get("owner_user_id") or "").strip().isdigit()
+        })
+        owner_names = {}
+        if owner_ids:
+            marks = ",".join("?" for _ in owner_ids)
+            cursor.execute(f"SELECT id, display_name, username FROM auth_users WHERE id IN ({marks})", owner_ids)
+            owner_names = {
+                int(row["id"]): str(row["display_name"] or row["username"] or "")
+                for row in cursor.fetchall()
+            }
+        for job in jobs:
+            owner_id = job.get("owner_user_id")
+            job["_task_owner_display_name"] = owner_names.get(int(owner_id)) if str(owner_id or "").strip().isdigit() else ""
+        rows = [
+            (
+                job,
+                event_map.get(str(job.get("id")), []),
+                material_map.get((int(job["owner_user_id"]), str(job.get("video_id") or "")), []),
+            )
+            for job in jobs
+        ]
+        return (rows, total, summary) if include_meta else rows
 
 
 def _task_acknowledgements(user_id):
@@ -439,6 +513,29 @@ def _task_acknowledgements(user_id):
         cursor = conn.cursor()
         cursor.execute("SELECT task_key, acknowledged_at FROM task_acknowledgements WHERE user_id = ?", (int(user_id),))
         return {str(row["task_key"]): _task_iso(row["acknowledged_at"]) for row in cursor.fetchall()}
+
+
+def _task_publish_retry_data(job, materials):
+    task_id = f"workflow:{job.get('id')}"
+    records = [item for item in materials if str(item.get("publish_task_id") or "") == task_id]
+    retry_records = [item for item in records if str(item.get("status") or "") in {"failed", "timeout"}]
+    has_blocking_status = any(str(item.get("status") or "") in {"queued", "running", "uncertain", "cancelled"} for item in records)
+    can_retry = bool(retry_records) and not has_blocking_status and not any(item.get("retry_source") for item in records)
+    return {
+        "publishTaskId": task_id if retry_records else "",
+        "canRetry": can_retry,
+        "retryTargets": [
+            {
+                "id": item.get("id"),
+                "platform": platform_name(int(item.get("platform_type") or 0)),
+                "accountName": item.get("account_name") or "",
+                "accountFile": item.get("account_file") or "",
+                "message": item.get("message") or "",
+                "updatedAt": _task_iso(item.get("updated_at") or item.get("published_at")),
+            }
+            for item in retry_records
+        ],
+    }
 
 
 def _task_item(job, events, materials, acknowledged_at=""):
@@ -449,32 +546,174 @@ def _task_item(job, events, materials, acknowledged_at=""):
     latest = next((event for event in reversed(stage_events) if event["status"] == "running"), None) or (stage_events[-1] if stage_events else None)
     warning_events = [event for event in stage_events if _task_has_fallback(event, False)[0]]
     completion_at = _task_datetime(job.get("updated_at")) or _task_datetime(job.get("created_at"))
-    expires_at = completion_at + datetime.timedelta(hours=_TASK_SUCCESS_RETENTION_HOURS) if job_status == "success" and completion_at else None
+    expires_at = completion_at + datetime.timedelta(hours=_TASK_SUCCESS_RETENTION_HOURS) if job_status in {"success", "reused"} and completion_at else None
     has_publish_event = any(event["stage"] == "publish" for event in events)
     is_publish = has_publish_event or str(job.get("step") or "") in {"publish", "publish_confirmation"}
+    publish_progress = job.get("publishProgress") if isinstance(job.get("publishProgress"), dict) else {}
+    current_stage = latest.get("label") if latest else _TASK_STAGE_LABELS.get(job.get("step"), job.get("step") or "等待开始")
+    progress_value = round(float(job.get("progress") or 0), 1)
+    message = str(job.get("message") or (latest.get("message") if latest else ""))
+    if publish_progress and is_publish:
+        completed = int(publish_progress.get("completed") or 0)
+        total = int(publish_progress.get("total") or 0)
+        current_stage = "发布排队中" if job_status == "waiting_publish" else f"发布中 {completed} / {total}"
+        message = str(publish_progress.get("message") or message)
+        if total:
+            progress_value = max(progress_value, round(97 + (min(completed, total) / total) * 3, 1))
     scope = "download" if download_only else "publish" if is_publish else "processing"
     chinese_title = job.get("_task_chinese_title") or ""
     english_title = job.get("title") or job.get("video_id") or "未命名视频"
     return {
         "taskKey": task_key, "jobId": job.get("id"), "videoId": job.get("video_id") or "", "title": english_title,
         "englishTitle": english_title, "chineseTitle": chinese_title, "type": scope, "typeLabel": _task_type_label(scope, job, events), "scope": scope,
-        "status": job_status, "statusLabel": _task_status_label(job_status), "progress": round(float(job.get("progress") or 0), 1),
-        "currentStage": latest.get("label") if latest else _TASK_STAGE_LABELS.get(job.get("step"), job.get("step") or "等待开始"),
+        "status": job_status, "statusLabel": _task_status_label(job_status), "progress": progress_value,
+        "currentStage": current_stage,
         "currentStageKey": latest.get("stage") if latest else job.get("step") or "workflow",
-        "message": str(job.get("message") or (latest.get("message") if latest else "")),
+        "message": message,
         "errorReason": str(job.get("error_reason") or job.get("error_detail") or (latest.get("message") if latest and latest["status"] in {"failed", "abnormal"} else "")),
         "warningSummary": warning_events[0].get("message") if warning_events else "", "hasWarning": bool(warning_events),
         "startedAt": _task_iso(job.get("started_at") or job.get("created_at")), "updatedAt": _task_iso(job.get("updated_at") or job.get("created_at")),
         "finishedAt": _task_iso(completion_at) if job_status in _TASK_TERMINAL_STATUSES else "", "expiresAt": _task_iso(expires_at),
         "acknowledged": bool(acknowledged_at), "acknowledgedAt": acknowledged_at,
+        "ownerUserId": job.get("owner_user_id"), "ownerDisplayName": job.get("_task_owner_display_name") or "",
+        "publishProgress": publish_progress,
+        **_task_publish_retry_data(job, materials),
     }
 
 
-def list_task_center(user_id, *, history=False, active_only=False):
+def _task_history_statuses(result):
+    if result == "success":
+        return ("success", "reused")
+    if result == "problem":
+        return ("partial", "needs_verification", "failed", "abnormal")
+    return tuple(sorted(_TASK_TERMINAL_STATUSES))
+
+
+def _task_unified_query(*, keyword="", task_type="all", status="all", updated_from="", updated_to=""):
+    download_sql = "LOWER(COALESCE(operation, '')) IN ('download', 'download_only', 'download-only')"
+    publish_sql = "(EXISTS (SELECT 1 FROM youtube_workflow_events event WHERE event.job_id = youtube_workflow_jobs.id AND event.stage = 'publish') OR COALESCE(step, '') IN ('publish', 'publish_confirmation'))"
+    editing_sql = "LOWER(COALESCE(operation, '')) IN ('intro_refresh', 'editing_intro', 'cover_reburn', 'editing', 'editing_concat')"
+    type_sql = {
+        "download": download_sql,
+        "publish": publish_sql,
+        "editing": editing_sql,
+        "processing": f"NOT ({download_sql} OR {publish_sql} OR {editing_sql})",
+    }.get(str(task_type or "all").lower())
+    conditions = []
+    values = []
+    if type_sql:
+        conditions.append(type_sql)
+    status_key = str(status or "all").lower()
+    status_groups = {
+        "active": tuple(sorted(_TASK_ACTIVE_STATUSES)),
+        "waiting_confirmation": ("waiting_confirmation",),
+        "success": ("success", "reused"),
+        "problem": ("partial", "needs_verification", "failed", "abnormal"),
+        "reused": ("reused",),
+        "partial": ("partial",),
+        "needs_verification": ("needs_verification",),
+        "failed": ("failed",),
+        "abnormal": ("abnormal",),
+        "cancelled": ("cancelled",),
+    }
+    if status_key in status_groups:
+        statuses = status_groups[status_key]
+        marks = ",".join("?" for _ in statuses)
+        conditions.append(f"status IN ({marks})")
+        values.extend(statuses)
+    if keyword:
+        like = f"%{str(keyword).strip()}%"
+        conditions.append("(" + " OR ".join(
+            "COALESCE({0}, '') LIKE ?".format(field)
+            for field in ("id", "video_id", "title", "message", "error_reason", "error_detail")
+        ) + ")")
+        values.extend([like] * 6)
+    if updated_from:
+        conditions.append("COALESCE(updated_at, created_at) >= ?")
+        values.append(f"{updated_from} 00:00:00")
+    if updated_to:
+        conditions.append("COALESCE(updated_at, created_at) <= ?")
+        values.append(f"{updated_to} 23:59:59")
+    return conditions, values
+
+
+def _task_unified_sort(sort):
+    field = {
+        "created_desc": "COALESCE(created_at, updated_at) DESC, id DESC",
+        "finished_desc": "COALESCE(updated_at, created_at) DESC, id DESC",
+    }.get(str(sort or "updated_desc").lower(), "COALESCE(updated_at, created_at) DESC, id DESC")
+    return f"CASE WHEN status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish') THEN 0 ELSE 1 END, {field}"
+
+
+def _task_unified_item(job, events, materials, acknowledged_at=""):
+    item = _task_item(job, events, materials, acknowledged_at)
+    operation = str(job.get("operation") or "").lower()
+    if operation in {"intro_refresh", "editing_intro", "cover_reburn", "editing", "editing_concat"}:
+        item["type"] = "editing"
+        item["scope"] = "editing"
+        item["typeLabel"] = _task_type_label("processing", job, events)
+    return item
+
+
+def list_all_task_center(user_id, *, is_admin=False, task_type="all", status="all", keyword="", owner="all", updated_from="", updated_to="", sort="updated_desc", page=1, page_size=20):
+    page = _task_page(page, 1, 1, 100000)
+    page_size = _task_page(page_size, 20, 1, 100)
+    owner_user_id = None if is_admin and str(owner or "all").lower() == "all" else user_id
+    query_conditions, query_values = _task_unified_query(
+        keyword=keyword, task_type=task_type, status=status, updated_from=updated_from, updated_to=updated_to,
+    )
+    rows, total, status_counts = _task_load(
+        owner_user_id=owner_user_id,
+        query_conditions=query_conditions,
+        query_values=query_values,
+        order_by=_task_unified_sort(sort),
+        page=page,
+        page_size=page_size,
+        include_meta=True,
+    )
+    acknowledgements = _task_acknowledgements(user_id)
+    items = [
+        _task_unified_item(job, events, materials, acknowledgements.get(f"workflow:{job.get('id')}", ""))
+        for job, events, materials in rows
+    ]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "summary": {
+            "total": total,
+            "active": sum(status_counts.get(value, 0) for value in _TASK_ACTIVE_STATUSES),
+            "waitingConfirmation": status_counts.get("waiting_confirmation", 0),
+            "success": status_counts.get("success", 0) + status_counts.get("reused", 0),
+            "reused": status_counts.get("reused", 0),
+            "partial": status_counts.get("partial", 0),
+            "needsVerification": status_counts.get("needs_verification", 0),
+            "failed": status_counts.get("failed", 0),
+            "abnormal": status_counts.get("abnormal", 0),
+            "cancelled": status_counts.get("cancelled", 0),
+        },
+    }
+
+
+def _task_page(value, default, minimum, maximum):
+    try:
+        return max(minimum, min(int(value), maximum))
+    except (TypeError, ValueError):
+        return default
+
+
+def list_task_center(user_id, *, is_admin=False, history=False, active_only=False, result="all", scope="all", page=1, page_size=20):
     acknowledgements = _task_acknowledgements(user_id)
     now = _task_now()
     items = []
-    for job, events, materials in _task_load(active_only=active_only):
+    owner_user_id = None if history and is_admin and scope != "mine" else user_id
+    rows = _task_load(
+        active_only=active_only and not history,
+        owner_user_id=owner_user_id,
+        terminal_statuses=_task_history_statuses(result) if history else (),
+    )
+    for job, events, materials in rows:
         if _task_only_download(job, events):
             continue
         item = _task_item(job, events, materials, acknowledgements.get(f"workflow:{job.get('id')}", ""))
@@ -484,13 +723,19 @@ def list_task_center(user_id, *, history=False, active_only=False):
         if item["acknowledged"] and not history:
             continue
         items.append(item)
+    if history:
+        page = _task_page(page, 1, 1, 100000)
+        page_size = _task_page(page_size, 20, 1, 100)
+        total = len(items)
+        start = (page - 1) * page_size
+        return {"items": items[start:start + page_size], "total": total, "page": page, "pageSize": page_size}
     groups = {"active": [], "waitingConfirmation": [], "recentCompleted": [], "abnormal": []}
     for item in items:
-        if item["status"] in {"queued", "running"}:
+        if item["status"] in {"queued", "running", "waiting_publish"}:
             groups["active"].append(item)
         elif item["status"] == "waiting_confirmation":
             groups["waitingConfirmation"].append(item)
-        elif item["status"] == "success":
+        elif item["status"] in {"success", "reused"}:
             groups["recentCompleted"].append(item)
         else:
             groups["abnormal"].append(item)
@@ -504,7 +749,7 @@ def list_task_center(user_id, *, history=False, active_only=False):
     }
 
 
-def get_task_center_detail(task_key, user_id):
+def get_task_center_detail(task_key, user_id, *, is_admin=False):
     if not str(task_key or "").startswith("workflow:"):
         raise LookupError("任务标识无效")
     job_id = str(task_key).split(":", 1)[1]
@@ -512,6 +757,8 @@ def get_task_center_detail(task_key, user_id):
     if not rows:
         raise LookupError("任务不存在")
     job, events, materials = rows[0]
+    if not is_admin and job.get("owner_user_id") != int(user_id):
+        raise LookupError("任务不存在")
     acknowledgements = _task_acknowledgements(user_id)
     item = _task_item(job, events, materials, acknowledgements.get(task_key, ""))
     if item["scope"] == "download":
@@ -550,8 +797,8 @@ def get_task_center_detail(task_key, user_id):
     return {"task": item, "events": enriched_events, "graph": graph}
 
 
-def acknowledge_task_center_task(task_key, user_id):
-    detail = get_task_center_detail(task_key, user_id)
+def acknowledge_task_center_task(task_key, user_id, *, is_admin=False):
+    detail = get_task_center_detail(task_key, user_id, is_admin=is_admin)
     acknowledged_at = _task_iso(_task_now())
     with _db_connect() as conn:
         conn.execute("""

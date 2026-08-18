@@ -19,6 +19,9 @@ _WORKFLOW_ERROR_CONFIG = (
     (lambda _exc, text: "HIGHLIGHT_SEGMENTS_INSUFFICIENT:" in text, "VF-HIGHLIGHT-INSUFFICIENT", "HIGHLIGHT_SEGMENTS_INSUFFICIENT", "高光片段生成数量不足，任务未输出不完整成片；请重新生成剪辑方案后重试。"),
     (lambda _exc, text: "VF-PUBLISH-RATE-LIMIT" in text or "upload rate limit" in text.lower() or "code: 601" in text.lower(), "VF-PUBLISH-RATE-LIMIT", "PUBLISH_RATE_LIMIT", "平台限制该账号的上传频率；请等待一段时间后仅重发发布步骤，无需重新下载或处理视频。"),
     (lambda _exc, text: "VF-PUBLISH-RESULT-UNCERTAIN" in text, "VF-PUBLISH-RESULT-UNCERTAIN", "PUBLISH_RESULT_UNCERTAIN", "平台已接收上传但未在等待期内确认发布结果；请先到平台作品管理页核验，系统已阻止自动重发以避免重复发布。"),
+    (lambda _exc, text: "VF-PUBLISH-COOKIE-INVALID" in text, "VF-PUBLISH-COOKIE-INVALID", "PUBLISH_COOKIE_INVALID", "视频号 Cookie 已失效；请重新连接已授权账号后重试发布。"),
+    (lambda _exc, text: "VF-PUBLISH-UPLOAD-FAILED" in text, "VF-PUBLISH-UPLOAD-FAILED", "PUBLISH_UPLOAD_FAILED", "视频号页面已明确提示上传失败；请检查上传控件、网络和页面诊断截图后重试。"),
+    (lambda _exc, text: "VF-PUBLISH-PAGE-RECOVERY-FAILED" in text, "VF-PUBLISH-PAGE-RECOVERY-FAILED", "PUBLISH_PAGE_RECOVERY_FAILED", "视频号封面生成或页面会话恢复失败；结果待核验，请查看诊断 JSON 和截图。"),
     (lambda _exc, text: "定时发布时间必须大于当前时间 2 小时" in text or "定时发布时间至少需要晚于当前时间 2 小时" in text, "VF-PUBLISH-SCHEDULE-TOO-SOON", "PUBLISH_SCHEDULE_TOO_SOON", "定时发布时间距离当前时间不足 2 小时，平台拒绝提交；请调整为至少 2 小时后的时间后重试发布。"),
     (lambda _exc, text: "PUBLISH_FAILED:" in text, "VF-PUBLISH-PLATFORM-FAILED", "PUBLISH_PLATFORM_FAILED", "平台发布失败；请检查所选账号状态、平台投稿限制和后端发布日志后重试。"),
     (lambda _exc, text: "管理员或运营者权限" in text, "VF-PUBLISH-PERMISSION-DENIED", "PUBLISH_PERMISSION_DENIED", "当前登录微信没有该视频号的发布权限，请使用已授权账号重新登录。"),
@@ -31,6 +34,7 @@ _WORKFLOW_ERROR_CONFIG = (
     (lambda _exc, text: "YOUTUBE_COOKIE_FILE_INVALID" in text or "YOUTUBE_COOKIES_BROWSER_INVALID" in text, "VF-YOUTUBE-COOKIE-CONFIG", "YOUTUBE_COOKIE_CONFIG", "YouTube Cookie 配置无效；请使用项目目录内的 Netscape Cookie 文件，或填写受支持的浏览器名称。"),
     (lambda _exc, text: "未安装 yt-dlp" in text.lower(), "VF-DOWNLOAD-DEPENDENCY-MISSING", "DOWNLOAD_DEPENDENCY_MISSING", "下载组件未安装或不可用，请检查后端依赖配置。"),
     (lambda _exc, text: "YTDLP_DOWNLOAD_STREAM_INTERRUPTED" in text, "VF-DOWNLOAD-STREAM-INTERRUPTED", "DOWNLOAD_STREAM_INTERRUPTED", "下载时网络传输被中断，系统已自动重试仍未完成；请检查网络稳定性后重试下载，无需重新导入视频。"),
+    (lambda _exc, text: "unable to download video data" in text.lower() and "http error 403" in text.lower(), "VF-DOWNLOAD-YOUTUBE-FORBIDDEN", "YOUTUBE_DOWNLOAD_FORBIDDEN", "YouTube 拒绝了媒体流下载请求（HTTP 403）。请关闭不必要的 Google/YouTube 登录会话后重试；若多个视频持续失败，请检查当前网络出口或代理是否被限制。"),
     (lambda _exc, text: "ffmpeg 已执行，但未生成" in text.lower(), "VF-MEDIA-OUTPUT-MISSING", "MEDIA_OUTPUT_MISSING", "视频处理未生成有效输出文件，请重新处理；如持续发生，请检查磁盘空间和后端日志。"),
     (lambda _exc, text: "ffmpeg" in text.lower() or "cpb:" in text.lower(), "VF-MEDIA-PROCESS-UNCLASSIFIED", "MEDIA_PROCESS_UNCLASSIFIED", "视频处理失败，但工具输出未包含可判定原因。请查看任务编号对应的后端日志。"),
 )

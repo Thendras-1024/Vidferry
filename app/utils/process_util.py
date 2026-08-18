@@ -32,6 +32,5 @@ def _run_command(command, cwd=None, timeout=None):
     )
     output = "\n".join(part for part in [(result.stdout or "").strip(), (result.stderr or "").strip()] if part)
     if result.returncode != 0:
-        display_command = " ".join(map(str, command))
-        raise RuntimeError(output or f"命令执行失败: {display_command}")
+        raise RuntimeError(output or "命令执行失败")
     return result

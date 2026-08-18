@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib import import_module
 
-from app.config import FEISHU_ROBOT_ENABLED
+from app.config import FEISHU_AGENT_OWNER_USER_ID, FEISHU_ROBOT_ENABLED
 from app.feishu_robot import start_embedded_feishu_robot
 from app.utils.text_util import ensure_utf8_stdio
 
@@ -25,6 +25,7 @@ def initialize_runtime() -> None:
     """执行后端启动钩子,与正式入口 ``run.py`` 共用。"""
     backend = _backend()
     backend.init_youtube_video_table()
+    backend.recover_interrupted_publish_dispatch_jobs()
     recovered_jobs = backend.recover_interrupted_workflow_jobs()
     if recovered_jobs:
         print(f"启动恢复：已标记 {len(recovered_jobs)} 个历史中断任务为异常")
@@ -35,6 +36,7 @@ def initialize_runtime() -> None:
     if reconciled_events:
         print(f"启动修复：已收口 {len(reconciled_events)} 个历史任务的阶段记录")
     backend.normalize_existing_youtube_subscribers()
+    backend.start_publish_dispatcher()
     backend.start_scheduled_publish_scheduler()
     backend.install_workflow_shutdown_handlers()
     start_embedded_feishu_robot(
@@ -43,4 +45,5 @@ def initialize_runtime() -> None:
         image_roots=(backend.BASE_DIR,),
         sanitize=backend.sanitize_agent_output,
         session_manager=backend,
+        owner_user_id=FEISHU_AGENT_OWNER_USER_ID,
     )

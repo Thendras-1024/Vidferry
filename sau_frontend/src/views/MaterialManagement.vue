@@ -81,11 +81,6 @@
             <el-tag effect="plain">{{ processVersionLabel(row.processVersion || row.metadata?.processVersion) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="字幕语言" width="120">
-          <template #default="{ row }">
-            <el-tag type="success" effect="plain">{{ materialSubtitleLanguageLabel(row) || '-' }}</el-tag>
-          </template>
-        </el-table-column>
         <el-table-column label="内容风险" width="120">
           <template #default="{ row }">
             <el-tag v-if="row.analysisResult?.contentRisk?.requiresPublishConfirmation" type="warning" effect="light">发布需确认</el-tag>
@@ -98,7 +93,9 @@
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="入库时间" width="170" />
+        <el-table-column label="入库时间" width="170">
+          <template #default="{ row }">{{ formatMaterialTime(row.upload_time) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <div class="table-actions">
@@ -165,7 +162,9 @@
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="入库时间" width="170" />
+        <el-table-column label="入库时间" width="170">
+          <template #default="{ row }">{{ formatMaterialTime(row.upload_time) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <div class="table-actions">
@@ -208,7 +207,9 @@
         <el-table-column label="大小" width="100">
           <template #default="{ row }">{{ row.filesize }} MB</template>
         </el-table-column>
-        <el-table-column prop="upload_time" label="入库时间" width="170" />
+        <el-table-column label="入库时间" width="170">
+          <template #default="{ row }">{{ formatMaterialTime(row.upload_time) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <div class="table-actions">
@@ -297,12 +298,12 @@
           controls
           class="preview-video"
         >
-          <source :src="getPreviewUrl(currentMaterial.file_path)" type="video/mp4">
+          <source :src="getPreviewUrl(currentMaterial.asset_id)" type="video/mp4">
           您的浏览器不支持视频播放
         </video>
         <img
           v-else-if="isImageFile(currentMaterial.filename)"
-          :src="getPreviewUrl(currentMaterial.file_path)"
+          :src="getPreviewUrl(currentMaterial.asset_id)"
           class="preview-image"
           alt=""
         >
@@ -310,7 +311,7 @@
           <p>标题: {{ materialTitle(currentMaterial) }}</p>
           <p>视频时长: {{ materialDuration(currentMaterial) }}</p>
           <p>文件大小: {{ currentMaterial.filesize }} MB</p>
-          <p>入库时间: {{ currentMaterial.upload_time }}</p>
+          <p>入库时间: {{ formatMaterialTime(currentMaterial.upload_time) }}</p>
           <el-button type="primary" @click="downloadFile(currentMaterial)">下载文件</el-button>
         </div>
       </div>
@@ -324,10 +325,28 @@
         <el-form-item label="发布文案">
           <el-input v-model="publishDraftForm.description" type="textarea" :rows="6" maxlength="800" show-word-limit />
         </el-form-item>
-        <el-form-item label="话题">
-          <el-select v-model="publishDraftForm.tags" multiple filterable allow-create default-first-option placeholder="输入后回车添加话题">
-            <el-option v-for="tag in publishDraftForm.tags" :key="tag" :label="tag" :value="tag" />
+        <el-form-item label="自动标签">
+          <el-select v-model="publishDraftForm.tags" multiple filterable default-first-option placeholder="选择候选话题" @change="normalizeMaterialDraftTopics">
+            <el-option v-for="tag in publishDraftForm.tagOptions" :key="tag" :label="tag" :value="tag" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="本视频自定义话题">
+          <div class="tag-cloud">
+            <el-tag v-for="tag in publishDraftForm.customTags" :key="tag" closable @close="removeMaterialDraftCustomTag(tag)">#{{ tag }}</el-tag>
+            <span v-if="publishDraftForm.customTags.length === 0" class="empty-topic">暂无自定义话题</span>
+          </div>
+          <div class="topic-add-row">
+            <el-input
+              v-model="publishDraftForm.newTag"
+              placeholder="输入自定义话题"
+              clearable
+              @keyup.enter.prevent="addMaterialDraftTag"
+            />
+            <el-button type="primary" plain @click="addMaterialDraftTag">
+              <el-icon><Plus /></el-icon>
+              <span>新增话题</span>
+            </el-button>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -342,7 +361,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { InfoFilled, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
+import { InfoFilled, Plus, Refresh, Upload, VideoCamera } from '@element-plus/icons-vue'
 import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'element-plus'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
@@ -384,7 +403,10 @@ const currentDraftMaterial = ref(null)
 const publishDraftForm = ref({
   title: '',
   description: '',
-  tags: []
+  tags: [],
+  customTags: [],
+  tagOptions: [],
+  newTag: ''
 })
 const processedMaterials = ref([])
 const downloadedMaterials = ref([])
@@ -421,30 +443,6 @@ const languageLabel = (language) => {
   return languageMap[language] || language || '-'
 }
 
-const inferSubtitleLanguage = (material) => {
-  const explicitLanguage = material?.subtitleLanguage || material?.metadata?.subtitleLanguage
-  if (explicitLanguage) return explicitLanguage
-  if (material?.source_type !== 'youtube_processed') return ''
-
-  const filename = material?.filename || material?.original_filename || ''
-  const match = filename.match(/_([a-z]{2}(?:-[A-Z]{2})?)\.[^.]+$/)
-  const suffixMap = {
-    zh: 'zh-CN',
-    en: 'en',
-    ja: 'ja',
-    ko: 'ko',
-    es: 'es',
-    fr: 'fr',
-    de: 'de',
-    ru: 'ru'
-  }
-  return match ? (suffixMap[match[1]] || match[1]) : ''
-}
-
-const materialSubtitleLanguageLabel = (material) => {
-  return material?.subtitleLanguageLabel || material?.metadata?.subtitleLanguageLabel || languageLabel(inferSubtitleLanguage(material))
-}
-
 const materialBurnProfile = (material) => {
   return String(
     material?.burnProfile ||
@@ -454,8 +452,14 @@ const materialBurnProfile = (material) => {
   ).toLowerCase()
 }
 
+const BURN_PROFILE_LABELS = {
+  stable: '标准 1080p（推荐）',
+  fast: '快速 1080p',
+  '2k': '2K 高画质（需 2K 原片）'
+}
+
 const burnProfileLabel = (material) => {
-  return materialBurnProfile(material) === 'fast' ? '速度优先' : '兼容优先'
+  return BURN_PROFILE_LABELS[materialBurnProfile(material)] || BURN_PROFILE_LABELS.stable
 }
 
 const burnProfileTagType = (material) => {
@@ -467,11 +471,9 @@ const materialVideoId = (material) => {
 }
 
 const materialThumbnail = (material) => {
-  if (material?.localThumbnailPath) {
-    return materialApi.getMaterialPreviewUrl(material.localThumbnailPath)
-  }
   const videoId = materialVideoId(material)
   if (videoId) return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+  if (material?.asset_id) return materialApi.getMaterialPreviewUrl(material.asset_id)
   if (material?.displayThumbnail) return material.displayThumbnail
   if (material?.metadata?.thumbnail) return material.metadata.thumbnail
   return ''
@@ -479,6 +481,16 @@ const materialThumbnail = (material) => {
 
 const materialDuration = (material) => {
   return material?.duration || material?.metadata?.duration || '-'
+}
+
+const formatMaterialTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric', month: 'long', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
 }
 
 const cleanTopicList = (topics = []) => {
@@ -490,11 +502,45 @@ const buildPublishDraftFromMaterial = (material) => {
   const savedDraft = material?.publishDraft || {}
   const result = material?.analysisResult || {}
   const titleOptions = Array.isArray(result.title_options) ? result.title_options.filter(Boolean) : []
+  const generatedTags = cleanTopicList(result.tags)
+  const selectedTags = cleanTopicList(savedDraft.tags)
+  const customTags = cleanTopicList(savedDraft.customTags).filter(tag => !selectedTags.includes(tag))
   return {
     title: savedDraft.title || titleOptions[0] || '',
     description: savedDraft.description || result.publish_copy || '',
-    tags: cleanTopicList(savedDraft.tags?.length ? savedDraft.tags : result.tags)
+    tags: selectedTags,
+    customTags,
+    tagOptions: Array.from(new Set([...generatedTags, ...selectedTags])),
+    newTag: ''
   }
+}
+
+const addMaterialDraftTag = () => {
+  const tag = cleanTopicList(publishDraftForm.value.newTag)[0] || ''
+  if (!tag) {
+    ElMessage.warning('请输入话题内容')
+    return
+  }
+  if (publishDraftForm.value.tags.includes(tag) || publishDraftForm.value.customTags.includes(tag)) {
+    ElMessage.warning('话题已存在')
+    return
+  }
+  publishDraftForm.value.customTags.push(tag)
+  publishDraftForm.value.newTag = ''
+}
+
+const normalizeMaterialDraftTopics = () => {
+  publishDraftForm.value.tags = cleanTopicList(publishDraftForm.value.tags)
+  publishDraftForm.value.customTags = cleanTopicList(publishDraftForm.value.customTags)
+    .filter(tag => !publishDraftForm.value.tags.includes(tag))
+  publishDraftForm.value.tagOptions = Array.from(new Set([
+    ...publishDraftForm.value.tags,
+    ...cleanTopicList(publishDraftForm.value.tagOptions)
+  ]))
+}
+
+const removeMaterialDraftCustomTag = (tag) => {
+  publishDraftForm.value.customTags = publishDraftForm.value.customTags.filter(item => item !== tag)
 }
 
 const materialVideoIdForDraft = (material) => {
@@ -556,17 +602,28 @@ const processingSettingsRows = (material) => {
   }
   const enabled = value => value ? '开启' : '关闭'
   const commentMode = settings.commentTranslationMode === 'google' ? 'Google 翻译' : 'Google 翻译 + LLM 修订'
+  const analysis = settings.sourceSubtitleAnalysis || {}
+  const subtitleMode = { auto: '自动适配', force_burn: '强制烧制', original: '原字幕', legacy: '历史模式' }[settings.subtitleMode] || '历史模式'
+  const sourceSubtitle = analysis.status === 'unknown' ? '识别失败' : ({ zh: '中文', non_zh: '非中文', none: '无', unknown: '未识别' }[analysis.classification] || '未识别')
+  const finalAction = { original: '原字幕', original_zh: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
+  const region = analysis.region
+  const regionText = region ? `${Math.round(region.x * 100)}%, ${Math.round(region.y * 100)}%, ${Math.round(region.width * 100)}% × ${Math.round(region.height * 100)}%` : '-'
   return [
     ['处理版本', processVersionLabel(settings.processVersion)],
     ['字幕语言', languageLabel(settings.subtitleLanguage)],
-    ['烧录预设', settings.burnProfile === 'fast' ? '速度优先' : '兼容优先'],
+    ['烧录预设', BURN_PROFILE_LABELS[settings.burnProfile] || BURN_PROFILE_LABELS.stable],
     ['字幕字号', settings.subtitleSize || '-'],
     ['字幕翻译', enabled(settings.translationEnabled)],
+    ['字幕模式', subtitleMode],
+    ['原字幕', sourceSubtitle],
+    ['最终处理', finalAction],
+    ['遮挡区域', regionText],
     ['翻译署名', settings.translatorLabel || '-'],
     ['水印', settings.watermarkEnabled ? settings.watermarkText || '已开启' : '关闭'],
     ['高光片头', settings.highlightIntroEnabled ? `${settings.highlightCount || 0} 条` : '关闭'],
     ['封面片头', settings.coverIntroEnabled ? settings.coverTitle || '开启' : '关闭'],
     ['评论烧制', settings.commentBurnEnabled ? `${settings.commentBurnCount || 0} 条，${commentMode}` : '关闭'],
+    ['字幕遮挡', enabled(settings.subtitleMaskEnabled)],
     ['内容安全审查', enabled(settings.contentSafetyReviewEnabled)]
   ]
 }
@@ -585,7 +642,6 @@ const MaterialIdentity = defineComponent({
     const infoRows = computed(() => [
       ['视频名称', materialTitle(props.material)],
       ['UUID', props.material.uuid],
-      ['存储路径', props.material.file_path],
       ['来源类型', props.material.source_type],
       ['状态', props.material.status],
       ['任务状态', workflowBadge.value ? `${workflowBadge.value.text} ${workflowBadge.value.detail}` : ''],
@@ -596,7 +652,7 @@ const MaterialIdentity = defineComponent({
       if (props.material.source_type === 'youtube_processed' || props.material.source_type === 'youtube_download') {
         return materialThumbnail(props.material)
       }
-      return materialThumbnail(props.material) || materialApi.getMaterialPreviewUrl(props.material.file_path)
+      return materialThumbnail(props.material)
     })
 
     return () => h('div', { class: 'material-identity' }, [
@@ -947,12 +1003,14 @@ const savePublishDraft = async () => {
     const response = await youtubeApi.updatePublishDraft(videoId, {
       title: publishDraftForm.value.title,
       description: publishDraftForm.value.description,
-      tags: cleanTopicList(publishDraftForm.value.tags)
+      tags: cleanTopicList(publishDraftForm.value.tags),
+      customTags: cleanTopicList(publishDraftForm.value.customTags).filter(tag => !publishDraftForm.value.tags.includes(tag))
     })
     material.publishDraft = response.data?.draft || {
       title: publishDraftForm.value.title,
       description: publishDraftForm.value.description,
-      tags: cleanTopicList(publishDraftForm.value.tags)
+      tags: cleanTopicList(publishDraftForm.value.tags),
+      customTags: cleanTopicList(publishDraftForm.value.customTags).filter(tag => !publishDraftForm.value.tags.includes(tag))
     }
     publishDraftDialogVisible.value = false
     ElMessage.success('发布稿已保存')
@@ -1056,12 +1114,12 @@ const handleBatchDelete = async (scope = 'all') => {
   }
 }
 
-const getPreviewUrl = (filePath) => {
-  return materialApi.getMaterialPreviewUrl(filePath)
+const getPreviewUrl = (assetId) => {
+  return materialApi.getMaterialPreviewUrl(assetId)
 }
 
 const downloadFile = (material) => {
-  const url = materialApi.downloadMaterial(material.file_path)
+  const url = materialApi.downloadMaterial(material.asset_id)
   window.open(url, '_blank')
 }
 
@@ -1512,5 +1570,12 @@ $ink-strong: var(--vf-text-primary);
     width: 96px;
     height: 54px;
   }
+}
+.publish-draft-form .topic-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
 }
 </style>
