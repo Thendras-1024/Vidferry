@@ -282,6 +282,22 @@ def test_publish_tags_are_split_before_douyin_limit_is_applied():
     assert _parse_tags(",".join(tags)) == tags
 
 
+def test_kuaishou_publish_tags_keep_the_first_four_in_order():
+    from uploader.ks_uploader.main import KUAISHOU_MAX_TAGS, _publish_tags
+
+    tags = [f"topic-{index}" for index in range(6)]
+
+    assert KUAISHOU_MAX_TAGS == 4
+    assert _publish_tags(tags) == ["topic-0", "topic-1", "topic-2", "topic-3"]
+
+
+def test_kuaishou_publish_tags_keep_all_available_tags_when_under_limit():
+    from uploader.ks_uploader.main import _publish_tags
+
+    assert _publish_tags(["platform", "llm-one"]) == ["platform", "llm-one"]
+    assert _publish_tags(None) == []
+
+
 def test_editing_prompts_require_ranked_fact_based_titles_covers_and_tags():
     ranking_rule = "title_options、cover_title_options、tags 均必须按预计传播和点击吸引力从高到低排列"
     evidence_rule = "只有标题、检索词或转写明确支持时，才可优先使用已有公共认知的品牌、人物、事件或主题"

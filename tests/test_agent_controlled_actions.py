@@ -1,8 +1,11 @@
 import datetime
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from app import project_butler
 from app.backend.runtime import create_backend_module
 
 
@@ -236,3 +239,54 @@ def test_copywriting_prompt_serializes_datetime_video_metadata():
     )
 
     assert "2026-08-17 23:30:28" in messages[1]["content"]
+
+
+def test_removed_agent_tools_are_not_registered_or_dispatchable():
+    backend = _backend()
+    removed = {
+        "explain_vidferry_pipeline",
+        "get_workflow_overview",
+        "list_short_video_projects",
+        "get_short_video_project",
+    }
+
+    assert removed.isdisjoint(backend._agent_tool_names())
+    assert backend._select_agent_tools("请查看短视频拼接项目和完整工作流") == []
+    for name in removed:
+        with pytest.raises(ValueError, match="不在白名单"):
+            backend._run_agent_tool(name, {})
+
+
+def test_project_butler_uses_internal_workflow_overview(monkeypatch):
+    fake_backend = SimpleNamespace(
+        _get_project_workflow_overview=lambda: {"counts": {"initial": 2}, "labels": {"initial": "待处理"}},
+        get_account_status=lambda: {"items": []},
+        list_failed_jobs=lambda: {"items": []},
+    )
+    monkeypatch.setitem(sys.modules, "sau_backend", fake_backend)
+
+    result = project_butler.butler_result("下一步怎么做")
+
+    assert result["toolResults"][0]["tool"] == "project_workflow_overview"
+    assert result["toolResults"][0]["result"]["counts"]["initial"] == 2
+
+
+def test_agent_soul_is_injected_only_into_agent_prompts(tmp_path):
+    backend = _backend()
+    (tmp_path / "soul.md").write_text("SOUL_TEST_RULE", encoding="utf-8")
+    backend.BASE_DIR = tmp_path
+
+    assert "SOUL_TEST_RULE" in backend.agent_react_system_prompt()
+    assert "SOUL_TEST_RULE" in backend.agent_reply_messages("问题", {})[0]["content"]
+    assert "SOUL_TEST_RULE" in backend.agent_reply_stream_messages("问题", {})[0]["content"]
+    assert "SOUL_TEST_RULE" not in backend.editing_analysis_system_prompt()
+
+
+def test_missing_agent_soul_falls_back_to_existing_prompt(tmp_path):
+    backend = _backend()
+    backend.BASE_DIR = tmp_path
+
+    prompt = backend.agent_react_system_prompt()
+
+    assert "<agent_soul>" not in prompt
+    assert "受控运营 Agent" in prompt

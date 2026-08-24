@@ -1,6 +1,3 @@
-import sys
-from types import ModuleType, SimpleNamespace
-
 import pytest
 
 from app.backend.runtime import create_backend_module
@@ -16,6 +13,36 @@ def test_source_language_is_normalized_for_subtitle_audit_responses():
     assert backend._normalize_source_language("hi") == "hi"
     assert backend._normalize_source_language("unknown-language") == ""
     assert backend._subtitle_audit_list_item({"source_language": "ja"})["sourceLanguage"] == "ja"
+
+
+def test_subtitle_audit_exposes_chinese_original_title_and_author():
+    backend = create_backend_module()
+
+    item = backend._subtitle_audit_list_item({
+        "workflow_title": "Original video title",
+        "workflow_channel": "Travel author",
+        "source_title_translation_metadata": '{"sourceTitleZh":"中文视频标题"}',
+    })
+
+    assert item["chineseTitle"] == "中文视频标题"
+    assert item["originalTitle"] == "Original video title"
+    assert item["author"] == "Travel author"
+
+
+def test_user_visible_times_are_normalized_to_beijing_iso():
+    backend = create_backend_module()
+
+    item = backend._subtitle_audit_list_item({"saved_at": "2026-08-23 12:34:56"})
+    assert item["savedAt"] == "2026-08-23T12:34:56+08:00"
+    assert backend._to_beijing_iso("2026-08-23T04:34:56Z") == "2026-08-23T12:34:56+08:00"
+    assert backend._task_now().tzinfo is None
+
+
+def test_flask_json_serializes_database_datetime_as_beijing_iso():
+    backend = create_backend_module()
+    response = backend.app.json.dumps({"savedAt": backend.datetime.datetime(2026, 8, 23, 12, 34, 56)})
+
+    assert '"savedAt": "2026-08-23T12:34:56+08:00"' in response
 
 
 def test_ass_keeps_asr_source_text_in_a_neutral_source_style(tmp_path):
@@ -90,38 +117,38 @@ def test_workflow_resource_uses_video_artifact_state(monkeypatch):
 ])
 def test_google_translation_uses_normalized_asr_source_language(monkeypatch, source_language, expected_source):
     backend = create_backend_module()
+    monkeypatch.setattr(backend, "YTDLP_PROXY", "")
+    monkeypatch.setattr(backend, "HF_PROXY", "")
     captured = []
 
-    class FakeGoogleTranslator:
-        def __init__(self, source, target):
-            captured.append((source, target))
+    def fake_google_translate(text, source, target, timeout, proxy):
+        captured.append((source, target, timeout, proxy))
+        return "\n".join("译文" for _ in text.splitlines())
 
-        def translate(self, text):
-            return "\n".join("译文" for _ in text.splitlines())
-
-    google_module = ModuleType("deep_translator.google")
-    google_module.requests = SimpleNamespace(get=lambda *args, **kwargs: None)
-    translator_module = ModuleType("deep_translator")
-    translator_module.GoogleTranslator = FakeGoogleTranslator
-    translator_module.google = google_module
-    constants_module = ModuleType("deep_translator.constants")
-    constants_module.GOOGLE_LANGUAGES_TO_CODES = {
-        "japanese": "ja",
-        "korean": "ko",
-        "spanish": "es",
-        "russian": "ru",
-        "chinese (simplified)": "zh-CN",
-    }
-    monkeypatch.setitem(sys.modules, "deep_translator", translator_module)
-    monkeypatch.setitem(sys.modules, "deep_translator.google", google_module)
-    monkeypatch.setitem(sys.modules, "deep_translator.constants", constants_module)
+    monkeypatch.setattr(backend, "_google_translate_text", fake_google_translate)
 
     translated = backend._translate_segments(
         [{"text": "source text"}], "zh-CN", source_language=source_language,
     )
 
-    assert captured == [(expected_source, "zh-CN")]
+    assert captured == [(expected_source, "zh-CN", backend.TRANSLATION_REQUEST_TIMEOUT, "")]
     assert translated[0]["subtitle"] == "译文"
+
+
+def test_google_translation_rejects_error_page_text(monkeypatch):
+    backend = create_backend_module()
+    monkeypatch.setattr(backend, "TRANSLATION_REQUEST_RETRIES", 1)
+    monkeypatch.setattr(backend, "_google_translate_text", lambda *args: "\\n**Error 500 (Server Error)!!1500. That's an error.")
+
+    with pytest.raises(RuntimeError, match="字幕翻译失败"):
+        backend._translate_segments([{"text": "source text"}], "zh-CN")
+
+
+def test_source_title_translation_cache_rejects_error_page_text():
+    backend = create_backend_module()
+
+    assert backend._is_valid_source_title_translation("\\n**Error 500 (Server Error)!!1500. That's an error.") is False
+    assert backend._is_valid_source_title_translation("杭州早市探店") is True
 
 
 @pytest.mark.parametrize(("source_language", "marker"), [
