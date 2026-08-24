@@ -2,7 +2,7 @@
 
 Vidferry 是本地优先的视频采集、处理、素材管理与多平台发布工具。它将 YouTube 线索检索、下载、字幕处理、处理版本二剪辑增强、发布文案和账号发布串成一个可追踪的工作流。
 
-项目面向本机或受控内网部署。YouTube、平台登录和自动发布都依赖本机网络、浏览器及第三方平台规则，不适合作为直接暴露公网的多租户服务。
+项目面向 Windows 本机或受控内网部署。YouTube、平台登录和自动发布都依赖本机网络、浏览器及第三方平台规则，不适合作为直接暴露公网的多租户服务。Linux 域名部署尚未实现；现有 HTTPS、CORS 与 Cookie 说明只定义未来上线边界，不构成可直接执行的公网部署方案。
 
 ## 已发布账号运营效果
 
@@ -38,7 +38,7 @@ Vidferry 是本地优先的视频采集、处理、素材管理与多平台发�
 
 ## 快速开始
 
-首次部署请按 [快速部署](docs/deployment/QUICK_DEPLOYMENT.md) 执行。配置项说明见 [配置参考](docs/deployment/CONFIGURATION.md)。
+首次 Windows 本地部署请按 [快速部署](docs/deployment/QUICK_DEPLOYMENT.md) 执行。配置项说明见 [配置参考](docs/deployment/CONFIGURATION.md)。Linux 域名部署暂未支持。
 
 ### 交给部署 Agent 的提示词
 
@@ -54,7 +54,7 @@ Vidferry 是本地优先的视频采集、处理、素材管理与多平台发�
 4. 提示我自行在本机 .env 填写真实 TEXT_LLM_API_KEY（以及按需的视觉模型配置）；在我完成前，可继续验证不依赖这些凭据的服务和页面，但不要伪造或猜测配置。
 5. 启动后端和前端，确认控制台 http://127.0.0.1:55173 可访问、后端运行在 http://127.0.0.1:5409，且前端 API 代理正常。
 6. 空数据库时运行交互式 create-admin 命令创建管理员；密码必须在终端交互输入，不能出现在命令参数、日志或回复中。
-7. 报告每一步的实际结果、服务地址、未完成的人工配置项和原始报错。不要将服务暴露到公网；生产部署需按文档配置 HTTPS、强随机 VIDFERRY_AUTH_SECRET 和 VIDFERRY_AUTH_COOKIE_SECURE=true。
+7. 报告每一步的实际结果、服务地址、未完成的人工配置项和原始报错。不要将服务暴露到公网，也不要把当前 Windows 本地部署流程延伸为 Linux 域名部署；后者尚未实现。
 ```
 
 本地环境准备完成后，分别启动后端和前端：
@@ -113,7 +113,7 @@ docs/                      中文功能与运维文档
 - [配置参考](docs/deployment/CONFIGURATION.md)
 - [用户认证与部署](docs/deployment/用户认证与部署.md)
 - [处理版本二评论烧制功能说明](docs/development/处理版本二评论烧制功能需求.md)
-- [Agent 开发路线](docs/development/agent-capability-roadmap.md)
+- [Agent 开发路线](docs/todos/agent-capability-roadmap.md)
 - [优化问题清单](docs/todos/优化问题清单.md)
 - [前端控制台说明](sau_frontend/README.md)
 
@@ -121,4 +121,4 @@ docs/                      中文功能与运维文档
 
 `.env`、`conf.py`、`cookiesFile/`、`videos/`、`videoFile/`、数据库备份和前端构建产物均为本地运行数据，不应提交到 Git。LLM 密钥、认证密钥、登录 Cookie、平台 Token sidecar 和用户密码不得写入前端代码、Agent 上下文或日志。
 
-生产环境应使用 HTTPS、设置强随机的 `VIDFERRY_AUTH_SECRET`、启用 `VIDFERRY_AUTH_COOKIE_SECURE=true`，并让后端仅监听受控网络。
+Linux 域名部署尚未实现。后续上线时必须先完成独立部署方案，并满足 HTTPS、强随机 `VIDFERRY_AUTH_SECRET`、`VIDFERRY_AUTH_COOKIE_SECURE=true` 与后端仅监听受控网络等要求。

@@ -1,6 +1,6 @@
 # Vidferry 快速部署
 
-本指南用于 Windows 本地部署 Vidferry。项目运行期使用 PostgreSQL。
+本指南仅用于 Windows 本地部署 Vidferry。项目运行期使用 PostgreSQL。Linux 域名部署尚未实现；请勿将本指南中的启动命令、反向代理提示或认证配置视为公网部署手册。
 
 ## 1. 前置条件
 
@@ -38,6 +38,13 @@ conda run -n vidferry python -m pip install -e .
 conda run -n vidferry python -m pip install -e ".[web]"
 ```
 
+安装浏览器运行时。平台登录和发布使用 patchright Chromium；国内网络可使用镜像：
+
+```powershell
+$env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
+conda run -n vidferry patchright install chromium
+```
+
 安装前端依赖：
 
 ```powershell
@@ -61,7 +68,7 @@ docker compose --env-file .env -f docker-compose.postgres.yml up -d
 docker compose --env-file .env -f docker-compose.postgres.yml ps
 ```
 
-然后编辑 `.env`，至少将 `TEXT_LLM_API_KEY` 替换为本地真实密钥。模型配置、GPU 转写和超时项见 [配置参考](CONFIGURATION.md)。`.env` 不得提交或共享。
+基础下载、转写与素材管理不需要 LLM。需要内容分析、字幕修订、发布文案、Agent 或评论筛选时，应完整填写 `TEXT_LLM_PROVIDER`、`TEXT_LLM_BASE_URL`、`TEXT_LLM_API_KEY` 与 `TEXT_LLM_MODEL`；需要关键帧审核时，再填写完整的 `MULTIMODAL_LLM_*` 配置。模型、GPU 转写、飞书、资源清理与认证配置见 [配置参考](CONFIGURATION.md)。`.env` 不得提交或共享。
 
 ## 4. 启动服务
 
@@ -74,7 +81,7 @@ conda run -n vidferry python run.py
 另开一个终端启动前端：
 
 ```powershell
-Set-Location E:\Vidferry\sau_frontend
+Set-Location sau_frontend
 npm run dev
 ```
 
@@ -131,6 +138,6 @@ conda run -n vidferry python -m pip install -U --pre "yt-dlp[default]"
 
 当前转写使用 Whisper。GPU 模式下先执行 `conda env update -n vidferry -f environment.gpu-win.yml`，再设置 `WHISPER_DEVICE=cuda` 和适配的 `WHISPER_COMPUTE_TYPE`；CPU 模式保持 `WHISPER_DEVICE=cpu`、`WHISPER_COMPUTE_TYPE=int8`。模型会在首次转写时下载到本地缓存。
 
-## 生产部署提示
+## Linux 域名部署状态
 
-生产环境使用 HTTPS 反向代理，让后端只监听内网或 `127.0.0.1`，设置 `VIDFERRY_AUTH_COOKIE_SECURE=true` 与强随机 `VIDFERRY_AUTH_SECRET`，并保持单个后端进程运行。详情见 [用户认证与部署](用户认证与部署.md)。
+当前未提供 Linux 服务进程、静态文件托管、反向代理、域名、证书或公网验收的可执行方案，因此 Linux 域名部署尚未支持。未来方案至少要满足 HTTPS、精确的 `VIDFERRY_CORS_ORIGINS`、`VIDFERRY_AUTH_COOKIE_SECURE=true`、强随机 `VIDFERRY_AUTH_SECRET`、后端不直接暴露公网以及单后端进程等约束。详情见 [用户认证与部署](用户认证与部署.md)。
