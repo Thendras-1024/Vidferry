@@ -9,6 +9,8 @@ def test_publish_progress_is_visible_and_waiting_publish_is_polled():
     assert "waiting_publish" in source
     assert "publishProgress" in source
     assert "workflowProgressText" in source
+    assert "publishCompleted, publishTotal) * 100 / publishTotal" in source
+    assert "97 + (Math.min(publishCompleted, publishTotal) / publishTotal) * 3" not in source
 
 
 def test_task_history_defaults_to_all_tasks():

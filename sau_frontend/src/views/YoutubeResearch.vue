@@ -2983,10 +2983,9 @@ const displayProgress = (job) => {
   const publishProgress = job.publishProgress || {}
   const publishTotal = Number(publishProgress.total || 0)
   const publishCompleted = Number(publishProgress.completed || 0)
-  const publishValue = publishTotal > 0 ? 97 + (Math.min(publishCompleted, publishTotal) / publishTotal) * 3 : 97
   const boundedProgress = Math.max(0, Math.min(100, rawProgress))
   if (job.step === 'publish' && publishTotal > 0) {
-    return Math.max(boundedProgress, Math.min(job.status === 'running' ? 99 : 100, publishValue))
+    return Math.round(Math.min(publishCompleted, publishTotal) * 100 / publishTotal)
   }
   if (job.status !== 'running') return boundedProgress
   return Math.max(0, Math.min(99, boundedProgress))
