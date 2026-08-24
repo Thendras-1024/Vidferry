@@ -70,7 +70,7 @@ def save_login_account(platform_type, cookie_file, user_name, status_queue, acco
         old_cookie_file = None
 
         if account_id is not None:
-            cursor.execute("SELECT type, filePath FROM user_info WHERE id = ? AND owner_user_id = ?", (account_id, owner_user_id))
+            cursor.execute("SELECT type, filePath FROM user_info WHERE id = %s AND owner_user_id = %s", (account_id, owner_user_id))
             row = cursor.fetchone()
             if row is None:
                 status_queue.put("500")
@@ -85,8 +85,8 @@ def save_login_account(platform_type, cookie_file, user_name, status_queue, acco
             cursor.execute(
                 '''
                 UPDATE user_info
-                SET type = ?, filePath = ?, userName = ?, status = ?
-                WHERE id = ? AND owner_user_id = ?
+                SET type = %s, filePath = %s, userName = %s, status = %s
+                WHERE id = %s AND owner_user_id = %s
                 ''',
                 (platform_type, cookie_file, user_name, 1, account_id, owner_user_id)
             )
@@ -94,7 +94,7 @@ def save_login_account(platform_type, cookie_file, user_name, status_queue, acco
             cursor.execute(
                 '''
                 INSERT INTO user_info (type, filePath, userName, status, owner_user_id)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ''',
                 (platform_type, cookie_file, user_name, 1, owner_user_id)
             )

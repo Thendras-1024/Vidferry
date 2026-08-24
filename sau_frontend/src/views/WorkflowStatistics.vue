@@ -242,6 +242,7 @@ import * as echarts from 'echarts'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { youtubeApi } from '@/api/youtube'
+import { formatBeijingTime } from '@/utils/time'
 
 const loading = ref(false)
 const rangePreset = ref('week')
@@ -424,7 +425,7 @@ function formatModels(value) {
 }
 
 function formatDate(value) {
-  return String(value || '').replace('T', ' ').slice(0, 19) || '-'
+  return formatBeijingTime(value) || '-'
 }
 
 function taskStatusText(status) {

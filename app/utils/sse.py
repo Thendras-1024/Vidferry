@@ -46,7 +46,7 @@ def run_async_function(type,id,status_queue,account_id=None,owner_user_id=None):
             case _:
                 status_queue.put("500")
     except Exception as e:
-        print(f"登录流程异常 : error_type = {type(e).__name__}")
+        print(f"登录流程异常 : error_type = {e.__class__.__name__}")
         status_queue.put("500")
     finally:
         loop.close()

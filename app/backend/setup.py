@@ -29,6 +29,8 @@ from pathlib import Path
 from queue import Empty, Queue
 from flask_cors import CORS
 from flask import Flask, request, jsonify, Response, render_template, send_from_directory, stream_with_context
+from flask.json.provider import DefaultJSONProvider
+from app.utils.format_util import _to_beijing_iso
 from app.auth.middleware import register_auth_middleware
 from werkzeug.utils import secure_filename
 from app.utils.text_util import clean_display_text, ensure_utf8_stdio
@@ -47,11 +49,24 @@ from app.config import (
     ACTIVE_JOB_STATUSES,
     AGENT_BLOCK_LEVEL,
     AGENT_CHAT_MAX_TOKENS,
+    AGENT_OUTPUT_MAX_TOKENS,
     AGENT_CHAT_TEMPERATURE,
     AGENT_CONTEXT_COMPACT_AFTER_CHARS,
     AGENT_CONTEXT_COMPACT_AFTER_MESSAGES,
+    AGENT_CONTEXT_COMPACTION_RECOVERY_RATIO,
+    AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO,
+    AGENT_CONTEXT_COMPACTION_TRIGGER_TOKENS,
+    AGENT_CONTEXT_COMPACTION_RECOVERY_TOKENS,
+    AGENT_CONTEXT_MODEL_WINDOW_TOKENS,
+    AGENT_CONTEXT_INPUT_MAX_TOKENS,
+    AGENT_CONTEXT_OUTPUT_MAX_TOKENS,
+    AGENT_CONTEXT_MAX_INPUT_TOKENS,
     AGENT_CONTEXT_RECENT_MESSAGES,
+    AGENT_CONTEXT_RECENT_TURNS,
     AGENT_CONTEXT_SUMMARY_MAX_CHARS,
+    AGENT_CONTEXT_OUTPUT_RESERVE_TOKENS,
+    AGENT_CONTEXT_TOOL_RESULT_MAX_CHARS,
+    AGENT_CONTEXT_TOOL_TOTAL_MAX_CHARS,
     AGENT_ENABLED,
     AGENT_FRAME_END_OFFSET_SECONDS,
     AGENT_FRAME_FIRST_SECOND,
@@ -129,6 +144,7 @@ from app.config import (
     YOUTUBE_DOWNLOAD_DIR,
     YOUTUBE_LEGACY_DEFAULT_QUERY,
     VIDEO_LOCAL_CLEANUP_BATCH_SIZE,
+    VIDEO_LOCAL_CLEANUP_INTERVAL_HOURS,
     VIDEO_LOCAL_CLEANUP_MODE,
     VIDEO_LOCAL_RETENTION_DAYS,
     YOUTUBE_PROCESSED_DIR,
@@ -140,6 +156,7 @@ from app.config import (
     YOUTUBE_COOKIE_FILE,
     YOUTUBE_COOKIES_FROM_BROWSER,
     YOUTUBE_COOKIES_BROWSER_PROFILE,
+    HF_PROXY,
     YTDLP_DOWNLOAD_RETRIES,
     YTDLP_FRAGMENT_RETRIES,
     YTDLP_DOWNLOAD_ATTEMPTS,
@@ -169,7 +186,19 @@ except ImportError as optional_import_error:
     ensure_biliup_binary = None
 
 active_queues = {}
+
+
+class _VidferryJSONProvider(DefaultJSONProvider):
+    def default(self, value):
+        if isinstance(value, datetime.datetime):
+            return _to_beijing_iso(value)
+        if isinstance(value, (datetime.date, datetime.time)):
+            return value.isoformat()
+        return super().default(value)
+
+
 app = Flask(__name__)
+app.json = _VidferryJSONProvider(app)
 
 
 # 默认仅允许本地前端访问，避免局域网/网页跨源调用本机敏感接口。

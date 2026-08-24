@@ -3,8 +3,32 @@
 import datetime
 import json
 import re
+from zoneinfo import ZoneInfo
 
 from app.core.cover_service import normalize_cover_context, normalize_cover_title
+
+
+_BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _beijing_datetime(value=None):
+    if value is None:
+        return datetime.datetime.now(_BEIJING_TZ)
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_BEIJING_TZ)
+    return parsed.astimezone(_BEIJING_TZ)
+
+
+def _to_beijing_iso(value):
+    parsed = _beijing_datetime(value)
+    return parsed.isoformat(timespec="seconds") if parsed else str(value or "")
 
 
 def _parse_upload_date(value):

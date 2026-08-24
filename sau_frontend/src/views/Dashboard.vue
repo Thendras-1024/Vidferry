@@ -144,6 +144,7 @@ import {
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { materialApi } from '@/api/material'
+import { backendTimeMs, formatBeijingTime } from '@/utils/time'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import PublishRetryDialog from '@/components/PublishRetryDialog.vue'
@@ -206,7 +207,7 @@ const contentStats = computed(() => {
 
 const recentPublishTasks = computed(() => {
   return [...appStore.publishTasks]
-    .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
+    .sort((a, b) => backendTimeMs(b.publishedAt) - backendTimeMs(a.publishedAt))
     .slice(0, 6)
 })
 
@@ -290,13 +291,7 @@ const deletePublishRecord = async (task, target) => {
 const formatPublishDate = (value) => {
   const raw = String(value || '').trim()
   if (!raw) return '-'
-  const date = new Date(raw)
-  if (Number.isNaN(date.getTime())) return raw
-  const utc = /(?:GMT|UTC|Z)$/i.test(raw)
-  const part = (utcName, localName) => String(utc ? date[utcName]() : date[localName]()).padStart(2, '0')
-  const year = utc ? date.getUTCFullYear() : date.getFullYear()
-  const month = String((utc ? date.getUTCMonth() : date.getMonth()) + 1).padStart(2, '0')
-  return `${year}-${month}-${part('getUTCDate', 'getDate')} ${part('getUTCHours', 'getHours')}:${part('getUTCMinutes', 'getMinutes')}:${part('getUTCSeconds', 'getSeconds')}`
+  return formatBeijingTime(raw, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-')
 }
 
 const openRetryDialog = (task) => {

@@ -16,7 +16,7 @@
           <el-table-column label="身份来源" width="120"><template #default="{ row }">{{ providerLabel(row.loginProvider) }}</template></el-table-column>
           <el-table-column label="角色" width="110"><template #default="{ row }">{{ row.role === 'admin' ? '管理员' : '普通用户' }}</template></el-table-column>
           <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status === 'active' ? '启用' : '停用' }}</el-tag></template></el-table-column>
-          <el-table-column prop="lastLoginAt" label="最近登录" min-width="180" />
+          <el-table-column label="最近登录" min-width="180"><template #default="{ row }">{{ formatBeijingTime(row.lastLoginAt) || '-' }}</template></el-table-column>
           <el-table-column label="操作" width="270" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="editUser(row)">编辑</el-button>
@@ -30,7 +30,7 @@
       </el-tab-pane>
       <el-tab-pane label="审计日志" name="audit">
         <el-table v-loading="auditLoading" :data="auditLogs">
-          <el-table-column prop="createdAt" label="时间" min-width="180" />
+          <el-table-column label="时间" min-width="180"><template #default="{ row }">{{ formatBeijingTime(row.createdAt) || '-' }}</template></el-table-column>
           <el-table-column prop="actorUsername" label="操作者" width="140" />
           <el-table-column prop="action" label="动作" min-width="160" />
           <el-table-column prop="targetId" label="目标" min-width="180" show-overflow-tooltip />
@@ -58,6 +58,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { userApi } from '@/api/user'
+import { formatBeijingTime } from '@/utils/time'
 
 const activeTab = ref('users')
 const loading = ref(false), auditLoading = ref(false), saving = ref(false)
@@ -104,7 +105,7 @@ const saveUser = async () => {
   } finally { saving.value = false }
 }
 const resetPassword = async row => {
-  const result = await ElMessageBox.prompt('输入至少 12 个字符的新临时密码', `重置 ${row.username} 的密码`, { inputType: 'password', inputPattern: /^.{12,128}$/, inputErrorMessage: '密码长度须为 12 到 128 个字符' })
+  const result = await ElMessageBox.prompt('输入至少 8 个字符的新临时密码', `重置 ${row.username} 的密码`, { inputType: 'password', inputPattern: /^.{8,128}$/, inputErrorMessage: '密码长度须为 8 到 128 个字符' })
   await userApi.resetPassword(row.id, result.value)
   ElMessage.success('密码已重置')
 }

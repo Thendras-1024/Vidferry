@@ -15,8 +15,8 @@ _PASSWORD_HASHER = PasswordHasher(
 
 def validate_password(password, username=""):
     value = str(password or "")
-    if len(value) < 12:
-        raise ValueError("密码至少需要 12 个字符")
+    if len(value) < 8:
+        raise ValueError("密码至少需要 8 个字符")
     if len(value) > 128:
         raise ValueError("密码不能超过 128 个字符")
     if username and username.lower() in value.lower():

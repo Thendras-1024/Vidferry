@@ -129,7 +129,7 @@ conda run -n vidferry python -m pip install -U --pre "yt-dlp[default]"
 
 ### GPU 转写或 NVENC 失败
 
-先使用默认 CPU 配置 `WHISPER_DEVICE=cpu`、`WHISPER_COMPUTE_TYPE=int8` 和 `VIDEO_ENCODER=libx264` 验证流程。GPU 模式必须由当前 CUDA、驱动及 FFmpeg 实际支持。
+当前转写使用 Whisper。GPU 模式下先执行 `conda env update -n vidferry -f environment.gpu-win.yml`，再设置 `WHISPER_DEVICE=cuda` 和适配的 `WHISPER_COMPUTE_TYPE`；CPU 模式保持 `WHISPER_DEVICE=cpu`、`WHISPER_COMPUTE_TYPE=int8`。模型会在首次转写时下载到本地缓存。
 
 ## 生产部署提示
 

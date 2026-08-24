@@ -244,7 +244,7 @@ def login():
                 if row is None or str(row[0]) != str(type):
                     return Response("data: 500\n\n", mimetype='text/event-stream')
         except Exception as e:
-            print(f"校验重新连接账号失败 : error_type = {type(e).__name__}")
+            print(f"校验重新连接账号失败 : error_type = {e.__class__.__name__}")
             return Response("data: 500\n\n", mimetype='text/event-stream')
 
     # 模拟一个用于异步通信的队列

@@ -47,9 +47,11 @@ MULTIMODAL_LLM_MODEL=qwen-vl-max
 | `YTDLP_JS_RUNTIME` | yt-dlp 使用的 JS runtime，默认示例为 `node`。YouTube 下载建议安装 Node.js 20+。 |
 | `YTDLP_JS_RUNTIME_PATH` | Node.js 不在 `PATH` 时填写绝对路径。 |
 | `YTDLP_REMOTE_COMPONENTS` | yt-dlp 远程组件，默认 `ejs:github`。首次下载需要可访问 GitHub。 |
-| `WHISPER_MODEL_SIZE` / `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | 转写模型、设备与计算精度。CPU 推荐 `small`、`cpu`、`int8`。 |
+| `WHISPER_MODEL_SIZE` / `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | 当前使用的 Whisper 模型、设备与计算精度。默认 `small` / `cpu` / `int8`。 |
 | `VIDEO_ENCODER` | `libx264` 或受当前 FFmpeg 与驱动支持的 `h264_nvenc`。 |
 | `VIDEO_NVENC_PRESET` / `VIDEO_NVENC_CQ` | NVIDIA 编码器预设与恒定质量，仅 `h264_nvenc` 生效。 |
+
+Whisper 使用 `faster-whisper` 与 CTranslate2。GPU 转写需要安装 CUDA 运行库；CPU 模式使用默认的 `WHISPER_DEVICE=cpu` 与 `WHISPER_COMPUTE_TYPE=int8` 即可。
 
 评论烧制没有独立环境变量：它是处理版本二的界面开关。启用后通过 yt-dlp 请求最多 100 条热门顶层评论，严格正则过滤后每 20 条分批进行 LLM 筛选。评论翻译可在界面选择 `Google 初译 + LLM 修订`（默认）或仅 `Google 初译`；单批失败会保留其他可用评论与 Google 初译结果。
 

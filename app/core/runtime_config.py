@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from app.config import VIDEO_ENCODER
@@ -14,6 +16,12 @@ class RuntimeConfigError(RuntimeError):
     def __init__(self, code, message):
         self.code = code
         super().__init__(f"RUNTIME_CONFIG_FAILED:{code}:{message}")
+
+
+_WHISPER_STATUS_CACHE_TTL_SECONDS = 30
+_WHISPER_CUDA_PROBE_TIMEOUT_SECONDS = 30
+_WHISPER_STATUS_CACHE = {}
+_WHISPER_STATUS_CACHE_LOCK = threading.Lock()
 
 
 def _status(ready, message="", *, level="info", action_value="", effective=None):
@@ -27,7 +35,24 @@ def _whisper_status():
     model = str(os.environ.get("WHISPER_MODEL_SIZE", "small") or "small").strip()
     device = str(os.environ.get("WHISPER_DEVICE", "cpu") or "cpu").strip().lower()
     compute_type = str(os.environ.get("WHISPER_COMPUTE_TYPE", "int8") or "int8").strip().lower()
+    cache_key = (model, device, compute_type)
+    now = time.monotonic()
+    with _WHISPER_STATUS_CACHE_LOCK:
+        cached = _WHISPER_STATUS_CACHE.get(cache_key)
+        if cached and now - cached[0] < _WHISPER_STATUS_CACHE_TTL_SECONDS:
+            return cached[1]
+
     effective = {"model": "large-v3" if model == "large" else model, "device": device, "computeType": compute_type}
+    with _WHISPER_STATUS_CACHE_LOCK:
+        cached = _WHISPER_STATUS_CACHE.get(cache_key)
+        if cached and time.monotonic() - cached[0] < _WHISPER_STATUS_CACHE_TTL_SECONDS:
+            return cached[1]
+        status = _whisper_status_uncached(model, device, compute_type, effective)
+        _WHISPER_STATUS_CACHE[cache_key] = (time.monotonic(), status)
+        return status
+
+
+def _whisper_status_uncached(model, device, compute_type, effective):
     if device not in {"cpu", "cuda", "auto"}:
         return _status(False, "WHISPER_DEVICE 仅支持 cpu、cuda 或 auto。", level="error", effective=effective)
     allowed_compute_types = {
@@ -35,7 +60,7 @@ def _whisper_status():
         "cuda": {"float16", "int8_float16", "int8", "float32", "bfloat16", "int8_bfloat16", "int8_float32"},
     }
     if device in allowed_compute_types and compute_type not in allowed_compute_types[device]:
-        return _status(False, f"WHISPER_COMPUTE_TYPE={compute_type} 不支持 {device}。", level="error", effective=effective)
+        return _status(False, f"WHISPER_COMPUTE_TYPE = {compute_type} 不支持 {device}。", level="error", effective=effective)
     if Path(model).exists():
         if not Path(model).is_dir():
             return _status(False, "WHISPER_MODEL_SIZE 指向的本地模型路径不是目录。", level="error", effective=effective)
@@ -58,12 +83,14 @@ def _whisper_status():
         try:
             probe = subprocess.run(
                 [os.sys.executable, "-c", "import ctranslate2; print(ctranslate2.get_cuda_device_count())"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=_WHISPER_CUDA_PROBE_TIMEOUT_SECONDS,
             )
             if probe.returncode != 0 or int((probe.stdout or "0").strip() or 0) < 1:
                 raise RuntimeError((probe.stderr or probe.stdout or "未检测到 CUDA 设备").strip())
-        except Exception as exc:
-            return _status(False, "Whisper CUDA 不可用；请执行 conda env update -n vidferry -f environment.gpu-win.yml 后重启，或改为 WHISPER_DEVICE=cpu。", level="error", action_value="conda env update -n vidferry -f environment.gpu-win.yml", effective=effective)
+        except subprocess.TimeoutExpired:
+            return _status(False, f"Whisper CUDA 初始化检测超时（{_WHISPER_CUDA_PROBE_TIMEOUT_SECONDS} 秒）；请检查 NVIDIA 驱动和 CUDA 运行库，或改为 WHISPER_DEVICE = cpu。", level="error", action_value="conda env update -n vidferry -f environment.gpu-win.yml", effective=effective)
+        except Exception:
+            return _status(False, "Whisper CUDA 不可用；请执行 conda env update -n vidferry -f environment.gpu-win.yml 后重启，或改为 WHISPER_DEVICE = cpu。", level="error", action_value="conda env update -n vidferry -f environment.gpu-win.yml", effective=effective)
     return _status(True, effective=effective)
 
 

@@ -30,7 +30,7 @@ const form = reactive({ currentPassword: '', newPassword: '', confirmPassword: '
 const validateConfirm = (_rule, value, callback) => callback(value === form.newPassword ? undefined : new Error('两次输入的新密码不一致'))
 const rules = {
   currentPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
-  newPassword: [{ required: true, message: '请输入新密码', trigger: 'blur' }, { min: 12, max: 128, message: '密码长度须为 12 到 128 个字符', trigger: 'blur' }],
+  newPassword: [{ required: true, message: '请输入新密码', trigger: 'blur' }, { min: 8, max: 128, message: '密码长度须为 8 到 128 个字符', trigger: 'blur' }],
   confirmPassword: [{ validator: validateConfirm, trigger: 'blur' }]
 }
 
