@@ -1,0 +1,19 @@
+{
+  "annotationStatus": {
+    "agent": "ready",
+    "asr": "pending_human_gold",
+    "translation": "pending_human_gold"
+  },
+  "datasetVersion": "v1",
+  "expectedCounts": {
+    "agent": 40,
+    "asr": 60,
+    "translation": 300
+  },
+  "languages": [
+    "en",
+    "ja",
+    "ko"
+  ],
+  "schemaVersion": 1
+}

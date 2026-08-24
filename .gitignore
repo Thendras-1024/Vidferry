@@ -235,17 +235,8 @@ models/
 qrcode.png
 # Added by code-review-graph
 .code-review-graph/
-docs/*
-!docs/**/
-!docs/**/*.md
-tests/*
-!tests/test_youtube_local_retention.py
-!tests/test_postgres_compat.py
-!tests/test_postgres_migrations.py
-!tests/conftest.py
-!tests/test_authentication.py
-!tests/test_comment_burn_service.py
-!tests/test_feishu_robot.py
-!tests/test_agent_observability.py
-!tests/test_task_center_history.py
-!tests/test_multilingual_subtitles.py
+
+
+# 本地评测媒体、模型输出和人工盲评结果
+/evaluation/media/
+/evaluation/results/

@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# 仅用于与历史 ASR 基线对比，不恢复到生产依赖。
+faster-whisper==1.2.1
+ctranslate2==4.8.1
