@@ -276,9 +276,9 @@ const exportSelected = async () => {
 }
 const deleteSelected = async () => {
   const selectedJobIds = selectedRows.value.map(row => row.jobId); const count = selectedJobIds.length
-  try { await ElMessageBox.confirm(`将删除 ${count} 条已结束处理记录及其字幕、评论审查数据。原视频和字幕文件不会被删除。`, '确认删除', { type: 'warning', confirmButtonText: '删除处理记录', cancelButtonText: '取消' }) } catch (_) { return }
+  try { await ElMessageBox.confirm(`将清理 ${count} 条记录对应的下载、处理、字幕、分析和任务中间产物；视频线索和已发布平台记录会保留，用于防止重复发布。`, '确认清理', { type: 'warning', confirmButtonText: '清理中间产物', cancelButtonText: '取消' }) } catch (_) { return }
   deleting.value = true
-  try { const res = await subtitleAuditApi.remove(selectedJobIds); ElMessage.success(`已删除 ${res?.data?.deletedCount || 0} 条审查记录`); if (drawerVisible.value && detail.value && selectedJobIds.includes(detail.value.jobId)) drawerVisible.value = false; await loadList() } catch (error) { ElMessage.error(error?.message || '删除审查记录失败') } finally { deleting.value = false }
+  try { const res = await subtitleAuditApi.remove(selectedJobIds); ElMessage.success(`已清理 ${res?.data?.deletedCount || 0} 条处理记录`); if (drawerVisible.value && detail.value && selectedJobIds.includes(detail.value.jobId)) drawerVisible.value = false; await loadList() } catch (error) { ElMessage.error(error?.message || '清理处理历史失败') } finally { deleting.value = false }
 }
 onMounted(async () => { await loadList(); if (route.query.jobId) await openDetail({ jobId: String(route.query.jobId) }) })
 </script>

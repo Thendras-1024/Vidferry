@@ -2,12 +2,12 @@ import request from '@/utils/request'
 
 export const subtitleAuditApi = {
   list(params = {}) {
-    return request.get('/admin/subtitle-audits', { params })
+    return request.get('/subtitle-audits', { params })
   },
   detail(jobId) {
-    return request.get(`/admin/subtitle-audits/${jobId}`)
+    return request.get(`/subtitle-audits/${jobId}`)
   },
   remove(jobIds) {
-    return request.delete('/admin/subtitle-audits', { data: { jobIds } })
+    return request.delete('/subtitle-audits', { data: { jobIds } })
   }
 }

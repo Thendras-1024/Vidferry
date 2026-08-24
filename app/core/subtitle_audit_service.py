@@ -69,14 +69,17 @@ def _subtitle_audit_sort_sql(value):
     }.get(str(value or "").strip(), "COALESCE(a.saved_at, j.updated_at, j.started_at, j.created_at) DESC, j.id DESC")
 
 
-def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_desc", page=1, page_size=20):
+def list_subtitle_audits(owner_user_id, keyword="", status="", safety_status="", sort="saved_desc", page=1, page_size=20):
+    owner_user_id = int(owner_user_id)
+    if owner_user_id <= 0:
+        raise ValueError("字幕审查归属账号必须是正整数")
     init_database_tables()
     page = _parse_positive_int(page, 1, 1, 999999)
     page_size = _parse_positive_int(page_size, 20, 1, 100)
     keyword = str(keyword or "").strip()
     status = str(status or "").strip()
     safety_status = str(safety_status or "").strip()
-    clauses, params = ["1 = 1"], []
+    clauses, params = ["j.owner_user_id = %s"], [owner_user_id]
     if keyword:
         clauses.append("(COALESCE(a.video_title, j.title) ILIKE %s OR COALESCE(a.video_id, j.video_id) ILIKE %s OR j.id ILIKE %s)")
         params.extend([f"%{keyword}%"] * 3)
@@ -90,7 +93,7 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
     order_by = _subtitle_audit_sort_sql(sort)
     with _db_connect() as conn:
         conn.row_factory = True
-        total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id WHERE {where}", params).fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id AND a.owner_user_id = j.owner_user_id LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id AND s.owner_user_id = j.owner_user_id WHERE {where}", params).fetchone()[0]
         rows = conn.execute(f'''
             SELECT a.*, v.transcript_language AS source_language, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
                    j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.channel AS workflow_channel, j.url AS workflow_url,
@@ -98,15 +101,15 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
                    (SELECT e.metadata
                     FROM youtube_workflow_events e
-                    WHERE e.stage = 'source_title_translation' AND e.status = 'success'
+                    WHERE e.owner_user_id = j.owner_user_id AND e.stage = 'source_title_translation' AND e.status = 'success'
                       AND (e.job_id = j.id OR (e.video_id = COALESCE(a.video_id, j.video_id) AND e.owner_user_id = j.owner_user_id))
                     ORDER BY CASE WHEN e.job_id = j.id THEN 0 ELSE 1 END, e.ended_at DESC NULLS LAST, e.id DESC
                     LIMIT 1) AS source_title_translation_metadata,
-                   EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
+                   EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.owner_user_id = j.owner_user_id AND e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j
-            LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
-            LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id)
-            LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
+            LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id AND a.owner_user_id = j.owner_user_id
+            LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id) AND v.owner_user_id = j.owner_user_id
+            LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id AND s.owner_user_id = j.owner_user_id
             WHERE {where}
             ORDER BY {order_by}
             LIMIT %s OFFSET %s
@@ -114,7 +117,69 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
     return {"items": [_subtitle_audit_list_item(dict(row)) for row in rows], "total": int(total), "page": page, "pageSize": page_size, "sort": str(sort or "saved_desc")}
 
 
-def delete_subtitle_audits(job_ids):
+def _subtitle_cleanup_path(raw_path, roots):
+    candidate = Path(str(raw_path or ""))
+    if not str(candidate):
+        return None
+    try:
+        resolved = candidate.resolve()
+        if any(resolved.is_relative_to(Path(root).resolve()) for root in roots):
+            return resolved
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _subtitle_cleanup_files(video_rows, file_rows, owner_user_id, job_ids):
+    roots = (YOUTUBE_DOWNLOAD_DIR, YOUTUBE_PROCESSED_DIR, YOUTUBE_TRANSCRIPT_DIR)
+    candidates = []
+    for video in video_rows:
+        video_id = str(video.get("video_id") or "").strip()
+        for key in ("downloaded_file_path", "processed_file_path", "editing_body_path", "editing_ass_path", "transcript_file_path"):
+            if video.get(key):
+                candidates.append((str(video[key]), video_id))
+        if video_id:
+            transcript_key = re.sub(r"[^A-Za-z0-9_-]+", "_", video_id)
+            candidates.append((str(Path(YOUTUBE_TRANSCRIPT_DIR) / f"{transcript_key}.json"), video_id))
+        download_path = _subtitle_cleanup_path(video.get("downloaded_file_path"), roots)
+        if download_path:
+            candidates.extend((str(download_path.with_suffix(extension)), video_id) for extension in (".webp", ".jpg", ".jpeg", ".png"))
+    for record in file_rows:
+        path = _material_file_path(dict(record))
+        if path:
+            candidates.append((str(path), str(record.get("source_video_id") or "")))
+
+    deleted_file_count = 0
+    errors = []
+    for raw_path, video_id in candidates:
+        path = _subtitle_cleanup_path(raw_path, roots)
+        if not path or not path.is_file():
+            continue
+        if _retention_path_shared(path, video_id, owner_user_id):
+            continue
+        try:
+            path.unlink()
+            deleted_file_count += 1
+        except OSError as exc:
+            errors.append(f"{path.name}:{type(exc).__name__}")
+
+    for job_id in job_ids:
+        intro_dir = _subtitle_cleanup_path(Path(YOUTUBE_PROCESSED_DIR) / f"{job_id}_editing_intro", (YOUTUBE_PROCESSED_DIR,))
+        if not intro_dir or not intro_dir.exists():
+            continue
+        try:
+            shutil.rmtree(intro_dir)
+        except OSError as exc:
+            errors.append(f"{intro_dir.name}:{type(exc).__name__}")
+    if errors:
+        raise RuntimeError("清理视频中间文件失败 : " + ", ".join(errors[:10]))
+    return deleted_file_count
+
+
+def delete_subtitle_audits(owner_user_id, job_ids):
+    owner_user_id = int(owner_user_id)
+    if owner_user_id <= 0:
+        raise ValueError("字幕审查归属账号必须是正整数")
     unique_job_ids = list(dict.fromkeys(
         str(job_id or "").strip() for job_id in (job_ids or []) if str(job_id or "").strip()
     ))
@@ -123,29 +188,108 @@ def delete_subtitle_audits(job_ids):
     if len(unique_job_ids) > 100:
         raise ValueError("单次最多删除 100 条审查记录")
     init_database_tables()
-    placeholders = ", ".join("%s" for _ in unique_job_ids)
+    requested_placeholders = ", ".join("%s" for _ in unique_job_ids)
     with _db_connect() as conn:
         cursor = conn.cursor()
-        rows = cursor.execute(
-            f"SELECT id, video_id, status FROM youtube_workflow_jobs WHERE id IN ({placeholders})",
-            unique_job_ids,
+        selected_rows = cursor.execute(
+            f"SELECT id, video_id, status FROM youtube_workflow_jobs WHERE owner_user_id = %s AND id IN ({requested_placeholders}) FOR UPDATE",
+            [owner_user_id, *unique_job_ids],
         ).fetchall()
-        active_ids = [row["id"] for row in rows if row["status"] in {"queued", "running", "waiting_confirmation"}]
+        if not selected_rows:
+            return {"deletedCount": 0, "deletedJobCount": 0, "deletedMaterialCount": 0, "deletedFileCount": 0, "retainedPublishedPlatformCount": 0}
+
+        video_ids = sorted({str(row["video_id"] or "").strip() for row in selected_rows if row["video_id"]})
+        if not video_ids:
+            return {"deletedCount": 0, "deletedJobCount": 0, "deletedMaterialCount": 0, "deletedFileCount": 0, "retainedPublishedPlatformCount": 0}
+        video_placeholders = ", ".join("%s" for _ in video_ids)
+
+        all_jobs = cursor.execute(
+            f"SELECT id, video_id, status FROM youtube_workflow_jobs WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) FOR UPDATE",
+            [owner_user_id, *video_ids],
+        ).fetchall()
+        active_statuses = {"queued", "running", "waiting_confirmation", "waiting_publish"}
+        active_ids = [row["id"] for row in all_jobs if str(row["status"] or "").lower() in active_statuses]
         if active_ids:
-            raise ValueError("运行中或待确认的任务不能删除")
-        video_ids = {str(row["video_id"] or "") for row in rows if row["video_id"]}
-        for table in ("youtube_workflow_llm_usage_events", "youtube_workflow_events", "youtube_subtitle_audits", "youtube_workflow_locks"):
-            cursor.execute(f"DELETE FROM {table} WHERE job_id IN ({placeholders})", unique_job_ids)
-        cursor.execute(f"DELETE FROM youtube_workflow_jobs WHERE id IN ({placeholders})", unique_job_ids)
+            raise ValueError("运行中或待确认的任务不能清理")
+
+        scheduled = cursor.execute(
+            f"SELECT 1 FROM scheduled_publish_tasks WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) AND status IN ('scheduled', 'queued', 'running') LIMIT 1",
+            [owner_user_id, *video_ids],
+        ).fetchone()
+        if scheduled:
+            raise ValueError("存在进行中的定时发布任务，不能清理")
+
+        uncertain = cursor.execute(
+            f"SELECT 1 FROM published_youtube_materials WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) AND deleted_at IS NULL AND invalidated_at IS NULL AND status IN ('unknown', 'pending', 'running', 'uncertain', 'queued') LIMIT 1",
+            [owner_user_id, *video_ids],
+        ).fetchone()
+        if uncertain:
+            raise ValueError("存在状态未确认的平台发布记录，不能清理")
+
+        video_rows = [dict(row) for row in cursor.execute(
+            f"SELECT * FROM youtube_videos WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) FOR UPDATE",
+            [owner_user_id, *video_ids],
+        ).fetchall()]
+        file_rows = [dict(row) for row in cursor.execute(
+            f"SELECT * FROM file_records WHERE owner_user_id = %s AND source_video_id IN ({video_placeholders}) AND source_type IN ('youtube_download', 'youtube_processed')",
+            [owner_user_id, *video_ids],
+        ).fetchall()]
+        all_job_ids = [str(row["id"]) for row in all_jobs]
+        deleted_file_count = _subtitle_cleanup_files(video_rows, file_rows, owner_user_id, all_job_ids)
+
+        if all_job_ids:
+            job_placeholders = ", ".join("%s" for _ in all_job_ids)
+            for table in ("youtube_workflow_llm_usage_events", "youtube_workflow_events", "youtube_subtitle_audits", "youtube_content_safety_audits", "youtube_workflow_locks"):
+                cursor.execute(f"DELETE FROM {table} WHERE owner_user_id = %s AND job_id IN ({job_placeholders})", [owner_user_id, *all_job_ids])
+            cursor.execute(f"DELETE FROM youtube_workflow_jobs WHERE owner_user_id = %s AND id IN ({job_placeholders})", [owner_user_id, *all_job_ids])
+
+        cursor.execute(
+            f"DELETE FROM file_records WHERE owner_user_id = %s AND source_video_id IN ({video_placeholders}) AND source_type IN ('youtube_download', 'youtube_processed')",
+            [owner_user_id, *video_ids],
+        )
+        deleted_material_count = cursor.execute(
+            f"DELETE FROM published_youtube_materials WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) AND NOT (deleted_at IS NULL AND invalidated_at IS NULL AND status IN ('confirmed', 'reused'))",
+            [owner_user_id, *video_ids],
+        ).rowcount
+        retained_count = cursor.execute(
+            f"SELECT COUNT(*) FROM published_youtube_materials WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) AND deleted_at IS NULL AND invalidated_at IS NULL AND status IN ('confirmed', 'reused')",
+            [owner_user_id, *video_ids],
+        ).fetchone()[0]
+        cursor.execute(
+            f"UPDATE published_youtube_materials SET material_id = NULL, filename = '', file_path = '', filesize = 0, thumbnail = '', account_file = '', metadata = '{{}}', updated_at = CURRENT_TIMESTAMP WHERE owner_user_id = %s AND video_id IN ({video_placeholders}) AND deleted_at IS NULL AND invalidated_at IS NULL AND status IN ('confirmed', 'reused')",
+            [owner_user_id, *video_ids],
+        )
+
         for video_id in video_ids:
-            if cursor.execute("SELECT 1 FROM youtube_workflow_jobs WHERE video_id = %s LIMIT 1", (video_id,)).fetchone():
-                continue
             cursor.execute(
-                "UPDATE youtube_videos SET comment_burn_snapshot = %s, comment_burn_signature = %s, comment_burn_status = %s, updated_at = CURRENT_TIMESTAMP WHERE video_id = %s",
-                ("{}", "", "", video_id),
+                """
+                UPDATE youtube_videos
+                SET download_status = 0, translate_status = 0, transcript_status = 0,
+                    downloaded_file_path = '', processed_file_path = '', transcript_file_path = '',
+                    transcript_language = '', analysis_status = 0, analysis_result = '', publish_draft = '',
+                    analysis_updated_at = NULL, editing_body_path = '', editing_ass_path = '',
+                    editing_body_signature = '', editing_intro_signature = '', editing_highlight_snapshot = '[]',
+                    editing_intro_status = '', comment_burn_snapshot = '{}', comment_burn_signature = '',
+                    comment_burn_status = '', local_files_state = 'purged', local_files_purged_at = CURRENT_TIMESTAMP,
+                    purge_attempted_at = CURRENT_TIMESTAMP, purge_error = '',
+                    publish_status = CASE WHEN EXISTS (
+                        SELECT 1 FROM published_youtube_materials
+                        WHERE owner_user_id = %s AND video_id = %s AND deleted_at IS NULL
+                          AND invalidated_at IS NULL AND status IN ('confirmed', 'reused')
+                    ) THEN 1 ELSE 0 END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE owner_user_id = %s AND video_id = %s
+                """,
+                (owner_user_id, video_id, owner_user_id, video_id),
             )
         conn.commit()
-    return {"deletedCount": max(0, int(cursor.rowcount or 0))}
+    return {
+        "deletedCount": len(all_job_ids),
+        "deletedJobCount": len(all_job_ids),
+        "deletedMaterialCount": max(0, int(deleted_material_count or 0)),
+        "deletedFileCount": deleted_file_count,
+        "retainedPublishedPlatformCount": int(retained_count or 0),
+    }
 
 
 def _subtitle_audit_list_item(row):
@@ -171,7 +315,10 @@ def _subtitle_audit_list_item(row):
     }
 
 
-def get_subtitle_audit_detail(job_id):
+def get_subtitle_audit_detail(owner_user_id, job_id):
+    owner_user_id = int(owner_user_id)
+    if owner_user_id <= 0:
+        raise ValueError("字幕审查归属账号必须是正整数")
     init_database_tables()
     with _db_connect() as conn:
         conn.row_factory = True
@@ -182,30 +329,30 @@ def get_subtitle_audit_detail(job_id):
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
                    (SELECT e.metadata
                     FROM youtube_workflow_events e
-                    WHERE e.stage = 'source_title_translation' AND e.status = 'success'
+                    WHERE e.owner_user_id = j.owner_user_id AND e.stage = 'source_title_translation' AND e.status = 'success'
                       AND (e.job_id = j.id OR (e.video_id = COALESCE(a.video_id, j.video_id) AND e.owner_user_id = j.owner_user_id))
                     ORDER BY CASE WHEN e.job_id = j.id THEN 0 ELSE 1 END, e.ended_at DESC NULLS LAST, e.id DESC
                     LIMIT 1) AS source_title_translation_metadata,
-                   EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
-            FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
-            LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id)
-            LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id
-            WHERE j.id = %s
-        ''', (str(job_id or ""),)).fetchone()
+                   EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.owner_user_id = j.owner_user_id AND e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
+            FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id AND a.owner_user_id = j.owner_user_id
+            LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id) AND v.owner_user_id = j.owner_user_id
+            LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id AND s.owner_user_id = j.owner_user_id
+            WHERE j.owner_user_id = %s AND j.id = %s
+        ''', (owner_user_id, str(job_id or ""))).fetchone()
         if not row:
             return None
         diagnostics = conn.execute('''
             SELECT operation, model, attempt, prompt_tokens, completion_tokens, total_tokens,
                    latency_ms, error_category, violations, raw_output, created_at
             FROM youtube_workflow_llm_usage_events
-            WHERE job_id = %s AND status IN ('contract_failed', 'soft_warning') AND raw_output <> ''
+            WHERE owner_user_id = %s AND job_id = %s AND status IN ('contract_failed', 'soft_warning') AND raw_output <> ''
             ORDER BY created_at DESC, id DESC
-        ''', (str(job_id or ""),)).fetchall()
+        ''', (owner_user_id, str(job_id or ""))).fetchall()
         comment_events = conn.execute('''
             SELECT metadata FROM youtube_workflow_events
-            WHERE job_id = %s AND stage IN ('comment_review', 'comment_fetch')
+            WHERE owner_user_id = %s AND job_id = %s AND stage IN ('comment_review', 'comment_fetch')
             ORDER BY CASE stage WHEN 'comment_review' THEN 0 ELSE 1 END, id DESC
-        ''', (str(job_id or ""),)).fetchall()
+        ''', (owner_user_id, str(job_id or ""))).fetchall()
     result = _subtitle_audit_list_item(dict(row))
     result["initialSegments"] = _subtitle_audit_json(row["initial_segments"], "[]")
     result["reviewedSegments"] = _subtitle_audit_json(row["reviewed_segments"], "[]")
