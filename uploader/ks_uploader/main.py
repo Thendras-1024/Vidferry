@@ -30,6 +30,11 @@ KUAISHOU_MANAGE_URL_PATTERN = "**/article/manage/video?status=2&from=publish**"
 KUAISHOU_COOKIE_INVALID_SELECTOR = "div.names div.container div.name:text('机构服务')"
 KUAISHOU_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 KUAISHOU_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+KUAISHOU_MAX_TAGS = 4
+
+
+def _publish_tags(tags):
+    return list(tags or [])[:KUAISHOU_MAX_TAGS]
 
 
 def _msg(emoji: str, text: str) -> str:
@@ -502,7 +507,7 @@ class KSVideo(KSBaseUploader):
             await page.keyboard.type(self.desc or self.title)
             await page.keyboard.press("Enter")
 
-            for index, tag in enumerate(self.tags[:3], start=1):
+            for index, tag in enumerate(_publish_tags(self.tags), start=1):
                 kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
                 await page.keyboard.type(f"#{tag} ")
                 await asyncio.sleep(2)
@@ -642,7 +647,7 @@ class KSNote(KSBaseUploader):
         await page.keyboard.type(self.note)
         await page.keyboard.press("Enter")
 
-        for index, tag in enumerate(self.tags[:3], start=1):
+        for index, tag in enumerate(_publish_tags(self.tags), start=1):
             kuaishou_logger.info(_msg("🏷️", f"小人正在添加第 {index} 个话题: #{tag}"))
             await page.keyboard.type(f"#{tag} ")
             await asyncio.sleep(2)
