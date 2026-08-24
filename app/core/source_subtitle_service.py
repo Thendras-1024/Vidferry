@@ -1,4 +1,4 @@
-"""原视频字幕的多模态识别与处理决策。"""
+"""原视频字幕烧制与遮罩决策。"""
 
 from __future__ import annotations
 
@@ -20,10 +20,11 @@ from app.core.llm_harness import call_json_contract
 from app.utils.ffmpeg_util import _resolve_ffmpeg_command
 
 
+SOURCE_SUBTITLE_ANALYSIS_VERSION = 3
 SOURCE_SUBTITLE_SAMPLE_COUNT = 12
 SOURCE_SUBTITLE_FRAME_WIDTH = 960
-SOURCE_SUBTITLE_MIN_CONFIDENCE = 0.75
-SOURCE_SUBTITLE_FALLBACK_REGION = {"x": 0.06, "y": 0.84, "width": 0.88, "height": 0.155}
+SOURCE_SUBTITLE_FIRST_MAX_TOKENS = 3000
+SOURCE_SUBTITLE_RETRY_MAX_TOKENS = 6000
 
 _logger = logging.getLogger("vidferry.backend")
 
@@ -59,88 +60,22 @@ def _extract_source_subtitle_frames(video_path, timestamps):
     return frames
 
 
-def _validate_normalized_bbox(value, path):
-    if not isinstance(value, dict) or set(value) != {"x", "y", "width", "height"}:
-        raise ValueError(f"{path} 字段不合法")
-    bbox = {}
-    for key in ("x", "y", "width", "height"):
-        number = value.get(key)
-        if isinstance(number, bool) or not isinstance(number, (int, float)):
-            raise ValueError(f"{path}.{key} 必须是数值")
-        bbox[key] = float(number)
-    if bbox["width"] <= 0 or bbox["height"] <= 0 or bbox["x"] < 0 or bbox["y"] < 0:
-        raise ValueError(f"{path} 超出归一化坐标范围")
-    if bbox["x"] + bbox["width"] > 1 or bbox["y"] + bbox["height"] > 1:
-        raise ValueError(f"{path} 超出归一化坐标范围")
-    return {key: round(value, 4) for key, value in bbox.items()}
-
-
-def validate_source_subtitle_result(value, frame_count):
-    if not isinstance(value, dict) or set(value) != {"classification", "confidence", "evidenceFrames", "reason"}:
-        raise ValueError("原视频字幕识别返回字段不合法")
+def validate_source_subtitle_result(value, _frame_count=None):
+    if not isinstance(value, dict) or set(value) != {"classification", "reason"}:
+        raise ValueError("原视频字幕决策返回字段不合法")
     classification = str(value.get("classification") or "").strip()
     if classification not in {"zh", "non_zh", "none"}:
         raise ValueError("classification 必须是 zh、non_zh 或 none")
-    confidence = value.get("confidence")
-    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= float(confidence) <= 1:
-        raise ValueError("confidence 必须在 0 到 1 之间")
     reason = str(value.get("reason") or "").strip()
     if not reason:
         raise ValueError("reason 不能为空")
-    raw_evidence = value.get("evidenceFrames")
-    if not isinstance(raw_evidence, list):
-        raise ValueError("evidenceFrames 必须是数组")
-    evidence = []
-    seen = set()
-    for position, item in enumerate(raw_evidence):
-        if not isinstance(item, dict) or set(item) != {"frameIndex", "language", "bbox"}:
-            raise ValueError(f"evidenceFrames[{position}] 字段不合法")
-        frame_index = item.get("frameIndex")
-        if isinstance(frame_index, bool) or not isinstance(frame_index, int) or not 1 <= frame_index <= frame_count:
-            raise ValueError(f"evidenceFrames[{position}].frameIndex 不合法")
-        if frame_index in seen:
-            raise ValueError("evidenceFrames 的 frameIndex 不得重复")
-        seen.add(frame_index)
-        language = str(item.get("language") or "").strip()
-        if language not in {"zh", "non_zh", "mixed", "none"}:
-            raise ValueError(f"evidenceFrames[{position}].language 不合法")
-        bbox = item.get("bbox")
-        if classification == "none":
-            if language != "none" or bbox is not None:
-                raise ValueError("none 分类的证据帧必须使用 language=none 且 bbox=null")
-        else:
-            bbox = _validate_normalized_bbox(bbox, f"evidenceFrames[{position}].bbox")
-        evidence.append({"frameIndex": frame_index, "language": language, "bbox": bbox})
     return {
         "classification": classification,
-        "confidence": round(float(confidence), 4),
-        "evidenceFrames": evidence,
         "reason": reason[:500],
     }
 
 
-def _source_subtitle_region(evidence_frames):
-    boxes = [
-        item["bbox"]
-        for item in evidence_frames or []
-        if isinstance(item.get("bbox"), dict)
-        and item["bbox"]["y"] + item["bbox"]["height"] / 2 >= 0.55
-        and item["bbox"]["width"] <= 0.88
-    ]
-    if len(boxes) < 2:
-        return None
-    # ponytail: 仅支持底部对白字幕；非底部字幕需要 OCR 跟踪后再扩展。
-    top = max(0.0, min(item["y"] for item in boxes) - 0.01)
-    bottom = 0.995
-    return {
-        "x": SOURCE_SUBTITLE_FALLBACK_REGION["x"],
-        "y": round(top, 4),
-        "width": SOURCE_SUBTITLE_FALLBACK_REGION["width"],
-        "height": round(bottom - top, 4),
-    }
-
-
-def resolve_source_subtitle_decision(mode, classification, requested_mask=False):
+def resolve_source_subtitle_decision(mode, classification="unknown", requested_mask=False):
     mode = str(mode or "legacy").strip()
     classification = str(classification or "unknown").strip()
     if mode == "legacy":
@@ -148,7 +83,7 @@ def resolve_source_subtitle_decision(mode, classification, requested_mask=False)
     if mode == "original":
         return {"translationEnabled": False, "subtitleMaskEnabled": False, "effectiveAction": "original"}
     if mode == "force_burn":
-        mask = bool(requested_mask and classification != "none")
+        mask = bool(requested_mask)
         return {
             "translationEnabled": True,
             "subtitleMaskEnabled": mask,
@@ -158,105 +93,163 @@ def resolve_source_subtitle_decision(mode, classification, requested_mask=False)
         return {"translationEnabled": False, "subtitleMaskEnabled": False, "effectiveAction": "original_zh"}
     if classification == "none":
         return {"translationEnabled": True, "subtitleMaskEnabled": False, "effectiveAction": "burn"}
-    return {"translationEnabled": True, "subtitleMaskEnabled": True, "effectiveAction": "mask_and_burn"}
+    if classification == "non_zh":
+        return {"translationEnabled": True, "subtitleMaskEnabled": True, "effectiveAction": "mask_and_burn"}
+    return {
+        "translationEnabled": True,
+        "subtitleMaskEnabled": True,
+        "effectiveAction": "mask_and_burn",
+    }
+
+
+def _source_subtitle_analysis(
+    mode,
+    classification,
+    reason,
+    status,
+    elapsed_seconds=0,
+    requested_mask=False,
+    fallback_translation_enabled=None,
+):
+    decision = resolve_source_subtitle_decision(
+        mode,
+        classification=classification,
+        requested_mask=requested_mask,
+    )
+    burn_subtitles = bool((decision or {}).get("translationEnabled"))
+    subtitle_mask_enabled = bool((decision or {}).get("subtitleMaskEnabled"))
+    if decision is None and fallback_translation_enabled is not None:
+        burn_subtitles = bool(fallback_translation_enabled)
+        subtitle_mask_enabled = bool(requested_mask and burn_subtitles)
+    return {
+        "analysisVersion": SOURCE_SUBTITLE_ANALYSIS_VERSION,
+        "status": status,
+        "classification": classification,
+        "burnSubtitles": burn_subtitles,
+        "subtitleMaskEnabled": subtitle_mask_enabled,
+        "reason": str(reason or "")[:500],
+        "decision": decision,
+        "elapsedSeconds": round(float(elapsed_seconds or 0), 2),
+    }
 
 
 def _source_subtitle_system_prompt():
     return (
-        "你是视频原字幕检测器。只识别承担对白字幕作用、位置稳定且随时间变化的文字；"
-        "排除招牌、水印、弹幕、标题、界面文字和偶然出现的中文。"
-        "中文和外语双语字幕归类为 zh。坐标使用 0 到 1 的归一化值。"
-        "只返回 JSON，不要返回 Markdown。"
+        "你是视频原字幕识别器。只识别承担对白作用、位置稳定且随时间变化的字幕；"
+        "忽略水印、招牌、弹幕、标题和界面文字。只返回 JSON，不要返回 Markdown。"
     )
 
 
 def _source_subtitle_user_prompt(frame_count):
     return (
-        f"分析以下按时间排序的 {frame_count} 帧。返回 classification(zh/non_zh/none)、confidence(0-1)、"
-        "reason、evidenceFrames。每个证据项严格包含 frameIndex、language(zh/non_zh/mixed/none)、bbox。"
-        "有字幕时 bbox={x,y,width,height}，无字幕时 bbox=null。至少给出两帧相互一致的证据。"
+        f"分析以下按时间排序的 {frame_count} 帧。返回 classification(zh/non_zh/none) 和 reason。"
+        "中文对白字幕返回 zh；存在非中文对白字幕时返回 non_zh；没有原视频对白字幕时返回 none。"
     )
+
+
+def _source_subtitle_messages(frames, retry_reason=""):
+    prompt = _source_subtitle_user_prompt(len(frames))
+    if retry_reason:
+        prompt += (
+            " 上一次检查失败，失败原因如下；请重新检查全部视频帧并只返回合法 JSON："
+            f" {str(retry_reason)[:500]}"
+        )
+    content = [{"type": "text", "text": prompt}]
+    for frame in frames:
+        content.append({"type": "text", "text": f"frameIndex={frame['frameIndex']}, timestamp={frame['timestampSeconds']:.2f}s"})
+        content.append({"type": "image_url", "image_url": {"url": frame["dataUrl"]}})
+    return [
+        {"role": "system", "content": _source_subtitle_system_prompt()},
+        {"role": "user", "content": content},
+    ]
+
+
+def _run_source_subtitle_attempt(job, video_path, duration, telemetry, max_tokens, retry_reason=""):
+    frames = _extract_source_subtitle_frames(video_path, _source_subtitle_timestamps(duration))
+    result, usage, _ = call_json_contract(
+        messages=_source_subtitle_messages(frames, retry_reason),
+        contract_id="source_subtitle_analysis",
+        validator=validate_source_subtitle_result,
+        model=MULTIMODAL_LLM_MODEL,
+        api_key=MULTIMODAL_LLM_API_KEY,
+        base_url=MULTIMODAL_LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        temperature=0.1,
+        max_tokens=max_tokens,
+        max_attempts=1,
+        prompt_version="source-subtitle-v3",
+        telemetry=telemetry,
+        profile_channel="multimodal",
+    )
+    return result, usage
 
 
 def analyze_source_subtitles(job, video_path, duration, telemetry=None):
     mode = str((job or {}).get("subtitleMode") or "legacy")
     requested_mask = bool((job or {}).get("subtitleMaskEnabled"))
-    if mode in {"legacy", "original"} or (mode == "force_burn" and not requested_mask):
-        classification = "unknown"
-        decision = resolve_source_subtitle_decision(mode, classification, requested_mask)
-        return {
-            "status": "skipped",
-            "classification": classification,
-            "confidence": 0,
-            "evidenceFrames": [],
-            "region": None,
-            "reason": "当前字幕模式无需执行原字幕识别",
-            "decision": decision,
-        }, {}
+    if mode != "auto":
+        return _source_subtitle_analysis(
+            mode,
+            "unknown",
+            "当前字幕模式无需执行 LLM 判断",
+            "skipped",
+            requested_mask=requested_mask,
+            fallback_translation_enabled=(job or {}).get("translationEnabled", True),
+        ), {}
 
     started_at = time.monotonic()
+    multimodal = (get_llm_config_status() or {}).get("multimodal") or {}
+    if not (MULTIMODAL_LLM_API_KEY and MULTIMODAL_LLM_BASE_URL and MULTIMODAL_LLM_MODEL):
+        reason = "未配置多模态模型"
+        _logger.warning("原视频字幕判断不可用 : job_id = %s reason = %s", (job or {}).get("id") or "", reason)
+        return _source_subtitle_analysis(mode, "unknown", reason, "degraded", time.monotonic() - started_at), {}
+    if not multimodal.get("ready") or not multimodal.get("visionReady"):
+        reason = multimodal.get("message") or "多模态模型不支持图片输入"
+        _logger.warning("原视频字幕判断不可用 : job_id = %s reason = %s", (job or {}).get("id") or "", reason)
+        return _source_subtitle_analysis(mode, "unknown", reason, "degraded", time.monotonic() - started_at), {}
     try:
-        multimodal = (get_llm_config_status() or {}).get("multimodal") or {}
-        if not (MULTIMODAL_LLM_API_KEY and MULTIMODAL_LLM_BASE_URL and MULTIMODAL_LLM_MODEL):
-            raise RuntimeError("未配置多模态模型")
-        if not multimodal.get("ready") or not multimodal.get("visionReady"):
-            raise RuntimeError(multimodal.get("message") or "多模态模型不支持图片输入")
-        frames = _extract_source_subtitle_frames(video_path, _source_subtitle_timestamps(duration))
-        content = [{"type": "text", "text": _source_subtitle_user_prompt(len(frames))}]
-        for frame in frames:
-            content.append({"type": "text", "text": f"frameIndex={frame['frameIndex']}, timestamp={frame['timestampSeconds']:.2f}s"})
-            content.append({"type": "image_url", "image_url": {"url": frame["dataUrl"]}})
-        result, usage, _ = call_json_contract(
-            messages=[
-                {"role": "system", "content": _source_subtitle_system_prompt()},
-                {"role": "user", "content": content},
-            ],
-            contract_id="source_subtitle_analysis",
-            validator=lambda value: validate_source_subtitle_result(value, len(frames)),
-            model=MULTIMODAL_LLM_MODEL,
-            api_key=MULTIMODAL_LLM_API_KEY,
-            base_url=MULTIMODAL_LLM_BASE_URL,
-            timeout=LLM_TIMEOUT,
-            temperature=0.1,
-            max_tokens=1400,
-            prompt_version="source-subtitle-v1",
-            telemetry=telemetry,
+        result, usage = _run_source_subtitle_attempt(
+            job, video_path, duration, telemetry, SOURCE_SUBTITLE_FIRST_MAX_TOKENS,
         )
-        matching_languages = {
-            "zh": {"zh", "mixed"},
-            "non_zh": {"non_zh"},
-            "none": {"none"},
-        }[result["classification"]]
-        consistent_frames = [
-            item for item in result["evidenceFrames"] if item.get("language") in matching_languages
-        ]
-        accepted = result["confidence"] >= SOURCE_SUBTITLE_MIN_CONFIDENCE and len(consistent_frames) >= 2
-        classification = result["classification"] if accepted else "unknown"
-        region = _source_subtitle_region(consistent_frames) if accepted and classification != "none" else None
-        decision = resolve_source_subtitle_decision(mode, classification, requested_mask)
-        if decision and decision["subtitleMaskEnabled"] and not region:
-            region = dict(SOURCE_SUBTITLE_FALLBACK_REGION)
-        return {
-            "status": "success" if accepted else "unknown",
-            "classification": classification,
-            "confidence": result["confidence"],
-            "evidenceFrames": result["evidenceFrames"],
-            "region": region,
-            "reason": result["reason"] if accepted else "识别结果未达到双帧一致或置信度阈值",
-            "decision": decision,
-            "elapsedSeconds": round(time.monotonic() - started_at, 2),
-        }, usage
-    except Exception as exc:
-        _logger.warning("原视频字幕识别降级 job_id=%s", (job or {}).get("id") or "", exc_info=True)
-        classification = "unknown"
-        decision = resolve_source_subtitle_decision(mode, classification, requested_mask)
-        return {
-            "status": "unknown",
-            "classification": classification,
-            "confidence": 0,
-            "evidenceFrames": [],
-            "region": dict(SOURCE_SUBTITLE_FALLBACK_REGION) if decision and decision["subtitleMaskEnabled"] else None,
-            "reason": f"{exc.__class__.__name__}: {str(exc)[:300]}",
-            "decision": decision,
-            "elapsedSeconds": round(time.monotonic() - started_at, 2),
-        }, {}
+        return _source_subtitle_analysis(
+            mode,
+            result["classification"],
+            result["reason"],
+            "success",
+            time.monotonic() - started_at,
+        ), usage
+    except Exception as first_exc:
+        first_reason = f"{first_exc.__class__.__name__}: {str(first_exc)[:500]}"
+        _logger.warning(
+            "原视频字幕首次判断失败 : job_id = %s reason = %s",
+            (job or {}).get("id") or "", first_reason,
+        )
+        try:
+            result, usage = _run_source_subtitle_attempt(
+                job,
+                video_path,
+                duration,
+                telemetry,
+                SOURCE_SUBTITLE_RETRY_MAX_TOKENS,
+                retry_reason=first_reason,
+            )
+            return _source_subtitle_analysis(
+                mode,
+                result["classification"],
+                result["reason"],
+                "success",
+                time.monotonic() - started_at,
+            ), usage
+        except Exception as retry_exc:
+            reason = f"首次检查失败 : {first_reason}；二次检查失败 : {retry_exc.__class__.__name__}: {str(retry_exc)[:300]}"
+            _logger.warning(
+                "原视频字幕二次判断失败 : job_id = %s reason = %s",
+                (job or {}).get("id") or "", reason,
+            )
+        return _source_subtitle_analysis(
+            mode,
+            "unknown",
+            reason,
+            "degraded",
+            time.monotonic() - started_at,
+        ), {}

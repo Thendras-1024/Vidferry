@@ -74,12 +74,12 @@
         <section class="settings-section">
           <div class="section-heading"><h2>翻译与拼接</h2><p>启用或关闭处理链路中的可选步骤。</p></div>
           <div class="switch-list">
-            <div class="switch-row subtitle-mode-row"><div><strong>字幕模式</strong><span>自动识别原字幕；识别错误时可用人工模式重新处理。</span></div><el-radio-group v-model="form.subtitleMode"><el-radio-button value="auto" :disabled="!subtitleMaskAvailable">自动适配</el-radio-button><el-radio-button value="force_burn">强制烧制</el-radio-button><el-radio-button value="original">原字幕</el-radio-button></el-radio-group></div>
+            <div class="switch-row subtitle-mode-row"><div><strong>字幕模式</strong><span>自动模式检测到非中文原字幕时默认遮挡后烧制；中文原字幕保留，无原字幕时直接烧制。</span></div><el-radio-group v-model="form.subtitleMode"><el-radio-button value="auto" :disabled="!subtitleMaskAvailable">自动适配</el-radio-button><el-radio-button value="force_burn">强制烧制</el-radio-button><el-radio-button value="original">原字幕</el-radio-button></el-radio-group></div>
             <div class="switch-row"><div><strong>广告风险审查</strong><span>ASR 后检测连续站外推广内容。</span></div><el-switch v-model="form.contentSafetyReviewEnabled" /></div>
             <div class="switch-row"><div><strong>拼接高光片段</strong><span>处理版本二在正片前加入高光片段。</span></div><el-switch v-model="form.highlightIntroEnabled" /></div>
             <div class="switch-row"><div><strong>拼接封面图片</strong><span>处理版本二在正片前加入封面片头。</span></div><el-switch v-model="form.coverIntroEnabled" /></div>
             <div class="switch-row"><div><strong>烧制评论</strong><span>{{ commentBurnAvailable ? '筛选并翻译热门评论后烧制。' : '当前自定义字幕命令不支持评论烧制。' }}</span></div><el-switch v-model="form.commentBurnEnabled" :disabled="form.processVersion !== 'editing_v1' || !commentBurnAvailable" /></div>
-            <div v-if="form.subtitleMode === 'force_burn'" class="switch-row"><div><strong>遮挡原视频字幕</strong><span>{{ subtitleMaskAvailable ? '识别原字幕区域并用强模糊细颗粒马赛克覆盖，新字幕位于上层。' : '当前自定义字幕命令不支持字幕遮挡。' }}</span></div><el-switch v-model="form.subtitleMaskEnabled" :disabled="!subtitleMaskAvailable" /></div>
+            <div v-if="form.subtitleMode === 'force_burn'" class="switch-row"><div><strong>遮挡原视频字幕</strong><span>{{ subtitleMaskAvailable ? '固定遮挡底部字幕区并用强模糊细颗粒马赛克覆盖，新字幕位于上层。' : '当前自定义字幕命令不支持字幕遮挡。' }}</span></div><el-switch v-model="form.subtitleMaskEnabled" :disabled="!subtitleMaskAvailable" /></div>
             <div v-if="form.commentBurnEnabled" class="inline-settings">
               <label class="setting-field"><span>评论数量</span><el-select v-model="form.commentBurnCount"><el-option v-for="count in commentBurnCounts" :key="count" :label="`${count} 条`" :value="count" /></el-select></label>
               <label class="setting-field"><span>评论翻译</span><el-radio-group v-model="form.commentTranslationMode"><el-radio-button value="google_llm">Google + LLM</el-radio-button><el-radio-button value="google">Google</el-radio-button></el-radio-group></label>

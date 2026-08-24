@@ -41,10 +41,15 @@
     <section class="audit-table-wrap">
       <el-table ref="auditTable" v-loading="loading" :data="items" row-key="jobId" @selection-change="handleSelectionChange" @row-click="openDetail">
         <el-table-column type="selection" width="46" />
-        <el-table-column prop="title" label="视频 / 任务" min-width="280">
+        <el-table-column prop="originalTitle" label="视频" min-width="340">
           <template #default="{ row }">
-            <strong class="title">{{ row.title }}</strong>
-            <span class="muted">{{ row.videoId }} · {{ row.jobId }}</span>
+            <div class="title-stack">
+              <div class="title-line" :title="`${row.chineseTitle || '原题中文翻译未生成'}｜${row.originalTitle || row.title || '未命名视频'}`">
+                <strong class="title">{{ row.chineseTitle || '原题中文翻译未生成' }}</strong>
+                <span class="original-title">｜{{ row.originalTitle || row.title || '未命名视频' }}</span>
+              </div>
+              <span class="muted author">作者：{{ row.author || '未知作者' }}</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="任务状态" width="110">
@@ -66,7 +71,11 @@
       <template v-else-if="detail">
         <span ref="detailTop" class="detail-top-anchor" />
         <div class="detail-meta">
-          <div><strong>{{ detail.title }}</strong><span>{{ detail.videoId }} · {{ detail.jobId }}</span></div>
+          <div>
+            <strong>{{ detail.chineseTitle || '原题中文翻译未生成' }}</strong>
+            <span>{{ detail.originalTitle || detail.title || '未命名视频' }}</span>
+            <span>作者：{{ detail.author || '未知作者' }}</span>
+          </div>
           <el-tag :type="reviewType(detail)">{{ reviewLabel(detail.reviewStatus) }}</el-tag>
         </div>
         <el-alert v-if="reviewNote(detail)" :type="reviewType(detail)" :closable="false" show-icon :title="reviewNote(detail)" />
@@ -161,6 +170,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCloseFilled, Delete, Download, Loading, Refresh, Search, Top, WarningFilled } from '@element-plus/icons-vue'
 import { subtitleAuditApi } from '@/api/subtitleAudit'
 import { youtubeApi } from '@/api/youtube'
+import { formatBeijingTime } from '@/utils/time'
 
 const loading = ref(false); const detailLoading = ref(false); const items = ref([]); const total = ref(0)
 const route = useRoute()
@@ -172,7 +182,7 @@ const loadList = async () => { loading.value = true; try { const res = await sub
 const search = () => { page.value = 1; loadList() }
 const handleSelectionChange = rows => { selectedRows.value = rows }
 const openDetail = async (row, column) => { if (column?.type === 'selection') return; drawerVisible.value = true; detail.value = null; activeTab.value = 'subtitles'; detailLoading.value = true; try { const res = await subtitleAuditApi.detail(row.jobId); detail.value = res?.data || null; const risks = detail.value?.contentSafety?.risks || []; trimRangeText.value = risks.map(item => `${formatClock(item.start)}-${formatClock(item.end)}`).join('\n'); safeReason.value = ''; activeTab.value = risks.length ? 'safety' : (detail.value?.commentReviewItems?.length ? 'comments' : 'subtitles') } catch (error) { ElMessage.error(error?.message || '读取审查详情失败') } finally { detailLoading.value = false } }
-const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
+const formatTime = value => value ? formatBeijingTime(value) : '—'
 const formatRange = item => `${Number(item?.start || 0).toFixed(1)}s - ${Number(item?.end || 0).toFixed(1)}s`
 const formatClock = value => { const seconds = Math.max(0, Number(value || 0)); const minutes = Math.floor(seconds / 60); return `${String(minutes).padStart(2, '0')}:${(seconds % 60).toFixed(1).padStart(4, '0')}` }
 const sourceLanguageLabel = value => ({ 'zh-CN': '中文', en: '英文', ja: '日语', ko: '韩语', es: '西班牙语', fr: '法语', de: '德语', ru: '俄语' }[value] || (value ? `其他语言（${value}）` : '未知'))
@@ -277,7 +287,7 @@ onMounted(async () => { await loadList(); if (route.query.jobId) await openDetai
 @use '@/styles/variables.scss' as *;
 .subtitle-audit { max-width: 1440px; margin: 0 auto; }
 .audit-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:4px 0 18px; } .kicker { color:var(--vf-primary); font-size:11px; font-weight:700; } h1 { margin:4px 0 6px; font-size:22px; } .audit-heading p,.muted,.detail-meta span { color:$text-secondary; font-size:12px; } .audit-filters { display:flex; gap:10px; margin-bottom:14px; } .audit-filters .el-input { max-width:380px; } .audit-filters .el-select { width:150px; }
-.audit-table-wrap { overflow:hidden; border:1px solid $border-light; border-radius:8px; background:var(--vf-surface); } .title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .muted { display:block; margin-top:5px; } .pager { display:flex; justify-content:flex-end; padding:12px 16px; border-top:1px solid $border-lighter; }
+.audit-table-wrap { overflow:hidden; border:1px solid $border-light; border-radius:8px; background:var(--vf-surface); } .title-stack { min-width:0; } .title-line { display:flex; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .original-title { flex:1; min-width:0; overflow:hidden; color:$text-secondary; text-overflow:ellipsis; white-space:nowrap; } .muted { display:block; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .author { margin-top:4px; } .pager { display:flex; justify-content:flex-end; padding:12px 16px; border-top:1px solid $border-lighter; }
 .detail-loading { display:flex; align-items:center; gap:8px; color:$text-secondary; } .detail-top-anchor { display:block; height:0; } .detail-meta { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; } .detail-meta div { display:grid; gap:4px; min-width:0; } .detail-meta strong,.detail-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .issue-jump { position:sticky; top:0; z-index:2; display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:12px 0 4px; padding:8px 10px; border:1px solid var(--vf-border); border-radius:6px; box-shadow:var(--vf-shadow-sm); background:var(--vf-surface-elevated); color:$text-secondary; font-size:12px; } .issue-jump-top { color:var(--vf-text-regular); } .issue-jump-label { color:$text-regular; font-weight:700; } .issue-jump-divider { width:1px; height:20px; margin:0 2px; background:var(--vf-border); }
 .review-batch { margin-bottom:12px; border:1px solid $border-light; border-radius:8px; overflow:hidden; } .review-batch.is-retried { border-color:#f0b429; background:#fffdf4; } .review-batch.is-fallback { border-color:#f2b8b5; background:#fffafa; } .batch-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; background:#f5f8fc; } .is-retried .batch-heading { background:#fff7d6; } .is-fallback .batch-heading { background:#fff1f0; } .batch-heading div { display:flex; align-items:baseline; gap:8px; min-width:0; } .batch-heading span { color:$text-secondary; font-size:12px; } .review-batch :deep(.el-alert) { margin:10px 12px 0; } .batch-columns,.batch-segment { display:grid; grid-template-columns:125px minmax(0, 1fr) minmax(0, 1fr); gap:16px; } .batch-columns { padding:10px 12px; color:$text-secondary; font-size:12px; } .batch-columns span:first-child { grid-column:2; } .batch-segment { padding:12px; border-top:1px solid $border-lighter; line-height:1.65; font-size:13px; } .batch-segment time { color:$text-secondary; font-variant-numeric:tabular-nums; } .batch-segment p { margin:0 0 7px; white-space:pre-wrap; } .batch-segment .source { color:$text-regular; }

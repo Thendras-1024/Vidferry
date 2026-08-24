@@ -1,7 +1,8 @@
-"""字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 烧录。"""
+"""字幕处理服务:音频提取、Whisper 转写、翻译、ASS 字幕生成与 FFmpeg 字幕烧录。"""
 
 import re
-from threading import RLock
+import json
+import requests
 
 from app.core.llm_harness import redact_profanity
 from app.core.subtitle_review import _normalize_subtitle_source_language, review_translated_segments
@@ -20,8 +21,16 @@ CUE_MAX_SPACED_CHARS = 42
 CUE_MAX_KOREAN_CHARS = 28
 CUE_MAX_CJK_CHARS = 18
 AUTHOR_OVERLAY_FONT_SIZE = 50
-_GOOGLE_TRANSLATOR_REQUEST_LOCK = RLock()
 TRANSLATION_REQUEST_RETRIES = 3
+_TRANSLATION_ERROR_MARKERS = re.compile(
+    r"(?i)(?:error\s*\d{3}|server\s+error|that(?:'|’)s\s+an\s+error|<!doctype\s+html|<html\b)"
+)
+_GOOGLE_TRANSLATE_BATCH_URL = (
+    "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
+    "?rpcids=MkEWBc&source-path=%2F&f.sid=-"
+    "&hl=en"
+    "&soc-app=1&soc-platform=1&soc-device=1"
+)
 
 
 def _format_ass_timestamp(seconds):
@@ -230,6 +239,8 @@ def _load_transcript_file(path):
     if not transcript_path.is_file():
         return None
     data = json.loads(transcript_path.read_text(encoding="utf-8"))
+    if data.get("asrModel"):
+        return None
     segments = data.get("segments") or []
     if not segments:
         return None
@@ -295,7 +306,7 @@ def _get_or_create_transcript(job, source_file, work_dir, progress_base=10, prog
         )
     _subtitle_stage_log(
         "info",
-        "字幕处理阶段完成 : job_id = %s | video_id = %s | stage = asr | segments = %s | language = %s",
+        "字幕处理阶段完成 : job_id = %s | video_id = %s | stage = whisper_asr | segments = %s | language = %s",
         job_id or "", video_id or "", len(segments), language or "",
     )
     _update_translate_progress(job_id, progress_done, f"已识别 {len(segments)} 段字幕")
@@ -308,25 +319,68 @@ def _strip_chinese_period(text):
     return text.replace("。", "").replace("．", "")
 
 
+def _is_valid_source_title_translation(value):
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return bool(text) and len(text) <= 500 and not _TRANSLATION_ERROR_MARKERS.search(text)
+
+
+def _google_translate_text(text, source_language, target_language, timeout, proxy=""):
+    """通过 Google Translate 的结构化批量接口翻译，并保持输入换行边界。"""
+    request_payload = json.dumps(
+        [[text, source_language, target_language, True],
+         [None, None, None, None, None, None, None, None, [None, None, source_language]]],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    form_payload = json.dumps(
+        [[[
+            "MkEWBc", request_payload, None, "generic",
+        ]]],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    proxy_value = str(proxy or "").strip()
+    proxies = {"http": proxy_value, "https": proxy_value} if proxy_value else None
+    response = requests.post(
+        _GOOGLE_TRANSLATE_BATCH_URL,
+        data={"f.req": form_payload},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "User-Agent": "Mozilla/5.0",
+            "x-same-domain": "1",
+        },
+        proxies=proxies,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    body = response.text.lstrip()
+    if body.startswith(")]}'"):
+        body = body.split("\n", 1)[1] if "\n" in body else ""
+    outer = json.loads(body)
+    rpc_payload = json.loads(outer[0][2])
+    translation_groups = rpc_payload[1][0][0][5]
+    lines = [str(item[0] or "") for item in translation_groups]
+    if not lines:
+        raise RuntimeError("Google Translate 返回空结果")
+    translated = "".join(lines)
+    if _TRANSLATION_ERROR_MARKERS.search(translated):
+        raise RuntimeError("Google Translate 返回错误页")
+    return translated
+
+
 def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job_id="", source_language=""):
     target_language, language_meta = _subtitle_language_meta(target_language)
     source_language = _normalize_subtitle_source_language(source_language)
     if isinstance(segments, dict):
         job_id = job_id or segments.get("jobId") or ""
         segments = segments.get("segments") or []
-    try:
-        from deep_translator import GoogleTranslator
-        from deep_translator.constants import GOOGLE_LANGUAGES_TO_CODES
-    except ImportError as exc:
-        raise RuntimeError("未安装 deep-translator，请先安装依赖后再执行字幕翻译。") from exc
-
     if target_language == "en":
         return [dict(segment, subtitle=segment.get("text") or "") for segment in segments]
 
     google_source_language = "zh-CN" if source_language == "zh" else source_language
-    if google_source_language not in set(GOOGLE_LANGUAGES_TO_CODES.values()):
+    if not google_source_language or len(google_source_language) > 20 or google_source_language == "yue":
         google_source_language = "auto"
-    translator = GoogleTranslator(source=google_source_language, target=target_language)
+    translation_proxy = str(globals().get("YTDLP_PROXY") or globals().get("HF_PROXY") or "").strip()
     translated = [dict(segment) for segment in segments]
     batch = []
     batch_indices = []
@@ -341,25 +395,21 @@ def _translate_segments(segments, target_language=DEFAULT_SUBTITLE_LANGUAGE, job
         _subtitle_stage_log("info", "subtitle translation : job_id = %s | %s", job_id or "-", message)
 
     def translate_text(text):
-        import deep_translator.google as google_module
-
-        original_get = google_module.requests.get
-
-        def get_with_timeout(*args, **kwargs):
-            kwargs.setdefault("timeout", request_timeout)
-            return original_get(*args, **kwargs)
-
-        # deep-translator 通过模块级 requests.get 发起请求，必须串行替换避免并发任务互相还原补丁。
         last_error = None
         for attempt in range(TRANSLATION_REQUEST_RETRIES):
-            with _GOOGLE_TRANSLATOR_REQUEST_LOCK:
-                google_module.requests.get = get_with_timeout
-                try:
-                    return translator.translate(text)
-                except Exception as exc:
-                    last_error = exc
-                finally:
-                    google_module.requests.get = original_get
+            try:
+                result = _google_translate_text(
+                    text,
+                    google_source_language,
+                    target_language,
+                    request_timeout,
+                    translation_proxy,
+                )
+                if _TRANSLATION_ERROR_MARKERS.search(str(result)):
+                    raise RuntimeError("Google Translate 返回错误页")
+                return result
+            except Exception as exc:
+                last_error = exc
             if attempt + 1 < TRANSLATION_REQUEST_RETRIES:
                 delay = 0.5 * (2 ** attempt)
                 log(f"翻译请求失败，将在 {delay:.1f}s 后重试 {attempt + 1}/{TRANSLATION_REQUEST_RETRIES - 1}: error_type = {last_error.__class__.__name__}")
@@ -1108,37 +1158,23 @@ def _ffmpeg_error_summary(lines):
     return " | ".join(tail)[:240] or "FFmpeg 未返回错误摘要"
 
 
-def _subtitle_mask_geometry(width, height, region=None):
+def _subtitle_mask_geometry(width, height):
     width = max(2, int(width or 0))
     height = max(2, int(height or 0))
     fallback_region = {"x": 0.06, "y": 0.84, "width": 0.88, "height": 0.155}
-    region = region if isinstance(region, dict) else fallback_region
-    try:
-        normalized_y = max(0.0, min(1.0, float(region.get("y", 0.84))))
-        normalized_height = max(0.01, min(1.0 - normalized_y, float(region.get("height", 0.155))))
-    except (TypeError, ValueError):
-        return _subtitle_mask_geometry(width, height)
-    if normalized_y < 0.55 or normalized_height > 0.28:
-        normalized_y = fallback_region["y"]
-        normalized_height = fallback_region["height"]
-    y = min(height - 2, max(0, int(height * normalized_y) // 2 * 2))
+    y = min(height - 2, max(0, int(height * fallback_region["y"]) // 2 * 2))
     mask_width = max(2, min(width, int(width * fallback_region["width"])) // 2 * 2)
     x = max(0, (width - mask_width) // 4 * 2)
     mask_width = max(2, (width - x * 2) // 2 * 2)
-    mask_height = max(2, min(height - y, int(height * normalized_height)) // 2 * 2)
+    mask_height = max(2, min(height - y, int(height * fallback_region["height"])) // 2 * 2)
     block = 6 if min(width, height) >= 720 else 4
     pixel_width = max(2, round(mask_width / block) // 2 * 2)
     pixel_height = max(2, round(mask_height / block) // 2 * 2)
     return x, y, mask_width, mask_height, pixel_width, pixel_height
 
 
-def _subtitle_mask_region(job):
-    analysis = (job or {}).get("sourceSubtitleAnalysis") or {}
-    return analysis.get("region") if isinstance(analysis, dict) else None
-
-
-def _subtitle_mask_filter(source_label, output_label, width, height, region=None):
-    x, y, mask_width, mask_height, pixel_width, pixel_height = _subtitle_mask_geometry(width, height, region)
+def _subtitle_mask_filter(source_label, output_label, width, height):
+    x, y, mask_width, mask_height, pixel_width, pixel_height = _subtitle_mask_geometry(width, height)
     blur_sigma = max(6, round(min(int(width or 0), int(height or 0)) * 0.01))
     return (
         f"[{source_label}]split=2[subtitle_mask_base][subtitle_mask_area];"
@@ -1186,9 +1222,7 @@ def _burn_subtitles_to_mp4(source_file, ass_file, output_file, duration=0, job_i
         target_width, target_height = int(video_info.get("width") or 0), int(video_info.get("height") or 0)
     video_filters.append("setsar=1")
     if job.get("subtitleMaskEnabled"):
-        mask_graph = _subtitle_mask_filter(
-            "subtitle_mask_input", "subtitle_masked", target_width, target_height, _subtitle_mask_region(job),
-        )
+        mask_graph = _subtitle_mask_filter("subtitle_mask_input", "subtitle_masked", target_width, target_height)
         filter_complex = f"[0:v]{','.join(video_filters)}[subtitle_mask_input];{mask_graph};[subtitle_masked]{subtitle_filter}[subtitle_output]"
         filter_args = ["-filter_complex", filter_complex, "-map", "[subtitle_output]", "-map", "0:a?"]
     else:
@@ -1353,8 +1387,9 @@ def _download_youtube_video(job):
     except ImportError as exc:
         raise RuntimeError("未安装 yt-dlp，请先执行 `uv pip install -e .` 更新依赖。") from exc
 
+    proxy = YTDLP_PROXY or HF_PROXY
     ydl_opts = {
-        **_base_ytdlp_opts(),
+        **_base_ytdlp_opts(proxy=proxy),
         "format": "bv*+ba/b",
         "merge_output_format": "mp4",
         "outtmpl": output_template,

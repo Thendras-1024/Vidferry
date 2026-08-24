@@ -2,6 +2,8 @@
 
 
 def _subtitle_audit_json(value, fallback):
+    if isinstance(value, dict):
+        return value
     try:
         return json.loads(value or fallback)
     except (TypeError, ValueError):
@@ -91,9 +93,15 @@ def list_subtitle_audits(keyword="", status="", safety_status="", sort="saved_de
         total = conn.execute(f"SELECT COUNT(*) FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id LEFT JOIN youtube_content_safety_audits s ON s.job_id = j.id WHERE {where}", params).fetchone()[0]
         rows = conn.execute(f'''
             SELECT a.*, v.transcript_language AS source_language, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
-                   j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.url AS workflow_url,
+                   j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.channel AS workflow_channel, j.url AS workflow_url,
                    j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
+                   (SELECT e.metadata
+                    FROM youtube_workflow_events e
+                    WHERE e.stage = 'source_title_translation' AND e.status = 'success'
+                      AND (e.job_id = j.id OR (e.video_id = COALESCE(a.video_id, j.video_id) AND e.owner_user_id = j.owner_user_id))
+                    ORDER BY CASE WHEN e.job_id = j.id THEN 0 ELSE 1 END, e.ended_at DESC NULLS LAST, e.id DESC
+                    LIMIT 1) AS source_title_translation_metadata,
                    EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j
             LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
@@ -142,13 +150,21 @@ def delete_subtitle_audits(job_ids):
 
 def _subtitle_audit_list_item(row):
     safety = _subtitle_audit_json(row.get("content_safety_snapshot"), "{}")
+    translation_metadata = _subtitle_audit_json(row.get("source_title_translation_metadata"), "{}")
+    original_title = row.get("workflow_title") or row.get("video_title") or row.get("video_id") or row.get("workflow_video_id") or "未命名视频"
     return {
         "jobId": row.get("job_id") or row.get("workflow_job_id") or "", "videoId": row.get("video_id") or row.get("workflow_video_id") or "", "url": row.get("workflow_url") or "",
-        "title": row.get("video_title") or row.get("workflow_title") or row.get("video_id") or row.get("workflow_video_id") or "未命名视频",
+        "title": original_title, "originalTitle": original_title,
+        "chineseTitle": (
+            str(translation_metadata.get("sourceTitleZh") or "").strip()
+            if _is_valid_source_title_translation(translation_metadata.get("sourceTitleZh"))
+            else ""
+        ),
+        "author": row.get("workflow_channel") or "",
         "targetLanguage": row.get("target_language") or "", "sourceLanguage": _normalize_source_language(row.get("source_language")), "reviewStatus": row.get("review_status") or "not_recorded",
         "fallbackSegmentCount": int(row.get("fallback_segment_count") or 0),
-        "savedAt": row.get("saved_at") or row.get("job_updated_at") or row.get("job_started_at") or row.get("job_created_at") or "", "jobStatus": row.get("job_status") or "",
-        "jobStartedAt": row.get("job_started_at") or row.get("job_created_at") or "",
+        "savedAt": _to_beijing_iso(row.get("saved_at") or row.get("job_updated_at") or row.get("job_started_at") or row.get("job_created_at")), "jobStatus": row.get("job_status") or "",
+        "jobStartedAt": _to_beijing_iso(row.get("job_started_at") or row.get("job_created_at")),
         "commentBurnEnabled": bool(row.get("comment_burn_enabled")), "hasCommentAudit": bool(row.get("has_comment_audit")),
         "contentSafetyStatus": row.get("content_safety_status") or safety.get("status") or "not_enabled",
         "contentSafetyRiskCount": len(safety.get("risks") or []), "contentSafetyDecision": safety.get("decision") or "",
@@ -161,9 +177,15 @@ def get_subtitle_audit_detail(job_id):
         conn.row_factory = True
         row = conn.execute('''
             SELECT a.*, v.transcript_language AS source_language, s.snapshot AS content_safety_snapshot, s.status AS content_safety_status,
-                   j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.url AS workflow_url,
+                   j.id AS workflow_job_id, j.video_id AS workflow_video_id, j.title AS workflow_title, j.channel AS workflow_channel, j.url AS workflow_url,
                    j.status AS job_status, j.started_at AS job_started_at, j.created_at AS job_created_at,
                    j.updated_at AS job_updated_at, j.comment_burn_enabled,
+                   (SELECT e.metadata
+                    FROM youtube_workflow_events e
+                    WHERE e.stage = 'source_title_translation' AND e.status = 'success'
+                      AND (e.job_id = j.id OR (e.video_id = COALESCE(a.video_id, j.video_id) AND e.owner_user_id = j.owner_user_id))
+                    ORDER BY CASE WHEN e.job_id = j.id THEN 0 ELSE 1 END, e.ended_at DESC NULLS LAST, e.id DESC
+                    LIMIT 1) AS source_title_translation_metadata,
                    EXISTS(SELECT 1 FROM youtube_workflow_events e WHERE e.job_id = j.id AND e.stage IN ('comment_fetch', 'comment_review')) AS has_comment_audit
             FROM youtube_workflow_jobs j LEFT JOIN youtube_subtitle_audits a ON a.job_id = j.id
             LEFT JOIN youtube_videos v ON v.video_id = COALESCE(a.video_id, j.video_id)
@@ -204,6 +226,6 @@ def get_subtitle_audit_detail(job_id):
         "promptTokens": int(item["prompt_tokens"] or 0), "completionTokens": int(item["completion_tokens"] or 0),
         "totalTokens": int(item["total_tokens"] or 0), "latencyMs": float(item["latency_ms"] or 0),
         "category": item["error_category"] or "", "violations": _subtitle_audit_json(item["violations"], "[]"),
-        "rawOutput": item["raw_output"] or "", "createdAt": item["created_at"] or "",
+        "rawOutput": item["raw_output"] or "", "createdAt": _to_beijing_iso(item["created_at"]),
     } for item in diagnostics]
     return result

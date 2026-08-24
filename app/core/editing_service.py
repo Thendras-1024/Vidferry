@@ -285,7 +285,7 @@ def render_editing_intro_assets(job, source_file, ass_file, analysis_result, wor
         if cover_path and cover_title:
             cover_ass = work_dir / "cover.ass"
             cover_clip = work_dir / "cover.mp4"
-            layout = analyze_cover_layout(cover_path, width, height, cover_title)
+            layout = analyze_cover_layout(cover_path, width, height, cover_title, signature=job.get("coverSignature"))
             write_cover_ass(cover_ass, width, height, EDITING_COVER_DURATION_SECONDS, cover_title, layout,
                             signature=job.get("coverSignature"), watermark_text=_watermark_text(job) if _watermark_enabled(job) else "")
             _run_command(build_cover_clip_command(ffmpeg, cover_path, cover_ass, cover_clip, width, height, fps,
@@ -301,7 +301,7 @@ def render_editing_intro_assets(job, source_file, ass_file, analysis_result, wor
         if ass_file and Path(ass_file).is_file():
             clip_ass = _write_clip_ass(ass_file, work_dir / f"highlight_{index}.ass", start, end, include_comments=False)
         if job.get("subtitleMaskEnabled"):
-            mask_graph = _subtitle_mask_filter("highlight_mask_input", "highlight_masked", width, height, _subtitle_mask_region(job))
+            mask_graph = _subtitle_mask_filter("highlight_mask_input", "highlight_masked", width, height)
             overlay_filters = []
             if clip_ass:
                 overlay_filters.append(f"subtitles='{_ffmpeg_subtitle_path(clip_ass)}'")

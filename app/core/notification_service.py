@@ -227,6 +227,24 @@ def create_publish_cookie_invalid_notification(task, reason):
     _sync_notification_issues([issue], owner_user_id=owner_user_id, resolve_stale=False)
 
 
+def create_source_subtitle_degraded_notification(job, reason):
+    job = job or {}
+    job_id = str(job.get("id") or "").strip()
+    owner_user_id = int(job.get("ownerUserId") or 0)
+    if not job_id or not owner_user_id:
+        return
+    title = str(job.get("title") or job.get("videoId") or "当前视频").strip()
+    detail = str(reason or "原视频字幕识别不可用，请检查多模态模型配置后重试。").strip()[:500]
+    issue = _notification_issue(
+        "source-subtitle-degraded", "warning", f"source-subtitle-degraded:{job_id}",
+        "原视频字幕识别已降级",
+        f"{title}：{detail}",
+        {"path": "/youtube-research", "query": {"focusJob": job_id, "focusAction": "error"}},
+        [{"id": job_id, "title": title, "reason": detail}],
+    )
+    _sync_notification_issues([issue], owner_user_id=owner_user_id, resolve_stale=False)
+
+
 def resolve_publish_cookie_invalid_notifications(account_id, owner_user_id):
     account_id = int(account_id or 0)
     owner_user_id = int(owner_user_id or 0)
