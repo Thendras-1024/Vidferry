@@ -40,8 +40,8 @@ export const materialApi = {
     return http.get('/publish/tasks', params)
   },
 
-  retryFailedPublishTask: (taskId, targetRecordIds) => {
-    return http.post(`/publish/tasks/${encodeURIComponent(taskId)}/retry-failed`, { targetRecordIds })
+  retryFailedPublishTask: (taskId, targetRecordIds, riskOverride = {}, config = {}) => {
+    return http.post(`/publish/tasks/${encodeURIComponent(taskId)}/retry-failed`, { targetRecordIds, riskOverride }, config)
   },
 
   getScheduledPublishTasks: (params = {}) => {

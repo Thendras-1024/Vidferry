@@ -179,6 +179,15 @@ def youtube_videos():
         }), 500
 
 
+@app.route('/youtube/videos/local-retention/scan', methods=['POST'])
+def scan_youtube_local_retention_route():
+    try:
+        return _json_response(data=scan_youtube_local_retention(_current_account_owner_id()))
+    except Exception:
+        backend_logger.exception("YouTube 本地留存扫描失败")
+        return _json_response(500, "扫描本地留存失败，请稍后重试", None, 500)
+
+
 @app.route('/youtube/workflow/settings', methods=['GET'])
 def youtube_workflow_settings():
     try:

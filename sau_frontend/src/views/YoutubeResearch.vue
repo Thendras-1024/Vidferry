@@ -281,6 +281,9 @@
             <el-button size="small" :icon="Clock" @click="toggleHistoryMode">
               {{ historyMode ? '返回线索列表' : '历史线索' }}
             </el-button>
+            <el-button size="small" :icon="Refresh" :loading="retentionScanning" @click="scanLocalRetention">
+              扫描本地留存
+            </el-button>
             <el-input
               v-model="videoFilter.keyword"
               class="video-keyword-filter"
@@ -384,9 +387,28 @@
                     发布需确认
                   </el-tag>
                   <el-tag size="small" effect="plain" type="info">{{ row.groupName || '未分类' }}</el-tag>
-                  <a :href="row.url" :title="row.title || '未获取到标题'" target="_blank" rel="noopener noreferrer" class="video-title">
-                    {{ row.title || '未获取到标题' }}
-                  </a>
+                  <div class="video-title-stack">
+                    <a :href="row.url" :title="row.title || '未获取到标题'" target="_blank" rel="noopener noreferrer" class="video-title">
+                      {{ row.chineseTitle || row.title || '未获取到标题' }}
+                    </a>
+                    <span
+                      v-if="row.chineseTitle && row.title && row.chineseTitle !== row.title"
+                      class="video-original-title"
+                      :title="row.title"
+                    >
+                      {{ row.title }}
+                    </span>
+                  </div>
+                  <el-button
+                    class="video-detail-trigger"
+                    text
+                    circle
+                    aria-label="查看视频详情"
+                    title="查看视频详情"
+                    @click="showVideoDetails(row)"
+                  >
+                    <el-icon><InfoFilled /></el-icon>
+                  </el-button>
                 </div>
                 <div class="video-meta">
                   <span>{{ row.channel || '未知博主' }}</span>
@@ -425,7 +447,7 @@
                     size="small"
                     type="success"
                     effect="plain"
-                    :closable="Boolean(platform.recordId) && platform.status !== 'confirmed'"
+                      :closable="Boolean(platform.recordId) && !['confirmed', 'reused'].includes(platform.status)"
                     @close="deletePublishedPlatform(row, platform)"
                   >
                     {{ platform.name }}
@@ -463,7 +485,18 @@
                   </el-popover>
                 </div>
                 <div v-else-if="analysisHint(row)" class="analysis-hint" :class="analysisHint(row).className">
-                  {{ analysisHint(row).label }}
+                  <span>{{ analysisHint(row).label }}</span>
+                  <el-button
+                    v-if="canPreviewProcessedVideo(row)"
+                    size="small"
+                    text
+                    :loading="previewLoadingId === row.id"
+                    title="预览处理后视频"
+                    @click="previewProcessedVideo(row)"
+                  >
+                    <el-icon><VideoPlay /></el-icon>
+                    <span>预览成品</span>
+                  </el-button>
                 </div>
               </div>
             </div>
@@ -732,14 +765,14 @@
               <div class="watermark-switch-row">
                 <div>
                   <span class="settings-label">字幕模式</span>
-                  <span class="setting-hint">自动识别原字幕；识别错误后可用人工模式重新处理</span>
+                  <span class="setting-hint">检测到非中文原字幕时默认遮挡后烧制；中文原字幕保留，无原字幕时直接烧制</span>
                 </div>
                 <el-radio-group v-model="workflowForm.subtitleMode"><el-radio-button value="auto" :disabled="!subtitleMaskAvailable">自动适配</el-radio-button><el-radio-button value="force_burn">强制烧制</el-radio-button><el-radio-button value="original">原字幕</el-radio-button></el-radio-group>
               </div>
               <div v-if="workflowForm.subtitleMode === 'force_burn'" class="watermark-switch-row">
                 <div>
                   <span class="settings-label">遮挡原视频字幕</span>
-                  <span class="setting-hint">{{ subtitleMaskAvailable ? '识别原字幕区域并用强模糊细颗粒马赛克覆盖，新字幕位于上层' : '已启用自定义字幕命令，字幕遮挡不可用' }}</span>
+                  <span class="setting-hint">{{ subtitleMaskAvailable ? '固定遮挡底部字幕区并用强模糊细颗粒马赛克覆盖，新字幕位于上层' : '已启用自定义字幕命令，字幕遮挡不可用' }}</span>
                 </div>
                 <el-switch v-model="workflowForm.subtitleMaskEnabled" :disabled="!subtitleMaskAvailable" />
               </div>
@@ -941,6 +974,134 @@
     </el-dialog>
 
     <el-dialog
+      v-model="videoDetailDialogVisible"
+      :title="currentDetailRow?.chineseTitle || currentDetailRow?.title || '视频详情'"
+      width="min(780px, calc(100vw - 32px))"
+      class="video-detail-dialog"
+    >
+      <div v-if="currentDetailRow" class="video-detail-panel">
+        <section class="video-detail-section">
+          <span class="panel-kicker">线索信息</span>
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="当前阶段">
+              <el-tag size="small" :type="detailStageTagType(currentDetailRow)">{{ currentStage(currentDetailRow).label }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="分组">{{ currentDetailRow.groupName || '未分类' }}</el-descriptions-item>
+            <el-descriptions-item label="频道">{{ currentDetailRow.channel || '未知博主' }}</el-descriptions-item>
+            <el-descriptions-item label="粉丝数">{{ currentDetailRow.subscribers || '粉丝数未知' }}</el-descriptions-item>
+            <el-descriptions-item label="发布时间">{{ currentDetailRow.publishedAt || '发布时间未知' }}</el-descriptions-item>
+            <el-descriptions-item label="视频时长">{{ currentDetailRow.duration || '时长未知' }}</el-descriptions-item>
+            <el-descriptions-item label="来源链接" :span="2">
+              <a :href="currentDetailRow.url" target="_blank" rel="noopener noreferrer" class="video-detail-link">打开 YouTube 视频</a>
+            </el-descriptions-item>
+          </el-descriptions>
+        </section>
+
+        <section v-if="hasDownloadedVideo(currentDetailRow)" class="video-detail-section">
+          <span class="panel-kicker">下载状态</span>
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="原视频">已下载</el-descriptions-item>
+            <el-descriptions-item label="原视频分辨率">{{ mediaResolutionText(detailMedia.downloaded) }}</el-descriptions-item>
+            <el-descriptions-item label="处理状态">{{ isTranslationSkipped(currentDetailRow) ? '已跳过处理' : (hasProcessedVideo(currentDetailRow) ? '已处理' : '待处理') }}</el-descriptions-item>
+          </el-descriptions>
+        </section>
+
+        <section v-if="activeJobForVideo(currentDetailRow)" class="video-detail-section">
+          <span class="panel-kicker">执行任务</span>
+          <div class="detail-job-progress">
+            <el-progress :percentage="displayProgress(activeJobForVideo(currentDetailRow))" :stroke-width="8" />
+            <span>{{ workflowProgressText(activeJobForVideo(currentDetailRow)) }}</span>
+          </div>
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="任务状态">{{ jobStatusText(activeJobForVideo(currentDetailRow).status, activeJobForVideo(currentDetailRow).step) }}</el-descriptions-item>
+            <el-descriptions-item label="当前步骤">{{ jobStepText(activeJobForVideo(currentDetailRow).step) }}</el-descriptions-item>
+          </el-descriptions>
+          <div class="detail-settings-list">
+            <span v-for="setting in processingSettingsRows(activeJobForVideo(currentDetailRow))" :key="setting.label">
+              {{ setting.label }}：{{ setting.value }}
+            </span>
+          </div>
+        </section>
+
+        <section v-if="currentDetailRow.processedVersions?.length" class="video-detail-section">
+          <span class="panel-kicker">处理后成品</span>
+          <div class="processed-version-details">
+            <div v-for="version in currentDetailRow.processedVersions" :key="version.materialId || version.processVersion" class="processed-version-detail">
+              <strong>{{ processVersionLabel(version.processVersion) }}</strong>
+              <span>{{ version.duration || '时长未知' }}</span>
+              <span>{{ fileSizeText(version.filesize) }}</span>
+              <span>处理后视频分辨率 {{ mediaResolutionText(detailMedia.processed[version.processVersion]) }}</span>
+              <span>{{ version.createdAt || '生成时间未知' }}</span>
+              <el-tag v-if="version.coverReburnRequired" size="small" type="warning" effect="plain">封面待重烧</el-tag>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="showInlinePublishDraft(currentDetailRow)" class="video-detail-section">
+          <span class="panel-kicker">发布文案</span>
+          <div class="detail-publish-draft">
+            <strong>{{ currentDetailRow.analysisDraft.selectedTitle || currentDetailRow.analysisDraft.coverTitle || '已生成发布文案' }}</strong>
+            <p>{{ currentDetailRow.analysisDraft.publishCopy || '暂无发布文案' }}</p>
+            <span>{{ currentDetailRow.analysisDraft.tags.length + currentDetailRow.analysisDraft.customTags.length }} 个话题</span>
+          </div>
+        </section>
+
+        <section v-if="currentDetailRow.publishDelivery?.targets?.length" class="video-detail-section">
+          <span class="panel-kicker">发布状态</span>
+          <div class="detail-target-list">
+            <div v-for="target in currentDetailRow.publishDelivery.targets" :key="target.recordId || target.type" class="detail-target-item">
+              <el-tag :type="publishTargetTagType(target.status)" effect="plain">
+                {{ target.name }} · {{ publishTargetStatusText(target.status) }}
+              </el-tag>
+              <span v-if="target.publishedAt">发布于 {{ formatDetailTime(target.publishedAt) }}</span>
+              <span v-else>暂无发布时间</span>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="detailWorkflowLoading || detailSubtitleDecision" class="video-detail-section">
+          <span class="panel-kicker">字幕自动适配</span>
+          <div v-if="detailWorkflowLoading" class="detail-subtitle-loading">正在读取最近一次处理判断</div>
+          <template v-else-if="detailSubtitleDecision">
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="原视频字幕">{{ detailSubtitleDecision.classificationLabel }}</el-descriptions-item>
+              <el-descriptions-item label="默认处理策略">{{ detailSubtitleDecision.actionLabel }}</el-descriptions-item>
+              <el-descriptions-item label="判断时间">{{ formatDetailTime(detailSubtitleDecision.jobAt) }}</el-descriptions-item>
+              <el-descriptions-item label="判断状态">{{ detailSubtitleDecision.statusLabel }}</el-descriptions-item>
+            </el-descriptions>
+            <div class="detail-subtitle-reason">{{ detailSubtitleDecision.reason }}</div>
+          </template>
+        </section>
+
+        <section v-if="stageErrorJob(currentDetailRow)" class="video-detail-section">
+          <span class="panel-kicker">异常信息</span>
+          <div class="detail-row">
+            <span>任务消息</span>
+            <p>{{ stageErrorJob(currentDetailRow).errorReason || stageErrorJob(currentDetailRow).message || '暂无详细错误信息' }}</p>
+          </div>
+        </section>
+      </div>
+      <template #footer>
+        <el-button @click="videoDetailDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="processedPreviewDialogVisible"
+      :title="currentDetailRow?.chineseTitle || currentPreviewMaterial?.displayTitle || currentDetailRow?.title || '处理后视频预览'"
+      width="min(920px, calc(100vw - 32px))"
+      :top="'8vh'"
+      @close="stopProcessedPreview"
+      @closed="resetProcessedPreview"
+    >
+      <div v-if="currentPreviewMaterial" class="processed-preview-container">
+        <video ref="processedPreviewVideoRef" :src="processedPreviewUrl(currentPreviewMaterial)" controls class="processed-preview-video">
+          您的浏览器不支持视频播放
+        </video>
+      </div>
+    </el-dialog>
+
+    <el-dialog
       v-model="jobErrorDialogVisible"
       title="任务失败详情"
       width="560px"
@@ -1052,6 +1213,7 @@ import { useVideoGroupStore } from '@/stores/videoGroup'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 import VideoGroupManageDialog from '@/components/VideoGroupManageDialog.vue'
 import { cleanTopicList, normalizeDraftTopics } from '@/utils/publishDraft'
+import { backendTimeMs, formatBeijingTime } from '@/utils/time'
 
 const loading = ref(false)
 const searchLoading = ref(false)
@@ -1064,6 +1226,7 @@ const analyzingId = ref('')
 const savingAnalysisId = ref('')
 const deletingId = ref('')
 const batchDeleting = ref(false)
+const retentionScanning = ref(false)
 const resettingId = ref('')
 const resetDialogVisible = ref(false)
 const resetTarget = ref(null)
@@ -1077,6 +1240,15 @@ const analysisLoading = ref(false)
 const analysisResult = ref(null)
 const analysisStatus = ref(0)
 const currentAnalysisRow = ref(null)
+const videoDetailDialogVisible = ref(false)
+const currentDetailRow = ref(null)
+const processedPreviewDialogVisible = ref(false)
+const currentPreviewMaterial = ref(null)
+const processedPreviewVideoRef = ref(null)
+const previewLoadingId = ref('')
+const detailMedia = reactive({ downloaded: null, processed: {} })
+const detailWorkflowJob = ref(null)
+const detailWorkflowLoading = ref(false)
 const jobErrorDialogVisible = ref(false)
 const currentErrorJob = ref(null)
 const videoTableRef = ref(null)
@@ -1638,26 +1810,20 @@ const processVersionLabel = (value) => {
 
 const processingSettingsRows = (settings = {}) => {
   const enabled = value => value ? '开启' : '关闭'
-  const language = subtitleLanguages.find(item => item.value === settings.subtitleLanguage)?.label || settings.subtitleLanguage || '-'
   const burnProfile = burnProfiles.find(item => item.value === settings.burnProfile)?.label || settings.burnProfile || '-'
   const subtitleSize = subtitleSizes.find(item => item.value === settings.subtitleSize)?.label || settings.subtitleSize || '-'
   const commentMode = settings.commentTranslationMode === 'google' ? 'Google 翻译' : 'Google 翻译 + LLM 修订'
   const analysis = settings.sourceSubtitleAnalysis || {}
   const subtitleMode = { auto: '自动适配', force_burn: '强制烧制', original: '原字幕', legacy: '历史模式' }[settings.subtitleMode] || '历史模式'
-  const sourceSubtitle = analysis.status === 'unknown' ? '识别失败' : ({ zh: '中文', non_zh: '非中文', none: '无', unknown: '未识别' }[analysis.classification] || '未识别')
-  const finalAction = { original: '原字幕', original_zh: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
-  const region = analysis.region
-  const regionText = region ? `${Math.round(region.x * 100)}%, ${Math.round(region.y * 100)}%, ${Math.round(region.width * 100)}% × ${Math.round(region.height * 100)}%` : '-'
+  const finalAction = { original: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
   return [
     { label: '处理版本', value: processVersionLabel(settings.processVersion) },
-    { label: '字幕语言', value: language },
     { label: '烧录预设', value: burnProfile },
     { label: '字幕字号', value: subtitleSize },
     { label: '字幕翻译', value: enabled(settings.translationEnabled) },
     { label: '字幕模式', value: subtitleMode },
-    { label: '原字幕', value: sourceSubtitle },
     { label: '最终处理', value: finalAction },
-    { label: '遮挡区域', value: regionText },
+    { label: '判断原因', value: analysis.reason || '-' },
     { label: '翻译署名', value: settings.translatorLabel || '-' },
     { label: '水印', value: settings.watermarkEnabled ? settings.watermarkText || '已开启' : '关闭' },
     { label: '高光片头', value: settings.highlightIntroEnabled ? `${settings.highlightCount || 0} 条` : '关闭' },
@@ -1759,12 +1925,15 @@ const isDownloaded = (item) => Number(item.downloadStatus) === 1
 const isTranslated = (item) => Number(item.translateStatus) === 1
 const isTranslationSkipped = (item) => Number(item.translateStatus) === 2
 const isPublished = (item) => item.publishStatus === 1
-const unresolvedPublishTargets = (item) => (item.publishDelivery?.targets || []).filter(target => target.status !== 'confirmed')
+const formatDetailTime = value => formatBeijingTime(value, {
+  year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+}) || '时间未知'
+const unresolvedPublishTargets = (item) => (item.publishDelivery?.targets || []).filter(target => !['confirmed', 'reused'].includes(target.status))
 const publishTargetStatusText = status => ({
-  queued: '待发布', running: '发布中', failed: '失败', uncertain: '待核验', cancelled: '已取消'
+  queued: '待发布', running: '发布中', confirmed: '已发布', reused: '已发布', failed: '失败', uncertain: '待核验', cancelled: '已取消'
 }[status] || status || '未知')
 const publishTargetTagType = status => ({
-  queued: 'info', running: 'warning', failed: 'danger', uncertain: 'warning', cancelled: 'info'
+  confirmed: 'success', reused: 'success', queued: 'info', running: 'warning', failed: 'danger', uncertain: 'warning', cancelled: 'info'
 }[status] || 'info')
 const isRunningJob = (job) => ['queued', 'running', 'waiting_confirmation', 'waiting_publish'].includes(job.status)
 
@@ -1773,6 +1942,27 @@ const activeJobForVideo = (item) => jobs.value.find(job => job.videoId === item.
 const activeAnalysisJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isRunningJob(job) && job.step === 'analysis')
 const failedJobForVideo = (item) => jobs.value.find(job => job.videoId === item.id && isFailedJobRelevantToCurrentStage(item, job))
 const stageErrorJob = (item) => failedJobForVideo(item)
+
+const detailSubtitleDecision = computed(() => {
+  const job = detailWorkflowJob.value
+  if (!job || String(job.subtitleMode || '').toLowerCase() !== 'auto') return null
+  const analysis = job.sourceSubtitleAnalysis && typeof job.sourceSubtitleAnalysis === 'object'
+    ? job.sourceSubtitleAnalysis
+    : {}
+  const classification = ['zh', 'none', 'non_zh'].includes(analysis.classification) ? analysis.classification : 'unknown'
+  const details = {
+    zh: { classificationLabel: '自带中文字幕', actionLabel: '不需要烧制字幕' },
+    none: { classificationLabel: '无字幕', actionLabel: '烧制字幕' },
+    non_zh: { classificationLabel: '有字幕但不带中文字幕', actionLabel: '烧制字幕 + 启用遮罩' },
+    unknown: { classificationLabel: '无法判断', actionLabel: '烧制字幕 + 启用遮罩' }
+  }[classification]
+  return {
+    ...details,
+    jobAt: job.updatedAt || job.createdAt,
+    statusLabel: analysis.status === 'success' ? '判断完成' : '无法完成判断，使用默认策略',
+    reason: analysis.reason || '没有可用的原视频字幕判断结果，已采用烧制字幕并启用遮罩。'
+  }
+})
 
 const isFailedJobRelevantToCurrentStage = (item, job) => {
   if (!job || !['failed', 'partial', 'needs_verification', 'abnormal'].includes(job.status)) return false
@@ -1898,6 +2088,169 @@ const analysisHint = (item) => {
     return { label: '已生成发布文案', className: 'is-ready' }
   }
   return null
+}
+
+const detailStageTagType = (item) => ({
+  'is-running': 'warning',
+  'is-warning': 'warning',
+  'is-ready': 'success',
+  'is-complete': 'success',
+  'is-failed': 'danger'
+}[currentStage(item).className] || 'info')
+
+const fileSizeText = (value) => {
+  const size = Number(value || 0)
+  return size > 0 ? `${size.toFixed(2)} MB` : '文件大小未知'
+}
+
+const showVideoDetails = (row) => {
+  currentDetailRow.value = row
+  detailMedia.downloaded = null
+  detailMedia.processed = {}
+  detailWorkflowJob.value = null
+  videoDetailDialogVisible.value = true
+  loadDetailMedia(row)
+  loadDetailWorkflow(row)
+}
+
+const canPreviewProcessedVideo = (row) => {
+  return Number(row.analysisStatus) === 1 && Array.isArray(row.processedVersions) && row.processedVersions.length > 0
+}
+
+const processedPreviewUrl = (material) => {
+  return material?.asset_id ? materialApi.getMaterialPreviewUrl(material.asset_id) : ''
+}
+
+const mediaResolutionText = (media) => {
+  if (media === null) return '读取中'
+  if (!media?.width || !media?.height) return '未知'
+  return `${media.width} × ${media.height}`
+}
+
+const readMediaResolution = (material) => new Promise(resolve => {
+  const source = processedPreviewUrl(material)
+  if (!source) {
+    resolve({ width: 0, height: 0 })
+    return
+  }
+  const video = document.createElement('video')
+  const finish = () => {
+    video.removeAttribute('src')
+    video.load()
+  }
+  const timeout = window.setTimeout(() => {
+    finish()
+    resolve({ width: 0, height: 0 })
+  }, 8000)
+  video.preload = 'metadata'
+  video.onloadedmetadata = () => {
+    window.clearTimeout(timeout)
+    const resolution = { width: video.videoWidth, height: video.videoHeight }
+    finish()
+    resolve(resolution)
+  }
+  video.onerror = () => {
+    window.clearTimeout(timeout)
+    finish()
+    resolve({ width: 0, height: 0 })
+  }
+  video.src = source
+})
+
+const loadDetailMedia = async (row) => {
+  try {
+    const [downloadedResponse, processedResponse] = await Promise.all([
+      materialApi.getAllMaterials({ sourceType: 'youtube_download', videoIds: row.id, page: 1, pageSize: 1 }),
+      materialApi.getAllMaterials({ sourceType: 'youtube_processed', videoIds: row.id, page: 1, pageSize: 100 })
+    ])
+    const downloaded = downloadedResponse.data?.items?.[0]
+    const processed = processedResponse.data?.items || []
+    const [downloadedResolution, ...processedResolutions] = await Promise.all([
+      downloaded ? readMediaResolution(downloaded) : Promise.resolve({ width: 0, height: 0 }),
+      ...processed.map(readMediaResolution)
+    ])
+    if (currentDetailRow.value?.id !== row.id) return
+    detailMedia.downloaded = downloadedResolution
+    detailMedia.processed = Object.fromEntries(processed.map((material, index) => [
+      material.processVersion,
+      processedResolutions[index] || { width: 0, height: 0 }
+    ]))
+  } catch (error) {
+    if (currentDetailRow.value?.id !== row.id) return
+    detailMedia.downloaded = { width: 0, height: 0 }
+    detailMedia.processed = {}
+    console.warn('读取视频分辨率失败:', error)
+  }
+}
+
+const DETAIL_SUBTITLE_EXCLUDED_OPERATIONS = new Set([
+  'download', 'download_only', 'download-only', 'cover_reburn', 'intro_refresh', 'editing_intro'
+])
+
+const loadDetailWorkflow = async (row) => {
+  detailWorkflowLoading.value = true
+  try {
+    const response = await youtubeApi.listWorkflowJobs({
+      videoIds: row.id,
+      page: 1,
+      pageSize: 100,
+      status: 'all'
+    })
+    const jobs = (response?.data?.items || [])
+      .filter(job => !DETAIL_SUBTITLE_EXCLUDED_OPERATIONS.has(String(job.operation || '').toLowerCase()))
+      .sort((left, right) => {
+        const rightTime = backendTimeMs(right.updatedAt || right.createdAt)
+        const leftTime = backendTimeMs(left.updatedAt || left.createdAt)
+        return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime)
+      })
+    if (currentDetailRow.value?.id === row.id) detailWorkflowJob.value = jobs[0] || null
+  } catch (error) {
+    if (currentDetailRow.value?.id === row.id) detailWorkflowJob.value = null
+    console.warn('读取视频处理任务失败:', error)
+  } finally {
+    if (currentDetailRow.value?.id === row.id) detailWorkflowLoading.value = false
+  }
+}
+
+const stopProcessedPreview = () => {
+  const video = processedPreviewVideoRef.value
+  if (!video) return
+  video.pause()
+  video.currentTime = 0
+  video.removeAttribute('src')
+  video.load()
+}
+
+const resetProcessedPreview = () => {
+  stopProcessedPreview()
+  currentPreviewMaterial.value = null
+}
+
+const previewProcessedVideo = async (row) => {
+  if (!canPreviewProcessedVideo(row)) return
+  previewLoadingId.value = row.id
+  try {
+    const response = await materialApi.getAllMaterials({
+      sourceType: 'youtube_processed',
+      videoIds: row.id,
+      page: 1,
+      pageSize: 100
+    })
+    const materials = response.data?.items || []
+    const selected = materials.find(item => item.processVersion === workflowForm.processVersion) || materials[0]
+    if (!selected?.asset_id) {
+      ElMessage.warning('处理后视频已清理或暂不可预览')
+      return
+    }
+    currentDetailRow.value = row
+    currentPreviewMaterial.value = selected
+    processedPreviewDialogVisible.value = true
+  } catch (error) {
+    console.error('获取处理后视频预览失败:', error)
+    ElMessage.error('获取处理后视频预览失败')
+  } finally {
+    previewLoadingId.value = ''
+  }
 }
 
 const analysisActionText = (item) => {
@@ -2328,6 +2681,27 @@ const setStatusFilter = (filter) => {
   nextTick(() => videoListSectionRef.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 }
 
+const scanLocalRetention = async () => {
+  retentionScanning.value = true
+  try {
+    const res = await youtubeApi.scanLocalRetention()
+    const result = res?.data || {}
+    appStore.clearListCache('youtube:videos:')
+    await loadVideos(false, { force: true })
+    const overdueCount = Number(result.overdueCount || 0)
+    const movedCount = Number(result.purgedCount || 0) + Number(result.repairedCount || 0)
+    if (overdueCount > 0) {
+      ElMessage.warning(`扫描完成，仍有 ${overdueCount} 条视频超过 7 天未清理`)
+    } else {
+      ElMessage.success(`扫描完成，已清理或移入历史线索 ${movedCount} 条`)
+    }
+  } catch (error) {
+    ElMessage.error(error?.message || '扫描本地留存失败')
+  } finally {
+    retentionScanning.value = false
+  }
+}
+
 const handleVideoSelectionChange = (rows) => {
   selectedVideos.value = rows
 }
@@ -2446,7 +2820,7 @@ const loadVideos = async (showLoading = true, options = {}) => {
 
 const refreshVideosByIds = async (videoIds = []) => {
   const ids = uniqueValues(videoIds)
-  if (ids.length === 0) return
+  if (ids.length === 0) return null
   try {
     const res = await youtubeApi.list({
       ids: ids.join(','),
@@ -2460,8 +2834,10 @@ const refreshVideosByIds = async (videoIds = []) => {
     if (res.data?.summary) {
       videoSummary.value = res.data.summary
     }
+    return nextItems[0] || null
   } catch (error) {
     console.warn('局部刷新视频线索失败:', error)
+    return null
   }
 }
 
@@ -2721,6 +3097,8 @@ const validateWorkflowPublishAccounts = async (row) => {
 }
 
 const createJob = async (row) => {
+  const latestRow = await refreshVideosByIds([row.id])
+  row = latestRow || row
   if (!(await validateWorkflowPublishAccounts(row))) return
   const pendingPlatforms = new Set(pendingWorkflowPublishPlatforms(row).map(item => item.key))
   const shouldProcessBeforePublish = !(isTranslated(row) || isTranslationSkipped(row))
@@ -3294,7 +3672,8 @@ const askAgentAboutVideo = (row) => {
       videoContext: {
         source: 'youtube-research',
         videoId: String(row?.id || ''),
-        title: row?.title || '',
+        title: row?.chineseTitle || row?.title || '',
+        originalTitle: row?.title || '',
         url: row?.url || '',
         channel: row?.channel || '',
         subscribers: row?.subscribers || '',
@@ -4029,8 +4408,8 @@ $ink-strong: var(--vf-text-primary);
 }
 
 .video-title {
+  display: block;
   min-width: 0;
-  flex: 1 1 96px;
   color: $ink-strong;
   font-weight: 650;
   line-height: 1.45;
@@ -4040,6 +4419,33 @@ $ink-strong: var(--vf-text-primary);
   white-space: nowrap;
 
   &:hover {
+    color: $accent-blue;
+  }
+}
+
+.video-title-stack {
+  display: grid;
+  flex: 1 1 96px;
+  min-width: 0;
+  gap: 2px;
+}
+
+.video-original-title {
+  min-width: 0;
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-detail-trigger {
+  flex: 0 0 auto;
+  color: #64748b;
+
+  &:hover,
+  &:focus-visible {
     color: $accent-blue;
   }
 }
@@ -4278,6 +4684,7 @@ $ink-strong: var(--vf-text-primary);
 .analysis-hint {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   width: fit-content;
   max-width: 360px;
   padding: 5px 8px;
@@ -4305,6 +4712,160 @@ $ink-strong: var(--vf-text-primary);
     border-color: rgba(185, 28, 28, 0.24);
     background: rgba(239, 68, 68, 0.1);
   }
+
+  :deep(.el-button) {
+    min-height: 20px;
+    padding: 2px 4px;
+    color: inherit;
+    font-size: 12px;
+    font-weight: 650;
+  }
+}
+
+.video-detail-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.video-detail-section {
+  display: grid;
+  gap: 8px;
+
+  :deep(.el-descriptions__label) {
+    color: $text-secondary;
+    font-weight: 600;
+  }
+
+  :deep(.el-descriptions__content) {
+    color: $ink-strong;
+    overflow-wrap: anywhere;
+  }
+}
+
+.video-detail-link {
+  color: $accent-blue;
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.detail-job-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: 6px;
+  background: var(--vf-surface-hover);
+  color: $text-regular;
+  font-size: 12px;
+
+  span {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.detail-settings-list,
+.detail-target-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.detail-target-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.detail-subtitle-loading,
+.detail-subtitle-reason {
+  padding: 8px 10px;
+  border-radius: 4px;
+  color: $text-secondary;
+  background: var(--vf-surface-hover);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.detail-settings-list span {
+  padding: 3px 6px;
+  border-radius: 4px;
+  color: $text-regular;
+  background: var(--vf-surface-hover);
+  font-size: 12px;
+}
+
+.processed-version-details {
+  display: grid;
+  gap: 8px;
+}
+
+.processed-version-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid $border-lighter;
+  border-radius: 6px;
+  background: var(--vf-surface-hover);
+  color: $text-regular;
+  font-size: 12px;
+
+  strong {
+    color: $ink-strong;
+    font-size: 13px;
+  }
+}
+
+.detail-publish-draft {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(4, 120, 87, 0.16);
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.06);
+
+  strong {
+    color: $ink-strong;
+    font-size: 14px;
+  }
+
+  p {
+    margin: 0;
+    color: $text-regular;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  span {
+    color: $text-secondary;
+    font-size: 12px;
+  }
+}
+
+.processed-preview-container {
+  display: flex;
+  justify-content: center;
+  min-height: 180px;
+  background: #101820;
+}
+
+.processed-preview-video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
 }
 
 .status-chip {

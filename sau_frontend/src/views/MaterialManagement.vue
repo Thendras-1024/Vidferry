@@ -365,19 +365,9 @@ import { InfoFilled, Plus, Refresh, Upload, VideoCamera } from '@element-plus/ic
 import { ElButton, ElIcon, ElMessage, ElMessageBox, ElPopover, ElTag } from 'element-plus'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
+import { formatBeijingTime } from '@/utils/time'
 import { useAppStore } from '@/stores/app'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
-
-const languageMap = {
-  'zh-CN': '中文',
-  en: '英文',
-  ja: '日文',
-  ko: '韩文',
-  es: '西班牙语',
-  fr: '法语',
-  de: '德语',
-  ru: '俄语'
-}
 
 const appStore = useAppStore()
 
@@ -439,10 +429,6 @@ const materialPublishedAt = (material) => {
   return material?.displayPublishedAt || material?.metadata?.publishedAt || ''
 }
 
-const languageLabel = (language) => {
-  return languageMap[language] || language || '-'
-}
-
 const materialBurnProfile = (material) => {
   return String(
     material?.burnProfile ||
@@ -483,11 +469,45 @@ const materialDuration = (material) => {
   return material?.duration || material?.metadata?.duration || '-'
 }
 
+const materialResolutionText = (resolution) => {
+  if (resolution === null) return '读取中'
+  if (!resolution?.width || !resolution?.height) return '未知'
+  return `${resolution.width} × ${resolution.height}`
+}
+
+const readMaterialResolution = (material) => new Promise(resolve => {
+  const source = material?.asset_id ? materialApi.getMaterialPreviewUrl(material.asset_id) : ''
+  if (!source) {
+    resolve({ width: 0, height: 0 })
+    return
+  }
+  const video = document.createElement('video')
+  const finish = () => {
+    video.removeAttribute('src')
+    video.load()
+  }
+  const timeout = window.setTimeout(() => {
+    finish()
+    resolve({ width: 0, height: 0 })
+  }, 8000)
+  video.preload = 'metadata'
+  video.onloadedmetadata = () => {
+    window.clearTimeout(timeout)
+    const resolution = { width: video.videoWidth, height: video.videoHeight }
+    finish()
+    resolve(resolution)
+  }
+  video.onerror = () => {
+    window.clearTimeout(timeout)
+    finish()
+    resolve({ width: 0, height: 0 })
+  }
+  video.src = source
+})
+
 const formatMaterialTime = (value) => {
   if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', {
+  return formatBeijingTime(value, {
     year: 'numeric', month: 'long', day: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   })
@@ -596,6 +616,7 @@ const processVersionLabel = (value) => {
 }
 
 const processingSettingsRows = (material) => {
+  if (material?.source_type !== 'youtube_processed') return []
   const settings = material?.processingSettings
   if (!settings || typeof settings !== 'object' || Object.keys(settings).length === 0) {
     return [['处理设置', '历史素材未记录完整任务设置']]
@@ -604,20 +625,15 @@ const processingSettingsRows = (material) => {
   const commentMode = settings.commentTranslationMode === 'google' ? 'Google 翻译' : 'Google 翻译 + LLM 修订'
   const analysis = settings.sourceSubtitleAnalysis || {}
   const subtitleMode = { auto: '自动适配', force_burn: '强制烧制', original: '原字幕', legacy: '历史模式' }[settings.subtitleMode] || '历史模式'
-  const sourceSubtitle = analysis.status === 'unknown' ? '识别失败' : ({ zh: '中文', non_zh: '非中文', none: '无', unknown: '未识别' }[analysis.classification] || '未识别')
-  const finalAction = { original: '原字幕', original_zh: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
-  const region = analysis.region
-  const regionText = region ? `${Math.round(region.x * 100)}%, ${Math.round(region.y * 100)}%, ${Math.round(region.width * 100)}% × ${Math.round(region.height * 100)}%` : '-'
+  const finalAction = { original: '原字幕', burn: '烧制', mask_and_burn: '遮挡后烧制' }[analysis.decision?.effectiveAction] || (settings.subtitleMaskEnabled ? '遮挡后烧制' : (settings.translationEnabled ? '烧制' : '原字幕'))
   return [
     ['处理版本', processVersionLabel(settings.processVersion)],
-    ['字幕语言', languageLabel(settings.subtitleLanguage)],
     ['烧录预设', BURN_PROFILE_LABELS[settings.burnProfile] || BURN_PROFILE_LABELS.stable],
     ['字幕字号', settings.subtitleSize || '-'],
     ['字幕翻译', enabled(settings.translationEnabled)],
     ['字幕模式', subtitleMode],
-    ['原字幕', sourceSubtitle],
     ['最终处理', finalAction],
-    ['遮挡区域', regionText],
+    ['判断原因', analysis.reason || '-'],
     ['翻译署名', settings.translatorLabel || '-'],
     ['水印', settings.watermarkEnabled ? settings.watermarkText || '已开启' : '关闭'],
     ['高光片头', settings.highlightIntroEnabled ? `${settings.highlightCount || 0} 条` : '关闭'],
@@ -638,15 +654,58 @@ const MaterialIdentity = defineComponent({
   },
   setup(props) {
     const thumbFailed = ref(false)
+    const resolutionState = reactive({
+      loaded: false,
+      loading: false,
+      original: null,
+      processed: null
+    })
     const workflowBadge = computed(() => materialWorkflowBadge(props.material))
+    const isProcessedMaterial = computed(() => props.material.source_type === 'youtube_processed')
+    const resolutionRows = computed(() => {
+      if (!['youtube_download', 'youtube_processed'].includes(props.material.source_type)) return []
+      const rows = [['原视频分辨率', materialResolutionText(resolutionState.original)]]
+      if (isProcessedMaterial.value) rows.push(['处理后视频分辨率', materialResolutionText(resolutionState.processed)])
+      return rows
+    })
     const infoRows = computed(() => [
       ['视频名称', materialTitle(props.material)],
       ['UUID', props.material.uuid],
       ['来源类型', props.material.source_type],
       ['状态', props.material.status],
       ['任务状态', workflowBadge.value ? `${workflowBadge.value.text} ${workflowBadge.value.detail}` : ''],
+      ...resolutionRows.value,
       ...processingSettingsRows(props.material)
     ].filter(([, value]) => value !== undefined && value !== null && value !== ''))
+    const loadResolutions = async () => {
+      if (resolutionState.loading || resolutionState.loaded) return
+      resolutionState.loading = true
+      resolutionState.original = null
+      resolutionState.processed = isProcessedMaterial.value ? null : undefined
+      try {
+        let originalMaterial = props.material
+        if (isProcessedMaterial.value) {
+          const videoId = materialVideoId(props.material)
+          const response = videoId
+            ? await materialApi.getAllMaterials({ sourceType: 'youtube_download', videoIds: videoId, page: 1, pageSize: 1 })
+            : null
+          originalMaterial = response?.data?.items?.[0] || null
+        }
+        const [originalResolution, processedResolution] = await Promise.all([
+          originalMaterial ? readMaterialResolution(originalMaterial) : Promise.resolve({ width: 0, height: 0 }),
+          isProcessedMaterial.value ? readMaterialResolution(props.material) : Promise.resolve(undefined)
+        ])
+        resolutionState.original = originalResolution
+        resolutionState.processed = processedResolution
+      } catch (error) {
+        resolutionState.original = { width: 0, height: 0 }
+        resolutionState.processed = isProcessedMaterial.value ? { width: 0, height: 0 } : undefined
+        console.warn('读取素材分辨率失败:', error)
+      } finally {
+        resolutionState.loading = false
+        resolutionState.loaded = true
+      }
+    }
     const previewSource = computed(() => {
       if (thumbFailed.value) return ''
       if (props.material.source_type === 'youtube_processed' || props.material.source_type === 'youtube_download') {
@@ -686,10 +745,11 @@ const MaterialIdentity = defineComponent({
               class: 'info-button',
               text: true,
               circle: true,
-              'aria-label': '查看素材与处理设置'
+              'aria-label': isProcessedMaterial.value ? '查看素材与处理设置' : '查看素材信息',
+              onClick: loadResolutions
             }, { default: () => h(ElIcon, null, { default: () => h(InfoFilled) }) }),
             default: () => h('div', { class: 'technical-popover' }, [
-              h('strong', '素材与处理设置'),
+              h('strong', isProcessedMaterial.value ? '素材与处理设置' : '素材信息'),
               h('dl', { class: 'technical-list' }, infoRows.value.flatMap(([label, value]) => [
                 h('dt', label),
                 h('dd', { title: String(value) }, String(value))
@@ -1066,7 +1126,7 @@ const handleDelete = (material) => {
         }
       } catch (error) {
         console.error('删除视频素材出错:', error)
-        ElMessage.error('删除失败')
+        if (!error?.message) ElMessage.error('删除失败')
       }
     })
     .catch(() => {})
@@ -1104,7 +1164,8 @@ const handleBatchDelete = async (scope = 'all') => {
     selectedDownloadedMaterials.value = []
     await fetchMaterials({ force: true })
     if (result.failed > 0) {
-      ElMessage.warning(`已删除 ${result.success} 个，${result.failed} 个删除失败`)
+      const failureMessage = result.items?.find(item => !item.success)?.message || ''
+      ElMessage.warning(`已删除 ${result.success} 个，${result.failed} 个删除失败${failureMessage ? `：${failureMessage}` : ''}`)
     } else {
       ElMessage.success(`已删除 ${result.success} 个视频素材`)
     }

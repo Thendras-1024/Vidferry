@@ -22,6 +22,14 @@ export const youtubeApi = {
     return request.get('/youtube/videos', { params })
   },
 
+  scanLocalRetention() {
+    return request.post('/youtube/videos/local-retention/scan', {})
+  },
+
+  backfillHistoricalTitles() {
+    return request.post('/admin/youtube/title-translations/backfill', {})
+  },
+
   importVideo(data) {
     return request.post('/youtube/videos/import', data, { timeout: 30000 })
   },

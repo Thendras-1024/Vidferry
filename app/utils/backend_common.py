@@ -42,6 +42,8 @@ from app.utils.format_util import (
     _format_subscribers_w,
     _normalize_publish_tags,
     _now_iso,
+    _beijing_datetime,
+    _to_beijing_iso,
     _parse_json_object,
     _parse_publish_draft,
     _parse_upload_date,
@@ -68,6 +70,8 @@ _workflow_executor_limits = {
     "analysis": (WORKFLOW_MAX_ANALYSIS_JOBS, WORKFLOW_MAX_ANALYSIS_QUEUED_JOBS),
     "comment": (WORKFLOW_MAX_COMMENT_JOBS, WORKFLOW_MAX_COMMENT_QUEUED_JOBS),
     "candidate_analysis": (CANDIDATE_ANALYSIS_MAX_JOBS, CANDIDATE_ANALYSIS_MAX_QUEUED_JOBS),
+    # 标题翻译是低优先级单 worker；允许一次普通搜索的结果全部排队。
+    "title_translation": (1, 30),
 }
 _workflow_executors = {
     resource: ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"vidferry-{resource}")

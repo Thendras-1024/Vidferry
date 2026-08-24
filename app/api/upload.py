@@ -92,6 +92,7 @@ def get_asset_content(asset_id):
             str(file_path.parent),
             file_path.name,
             as_attachment=request.args.get("download") == "1",
+            conditional=True,
         )
     except LookupError:
         return jsonify({"code": 404, "msg": "素材不存在", "data": None}), 404

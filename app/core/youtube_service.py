@@ -190,13 +190,15 @@ def save_new_youtube_videos(videos, query, owner_user_id, group_id=None):
         WHERE owner_user_id = %s AND video_id IN ({placeholders})
         ORDER BY CASE video_id {' '.join(f'WHEN %s THEN {index}' for index, _ in enumerate(new_ids))} END
         ''', [target_group["name"], target_group["is_default"], owner_user_id, *new_ids, *new_ids])
-        return {
+        result = {
             "items": [_row_to_youtube_video(row) for row in cursor.fetchall()],
             "created": len(new_videos),
             "duplicate": len(normalized_videos) - len(new_videos),
             "publishedDuplicate": published_duplicate_count,
             "requested": len(videos),
         }
+        _queue_source_title_translations(owner_user_id, result["items"], _TITLE_TRANSLATION_PAGE_LIMIT)
+        return result
 
 
 def _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job_created_at="", group_id=None):
@@ -263,7 +265,10 @@ def save_one_youtube_video(video, query, owner_user_id, job_created_at="", group
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         _resolve_youtube_group(cursor, owner_user_id, group_id)
-        return _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job_created_at, group_id)
+        result = _save_one_youtube_video_with_cursor(cursor, video, query, owner_user_id, job_created_at, group_id)
+    if result.get("decision") == "created" and result.get("item"):
+        _queue_source_title_translations(owner_user_id, [result["item"]], 1)
+    return result
 
 
 def upsert_youtube_videos(videos, query, owner_user_id):
@@ -525,9 +530,12 @@ def _attach_processed_versions_for_videos(cursor, videos, owner_user_id):
     return videos
 
 
-def _youtube_video_summary(cursor, owner_user_id, keyword="", group_id=None):
+def _youtube_video_summary(cursor, owner_user_id, keyword="", group_id=None, storage_scope="active"):
     where_parts = ["owner_user_id = %s"]
     values = [owner_user_id]
+    storage_clause, storage_values = _youtube_storage_scope_clause(storage_scope)
+    where_parts.append(storage_clause)
+    values.extend(storage_values)
     if keyword:
         like = f"%{keyword}%"
         where_parts.append("(title ILIKE %s OR channel ILIKE %s OR url ILIKE %s OR query ILIKE %s)")
@@ -653,6 +661,7 @@ def list_youtube_videos(params=None, owner_user_id=None):
         cursor = conn.cursor()
         _reconcile_youtube_statuses_with_material_records(cursor, owner_user_id)
         _reconcile_youtube_generated_publish_drafts(cursor, owner_user_id)
+        _reconcile_superseded_publish_records(cursor, owner_user_id)
         conn.commit()
         where_sql, values, ids = _youtube_video_where(params, owner_user_id)
         sort_sql = _youtube_video_sort_sql(str(params.get("sort") or "default"))
@@ -682,9 +691,18 @@ def list_youtube_videos(params=None, owner_user_id=None):
             cursor.execute(f'''
             SELECT id, video_id, platform, platform_type, status, message, publish_task_id, updated_at,
                    published_at, account_id, account_name
-            FROM published_youtube_materials
-            WHERE owner_user_id = %s AND video_id IN ({placeholders})
-              AND deleted_at IS NULL
+            FROM (
+                SELECT id, video_id, platform, platform_type, status, message, publish_task_id, updated_at,
+                       published_at, account_id, account_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY video_id, platform_type
+                           ORDER BY id DESC
+                       ) AS record_rank
+                FROM published_youtube_materials
+                WHERE owner_user_id = %s AND video_id IN ({placeholders})
+                  AND deleted_at IS NULL AND invalidated_at IS NULL
+            ) current_records
+            WHERE record_rank = 1
             ORDER BY platform_type
             ''', [owner_user_id, *video_ids])
             for record in cursor.fetchall():
@@ -703,7 +721,9 @@ def list_youtube_videos(params=None, owner_user_id=None):
                 })
         for video in videos:
             records = publish_records.get(video.get("id"), [])
-            video["publishedPlatforms"] = [record for record in records if record["status"] == "confirmed"]
+            video["publishedPlatforms"] = [
+                record for record in records if record["status"] in {"confirmed", "reused"}
+            ]
             video["publishDelivery"] = {
                 "status": aggregate_publish_status(records) if records else "",
                 "statusLabel": publish_status_label(aggregate_publish_status(records)) if records else "未发布",
@@ -715,6 +735,11 @@ def list_youtube_videos(params=None, owner_user_id=None):
                 anchors = [record.get("publishedAt") for record in valid_targets if record.get("publishedAt")]
                 video["retentionAnchorAt"] = max(anchors) if anchors else ""
         _attach_processed_versions_for_videos(cursor, videos, owner_user_id)
+        _attach_source_title_translations(cursor, videos, owner_user_id)
+        _queue_source_title_translation_batch(
+            owner_user_id,
+            _source_title_translation_candidates(cursor, videos, owner_user_id, _TITLE_TRANSLATION_PAGE_LIMIT),
+        )
         return {
             "items": videos,
             "total": total,
@@ -725,6 +750,7 @@ def list_youtube_videos(params=None, owner_user_id=None):
                 owner_user_id,
                 str(params.get("keyword") or "").strip(),
                 params.get("groupId") or params.get("group_id"),
+                params.get("storageScope"),
             ),
         }
 

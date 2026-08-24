@@ -169,16 +169,23 @@ def _purge_youtube_video_local_files(video_id, owner_user_id):
     return {"status": "purged", "videoId": video_id, "deleted": deleted_count}
 
 
-def _youtube_local_cleanup_candidates(now=None):
+def _youtube_local_cleanup_candidates(now=None, owner_user_id=None):
     current = _retention_datetime(now) if now else _retention_datetime_module.datetime.now()
     cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
+    owner_clause = "AND video.owner_user_id = %s" if owner_user_id is not None else ""
+    query_params = []
+    if owner_user_id is not None:
+        query_params.append(owner_user_id)
+    query_params.append(cutoff.isoformat())
+    query_params.append(VIDEO_LOCAL_CLEANUP_BATCH_SIZE)
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
         SELECT video_id, owner_user_id
         FROM youtube_videos AS video
         WHERE local_files_state IN ('available', 'purge_failed')
+          {owner_clause}
           AND EXISTS (
               SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
@@ -207,15 +214,112 @@ def _youtube_local_cleanup_candidates(now=None):
           )
         ORDER BY video.updated_at ASC
         LIMIT %s
-        ''', (cutoff.isoformat(), VIDEO_LOCAL_CLEANUP_BATCH_SIZE))
+        ''', query_params)
         return [dict(row) for row in cursor.fetchall()]
 
 
-def run_youtube_local_cleanup_once():
+def _reconcile_youtube_purged_file_states(owner_user_id=None):
+    """将文件已不存在但数据库仍为活动状态的成功发布线索移入历史。"""
+    current = _retention_datetime_module.datetime.now()
+    cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
+    owner_clause = "AND video.owner_user_id = %s" if owner_user_id is not None else ""
+    params = [owner_user_id] if owner_user_id is not None else []
+    params.append(cutoff.isoformat())
+    repaired = []
+    with _db_connect() as conn:
+        conn.row_factory = True
+        cursor = conn.cursor()
+        cursor.execute(f'''
+        SELECT video.*
+        FROM youtube_videos AS video
+        WHERE video.local_files_state IN ('available', 'purge_failed')
+          {owner_clause}
+          AND EXISTS (
+              SELECT 1 FROM published_youtube_materials AS material
+              WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM published_youtube_materials AS material
+              WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                AND material.status NOT IN ('confirmed', 'reused')
+          )
+          AND (
+              SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+              WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+          ) <= %s
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_publish_tasks AS task
+              WHERE task.video_id = video.video_id AND task.owner_user_id = video.owner_user_id
+                AND task.status IN ('scheduled', 'queued', 'running')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM youtube_workflow_jobs AS job
+              WHERE job.video_id = video.video_id AND job.owner_user_id = video.owner_user_id
+                AND job.status IN ('queued', 'running', 'waiting_confirmation', 'waiting_publish')
+          )
+        LIMIT %s
+        ''', [*params, VIDEO_LOCAL_CLEANUP_BATCH_SIZE])
+        videos = [dict(row) for row in cursor.fetchall()]
+        for video in videos:
+            cursor.execute('''
+            SELECT file_path, storage_key
+            FROM file_records
+            WHERE owner_user_id = %s AND source_video_id = %s
+              AND source_type IN ('youtube_download', 'youtube_processed') AND status != 'purged'
+            ''', (video.get("owner_user_id"), video.get("video_id")))
+            materials = [dict(row) for row in cursor.fetchall()]
+            paths = [
+                video.get("downloaded_file_path"), video.get("processed_file_path"),
+                video.get("editing_body_path"), video.get("editing_ass_path"),
+                *(item.get("file_path") or item.get("storage_key") for item in materials),
+            ]
+            if any(_retention_path(path) for path in paths if path):
+                continue
+            now = _now_iso()
+            cursor.execute('''
+            UPDATE youtube_videos
+            SET local_files_state = 'purged', local_files_purged_at = COALESCE(local_files_purged_at, %s),
+                purge_error = '', downloaded_file_path = '', processed_file_path = '',
+                editing_body_path = '', editing_ass_path = '', download_status = 0, translate_status = 0,
+                updated_at = %s
+            WHERE video_id = %s AND owner_user_id = %s AND local_files_state IN ('available', 'purge_failed')
+            ''', (now, now, video.get("video_id"), video.get("owner_user_id")))
+            cursor.execute('''
+            UPDATE file_records
+            SET status = 'purged', purged_at = COALESCE(purged_at, %s), file_path = '', storage_key = ''
+            WHERE owner_user_id = %s AND source_video_id = %s
+              AND source_type IN ('youtube_download', 'youtube_processed') AND status != 'purged'
+            ''', (now, video.get("owner_user_id"), video.get("video_id")))
+            repaired.append(str(video.get("video_id") or ""))
+        conn.commit()
+    return repaired
+
+
+def scan_youtube_local_retention(owner_user_id):
+    """手动扫描并修复当前用户的本地媒体留存状态。"""
+    overdue_before = _youtube_local_cleanup_candidates(owner_user_id=owner_user_id)
+    cleanup = run_youtube_local_cleanup_once(owner_user_id=owner_user_id)
+    repaired_ids = _reconcile_youtube_purged_file_states(owner_user_id)
+    overdue_after = _youtube_local_cleanup_candidates(owner_user_id=owner_user_id)
+    return {
+        "mode": cleanup.get("mode"),
+        "scannedCount": len(overdue_before),
+        "purgedCount": sum(item.get("status") == "purged" for item in cleanup.get("results", [])),
+        "repairedCount": len(repaired_ids),
+        "repairedVideoIds": repaired_ids,
+        "overdueCount": len(overdue_after),
+        "overdueVideoIds": [str(item.get("video_id") or "") for item in overdue_after],
+    }
+
+
+def run_youtube_local_cleanup_once(owner_user_id=None):
     if VIDEO_LOCAL_CLEANUP_MODE == "off":
         return {"mode": "off", "processed": 0}
     init_youtube_video_table()
-    candidates = _youtube_local_cleanup_candidates()
+    candidates = _youtube_local_cleanup_candidates(owner_user_id=owner_user_id)
     if VIDEO_LOCAL_CLEANUP_MODE == "report":
         backend_logger.info("youtube local cleanup report : candidates = %s", len(candidates))
         return {"mode": "report", "processed": 0, "candidates": len(candidates)}

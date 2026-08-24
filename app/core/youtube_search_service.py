@@ -623,6 +623,7 @@ def _record_youtube_search_item(cursor, job, ordinal, video, decision, error="",
 
 
 def _process_youtube_search_candidate(job_id, ordinal, video):
+    created_item = None
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM youtube_search_jobs WHERE id = %s", (job_id,))
@@ -653,7 +654,12 @@ def _process_youtube_search_candidate(job_id, ordinal, video):
             job["groupId"],
         )
         _record_youtube_search_item(cursor, job, ordinal, video, result["decision"])
-        return result["decision"]
+        if result["decision"] == "created":
+            created_item = result.get("item")
+        decision = result["decision"]
+    if created_item:
+        _queue_source_title_translations(job["ownerUserId"], [created_item], 1)
+    return decision
 
 
 def _record_youtube_search_failure(job_id, ordinal, video, error):

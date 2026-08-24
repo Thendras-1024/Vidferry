@@ -66,7 +66,17 @@ def _log_workflow_failure(stage, job_id, exc):
 def _resolve_source_subtitle_processing(job, source_file):
     mode = str(job.get("subtitleMode") or "legacy")
     existing = job.get("sourceSubtitleAnalysis") or {}
-    analysis = existing if existing.get("decision") else None
+    decision = existing.get("decision") if isinstance(existing.get("decision"), dict) else {}
+    analysis = existing if (
+        int(existing.get("analysisVersion") or 0) == 3
+        and existing.get("classification") in {"zh", "non_zh", "none", "unknown"}
+        and isinstance(existing.get("burnSubtitles"), bool)
+        and isinstance(existing.get("subtitleMaskEnabled"), bool)
+        and bool(str(existing.get("reason") or "").strip())
+        and isinstance(decision.get("translationEnabled"), bool)
+        and isinstance(decision.get("subtitleMaskEnabled"), bool)
+        and bool(str(decision.get("effectiveAction") or "").strip())
+    ) else None
     usage = {}
     event_id = start_workflow_event(job, "source_subtitle_analysis", "正在识别原视频字幕", input_file_path=source_file)
     if analysis is None:
@@ -77,6 +87,10 @@ def _resolve_source_subtitle_processing(job, source_file):
             video_info.get("duration") or 0,
             build_workflow_llm_telemetry(job, event_id, "source_subtitle_analysis"),
         )
+        if analysis.get("status") == "degraded":
+            notifier = globals().get("create_source_subtitle_degraded_notification")
+            if callable(notifier):
+                notifier(job, analysis.get("reason"))
     decision = analysis.get("decision")
     if mode == "legacy" or not isinstance(decision, dict):
         translation_enabled = bool(job.get("translationEnabled", True))
@@ -90,17 +104,16 @@ def _resolve_source_subtitle_processing(job, source_file):
         subtitle_mask_enabled=int(subtitle_mask_enabled),
         source_subtitle_analysis=analysis,
     )
-    classification = analysis.get("classification") or "unknown"
     finish_workflow_event(
         event_id,
         "success",
-        "原视频字幕识别完成" if analysis.get("status") == "success" else "原视频字幕识别已按降级策略处理",
+        "原视频字幕判断完成" if analysis.get("status") == "success" else "原视频字幕判断已按降级策略处理",
         cloud_usage=_editing_plan_usage(usage) if usage else {},
         metadata={
-            "status": analysis.get("status") or "unknown",
-            "classification": classification,
+            "status": analysis.get("status") or "degraded",
+            "burnSubtitles": bool(analysis.get("burnSubtitles")),
+            "subtitleMaskEnabled": bool(analysis.get("subtitleMaskEnabled")),
             "effectiveAction": (decision or {}).get("effectiveAction") or "legacy",
-            "region": analysis.get("region"),
         },
     )
     return updated
@@ -145,7 +158,9 @@ def _editing_result_message(editing_result):
 
 
 def _subtitle_skip_reason(subtitle_result):
-    return "已按设置跳过字幕翻译和烧录" if subtitle_result.get("skippedBySetting") else "未检测到可识别人声，已跳过字幕处理"
+    if subtitle_result.get("skippedBySetting"):
+        return "已按设置跳过字幕翻译和烧录"
+    return subtitle_result.get("skipReason") or "未检测到可识别人声，已跳过字幕处理"
 
 
 def _source_title_translation_from_events(video_id, owner_user_id):
@@ -166,9 +181,28 @@ def _source_title_translation_from_events(video_id, owner_user_id):
         except (TypeError, ValueError):
             continue
         title = str(metadata.get("sourceTitleZh") or "").strip()
-        if title:
+        if _is_valid_source_title_translation(title):
             return title
     return ""
+
+
+def _source_title_translation_retry_blocked(video_id, owner_user_id):
+    if not video_id or owner_user_id is None:
+        return False
+    with _db_connect() as conn:
+        row = conn.execute('''
+        SELECT EXISTS (
+            SELECT 1 FROM youtube_workflow_events
+            WHERE video_id = %s AND owner_user_id = %s
+              AND stage = 'source_title_translation' AND status = 'running'
+        ) OR EXISTS (
+            SELECT 1 FROM youtube_workflow_events
+            WHERE video_id = %s AND owner_user_id = %s
+              AND stage = 'source_title_translation' AND status = 'failed'
+              AND ended_at >= CURRENT_TIMESTAMP - (21600 * INTERVAL '1 second')
+        ) AS blocked
+        ''', (video_id, int(owner_user_id), video_id, int(owner_user_id))).fetchone()
+    return bool(row and row["blocked"])
 
 
 def _ensure_source_title_translation(job):
@@ -176,14 +210,15 @@ def _ensure_source_title_translation(job):
     if not source_title:
         return ""
     cached = _source_title_translation_from_events(job.get("videoId") or "", job.get("ownerUserId"))
-    event_id = start_workflow_event(job, "source_title_translation", "正在翻译原视频标题")
     if cached:
-        finish_workflow_event(event_id, "success", "已复用原视频标题翻译", metadata={"sourceTitleZh": cached, "sourceTitleTranslationStatus": "success", "cached": True})
         return cached
+    if _source_title_translation_retry_blocked(job.get("videoId") or "", job.get("ownerUserId")):
+        return ""
+    event_id = start_workflow_event(job, "source_title_translation", "正在翻译原视频标题")
     try:
         translated = _translate_segments([{"text": source_title}], "zh-CN")
         title = str((translated[0] if translated else {}).get("subtitle") or "").strip()
-        if not title:
+        if not _is_valid_source_title_translation(title):
             raise RuntimeError("原视频标题翻译结果为空")
         finish_workflow_event(event_id, "success", "原视频标题翻译完成", metadata={"sourceTitleZh": title, "sourceTitleTranslationStatus": "success"})
         return title

@@ -8,7 +8,9 @@ def _material_file_path(record):
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return candidate
-    if record.get("source_type") in {"youtube_download", "youtube_processed"}:
+    if record.get("source_type") == "youtube_processed":
+        return Path(BASE_DIR / "videoFile" / raw_path)
+    if record.get("source_type") == "youtube_download":
         return Path(BASE_DIR / candidate)
     return Path(BASE_DIR / "videoFile" / raw_path)
 
@@ -21,6 +23,19 @@ def _material_metadata(record):
         return json.loads(metadata)
     except (TypeError, ValueError):
         return {}
+
+
+def _material_datetime_text(value):
+    """将数据库无时区的素材时间保留为本地时间文本，避免 Flask 按 GMT 序列化。"""
+    if value is None:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        try:
+            return isoformat(timespec="seconds")
+        except TypeError:
+            return isoformat()
+    return value
 
 
 def _material_source_video_id(record):
@@ -222,6 +237,20 @@ def delete_material_record(cursor, file_id, owner_user_id):
     source_video_id = _material_source_video_id(record)
     if source_video_id:
         _assert_no_active_youtube_job(cursor, source_video_id, owner_user_id)
+        if record.get("source_type") == "youtube_download":
+            processed_material = _find_latest_youtube_material(
+                cursor, source_video_id, "youtube_processed", owner_user_id
+            )
+            if processed_material:
+                raise WorkflowConflictError(
+                    "该视频已存在处理后视频，不能单独删除原视频；请先删除处理后视频。",
+                    WORKFLOW_ERROR_DELETE_PROCESSED_EXISTS,
+                    "PROCESSED_VIDEO_EXISTS",
+                    {
+                        "videoId": source_video_id,
+                        "processedMaterialId": processed_material.get("id"),
+                    },
+                )
 
     deleted_files = _delete_material_files(record)
     cursor.execute("DELETE FROM file_records WHERE id = %s AND owner_user_id = %s", (file_id, owner_user_id))
@@ -500,6 +529,7 @@ def _material_duration(record, source_video=None, probe_missing=True):
 
 def _row_to_material(row):
     item = dict(row)
+    item["upload_time"] = _material_datetime_text(item.get("upload_time"))
     metadata = _material_metadata(item)
     if not item.get("asset_id"):
         item["asset_id"] = ""
@@ -561,6 +591,7 @@ def _row_to_material(row):
 
 def _row_to_material_fast(row, source_video=None, analysis=None, workflow_job=None):
     item = dict(row)
+    item["upload_time"] = _material_datetime_text(item.get("upload_time"))
     metadata = _material_metadata(item)
     if not item.get("asset_id"):
         item["asset_id"] = ""
@@ -789,6 +820,7 @@ def _row_to_published_material(row):
         "platformType": int(item.get("platform_type") or 0),
         "assetId": item.get("asset_id") or "",
         "accountCount": int(item.get("account_count") or 0),
+        "accountFile": item.get("account_file") or "",
         "materialId": item.get("material_id"),
         "filename": item.get("filename") or "",
         "filesize": float(item.get("filesize") or 0),
@@ -823,13 +855,16 @@ def list_published_youtube_materials(limit=50, record_scope="active", owner_user
     if scope not in {"active", "archived", "all"}:
         raise ValueError("recordScope 必须是 active、archived 或 all")
     where_sql = {
-        "active": "record.deleted_at IS NULL AND COALESCE(NULLIF(record.status, ''), 'confirmed') = 'confirmed'",
+        "active": "record.deleted_at IS NULL AND COALESCE(NULLIF(record.status, ''), 'confirmed') IN ('confirmed', 'reused')",
         "archived": "record.deleted_at IS NOT NULL",
         "all": "1 = 1",
     }[scope]
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
+        if owner_user_id is not None:
+            _reconcile_superseded_publish_records(cursor, owner_user_id)
+            conn.commit()
         owner_clause = " AND record.owner_user_id = %s" if owner_user_id is not None else ""
         values = [owner_user_id, limit] if owner_user_id is not None else [limit]
         cursor.execute(f'''
@@ -848,7 +883,7 @@ def _published_youtube_identity_sets(cursor, owner_user_id):
     SELECT video_id, source_url FROM published_youtube_materials
     WHERE deleted_at IS NULL
       AND owner_user_id = %s
-      AND COALESCE(NULLIF(status, ''), 'confirmed') = 'confirmed'
+      AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('confirmed', 'reused')
     ''', (owner_user_id,))
     published_ids = set()
     published_urls = set()
@@ -901,6 +936,18 @@ def _archive_published_material(
         "publishTaskId": publish_task_id or "",
     }
 
+    now = _now_iso()
+    cursor.execute(
+        """
+        UPDATE published_youtube_materials
+        SET deleted_at = %s, updated_at = %s
+        WHERE video_id = %s AND owner_user_id = %s AND platform_type = %s
+          AND deleted_at IS NULL AND invalidated_at IS NULL
+          AND status IN ('failed', 'timeout')
+        """,
+        (now, now, video_id, owner_user_id, int(platform_type or 0)),
+    )
+
     def _assert_record_claimable(existing):
         # Lightweight archive fakes and very old rows may omit the status field;
         # 数据库记录必须带当前交付状态；测试替身可能省略该字段。
@@ -940,16 +987,14 @@ def _archive_published_material(
         SELECT id, publish_task_id, status FROM published_youtube_materials
         WHERE video_id = %s AND owner_user_id = %s
           AND platform_type = %s
-          AND COALESCE(account_id, 0) = COALESCE(%s, 0)
           AND deleted_at IS NULL AND invalidated_at IS NULL
         ORDER BY CASE WHEN publish_task_id = %s THEN 0 ELSE 1 END, id DESC
         LIMIT 1
         """,
-        (video_id, owner_user_id, int(platform_type or 0), account_id, publish_task_id or ""),
+        (video_id, owner_user_id, int(platform_type or 0), publish_task_id or ""),
     )
     existing = cursor.fetchone()
-    retry_context = bool(retry_source or retry_of_record_id or retry_of_task_id)
-    if existing and _should_archive_failed_publish_record(existing.get("status"), retry_context=retry_context):
+    if existing and _should_archive_failed_publish_record(existing.get("status")):
         cursor.execute(
             "UPDATE published_youtube_materials SET deleted_at = %s, updated_at = %s WHERE id = %s",
             (_now_iso(), _now_iso(), existing["id"]),
@@ -1263,7 +1308,43 @@ def _validate_publish_processed_files(file_list, owner_user_id=None):
 
 
 def _should_archive_failed_publish_record(status, retry_context=False):
-    return str(status or "").lower() in {"failed", "timeout"} and not retry_context
+    # 每次新的发布尝试都创建新记录，失败记录只作为历史保留。
+    return str(status or "").lower() in {"failed", "timeout"}
+
+
+def _reconcile_superseded_publish_records(cursor, owner_user_id, video_id=None):
+    """归档已被后续成功尝试覆盖的旧失败记录。"""
+    clauses = [
+        "stale.owner_user_id = %s",
+        "stale.deleted_at IS NULL",
+        "stale.invalidated_at IS NULL",
+        "stale.status IN ('failed', 'timeout')",
+    ]
+    filter_values = [int(owner_user_id)]
+    if video_id:
+        clauses.append("stale.video_id = %s")
+        filter_values.append(str(video_id))
+    now = _now_iso()
+    cursor.execute(
+        """
+        UPDATE published_youtube_materials AS stale
+        SET deleted_at = %s, updated_at = %s
+        WHERE {where_sql}
+          AND EXISTS (
+              SELECT 1
+              FROM published_youtube_materials AS newer
+              WHERE newer.owner_user_id = stale.owner_user_id
+                AND newer.video_id = stale.video_id
+                AND newer.platform_type = stale.platform_type
+                AND newer.deleted_at IS NULL
+                AND newer.invalidated_at IS NULL
+                AND newer.status IN ('confirmed', 'reused')
+                AND newer.id > stale.id
+          )
+        """.format(where_sql=" AND ".join(clauses)),
+        [now, now, *filter_values],
+    )
+    return int(cursor.rowcount or 0)
 
 
 def _resolve_publish_reservation_status(current_status, parent_kind, parent_status, target_status=""):
@@ -1375,7 +1456,6 @@ def _assert_publish_targets_available(material, targets):
                 """
                 SELECT id, publish_task_id, status FROM published_youtube_materials
                 WHERE video_id = %s AND platform_type = %s AND owner_user_id = %s
-                  AND COALESCE(account_id, 0) = COALESCE(%s, 0)
                   AND deleted_at IS NULL
                   AND invalidated_at IS NULL
                   AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('queued', 'running', 'confirmed', 'uncertain')
@@ -1653,7 +1733,7 @@ def _active_success_publish_count(cursor, video_id, owner_user_id):
     FROM published_youtube_materials
     WHERE video_id = %s AND owner_user_id = %s
       AND deleted_at IS NULL
-      AND COALESCE(NULLIF(status, ''), 'confirmed') = 'confirmed'
+      AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('confirmed', 'reused')
     ''', (video_id, owner_user_id))
     row = cursor.fetchone()
     return int((row or {})["total"] or 0)
@@ -1735,6 +1815,9 @@ def list_publish_tasks(limit=20, owner_user_id=None):
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
+        if owner_user_id is not None:
+            _reconcile_superseded_publish_records(cursor, owner_user_id)
+            conn.commit()
         where_sql = "deleted_at IS NULL"
         values = [fetch_limit]
         if owner_user_id is not None:
