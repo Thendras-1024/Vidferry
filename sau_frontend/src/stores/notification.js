@@ -64,6 +64,13 @@ export const useNotificationStore = defineStore('notification', () => {
     await refresh()
   }
 
+  const resetUserWorkspace = () => {
+    messages.value = []
+    historyMessages.value = []
+    summary.value = { activeCount: 0, unreadCount: 0, badgeCount: 0 }
+    historyLoaded.value = false
+  }
+
   return {
     messages,
     historyMessages,
@@ -90,5 +97,6 @@ export const useNotificationStore = defineStore('notification', () => {
     addWorkflowAbnormalMessage: refreshFromSource,
     addSearchFailureMessage: refreshFromSource,
     addDirectPublishFailureMessage,
+    resetUserWorkspace,
   }
 })

@@ -662,6 +662,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import { useNotificationStore } from '@/stores/notification'
+import { useUserStore } from '@/stores/user'
 import { agentApi } from '@/api/agent'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
@@ -670,6 +671,7 @@ import { http } from '@/utils/request'
 import { formatBeijingTime } from '@/utils/time'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 import PublishRetryDialog from '@/components/PublishRetryDialog.vue'
+import { removeLegacyWorkspaceStorage, userWorkspaceStorageKey } from '@/utils/userWorkspaceStorage'
 
 // 当前激活的tab
 const activeTab = ref('tab1')
@@ -677,12 +679,15 @@ const activeTab = ref('tab1')
 // tab计数器
 let tabCounter = 1
 
-const PUBLISH_DRAFT_STORAGE_KEY = 'vidferry:publish-center:draft:v1'
+const PUBLISH_DRAFT_STORAGE_NAME = 'publish-center:draft:v1'
 
 // 获取应用状态管理
 const appStore = useAppStore()
 const accountStore = useAccountStore()
 const notificationStore = useNotificationStore()
+const userStore = useUserStore()
+removeLegacyWorkspaceStorage()
+const publishDraftStorageKey = userWorkspaceStorageKey(userStore.userInfo?.id, PUBLISH_DRAFT_STORAGE_NAME)
 
 // 上传相关状态
 const materialLibraryVisible = ref(false)
@@ -857,7 +862,7 @@ const normalizeTopicSelections = (selections = {}) => {
 
 const readPublishDraft = () => {
   try {
-    const raw = localStorage.getItem(PUBLISH_DRAFT_STORAGE_KEY)
+    const raw = publishDraftStorageKey && localStorage.getItem(publishDraftStorageKey)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed?.tabs) ? parsed : null
@@ -932,7 +937,8 @@ const serializePublishTab = (tab) => ({
 
 const savePublishDraft = () => {
   try {
-    localStorage.setItem(PUBLISH_DRAFT_STORAGE_KEY, JSON.stringify({
+    if (!publishDraftStorageKey) return
+    localStorage.setItem(publishDraftStorageKey, JSON.stringify({
       activeTab: activeTab.value,
       tabCounter,
       tabs: tabs.map(serializePublishTab)

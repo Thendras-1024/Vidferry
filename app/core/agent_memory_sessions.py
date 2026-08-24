@@ -773,6 +773,8 @@ def delete_agent_session(session_id):
         with _db_connect() as conn:
             cursor = conn.cursor()
             owner_user_id = _agent_current_user_id()
+            if owner_user_id is None:
+                return False
             owner_filter, owner_values = _agent_owner_filter(owner_user_id)
             cursor.execute(
                 f"SELECT id FROM agent_sessions WHERE id = %s{owner_filter}",
@@ -782,7 +784,7 @@ def delete_agent_session(session_id):
                 return False
             cursor.execute("DELETE FROM agent_session_bindings WHERE session_id = %s", (session_id,))
             cursor.execute("DELETE FROM agent_messages WHERE session_id = %s", (session_id,))
-            cursor.execute("DELETE FROM agent_runs WHERE session_id = %s", (session_id,))
+            cursor.execute("DELETE FROM agent_runs WHERE session_id = %s AND owner_user_id = %s", (session_id, owner_user_id))
             cursor.execute(
                 """
                 UPDATE agent_sessions

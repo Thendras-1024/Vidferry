@@ -51,6 +51,10 @@ export const useAccountStore = defineStore('account', () => {
   const getAccountsByPlatform = (platform) => {
     return accounts.value.filter(acc => acc.platform === platform)
   }
+
+  const resetUserWorkspace = () => {
+    accounts.value = []
+  }
   
   return {
     accounts,
@@ -58,6 +62,7 @@ export const useAccountStore = defineStore('account', () => {
     addAccount,
     updateAccount,
     deleteAccount,
-    getAccountsByPlatform
+    getAccountsByPlatform,
+    resetUserWorkspace
   }
 })

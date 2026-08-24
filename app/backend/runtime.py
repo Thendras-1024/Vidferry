@@ -60,6 +60,7 @@ MODULE_ORDER = [
     "app/core/youtube_title_translation_service.py",
     "app/core/youtube_search_service.py",
     "app/core/short_video_service.py",
+    "app/core/agent_settings_service.py",
     "app/api/common.py",
     "app/api/task_center.py",
     "app/api/auth.py",

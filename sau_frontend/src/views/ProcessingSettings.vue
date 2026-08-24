@@ -114,8 +114,12 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Back, Check } from '@element-plus/icons-vue'
 import { youtubeApi } from '@/api/youtube'
+import { useUserStore } from '@/stores'
+import { userWorkspaceStorageKey } from '@/utils/userWorkspaceStorage'
 
 const router = useRouter()
+const userStore = useUserStore()
+const workflowSettingsStorageKey = computed(() => userWorkspaceStorageKey(userStore.userInfo?.id, 'youtube.workflowSettings'))
 const activeTab = ref('processing')
 const loading = ref(false)
 const saving = ref(false)
@@ -186,7 +190,7 @@ const saveSettings = async () => {
     Object.keys(form).forEach(key => {
       if (data[key] !== undefined) form[key] = data[key]
     })
-    localStorage.setItem('vidferry.youtube.workflowSettings', JSON.stringify(form))
+    if (workflowSettingsStorageKey.value) localStorage.setItem(workflowSettingsStorageKey.value, JSON.stringify(form))
     ElMessage.success('处理配置已保存')
   } catch (error) {
     ElMessage.error(error?.message || '保存处理配置失败')

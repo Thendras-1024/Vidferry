@@ -256,8 +256,8 @@ def _normalize_comment_burn_count(value):
     return count if count in {20, 25, 30, 35, 40, 45, 50} else 30
 
 
-def _workflow_watermark_settings(payload):
-    saved_settings = get_workflow_settings()
+def _workflow_watermark_settings(payload, owner_user_id):
+    saved_settings = get_workflow_settings(owner_user_id)
     watermark_enabled = bool(
         payload["watermarkEnabled"]
         if "watermarkEnabled" in payload else saved_settings.get("watermarkEnabled")
@@ -269,8 +269,8 @@ def _workflow_watermark_settings(payload):
     return watermark_enabled, watermark_text
 
 
-def _workflow_cover_settings(payload):
-    saved_settings = get_workflow_settings()
+def _workflow_cover_settings(payload, owner_user_id):
+    saved_settings = get_workflow_settings(owner_user_id)
     signature = payload.get("coverSignature") if "coverSignature" in payload else saved_settings.get("coverSignature")
     return (
         normalize_cover_title(payload.get("coverTitle")),
@@ -278,28 +278,28 @@ def _workflow_cover_settings(payload):
     )
 
 
-def _workflow_highlight_count(payload):
-    saved_settings = get_workflow_settings()
+def _workflow_highlight_count(payload, owner_user_id):
+    saved_settings = get_workflow_settings(owner_user_id)
     value = payload.get("highlightCount") if "highlightCount" in payload else saved_settings.get("highlightCount")
     return _normalize_highlight_count(value)
 
 
-def _workflow_comment_burn_count(payload):
-    saved_settings = get_workflow_settings()
+def _workflow_comment_burn_count(payload, owner_user_id):
+    saved_settings = get_workflow_settings(owner_user_id)
     value = payload.get("commentBurnCount") if "commentBurnCount" in payload else saved_settings.get("commentBurnCount")
     return _normalize_comment_burn_count(value)
 
 
-def _workflow_processing_options(payload):
-    saved_settings = get_workflow_settings()
+def _workflow_processing_options(payload, owner_user_id):
+    saved_settings = get_workflow_settings(owner_user_id)
     defaults = {"translationEnabled": True, "highlightIntroEnabled": True, "coverIntroEnabled": True, "commentBurnEnabled": False, "subtitleMaskEnabled": False}
     return tuple(bool(payload[key] if key in payload else saved_settings.get(key, defaults[key])) for key in (
         "translationEnabled", "highlightIntroEnabled", "coverIntroEnabled", "commentBurnEnabled", "subtitleMaskEnabled",
     ))
 
 
-def _workflow_subtitle_mode(payload):
-    saved_settings = get_workflow_settings()
+def _workflow_subtitle_mode(payload, owner_user_id):
+    saved_settings = get_workflow_settings(owner_user_id)
     value = payload.get("subtitleMode") if "subtitleMode" in payload else saved_settings.get("subtitleMode")
     return _normalize_subtitle_mode(value, allow_legacy=False)
 
@@ -312,6 +312,9 @@ def _normalize_process_version(value):
 def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="media"):
     init_youtube_workflow_table()
     payload = dict(payload or {})
+    owner_user_id = int(payload.get("ownerUserId") or 0)
+    if owner_user_id <= 0:
+        raise PermissionError("登录用户不能为空")
     account_group = resolve_publish_account_group(payload.get("publishAccountGroupId"))
     if account_group:
         group_accounts = {int(item["platformType"]): item["name"] for item in account_group["accounts"]}
@@ -329,19 +332,19 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     burn_profile = _normalize_burn_profile(payload.get("burnProfile"))
     subtitle_size = _normalize_subtitle_size(payload.get("subtitleSize"))
     translator_label = _normalize_translator_label(payload.get("translatorLabel"))
-    watermark_enabled, watermark_text = _workflow_watermark_settings(payload)
-    highlight_count = _workflow_highlight_count(payload)
-    comment_burn_count = _workflow_comment_burn_count(payload)
+    watermark_enabled, watermark_text = _workflow_watermark_settings(payload, owner_user_id)
+    highlight_count = _workflow_highlight_count(payload, owner_user_id)
+    comment_burn_count = _workflow_comment_burn_count(payload, owner_user_id)
     comment_translation_mode = _normalize_comment_translation_mode(payload.get("commentTranslationMode"))
-    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, subtitle_mask_enabled = _workflow_processing_options(payload)
-    subtitle_mode = _workflow_subtitle_mode(payload)
+    translation_enabled, highlight_intro_enabled, cover_intro_enabled, comment_burn_enabled, subtitle_mask_enabled = _workflow_processing_options(payload, owner_user_id)
+    subtitle_mode = _workflow_subtitle_mode(payload, owner_user_id)
     if subtitle_mode == "auto":
         translation_enabled, subtitle_mask_enabled = True, False
     elif subtitle_mode == "force_burn":
         translation_enabled = True
     else:
         translation_enabled, subtitle_mask_enabled = False, False
-    cover_title, cover_signature = _workflow_cover_settings(payload)
+    cover_title, cover_signature = _workflow_cover_settings(payload, owner_user_id)
     process_version = _normalize_process_version(payload.get("processVersion"))
     if comment_burn_enabled and process_version != PROCESS_VERSION_EDITING:
         raise ValueError("评论烧制仅支持处理版本二")
@@ -355,9 +358,6 @@ def create_youtube_workflow_job(payload, *, allow_active_job=False, lock_scope="
     if isinstance(tags, str):
         tags = [tag.strip().lstrip("#") for tag in tags.split(",") if tag.strip()]
     video_id = payload.get("videoId") or ""
-    owner_user_id = int(payload.get("ownerUserId") or 0)
-    if owner_user_id <= 0:
-        raise PermissionError("登录用户不能为空")
     _validate_burn_profile_source_resolution(video_id, burn_profile)
     if lock_scope not in {"media", "analysis"}:
         raise ValueError("任务锁范围不合法")

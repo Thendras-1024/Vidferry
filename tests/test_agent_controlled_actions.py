@@ -208,7 +208,7 @@ def test_published_platform_is_rejected_for_any_account(monkeypatch):
 def test_agent_processing_payload_uses_saved_workflow_settings(monkeypatch):
     backend = _backend()
     monkeypatch.setattr(backend, "_agent_current_user_id", lambda: 7)
-    monkeypatch.setattr(backend, "get_workflow_settings", lambda: {
+    monkeypatch.setattr(backend, "get_workflow_settings", lambda owner_user_id: {
         "processVersion": "editing_v1",
         "subtitleLanguage": "zh-CN",
         "highlightIntroEnabled": True,
@@ -273,20 +273,29 @@ def test_project_butler_uses_internal_workflow_overview(monkeypatch):
 
 def test_agent_soul_is_injected_only_into_agent_prompts(tmp_path):
     backend = _backend()
-    (tmp_path / "soul.md").write_text("SOUL_TEST_RULE", encoding="utf-8")
-    backend.BASE_DIR = tmp_path
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(backend, "_agent_current_user_id", lambda: 7)
+    monkeypatch.setattr(backend, "get_agent_soul", lambda owner_user_id: "SOUL_TEST_RULE")
 
-    assert "SOUL_TEST_RULE" in backend.agent_react_system_prompt()
-    assert "SOUL_TEST_RULE" in backend.agent_reply_messages("问题", {})[0]["content"]
-    assert "SOUL_TEST_RULE" in backend.agent_reply_stream_messages("问题", {})[0]["content"]
-    assert "SOUL_TEST_RULE" not in backend.editing_analysis_system_prompt()
+    try:
+        assert "SOUL_TEST_RULE" in backend.agent_react_system_prompt()
+        assert "SOUL_TEST_RULE" in backend.agent_reply_messages("问题", {})[0]["content"]
+        assert "SOUL_TEST_RULE" in backend.agent_reply_stream_messages("问题", {})[0]["content"]
+        assert "SOUL_TEST_RULE" not in backend.editing_analysis_system_prompt()
+    finally:
+        monkeypatch.undo()
 
 
 def test_missing_agent_soul_falls_back_to_existing_prompt(tmp_path):
     backend = _backend()
-    backend.BASE_DIR = tmp_path
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(backend, "_agent_current_user_id", lambda: 7)
+    monkeypatch.setattr(backend, "get_agent_soul", lambda owner_user_id: "")
 
-    prompt = backend.agent_react_system_prompt()
+    try:
+        prompt = backend.agent_react_system_prompt()
+    finally:
+        monkeypatch.undo()
 
     assert "<agent_soul>" not in prompt
     assert "受控运营 Agent" in prompt

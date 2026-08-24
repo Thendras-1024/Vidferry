@@ -475,17 +475,21 @@ def _insert_agent_run(
     output=None,
     model="",
     duration_ms=0,
+    owner_user_id=None,
 ):
+    if owner_user_id is None:
+        raise ValueError("Agent 运行记录必须归属当前用户。")
     cursor.execute(
         """
         INSERT INTO agent_runs (
-            id, session_id, run_type, subject_type, subject_id, status, decision, severity, content_hash,
+            id, owner_user_id, session_id, run_type, subject_type, subject_id, status, decision, severity, content_hash,
             input_summary, output, model, duration_ms, created_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             run_id,
+            owner_user_id,
             session_id or "",
             run_type,
             subject_type or "",
@@ -522,15 +526,19 @@ def save_agent_run(
     session_id = str(session_id or "").strip()
     run_id = _agent_new_id("run")
     duration_ms = int((_time.time() - started_at) * 1000) if started_at else 0
+    owner_user_id = _agent_current_user_id()
+    if owner_user_id is None:
+        raise ValueError("Agent 运行记录缺少当前用户归属。")
     with agent_session_guard(session_id):
         with _db_connect() as conn:
             cursor = conn.cursor()
             if session_id:
                 cursor.execute(
-                    "SELECT 1 FROM agent_sessions WHERE id = %s AND deleted_at IS NULL",
+                    "SELECT owner_user_id FROM agent_sessions WHERE id = %s AND deleted_at IS NULL",
                     (session_id,),
                 )
-                if not cursor.fetchone():
+                session_row = cursor.fetchone()
+                if not session_row or int(session_row[0]) != int(owner_user_id):
                     raise ValueError("Agent 会话不存在或已删除，运行记录未保存。")
             _insert_agent_run(
                 cursor,
@@ -547,6 +555,7 @@ def save_agent_run(
                 output=output,
                 model=model,
                 duration_ms=duration_ms,
+                owner_user_id=owner_user_id,
             )
             conn.commit()
     return run_id
@@ -566,6 +575,9 @@ def finalize_agent_turn(
     session_id = str(session_id or "").strip()
     run_id = _agent_new_id("run")
     duration_ms = int((_time.time() - started_at) * 1000) if started_at else 0
+    owner_user_id = _agent_current_user_id()
+    if owner_user_id is None:
+        raise ValueError("Agent 运行记录缺少当前用户归属。")
     with agent_session_guard(session_id):
         with _db_connect() as conn:
             cursor = conn.cursor()
@@ -608,6 +620,7 @@ def finalize_agent_turn(
                 output=output,
                 model=model,
                 duration_ms=duration_ms,
+                owner_user_id=owner_user_id,
             )
             conn.commit()
     return {"messageId": message_id, "runId": run_id}

@@ -1,6 +1,7 @@
 """PostgreSQL schema initialization."""
 
 import hashlib
+import json
 import shutil
 import threading
 from pathlib import Path
@@ -199,6 +200,51 @@ def _migrate_legacy_account_ownership(conn):
     cursor.execute("UPDATE youtube_workflow_jobs SET owner_user_id = %s WHERE owner_user_id IS NULL", (owner_user_id,))
 
 
+def _migrate_legacy_agent_soul(conn):
+    administrator = conn.execute(
+        "SELECT id FROM auth_users WHERE role = 'admin' AND status = 'active' ORDER BY created_at, id LIMIT 1"
+    ).fetchone()
+    source = (BASE_DIR / "soul.md").resolve()
+    if not administrator or not source.is_file():
+        return
+    try:
+        content = source.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return
+    if len(content.encode("utf-8")) > 128 * 1024:
+        return
+    key = f"agent_soul:{int(administrator[0])}"
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO NOTHING
+        """,
+        (key, json.dumps(content, ensure_ascii=False)),
+    )
+
+
+def _migrate_legacy_workflow_settings(conn):
+    administrator = conn.execute(
+        "SELECT id FROM auth_users WHERE role = 'admin' AND status = 'active' ORDER BY created_at, id LIMIT 1"
+    ).fetchone()
+    if not administrator:
+        return
+    row = conn.execute("SELECT value FROM app_settings WHERE key = 'youtube_workflow_settings'").fetchone()
+    if not row:
+        return
+    key = f"youtube_workflow_settings:{int(administrator[0])}"
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO NOTHING
+        """,
+        (key, row[0]),
+    )
+    conn.execute("DELETE FROM app_settings WHERE key = 'youtube_workflow_settings'")
+
+
 def init_database_tables():
     global _initialized
     if _initialized:
@@ -209,6 +255,8 @@ def init_database_tables():
         with _db_connect() as conn:
             _apply_pending_migrations(conn)
             _migrate_legacy_account_ownership(conn)
+            _migrate_legacy_workflow_settings(conn)
+            _migrate_legacy_agent_soul(conn)
             missing = _missing_tables(conn)
             if missing:
                 raise RuntimeError(f"PostgreSQL schema is incomplete: {', '.join(missing)}")

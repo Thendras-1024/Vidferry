@@ -63,7 +63,7 @@ def _requires_admin():
         return True
     if request.path in _ADMIN_PATHS:
         return True
-    return request.path == "/youtube/workflow/settings" and request.method in {"PUT", "PATCH"}
+    return False
 
 
 def _rate_limit_user_submission(user_id):

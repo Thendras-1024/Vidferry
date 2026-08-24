@@ -1210,10 +1210,12 @@ import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 import { useVideoGroupStore } from '@/stores/videoGroup'
+import { useUserStore } from '@/stores'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 import VideoGroupManageDialog from '@/components/VideoGroupManageDialog.vue'
 import { cleanTopicList, normalizeDraftTopics } from '@/utils/publishDraft'
 import { backendTimeMs, formatBeijingTime } from '@/utils/time'
+import { userWorkspaceStorageKey } from '@/utils/userWorkspaceStorage'
 
 const loading = ref(false)
 const searchLoading = ref(false)
@@ -1235,6 +1237,7 @@ const settingsDialogVisible = ref(false)
 const settingsTab = ref('processing')
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 const analysisDialogVisible = ref(false)
 const analysisLoading = ref(false)
 const analysisResult = ref(null)
@@ -1408,7 +1411,7 @@ const workflowForm = reactive({
 const commentBurnAvailable = ref(true)
 const subtitleMaskAvailable = ref(true)
 
-const WORKFLOW_SETTINGS_STORAGE_KEY = 'vidferry.youtube.workflowSettings'
+const WORKFLOW_SETTINGS_STORAGE_KEY = computed(() => userWorkspaceStorageKey(userStore.userInfo?.id, 'youtube.workflowSettings'))
 
 const fallbackBilibiliCategories = [
   { tid: 21, group: '生活', name: '日常', label: '生活 / 日常' },
@@ -1690,7 +1693,7 @@ const normalizeStoredWorkflowSettings = (rawSettings = {}) => {
 
 const readLocalWorkflowSettings = () => {
   try {
-    const raw = localStorage.getItem(WORKFLOW_SETTINGS_STORAGE_KEY)
+    const raw = WORKFLOW_SETTINGS_STORAGE_KEY.value ? localStorage.getItem(WORKFLOW_SETTINGS_STORAGE_KEY.value) : ''
     if (!raw) return {}
     return normalizeStoredWorkflowSettings(JSON.parse(raw))
   } catch (error) {
@@ -1701,7 +1704,7 @@ const readLocalWorkflowSettings = () => {
 
 const persistLocalWorkflowSettings = (settings) => {
   try {
-    localStorage.setItem(WORKFLOW_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+    if (WORKFLOW_SETTINGS_STORAGE_KEY.value) localStorage.setItem(WORKFLOW_SETTINGS_STORAGE_KEY.value, JSON.stringify(settings))
   } catch (error) {
     console.warn('保存本地处理设置失败', error)
   }
@@ -2691,7 +2694,7 @@ const scanLocalRetention = async () => {
     const overdueCount = Number(result.overdueCount || 0)
     const movedCount = Number(result.purgedCount || 0) + Number(result.repairedCount || 0)
     if (overdueCount > 0) {
-      ElMessage.warning(`扫描完成，仍有 ${overdueCount} 条视频超过 7 天未清理`)
+      ElMessage.warning(`扫描完成，仍有 ${overdueCount} 条符合留存期限的视频未清理`)
     } else {
       ElMessage.success(`扫描完成，已清理或移入历史线索 ${movedCount} 条`)
     }

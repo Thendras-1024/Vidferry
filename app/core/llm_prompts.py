@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from app.core.highlight_policy import HIGHLIGHT_MIN_START_SECONDS
 
@@ -34,22 +33,20 @@ _TEXT_GUARD_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的�
 _VISION_GUARD_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的发布前视觉安全质检员，负责根据关键帧识别画面风险并输出中文处置建议。"
 _AGENT_ACTION_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的受控运营 Agent，负责在权限边界内查询项目状态、解释流程和提供操作建议。"
 _AGENT_REPLY_ROLE = "角色与职责（最高优先级）：你是 Vidferry 的受控项目管家，负责把已验证的查询结果整理成准确、简洁的中文答复。"
-_AGENT_SOUL_MAX_BYTES = 128 * 1024
 
 
-def _agent_soul_instruction():
-    base_dir = globals().get("BASE_DIR")
-    if not base_dir:
+def _agent_soul_instruction(owner_user_id=None):
+    if owner_user_id is None:
+        try:
+            owner_user_id = _agent_current_user_id()
+        except (NameError, TypeError, ValueError):
+            owner_user_id = None
+    if not owner_user_id:
         return ""
-    path = Path(base_dir) / "soul.md"
     try:
-        if path.stat().st_size > _AGENT_SOUL_MAX_BYTES:
-            raise ValueError("文件超过大小限制")
-        soul = path.read_text(encoding="utf-8-sig").strip()
-    except FileNotFoundError:
-        return ""
-    except (OSError, UnicodeError, ValueError):
-        logging.getLogger("vidferry.backend").warning("Agent Soul 文件不可读取 : path = %s", path)
+        soul = get_agent_soul(owner_user_id).strip()
+    except (NameError, OSError, UnicodeError, ValueError):
+        logging.getLogger("vidferry.backend").warning("Agent Soul 读取失败 : owner_user_id = %s", owner_user_id)
         return ""
     if not soul:
         return ""

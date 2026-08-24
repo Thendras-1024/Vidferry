@@ -50,8 +50,7 @@ const routes = [
   {
     path: '/account-management',
     name: 'AccountManagement',
-    component: AccountManagement,
-    meta: { requiresAdmin: true }
+    component: AccountManagement
   },
   {
     path: '/material-management',
@@ -97,8 +96,7 @@ const routes = [
   {
     path: '/agent-settings',
     name: 'AgentSoulSettings',
-    component: AgentSoulSettings,
-    meta: { requiresAdmin: true }
+    component: AgentSoulSettings
   },
   {
     path: '/workflow-settings',

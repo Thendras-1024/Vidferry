@@ -503,7 +503,7 @@ def _run_agent_tool(name, args, session_id=""):
     if name == "prepare_video_action":
         return prepare_video_action(args.get("action") or "", session_id=session_id)
     if name == "get_workflow_settings":
-        return get_workflow_settings()
+        return get_workflow_settings(_agent_current_user_id())
     if name == "list_material_records":
         return agent_list_material_records(args.get("keyword") or "", args.get("limit"))
     if name == "list_videos_by_status":
@@ -1258,10 +1258,10 @@ def _agent_execution_targets(targets):
 def _agent_execution_workflow_payload(video, targets=None, schedule=""):
     targets = targets or []
     draft = video.get("publishDraft") if isinstance(video.get("publishDraft"), dict) else {}
-    settings = get_workflow_settings()
     owner_user_id = _agent_current_user_id()
     if owner_user_id is None:
         raise PermissionError("Agent 执行缺少当前登录用户身份")
+    settings = get_workflow_settings(owner_user_id)
     payload = {
         "ownerUserId": int(owner_user_id),
         "videoId": video.get("id") or "",

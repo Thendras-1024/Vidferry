@@ -24,11 +24,10 @@ def get_agent_run(run_id):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         owner_user_id = _agent_current_user_id()
-        owner_filter = ""
-        owner_values = ()
-        if owner_user_id is not None:
-            owner_filter = " AND (r.run_type != 'chat' OR s.owner_user_id = %s)"
-            owner_values = (owner_user_id,)
+        if owner_user_id is None:
+            return None
+        owner_filter = " AND r.owner_user_id = %s"
+        owner_values = (owner_user_id,)
         cursor.execute(
             f"""SELECT r.* FROM agent_runs AS r
                LEFT JOIN agent_sessions AS s ON s.id = r.session_id
@@ -43,9 +42,12 @@ def get_agent_run(run_id):
 
 def _latest_agent_session_run(session_id, run_type):
     with _db_connect(row_factory=True) as conn:
+        owner_user_id = _agent_current_user_id()
+        if owner_user_id is None:
+            return None
         row = conn.execute(
-            "SELECT * FROM agent_runs WHERE session_id = %s AND run_type = %s ORDER BY created_at DESC, id DESC LIMIT 1",
-            (str(session_id or ""), run_type),
+            "SELECT * FROM agent_runs WHERE owner_user_id = %s AND session_id = %s AND run_type = %s ORDER BY created_at DESC, id DESC LIMIT 1",
+            (owner_user_id, str(session_id or ""), run_type),
         ).fetchone()
     return _agent_run_from_row(row) if row else None
 
@@ -66,15 +68,18 @@ def get_latest_agent_session_chat_usage(session_id):
 def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_path=""):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
+        owner_user_id = _agent_current_user_id()
+        if owner_user_id is None:
+            return None
         if subject_type and subject_id:
             cursor.execute(
                 """
                 SELECT * FROM agent_runs
-                WHERE run_type = %s AND subject_type = %s AND subject_id = %s
+                WHERE owner_user_id = %s AND run_type = %s AND subject_type = %s AND subject_id = %s
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
-                (run_type, subject_type, subject_id),
+                (owner_user_id, run_type, subject_type, subject_id),
             )
             row = cursor.fetchone()
             if row:
@@ -86,10 +91,10 @@ def get_latest_agent_run(run_type, subject_type="", subject_id="", legacy_file_p
         cursor.execute(
             """
             SELECT * FROM agent_runs
-            WHERE run_type = %s AND COALESCE(subject_id, '') = ''
+            WHERE owner_user_id = %s AND run_type = %s AND COALESCE(subject_id, '') = ''
             ORDER BY created_at DESC, id DESC
             """,
-            (run_type,),
+            (owner_user_id, run_type),
         )
         for row in cursor.fetchall():
             summary = _agent_json_loads(row["input_summary"])
@@ -152,11 +157,10 @@ def get_agent_run_overview(limit=8):
     with _db_connect(row_factory=True) as conn:
         cursor = conn.cursor()
         owner_user_id = _agent_current_user_id()
-        owner_filter = ""
-        owner_values = ()
-        if owner_user_id is not None:
-            owner_filter = "WHERE r.run_type != 'chat' OR s.owner_user_id = %s"
-            owner_values = (owner_user_id,)
+        if owner_user_id is None:
+            return _agent_observability_payload([], limit)
+        owner_filter = "WHERE r.owner_user_id = %s"
+        owner_values = (owner_user_id,)
         cursor.execute(
             f"""
             SELECT r.* FROM agent_runs AS r

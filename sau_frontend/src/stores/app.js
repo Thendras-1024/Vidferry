@@ -98,6 +98,17 @@ export const useAppStore = defineStore('app', () => {
     publishRecordsRevision.value += 1
     clearListCache()
   }
+
+  const resetUserWorkspace = () => {
+    resetVisitStatus()
+    isAccountRefreshing.value = false
+    materials.value = []
+    publishedMaterials.value = []
+    publishTasks.value = []
+    clearListCache()
+    lastChangedPublishedVideoId.value = ''
+    publishRecordsRevision.value += 1
+  }
   
   // 设置账号管理页面刷新状态
   const setAccountRefreshing = (status) => {
@@ -127,6 +138,7 @@ export const useAppStore = defineStore('app', () => {
     setListCache,
     clearListCache,
     invalidatePublishRecords,
+    resetUserWorkspace,
     setAccountRefreshing
   }
 })

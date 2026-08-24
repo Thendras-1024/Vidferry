@@ -194,7 +194,7 @@ def test_new_workflow_job_insert_includes_auto_subtitle_snapshot(monkeypatch):
 
     monkeypatch.setattr(backend, "_db_connect", connect)
     monkeypatch.setattr(backend, "init_youtube_workflow_table", lambda: None)
-    monkeypatch.setattr(backend, "get_workflow_settings", lambda: backend._default_workflow_settings())
+    monkeypatch.setattr(backend, "get_workflow_settings", lambda owner_user_id: backend._default_workflow_settings())
     monkeypatch.setattr(backend, "resolve_publish_account_group", lambda _value: None)
     monkeypatch.setattr(backend, "get_youtube_workflow_job", lambda job_id: {"id": job_id, "subtitleMode": "auto"})
 

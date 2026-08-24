@@ -23,7 +23,7 @@
               <el-menu-item index="/short-video-studio">
                 <el-icon><VideoPlay /></el-icon><span>短视频拼接</span>
               </el-menu-item>
-              <el-menu-item v-if="isAdmin" index="/account-management">
+              <el-menu-item index="/account-management">
                 <el-icon><User /></el-icon><span>账号连接</span>
               </el-menu-item>
               <el-menu-item index="/material-management">
@@ -108,10 +108,10 @@
                     <el-dropdown-item command="password">修改密码</el-dropdown-item>
                     <el-dropdown-item command="about">帮助与版本</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="users" divided>用户与安全</el-dropdown-item>
-                    <el-dropdown-item v-if="isAdmin" command="statistics">处理统计</el-dropdown-item>
-                    <el-dropdown-item v-if="isAdmin" command="audit">字幕审计与诊断</el-dropdown-item>
+                    <el-dropdown-item command="statistics">处理统计</el-dropdown-item>
+                    <el-dropdown-item command="audit">字幕审计与诊断</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="shortVideoBgm">短视频 BGM 管理</el-dropdown-item>
-                    <el-dropdown-item v-if="isAdmin" command="agentSettings">Agent 设置</el-dropdown-item>
+                    <el-dropdown-item command="agentSettings">Agent 设置</el-dropdown-item>
                     <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -368,6 +368,7 @@ import { accountApi } from '@/api/account'
 import { commonApi } from '@/api/common'
 import { formatBeijingTime } from '@/utils/time'
 import { useAccountStore } from '@/stores/account'
+import { useAppStore } from '@/stores/app'
 import { useNotificationStore } from '@/stores/notification'
 import { useUserStore } from '@/stores/user'
 import TaskCenter from '@/components/TaskCenter.vue'
@@ -376,6 +377,7 @@ import { useAgentWorkspace } from '@/composables/useAgentWorkspace'
 const route = useRoute()
 const router = useRouter()
 const accountStore = useAccountStore()
+const appStore = useAppStore()
 const notificationStore = useNotificationStore()
 const userStore = useUserStore()
 const isAdmin = computed(() => userStore.userInfo?.role === 'admin')
@@ -419,7 +421,7 @@ const {
   agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel,
   handleAgentMessagesScroll, newAgentConversation, startAgentConversation, sendAgentMessage, showAgentMessageTools, copyAgentMessage, loadAgentHistory,
   openAgentHistory, openAgentWorkbench, selectAgentSession, handleAgentSessionCommand,
-  removeAgentSession, prepareAgentRetry, handleAgentInputKeydown, confirmAgentAction, handleAskAgentEvent
+  removeAgentSession, prepareAgentRetry, handleAgentInputKeydown, confirmAgentAction, handleAskAgentEvent, activateAgentWorkspace, clearAgentWorkspace
 } = agentWorkspace
 const activeMenu = computed(() => {
   return route.path
@@ -525,6 +527,10 @@ const handleUserCommand = async command => {
   if (command === 'about') return router.push('/about')
   if (command === 'password') return router.push('/change-password')
   if (command === 'logout') {
+    clearAgentWorkspace()
+    appStore.resetUserWorkspace()
+    accountStore.resetUserWorkspace()
+    notificationStore.resetUserWorkspace()
     await userStore.logout()
     window.location.hash = '#/login'
     window.location.reload()
@@ -541,6 +547,7 @@ const refreshNotifications = () => notificationStore.refresh({ includeHistory: s
 const initializeAuthenticatedWorkspace = () => {
   if (authenticatedWorkspaceStarted || !userStore.isLoggedIn) return
   authenticatedWorkspaceStarted = true
+  activateAgentWorkspace(userStore.userInfo?.id)
   void openAgentWorkbench()
   refreshRuntimeConfigStatus()
   refreshFeishuRobotStatus()
@@ -555,7 +562,16 @@ const initializeAuthenticatedWorkspace = () => {
   window.addEventListener('focus', refreshFeishuRobotStatus)
 }
 
-watch(() => userStore.isLoggedIn, initializeAuthenticatedWorkspace)
+watch(() => userStore.userInfo?.id || 0, (userId, previousUserId) => {
+  if (previousUserId && previousUserId !== userId) {
+    clearAgentWorkspace()
+    appStore.resetUserWorkspace()
+    accountStore.resetUserWorkspace()
+    notificationStore.resetUserWorkspace()
+    authenticatedWorkspaceStarted = false
+  }
+  initializeAuthenticatedWorkspace()
+})
 
 onMounted(() => {
   window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)

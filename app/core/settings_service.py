@@ -7,6 +7,7 @@ from app.publishing import PLATFORM_TYPE_TO_NAME, PUBLISH_TAG_LIMITS, clean_publ
 
 
 WORKFLOW_SETTINGS_KEY = "youtube_workflow_settings"
+WORKFLOW_SETTINGS_KEY_PREFIX = "youtube_workflow_settings:"
 PUBLISH_TAG_PRESETS_KEY_PREFIX = "publish_tag_presets:"
 COMMENT_BURN_COUNT_OPTIONS = {20, 25, 30, 35, 40, 45, 50}
 SUBTITLE_MODES = {"auto", "force_burn", "original"}
@@ -106,24 +107,40 @@ def _normalize_workflow_settings(payload=None):
     return settings
 
 
-def get_workflow_settings():
+def _workflow_settings_key(owner_user_id):
+    owner_user_id = int(owner_user_id)
+    if owner_user_id <= 0:
+        raise ValueError("处理配置归属账号必须是正整数")
+    return f"{WORKFLOW_SETTINGS_KEY_PREFIX}{owner_user_id}"
+
+
+def _settings_response(settings):
+    return {
+        **settings,
+        "commentBurnAvailable": _comment_burn_available(),
+        "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip()),
+    }
+
+
+def get_workflow_settings(owner_user_id):
+    key = _workflow_settings_key(owner_user_id)
     init_database_tables()
     with _db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM app_settings WHERE key = %s", (WORKFLOW_SETTINGS_KEY,))
+        cursor.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
         row = cursor.fetchone()
     if not row:
-        settings = _default_workflow_settings()
-        return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
+        return _settings_response(_default_workflow_settings())
     try:
         settings = _normalize_workflow_settings(json.loads(row[0]))
     except Exception:
         settings = _default_workflow_settings()
-    return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
+    return _settings_response(settings)
 
 
-def update_workflow_settings(payload):
-    current_settings = get_workflow_settings()
+def update_workflow_settings(owner_user_id, payload):
+    key = _workflow_settings_key(owner_user_id)
+    current_settings = get_workflow_settings(owner_user_id)
     settings = _normalize_workflow_settings({**current_settings, **(payload if isinstance(payload, dict) else {})})
     init_database_tables()
     with _db_connect() as conn:
@@ -136,10 +153,10 @@ def update_workflow_settings(payload):
                 value = excluded.value,
                 updated_at = CURRENT_TIMESTAMP
             ''',
-            (WORKFLOW_SETTINGS_KEY, json.dumps(settings, ensure_ascii=False)),
+            (key, json.dumps(settings, ensure_ascii=False)),
         )
         conn.commit()
-    return {**settings, "commentBurnAvailable": _comment_burn_available(), "subtitleMaskAvailable": not bool(str(SUBTITLE_COMMAND_TEMPLATE or "").strip())}
+    return _settings_response(settings)
 
 
 def _default_publish_tag_presets():

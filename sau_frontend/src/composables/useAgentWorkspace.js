@@ -3,9 +3,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { agentApi } from '@/api/agent'
 import { youtubeApi } from '@/api/youtube'
 import { mergeAndSortAgentSessions } from '@/utils/agentSessions'
+import { clearUserWorkspaceStorage, removeLegacyWorkspaceStorage, userWorkspaceStorageKey } from '@/utils/userWorkspaceStorage'
 
 const AGENT_MESSAGE_PAGE_SIZE = 12
-const AGENT_SESSION_META_KEY = 'vidferry:agent-session-meta'
+const AGENT_SESSION_ID_KEY = 'agent-session-id'
+const AGENT_SESSION_META_KEY = 'agent-session-meta'
 const PAGE_TITLES = {
   '/': 'Agent 工作台',
   '/youtube-research': '视频采集与处理',
@@ -21,9 +23,9 @@ const PAGE_TITLES = {
   '/about': '关于'
 }
 
-const readSessionMeta = () => {
+const readSessionMeta = userId => {
   try {
-    return JSON.parse(localStorage.getItem(AGENT_SESSION_META_KEY) || '{}')
+    return JSON.parse(localStorage.getItem(userWorkspaceStorageKey(userId, AGENT_SESSION_META_KEY)) || '{}')
   } catch {
     return {}
   }
@@ -33,7 +35,8 @@ export function useAgentWorkspace({ route, router }) {
   const agentDrawerVisible = ref(false)
   const agentLoading = ref(false)
   const agentInput = ref('')
-  const agentSessionId = ref(localStorage.getItem('vidferry:agent-session-id') || '')
+  const activeUserId = ref(0)
+  const agentSessionId = ref('')
   const agentMessages = ref([])
   const agentMessagesRef = ref(null)
   const agentOlderMessagesLoading = ref(false)
@@ -58,7 +61,7 @@ export function useAgentWorkspace({ route, router }) {
   const agentContextDetailsVisible = ref(false)
   const agentCompaction = ref({ state: 'idle', message: '', startedAt: 0, durationMs: 0 })
   const agentCompactionTick = ref(Date.now())
-  const agentSessionMeta = ref(readSessionMeta())
+  const agentSessionMeta = ref({})
 
   const agentSessionSource = computed(() => agentCurrentSession.value?.source || 'web')
   const agentSessionSourceLabel = computed(() => agentSessionSource.value === 'feishu' ? '手机端' : '本地 Agent')
@@ -321,10 +324,48 @@ export function useAgentWorkspace({ route, router }) {
     return agentMessages.value[agentMessages.value.length - 1]
   }
 
+  const agentStorageKey = name => userWorkspaceStorageKey(activeUserId.value, name)
+  const resetAgentWorkspaceState = () => {
+    agentSessionId.value = ''
+    restoreSequence += 1
+    agentSessionRestoreLoading.value = false
+    restoringSessionId = ''
+    restoredSessionId = ''
+    agentMessages.value = []
+    agentOlderMessagesLoading.value = false
+    agentHasOlderMessages.value = false
+    agentMessagesBeforeId.value = null
+    agentRetryContext.value = null
+    agentVideoContext.value = null
+    agentIncludeVideoContext.value = false
+    agentVideoSelection.value = []
+    agentVideoSelectionCardId.value = ''
+    agentCurrentSession.value = null
+    agentContextStats.value = null
+    agentContextDetailsVisible.value = false
+    setAgentCompaction({ state: 'idle' })
+  }
+  const activateAgentWorkspace = ownerUserId => {
+    const nextUserId = Number(ownerUserId || 0)
+    if (!Number.isInteger(nextUserId) || nextUserId <= 0) return
+    if (activeUserId.value && activeUserId.value !== nextUserId) clearUserWorkspaceStorage(activeUserId.value)
+    removeLegacyWorkspaceStorage()
+    activeUserId.value = nextUserId
+    resetAgentWorkspaceState()
+    agentSessionId.value = localStorage.getItem(agentStorageKey(AGENT_SESSION_ID_KEY)) || ''
+    agentSessionMeta.value = readSessionMeta(nextUserId)
+  }
+  const clearAgentWorkspace = () => {
+    if (activeUserId.value) clearUserWorkspaceStorage(activeUserId.value)
+    resetAgentWorkspaceState()
+    agentSessionMeta.value = {}
+    activeUserId.value = 0
+  }
   const saveAgentSessionId = sessionId => {
     if (!sessionId) return
     agentSessionId.value = sessionId
-    localStorage.setItem('vidferry:agent-session-id', sessionId)
+    const storageKey = agentStorageKey(AGENT_SESSION_ID_KEY)
+    if (storageKey) localStorage.setItem(storageKey, sessionId)
   }
 
   const restoreAgentMessages = async ({ allowExternal = false } = {}) => {
@@ -408,25 +449,9 @@ export function useAgentWorkspace({ route, router }) {
   }
 
   const newAgentConversation = () => {
-    agentSessionId.value = ''
-    restoreSequence += 1
-    agentSessionRestoreLoading.value = false
-    restoringSessionId = ''
-    restoredSessionId = ''
-    agentMessages.value = []
-    agentOlderMessagesLoading.value = false
-    agentHasOlderMessages.value = false
-    agentMessagesBeforeId.value = null
-    agentRetryContext.value = null
-    agentVideoContext.value = null
-    agentIncludeVideoContext.value = false
-    agentVideoSelection.value = []
-    agentVideoSelectionCardId.value = ''
-    agentCurrentSession.value = null
-    agentContextStats.value = null
-    agentContextDetailsVisible.value = false
-    setAgentCompaction({ state: 'idle' })
-    localStorage.removeItem('vidferry:agent-session-id')
+    resetAgentWorkspaceState()
+    const storageKey = agentStorageKey(AGENT_SESSION_ID_KEY)
+    if (storageKey) localStorage.removeItem(storageKey)
   }
 
   const startAgentConversation = async () => {
@@ -436,7 +461,10 @@ export function useAgentWorkspace({ route, router }) {
     agentInputRef.value?.focus()
   }
 
-  const persistAgentSessionMeta = () => localStorage.setItem(AGENT_SESSION_META_KEY, JSON.stringify(agentSessionMeta.value))
+  const persistAgentSessionMeta = () => {
+    const storageKey = agentStorageKey(AGENT_SESSION_META_KEY)
+    if (storageKey) localStorage.setItem(storageKey, JSON.stringify(agentSessionMeta.value))
+  }
   const updateAgentSessionMeta = (sessionId, changes) => {
     agentSessionMeta.value = { ...agentSessionMeta.value, [sessionId]: { ...agentSessionMeta.value[sessionId], ...changes } }
     persistAgentSessionMeta()
@@ -944,7 +972,7 @@ export function useAgentWorkspace({ route, router }) {
     agentHistoryLoading, agentHistory, agentHistoryRange, agentHistorySource, agentHistoryQuery,
     agentFiltersVisible, agentCurrentSession, agentContextStats, agentContextDetailsVisible, agentCompaction, agentContextUsageLabel, agentCompactionElapsedSeconds, agentSessionSource, agentSessionSourceLabel, agentSessionReadonly,
     agentQuickQuestions, workspaceTitle, currentAgentTitle, sortedAgentHistory, agentContextLabel, currentAgentContext, agentVideoSelectionForCard,
-    scrollAgentMessages, loadOlderAgentMessages, handleAgentMessagesScroll, newAgentConversation, startAgentConversation,
+    scrollAgentMessages, loadOlderAgentMessages, handleAgentMessagesScroll, newAgentConversation, startAgentConversation, activateAgentWorkspace, clearAgentWorkspace,
     sendAgentMessage, selectAgentVideoCard, updateAgentVideoSelection, clearAgentVideoSelection, loadAgentVideoStatusCardPage, showAgentMessageTools, copyAgentMessage, loadAgentHistory, openAgentHistory, openAgentWorkbench,
     selectAgentSession, compactCurrentAgentSession, handleAgentSessionCommand, removeAgentSession, prepareAgentRetry, handleAgentInputKeydown,
     confirmAgentAction, handleAskAgentEvent,

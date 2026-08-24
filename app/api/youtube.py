@@ -33,7 +33,7 @@ def _public_workflow_payload(value):
 def youtube_search():
     query = (
         request.args.get('query')
-        or get_workflow_settings().get("searchQuery")
+        or get_workflow_settings(_current_account_owner_id()).get("searchQuery")
         or YOUTUBE_DEFAULT_QUERY
     ).strip()
     try:
@@ -109,7 +109,7 @@ def create_youtube_search_job_route():
         query = str(
             (
                 payload.get("query")
-                or get_workflow_settings().get("searchQuery")
+                or get_workflow_settings(_current_account_owner_id()).get("searchQuery")
                 or YOUTUBE_DEFAULT_QUERY
             )
         ).strip()
@@ -191,7 +191,7 @@ def scan_youtube_local_retention_route():
 @app.route('/youtube/workflow/settings', methods=['GET'])
 def youtube_workflow_settings():
     try:
-        return _json_response(data=get_workflow_settings())
+        return _json_response(data=get_workflow_settings(_current_account_owner_id()))
     except Exception as e:
         backend_logger.exception("获取处理设置失败")
         return _json_response(500, "获取处理设置失败，请稍后重试", None, 500)
@@ -201,7 +201,7 @@ def youtube_workflow_settings():
 def update_youtube_workflow_settings():
     try:
         payload = request.get_json(silent=True) or {}
-        return _json_response(data=update_workflow_settings(payload))
+        return _json_response(data=update_workflow_settings(_current_account_owner_id(), payload))
     except Exception as e:
         backend_logger.exception("保存处理设置失败")
         return _json_response(500, "保存处理设置失败，请稍后重试", None, 500)

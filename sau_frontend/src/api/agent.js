@@ -153,10 +153,10 @@ export const agentApi = {
   },
 
   getSoul() {
-    return request.get('/admin/agent-soul')
+    return request.get('/agent/soul')
   },
 
   updateSoul(content) {
-    return request.put('/admin/agent-soul', { content })
+    return request.put('/agent/soul', { content })
   }
 }
