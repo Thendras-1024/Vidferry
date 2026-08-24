@@ -150,5 +150,13 @@ export const agentApi = {
 
   getRun(runId) {
     return request.get(`/agents/runs/${runId}`)
+  },
+
+  getSoul() {
+    return request.get('/admin/agent-soul')
+  },
+
+  updateSoul(content) {
+    return request.put('/admin/agent-soul', { content })
   }
 }

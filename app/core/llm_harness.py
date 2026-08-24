@@ -151,6 +151,129 @@ def _request_completion(base_url, api_key, timeout, payload):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _stream_content(value):
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    return "".join(
+        str(item.get("text") or "")
+        for item in value
+        if isinstance(item, dict)
+    )
+
+
+def _stream_event_content(data):
+    choice = ((data or {}).get("choices") or [{}])[0] or {}
+    return _stream_content((choice.get("delta") or {}).get("content"))
+
+
+def _stream_event_usage(data):
+    usage = (data or {}).get("usage")
+    if not isinstance(usage, dict):
+        return None
+    return {
+        "tokens": int(usage.get("total_tokens") or usage.get("totalTokens") or 0),
+        "totalTokens": int(usage.get("total_tokens") or usage.get("totalTokens") or 0),
+        "promptTokens": int(usage.get("prompt_tokens") or usage.get("promptTokens") or 0),
+        "completionTokens": int(usage.get("completion_tokens") or usage.get("completionTokens") or 0),
+    }
+
+
+def stream_text_completion(*, messages, model, api_key, base_url, timeout, temperature, max_tokens,
+                           profile_channel="agent", usage_callback=None):
+    """仅供 Agent 展示回答使用的 OpenAI 兼容 SSE 文本流。"""
+    if not api_key or not base_url or not model:
+        raise RuntimeError("模型 API Key、Base URL 或模型名称未配置。")
+
+    profile = llm_provider_profile(model, api_key, base_url, profile_channel=profile_channel)
+    provider = (profile or {}).get("provider") or "auto"
+    payload = {
+        "model": model,
+        "messages": list(messages),
+        "temperature": temperature,
+        "max_tokens": int(max_tokens),
+        "stream": True,
+    }
+    payload.update(provider_optional_fields(
+        provider,
+        disable_thinking=(profile or {}).get("thinkingRequested", True),
+        structured=False,
+    ))
+
+    last_error = None
+    candidate_payloads = []
+    for include_usage in (True, False):
+        stream_payload = dict(payload)
+        if include_usage:
+            stream_payload["stream_options"] = {"include_usage": True}
+        candidate_payloads.extend(fallback_payloads(stream_payload))
+
+    for candidate_payload, _removed in candidate_payloads:
+        request = urllib.request.Request(
+            f"{str(base_url or '').rstrip('/')}/chat/completions",
+            data=json.dumps(candidate_payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code == 400:
+                continue
+            raise _classify_request_error(exc, model) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise _classify_url_error(exc, model) from exc
+
+        try:
+            data_lines = []
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line:
+                    if not data_lines:
+                        continue
+                    event_data = "\n".join(data_lines)
+                    data_lines = []
+                    if event_data == "[DONE]":
+                        return
+                    try:
+                        event = json.loads(event_data)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("error"):
+                        raise RuntimeError(str(event["error"])[:300])
+                    usage = _stream_event_usage(event)
+                    if usage and callable(usage_callback):
+                        usage_callback(usage)
+                    content = _stream_event_content(event)
+                    if content:
+                        yield content
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+            if data_lines:
+                event_data = "\n".join(data_lines)
+                if event_data != "[DONE]":
+                    try:
+                        event = json.loads(event_data)
+                        usage = _stream_event_usage(event)
+                        if usage and callable(usage_callback):
+                            usage_callback(usage)
+                        content = _stream_event_content(event)
+                    except json.JSONDecodeError:
+                        content = ""
+                    if content:
+                        yield content
+            return
+        finally:
+            response.close()
+
+    if last_error is not None:
+        raise _classify_request_error(last_error, model) from last_error
+    raise RuntimeError("模型流式接口不可用。")
+
+
 def _classify_request_error(exc, model=""):
     if isinstance(exc, urllib.error.HTTPError):
         return _classify_http_error(exc, model)
@@ -222,8 +345,8 @@ def _emit_usage_telemetry(telemetry, payload):
         logging.exception("LLM 用量遥测写入失败 contract = %s", payload.get("operation") or "")
 
 
-def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None, profile_channel="text"):
-    """调用模型并最多进行一次针对契约错误的完整重写。"""
+def call_json_contract(*, messages, contract_id, validator, model, api_key, base_url, timeout, temperature, max_tokens, prompt_version, telemetry=None, soft_validator=None, retry_max_tokens=None, profile_channel="text", max_attempts=2):
+    """调用模型并按 max_attempts 处理契约错误重试。"""
     if not api_key or not base_url or not model:
         raise RuntimeError("模型 API Key、Base URL 或模型名称未配置。")
 
@@ -234,8 +357,9 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
     last_raw = ""
     last_violations = []
     use_retry_max_tokens = False
-    for attempt in range(1, 3):
-        attempt_max_tokens = retry_max_tokens if attempt == 2 and use_retry_max_tokens else max_tokens
+    max_attempts = max(1, int(max_attempts or 1))
+    for attempt in range(1, max_attempts + 1):
+        attempt_max_tokens = retry_max_tokens if attempt == max_attempts and use_retry_max_tokens else max_tokens
         payload = {
             "model": model,
             "messages": current_messages,
@@ -289,7 +413,7 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
             last_violations = list(getattr(exc, "violations", []) or [str(exc)])
             if not last_raw.strip() or contract_category == "length_truncated":
                 last_violations = _EMPTY_CONTENT_REASONS.get(contract_category, ["模型返回空 content"])
-            if isinstance(exc, LLMContractError) and parsed is not None and attempt == 2 and callable(soft_validator):
+            if isinstance(exc, LLMContractError) and parsed is not None and attempt == max_attempts and callable(soft_validator):
                 soft_warnings = []
                 try:
                     result = soft_validator(parsed, soft_warnings)
@@ -334,7 +458,7 @@ def call_json_contract(*, messages, contract_id, validator, model, api_key, base
                 "LLM 契约校验失败 contract=%s attempt=%s category=%s violations=%s",
                 contract_id, attempt, contract_category, last_violations[:8],
             )
-            if attempt == 1:
+            if attempt < max_attempts:
                 use_retry_max_tokens = contract_category == "length_truncated" and retry_max_tokens is not None
                 current_messages = [*messages, _repair_message(last_raw, last_violations)]
                 continue

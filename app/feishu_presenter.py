@@ -6,11 +6,10 @@ from app.config import FEISHU_BUTLER_CONSOLE_URL
 
 
 TOOL_LABELS = {
-    "explain_vidferry_pipeline": "工作流说明",
     "get_account_status": "账号状态",
     "get_publish_platforms": "发布平台",
     "get_video_detail": "视频详情",
-    "get_workflow_overview": "工作流概览",
+    "project_workflow_overview": "工作流概览",
     "list_failed_jobs": "异常任务",
     "list_publish_tasks": "发布任务",
     "list_videos_by_status": "视频列表",

@@ -111,6 +111,7 @@
                     <el-dropdown-item v-if="isAdmin" command="statistics">处理统计</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="audit">字幕审计与诊断</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin" command="shortVideoBgm">短视频 BGM 管理</el-dropdown-item>
+                    <el-dropdown-item v-if="isAdmin" command="agentSettings">Agent 设置</el-dropdown-item>
                     <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -334,6 +335,14 @@
             :closable="false"
             :title="agentConfigWarning"
           />
+          <el-alert
+            v-if="asrConfigWarning"
+            class="runtime-config-alert"
+            type="error"
+            show-icon
+            :closable="false"
+            :title="asrConfigWarning"
+          />
           <AgentWorkspace
             :workspace="agentWorkspace"
             :show-page="route.path === '/'"
@@ -357,6 +366,7 @@ import {
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { commonApi } from '@/api/common'
+import { formatBeijingTime } from '@/utils/time'
 import { useAccountStore } from '@/stores/account'
 import { useNotificationStore } from '@/stores/notification'
 import { useUserStore } from '@/stores/user'
@@ -393,6 +403,7 @@ let feishuRobotStatusTimer = null
 let authenticatedWorkspaceStarted = false
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
+const asrConfigWarning = ref('')
 const feishuRobotStatus = ref({ status: 'connecting', message: '正在读取飞书机器人状态。', updatedAt: '' })
 const showNotificationHistory = ref(false)
 const notificationMessages = computed(() => (
@@ -452,6 +463,10 @@ const refreshRuntimeConfigStatus = async () => {
     if (textStatus && !textStatus.ready) {
       llmConfigWarning.value = textStatus.message || '文本模型不可用，请检查配置并重启后端。'
     }
+    const asrStatus = res?.data?.runtime?.whisper
+    asrConfigWarning.value = asrStatus && !asrStatus.ready
+      ? (asrStatus.message || 'Whisper 不可用，请检查模型与运行配置。')
+      : ''
     const agent = res?.data?.agent
     const agentLlmStatus = llm?.agent
     const agentWarnings = []
@@ -484,23 +499,12 @@ const refreshFeishuRobotStatus = async () => {
 const formatMessageTime = (timestamp) => {
   if (!timestamp) return ''
 
-  return new Date(timestamp).toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+  return formatBeijingTime(timestamp, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 const formatAgentSessionTime = (timestamp) => {
   if (!timestamp) return ''
-  return new Date(timestamp).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+  return formatBeijingTime(timestamp, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 const handleMessageAction = (message) => {
@@ -517,6 +521,7 @@ const handleUserCommand = async command => {
   if (command === 'statistics') return router.push('/workflow-statistics')
   if (command === 'audit') return router.push('/subtitle-audit')
   if (command === 'shortVideoBgm') return router.push('/short-video-bgm')
+  if (command === 'agentSettings') return router.push('/agent-settings')
   if (command === 'about') return router.push('/about')
   if (command === 'password') return router.push('/change-password')
   if (command === 'logout') {

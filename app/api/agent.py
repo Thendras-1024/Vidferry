@@ -29,6 +29,8 @@ def agent_chat():
             "msg": "success",
             "data": result
         }), 200
+    except AgentContextBudgetError as exc:
+        return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as exc:
         backend_logger.exception("Agent 对话失败 session_id=%s", payload.get("sessionId") or "new")
         return jsonify({"code": 500, "msg": "Agent 对话失败，请稍后重试", "data": None}), 500

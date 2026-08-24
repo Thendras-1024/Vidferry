@@ -2,7 +2,7 @@
 
 from app.config import (
     AGENT_BLOCK_LEVEL,
-    AGENT_CHAT_MAX_TOKENS,
+    AGENT_OUTPUT_MAX_TOKENS,
     AGENT_CHAT_TEMPERATURE,
     AGENT_ENABLED,
     AGENT_FRAME_MAX_COUNT,
@@ -38,7 +38,8 @@ def _agent_status_payload():
         "maxToolCalls": AGENT_MAX_TOOL_CALLS,
         "reactMaxSteps": AGENT_REACT_MAX_STEPS,
         "chatTemperature": AGENT_CHAT_TEMPERATURE,
-        "chatMaxTokens": AGENT_CHAT_MAX_TOKENS,
+        "chatMaxTokens": AGENT_OUTPUT_MAX_TOKENS,
+        "outputMaxTokens": AGENT_OUTPUT_MAX_TOKENS,
         "guardTemperature": AGENT_GUARD_TEMPERATURE,
         "guardMaxTokens": AGENT_GUARD_MAX_TOKENS,
         "requireVisionCheck": AGENT_REQUIRE_VISION_CHECK,

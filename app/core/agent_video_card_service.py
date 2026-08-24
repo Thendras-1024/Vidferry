@@ -126,6 +126,12 @@ def _agent_video_card_details(videos):
                 "platformType": int(row["platform_type"] or 0),
                 "accountName": row["account_name"] or "",
             })
+        _attach_source_title_translations(cursor, videos, owner_user_id)
+        if owner_user_id is not None:
+            _queue_source_title_translation_batch(
+                owner_user_id,
+                _source_title_translation_candidates(cursor, videos, owner_user_id, _TITLE_TRANSLATION_PAGE_LIMIT),
+            )
     for video in videos:
         video_id = str(video["id"])
         latest = latest_jobs.get(video_id) or {}
@@ -155,6 +161,8 @@ def _agent_video_card_thumbnail(video, session_id=""):
 def _agent_video_status_card_item(video, label="", session_id=""):
     video = video if isinstance(video, dict) else {}
     publish_draft = video.get("publishDraft") or {}
+    original_title = video.get("title") or ""
+    display_title = video.get("chineseTitle") or original_title or "未命名视频"
     state = label or (
         "已发布" if int(video.get("publishStatus") or 0) else
         "已处理未发布" if int(video.get("translateStatus") or 0) in {1, 2} else
@@ -163,7 +171,8 @@ def _agent_video_status_card_item(video, label="", session_id=""):
     return {
         "id": str(video.get("id") or ""),
         "shortCode": f"#{str(video.get('id') or '')}",
-        "title": video.get("title") or "未命名视频",
+        "title": display_title,
+        "originalTitle": original_title,
         "channel": video.get("channel") or "",
         "duration": video.get("duration") or "",
         "status": state,
@@ -178,7 +187,8 @@ def _agent_video_status_card_item(video, label="", session_id=""):
         "detail": " · ".join(value for value in (video.get("channel"), video.get("duration"), state) if value),
         "videoContext": {
             "videoId": str(video.get("id") or ""),
-            "title": video.get("title") or "",
+            "title": display_title,
+            "originalTitle": original_title,
             "channel": video.get("channel") or "",
             "duration": video.get("duration") or "",
         },

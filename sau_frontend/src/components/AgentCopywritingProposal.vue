@@ -100,6 +100,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { agentApi } from '@/api/agent'
 import { cleanTopicList } from '@/utils/publishDraft'
+import { formatBeijingTime } from '@/utils/time'
 
 const props = defineProps({
   proposal: { type: Object, default: null },
@@ -160,7 +161,7 @@ const topicLabel = (...lists) => cleanTopicList(lists.flat()).map(tag => `#${tag
 
 const videoDetails = video => [
   { label: '状态', value: video.status || '已处理未发布' },
-  { label: '原视频发布时间', value: video.publishedAt || '未记录' },
+  { label: '原视频发布时间', value: formatBeijingTime(video.publishedAt) || '未记录' },
   { label: '检索主题', value: video.query || '未记录' },
   { label: '内容摘要', value: video.analysis?.summary || '未生成' }
 ]

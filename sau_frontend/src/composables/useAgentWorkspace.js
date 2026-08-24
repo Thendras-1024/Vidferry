@@ -11,6 +11,7 @@ const PAGE_TITLES = {
   '/youtube-research': '视频采集与处理',
   '/workflow-settings': '处理配置',
   '/account-management': '账号连接',
+  '/agent-settings': 'Agent 设置',
   '/user-management': '用户与安全',
   '/material-management': '视频素材',
   '/publish-center': '发布中心',

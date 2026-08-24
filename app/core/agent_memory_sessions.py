@@ -96,6 +96,144 @@ def _insert_agent_message(cursor, session_id, role, content, context=None):
     return message_id
 
 
+def _agent_turn_event_metadata(event_type, payload):
+    """事件审计只保留可检索的元数据，不持久化消息、工具参数或结果正文。"""
+    payload = payload if isinstance(payload, dict) else {}
+    if event_type in {"user_message", "assistant_message"}:
+        content = payload.get("content")
+        context = payload.get("context")
+        return {
+            "messageId": payload.get("messageId"),
+            "contentChars": len(str(content or "")),
+            "contextKeys": sorted(str(key) for key in context)[:40] if isinstance(context, dict) else [],
+        }
+    if event_type == "tool_call":
+        args = payload.get("args")
+        return {"argKeys": sorted(str(key) for key in args)[:40] if isinstance(args, dict) else []}
+    if event_type == "tool_result":
+        result = payload.get("result")
+        error = payload.get("error")
+        return {
+            "resultType": type(result).__name__ if result is not None else "none",
+            "resultCount": len(result) if isinstance(result, (dict, list, tuple, set, str)) else 0,
+            "errorType": type(error).__name__ if error else "",
+        }
+    return {
+        "keys": sorted(str(key) for key in payload)[:40],
+    }
+
+
+def _insert_agent_turn_event(cursor, session_id, turn_id, sequence, event_type, *, role="", tool_name="", payload=None):
+    """追加不含正文的会话事件审计；完整消息仍保留在会话消息表中。"""
+    cursor.execute(
+        """
+        INSERT INTO agent_turn_events (session_id, turn_id, sequence, event_type, role, tool_name, payload, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            str(session_id or ""), int(turn_id) if turn_id else None, int(sequence or 0), str(event_type or ""),
+            str(role or ""), str(tool_name or ""),
+            _agent_json_dumps(_agent_turn_event_metadata(str(event_type or ""), payload)), _agent_now_iso(),
+        ),
+    )
+
+
+def _backfill_legacy_agent_turn_events(session_id):
+    """为升级前无事件流的会话建立一次兼容视图，不修改原始消息。"""
+    with agent_session_guard(session_id):
+        with _db_connect(row_factory=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM agent_turn_events WHERE session_id = %s LIMIT 1", (session_id,))
+            if cursor.fetchone():
+                return
+            owner_filter, owner_values = _agent_owner_filter(_agent_current_user_id(), "s.owner_user_id")
+            cursor.execute(
+                f"""
+                SELECT m.id, m.role, m.content, m.context
+                FROM agent_messages AS m
+                JOIN agent_sessions AS s ON s.id = m.session_id
+                WHERE m.session_id = %s AND s.deleted_at IS NULL{owner_filter}
+                ORDER BY m.id ASC
+                """,
+                (session_id, *owner_values),
+            )
+            current_turn_id = None
+            for message in cursor.fetchall():
+                message_id = int(message["id"] or 0)
+                role = message["role"]
+                context = _agent_json_loads(message["context"], {})
+                if role == "user":
+                    current_turn_id = message_id
+                    _insert_agent_turn_event(
+                        cursor, session_id, current_turn_id, 0, "user_message", role="user",
+                        payload={"messageId": message_id, "content": message["content"], "context": context},
+                    )
+                    continue
+                turn_id = current_turn_id or message_id
+                for sequence, item in enumerate(context.get("toolResults") or [], start=1):
+                    if not isinstance(item, dict):
+                        continue
+                    _insert_agent_turn_event(
+                        cursor, session_id, turn_id, sequence * 2 - 1, "tool_call",
+                        tool_name=item.get("tool") or "", payload={"args": item.get("args") or {}},
+                    )
+                    _insert_agent_turn_event(
+                        cursor, session_id, turn_id, sequence * 2, "tool_result",
+                        tool_name=item.get("tool") or "", payload={
+                            "result": item.get("result"), "error": item.get("error") or "",
+                        },
+                    )
+                _insert_agent_turn_event(
+                    cursor, session_id, turn_id, 10_000, "assistant_message", role="assistant",
+                    payload={"messageId": message_id, "content": message["content"], "context": context},
+                )
+            conn.commit()
+
+
+def list_agent_turn_events(session_id, turn_id=None):
+    """按会话或回合读取原始事件，供诊断与后续回放使用。"""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return []
+    _backfill_legacy_agent_turn_events(session_id)
+    owner_filter, owner_values = _agent_owner_filter(_agent_current_user_id(), "s.owner_user_id")
+    values = [session_id, *owner_values]
+    turn_sql = ""
+    if turn_id is not None:
+        turn_sql = " AND e.turn_id = %s"
+        values.append(int(turn_id))
+    with _db_connect(row_factory=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT e.* FROM agent_turn_events AS e
+            JOIN agent_sessions AS s ON s.id = e.session_id
+            WHERE e.session_id = %s AND s.deleted_at IS NULL{owner_filter}{turn_sql}
+            ORDER BY e.turn_id, e.sequence, e.id
+            """,
+            values,
+        ).fetchall()
+    return [{
+        "id": row["id"], "turnId": row["turn_id"], "sequence": int(row["sequence"] or 0),
+        "type": row["event_type"], "role": row["role"] or "", "toolName": row["tool_name"] or "",
+        "payload": _agent_turn_event_metadata(row["event_type"], _agent_json_loads(row["payload"], {})),
+        "createdAt": row["created_at"],
+    } for row in rows]
+
+
+def save_agent_turn_event(session_id, event_type, *, turn_id=None, sequence=0, role="", tool_name="", payload=None):
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return None
+    with agent_session_guard(session_id):
+        with _db_connect() as conn:
+            cursor = conn.cursor()
+            _insert_agent_turn_event(
+                cursor, session_id, turn_id, sequence, event_type, role=role,
+                tool_name=tool_name, payload=payload,
+            )
+            conn.commit()
+
+
 def save_agent_message(session_id, role, content, context=None):
     session_id = str(session_id or "").strip()
     with agent_session_guard(session_id):
@@ -296,6 +434,13 @@ def start_agent_turn(session_id="", message="", context=None):
                     ),
                 )
             message_id = _insert_agent_message(cursor, session_id, "user", message, context)
+            _insert_agent_turn_event(
+                cursor, session_id, message_id, 0, "user_message", role="user",
+                payload={
+                    "messageId": message_id, "content": str(message or ""),
+                    "context": context if isinstance(context, dict) else {},
+                },
+            )
             conn.commit()
     if is_first_user_message:
         _schedule_agent_session_title(session_id, message, owner_user_id)
@@ -348,7 +493,7 @@ def _generate_agent_session_title(session_id, message, owner_user_id):
 
 
 def list_agent_messages(session_id, limit=12, before_id=None, after_id=None):
-    limit = max(1, min(int(limit or 12), 100))
+    limit = max(1, min(int(limit or 12), 2000))
     owner_user_id = _agent_current_user_id()
     owner_filter, owner_values = _agent_owner_filter(owner_user_id, "s.owner_user_id")
     values = [str(session_id or "").strip(), *owner_values]
@@ -412,6 +557,10 @@ def _agent_session_payload(row):
         "context": _agent_json_loads(row["context"], {}),
         "summary": summary if isinstance(summary, dict) else {},
         "summaryThroughId": int(row["summary_through_id"] or 0),
+        "summaryVersion": int(row.get("summary_version") or 1),
+        "summaryUpdatedAt": row.get("summary_updated_at") or "",
+        "contextPolicyVersion": row.get("context_policy_version") or _CONTEXT_POLICY_VERSION,
+        "lastCompactionRunId": row.get("last_compaction_run_id") or "",
         "messageCount": int(row["message_count"] or 0),
         "createdAt": row["created_at"] or "",
         "updatedAt": row["updated_at"] or row["created_at"] or "",

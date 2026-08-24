@@ -26,7 +26,7 @@ def _account_status():
 
 
 def _workflow_overview():
-    return _agent_tool("get_workflow_overview")()
+    return _agent_tool("_get_project_workflow_overview")()
 
 
 def _failed_jobs():
@@ -80,7 +80,7 @@ def butler_result(text):
         ]}
     if any(word in message for word in _NEXT_WORDS):
         return {"answer": "任务会依次经过下载、处理、发布稿生成和发布前确认。需要执行操作时请进入 Web 控制台。", "toolResults": [
-            {"tool": "get_workflow_overview", "result": _workflow_overview()},
+            {"tool": "project_workflow_overview", "result": _workflow_overview()},
         ]}
     return None
 

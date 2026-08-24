@@ -16,6 +16,7 @@ import UserManagement from '../views/UserManagement.vue'
 import ProcessingSettings from '../views/ProcessingSettings.vue'
 import ShortVideoStudio from '../views/ShortVideoStudio.vue'
 import ShortVideoBgmAdmin from '../views/ShortVideoBgmAdmin.vue'
+import AgentSoulSettings from '../views/AgentSoulSettings.vue'
 import pinia, { useUserStore } from '../stores'
 
 const routes = [
@@ -91,6 +92,12 @@ const routes = [
     path: '/short-video-bgm',
     name: 'ShortVideoBgmAdmin',
     component: ShortVideoBgmAdmin,
+    meta: { requiresAdmin: true }
+  },
+  {
+    path: '/agent-settings',
+    name: 'AgentSoulSettings',
+    component: AgentSoulSettings,
     meta: { requiresAdmin: true }
   },
   {

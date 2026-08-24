@@ -13,7 +13,7 @@
         <el-checkbox :model-value="isSelected(video.id)" @change="checked => toggle(video.id, checked)" />
         <el-image v-if="video.thumbnail" :src="video.thumbnail" fit="cover" class="video-cover" />
         <div class="video-copy">
-          <strong>{{ video.title || '未命名视频' }}</strong>
+          <strong :title="video.originalTitle || video.title">{{ video.title || '未命名视频' }}</strong>
           <small v-if="video.shortCode" class="video-code">编号 {{ video.shortCode }}</small>
           <span>{{ video.detail }}</span>
           <small v-if="video.processVersion">处理版本 {{ video.processVersion }}</small>
@@ -21,7 +21,7 @@
           <small v-if="video.latestJob?.message">{{ video.latestJob.message }}</small>
           <small v-if="video.publishedPlatforms?.length">已发布 {{ video.publishedPlatforms.map(item => item.platform).join('、') }}</small>
           <small v-else-if="video.hasPublishDraft">已有本地发布稿</small>
-          <small>{{ video.updatedAt || '' }}</small>
+          <small>{{ formatBeijingTime(video.updatedAt) }}</small>
         </div>
       </label>
     </div>
@@ -36,6 +36,8 @@
 </template>
 
 <script setup>
+import { formatBeijingTime } from '@/utils/time'
+
 const props = defineProps({
   card: { type: Object, required: true },
   selection: { type: Array, default: () => [] },

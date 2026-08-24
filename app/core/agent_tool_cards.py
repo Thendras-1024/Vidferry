@@ -49,15 +49,6 @@ def agent_tool_result_cards(tool_results):
                 "detail": _agent_card_text(result.get("description") or result.get("content") or "仅供查看，不会扩展 Agent 权限。", 240),
                 "status": "只读",
             }], 1, "skill"))
-        elif name == "explain_vidferry_pipeline":
-            cards.append(_agent_card("视频工作流", _agent_card_items(result.get("steps"), "label", ("description",), "key"), len(result.get("steps") or []), "workflow"))
-        elif name == "get_workflow_overview":
-            labels = result.get("labels") if isinstance(result.get("labels"), dict) else {}
-            counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
-            cards.append(_agent_card("工作流概览", [
-                {"title": labels.get(key) or key, "detail": f"{int(value or 0)} 个视频", "status": ""}
-                for key, value in counts.items()
-            ], len(counts), "workflow_overview"))
         elif name == "get_publish_platforms":
             cards.append(_agent_card("发布平台记录", _agent_card_items(result.get("items"), "platform", ("accountName", "publishedAt")), result.get("total", 0), "publish_platforms"))
         elif name == "list_publish_tasks":
@@ -76,17 +67,6 @@ def agent_tool_result_cards(tool_results):
                 for key, value in settings.items()
                 if not isinstance(value, (dict, list))
             ][:12], None, "workflow_settings"))
-        elif name == "list_short_video_projects":
-            cards.append(_agent_card("短视频项目", _agent_card_items(result.get("items"), "topic", ("targetCount", "updatedAt")), len(result.get("items") or []), "short_video_projects"))
-        elif name == "get_short_video_project":
-            candidates = result.get("candidates") or []
-            cards.append(_agent_card("短视频项目详情", [{
-                "title": _agent_card_text(result.get("topic") or "未命名项目", 120),
-                "detail": _agent_card_text(result.get("message") or result.get("updatedAt"), 160),
-                "status": _agent_card_text(result.get("status"), 48),
-            }], 1, "short_video_project"))
-            if candidates:
-                cards.append(_agent_card("候选审核", _agent_card_items(candidates, "title", ("channel", "analysisReason"), "analysisStatus"), len(candidates), "short_video_candidates"))
         elif name == "list_material_records":
             cards.append(_agent_card("素材", _agent_card_items(result.get("items"), "title", ("filename", "duration", "sourceType")), result.get("total", 0), "materials"))
         elif name == "search_youtube_candidates":

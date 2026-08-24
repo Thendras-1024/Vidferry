@@ -1,4 +1,4 @@
-"""Agent 只读查询工具:工作流概览、视频/账号/发布记录查询与流程说明。"""
+"""Agent 只读查询工具:视频、账号、发布记录和平台数据查询。"""
 
 
 from __future__ import annotations
@@ -51,18 +51,6 @@ AGENT_TOOL_SPECS = [
             "required": ["name", "path"],
             "additionalProperties": False,
         },
-        "readOnly": True,
-    },
-    {
-        "name": "explain_vidferry_pipeline",
-        "description": "说明 Vidferry 从线索导入、下载、处理、质检到发布的本地工作流。",
-        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        "readOnly": True,
-    },
-    {
-        "name": "get_workflow_overview",
-        "description": "查询当前视频工作流各状态数量概览。",
-        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         "readOnly": True,
     },
     {
@@ -172,23 +160,6 @@ AGENT_TOOL_SPECS = [
         "name": "get_workflow_settings",
         "description": "查询当前视频处理工作流设置，不会保存或修改设置。",
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        "readOnly": True,
-    },
-    {
-        "name": "list_short_video_projects",
-        "description": "查询当前用户的短视频拼接项目及状态，不会创建、修改或渲染项目。",
-        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        "readOnly": True,
-    },
-    {
-        "name": "get_short_video_project",
-        "description": "查询一个短视频拼接项目及候选审核状态，不会修改项目。",
-        "parameters": {
-            "type": "object",
-            "properties": {"projectId": {"type": "string"}},
-            "required": ["projectId"],
-            "additionalProperties": False,
-        },
         "readOnly": True,
     },
     {
@@ -531,21 +502,7 @@ def _agent_attach_latest_tasks(items):
     return items
 
 
-def explain_vidferry_pipeline():
-    return {
-        "name": "Vidferry 本地视频工作流",
-        "steps": [
-            {"key": "research", "label": "线索导入", "description": "按关键词或链接导入 YouTube 候选视频。"},
-            {"key": "download", "label": "视频下载", "description": "使用 yt-dlp 下载原视频并登记素材。"},
-            {"key": "process", "label": "字幕/剪辑处理", "description": "转写、翻译、烧录字幕，并按处理版本生成成片。"},
-            {"key": "analysis", "label": "发布稿生成", "description": "LLM 生成标题、正文、话题、高光和风险提示。"},
-            {"key": "guard", "label": "发布前质检", "description": "Agent 审核文本和关键帧，严重风险会阻断发布。"},
-            {"key": "publish", "label": "多平台发布", "description": "按账号和平台提交发布，并记录每个平台结果。"},
-        ],
-    }
-
-
-def get_workflow_overview():
+def _get_project_workflow_overview():
     owner_user_id = _agent_current_user_id()
     if not owner_user_id:
         raise PermissionError("工作流概览缺少当前用户身份")
@@ -565,48 +522,9 @@ def get_workflow_overview():
             )
             counts[status] = int((cursor.fetchone() or {})["total"] or 0)
     return {
-        "pipeline": explain_vidferry_pipeline()["steps"],
         "counts": counts,
         "labels": {key: AGENT_VIDEO_STATUSES.get(key, key) for key in statuses},
     }
-
-
-def _agent_compact_short_video_project(project, include_candidates=False):
-    result = {
-        "id": project.get("id") or "",
-        "topic": project.get("topic") or "",
-        "targetCount": int(project.get("targetCount") or 0),
-        "targetDurationSeconds": int(project.get("targetDurationSeconds") or 0),
-        "transitionType": project.get("transitionType") or "",
-        "status": project.get("status") or "",
-        "message": project.get("message") or "",
-        "outputMaterialId": project.get("outputMaterialId"),
-        "updatedAt": project.get("updated_at") or project.get("updatedAt") or "",
-    }
-    if include_candidates:
-        result["candidates"] = [
-            {
-                "id": candidate.get("id") or "",
-                "title": candidate.get("title") or "",
-                "channel": candidate.get("channel") or "",
-                "licenseBasis": candidate.get("licenseBasis") or "",
-                "durationSeconds": float(candidate.get("durationSeconds") or 0),
-                "selected": bool(candidate.get("selected")),
-                "analysisStatus": candidate.get("analysisStatus") or "",
-                "analysisScore": int(candidate.get("analysisScore") or 0),
-                "analysisReason": candidate.get("analysisReason") or "",
-            }
-            for candidate in project.get("candidates") or []
-        ]
-    return result
-
-
-def agent_list_short_video_projects():
-    return {"items": [_agent_compact_short_video_project(project) for project in list_short_video_projects()]}
-
-
-def agent_get_short_video_project(project_id):
-    return _agent_compact_short_video_project(get_short_video_project(project_id), include_candidates=True)
 
 
 def agent_list_material_records(keyword="", limit=None):
