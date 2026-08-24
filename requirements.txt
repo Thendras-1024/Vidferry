@@ -22,10 +22,9 @@ requests==2.32.3
 loguru==0.7.3
 
 # Video download, ASR, translation, and media processing
-yt-dlp>=2025.12.8
+yt-dlp[default]==2026.8.18.122307.dev0
 faster-whisper==1.2.1
 ctranslate2==4.8.1
-deep-translator>=1.11.4
 imageio-ffmpeg>=0.5.1
 opencv-python>=4.13.0.92
 

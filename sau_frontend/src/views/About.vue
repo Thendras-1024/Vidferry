@@ -93,11 +93,10 @@ const features = [
 const techStack = ['Vue 3', 'Element Plus', 'Pinia', 'Flask', 'PostgreSQL', 'yt-dlp', 'FFmpeg', 'faster-whisper', 'CTranslate2']
 
 const acknowledgements = [
-  { name: 'yt-dlp', license: 'Unlicense', version: '2026.3.17' },
+  { name: 'yt-dlp', license: 'Unlicense', version: '2026.8.18.122307.dev0' },
   { name: 'social-auto-upload', license: '开源项目', version: APP_VERSION },
   { name: 'FFmpeg', license: 'LGPL/GPL', version: '7.1 essentials build' },
-  { name: 'faster-whisper / CTranslate2', license: 'MIT', version: '1.2.1 / 4.7.2' },
-  { name: 'deep-translator', license: 'MIT', version: '1.11.4' }
+  { name: 'faster-whisper / CTranslate2', license: 'MIT', version: '1.2.1 / 4.8.1' }
 ]
 
 const acknowledgementNames = acknowledgements.map(item => item.name).join('、')
