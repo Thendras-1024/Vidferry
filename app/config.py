@@ -135,6 +135,7 @@ def _env_int(name, default, minimum=None, maximum=None):
     return value
 
 
+VIDEO_LOCAL_RETENTION_SUCCESS_DAYS = _env_int("VIDEO_LOCAL_RETENTION_SUCCESS_DAYS", 3, minimum=1, maximum=365)
 VIDEO_LOCAL_RETENTION_DAYS = _env_int("VIDEO_LOCAL_RETENTION_DAYS", 7, minimum=1, maximum=365)
 VIDEO_LOCAL_CLEANUP_INTERVAL_HOURS = _env_int("VIDEO_LOCAL_CLEANUP_INTERVAL_HOURS", 24, minimum=1, maximum=168)
 VIDEO_LOCAL_CLEANUP_BATCH_SIZE = _env_int("VIDEO_LOCAL_CLEANUP_BATCH_SIZE", 50, minimum=1, maximum=500)

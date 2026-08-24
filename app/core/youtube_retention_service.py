@@ -4,6 +4,11 @@ import datetime as _retention_datetime_module
 from pathlib import Path as _RetentionPath
 
 
+_RETENTION_SUCCESS_STATUSES = {"confirmed", "reused"}
+_RETENTION_PARTIAL_FAILURE_STATUSES = {"failed", "timeout", "cancelled"}
+_RETENTION_BLOCKED_STATUSES = {"queued", "running", "waiting_existing", "uncertain"}
+
+
 def _youtube_storage_scope_clause(scope):
     scope = str(scope or "active").strip().lower()
     if scope == "history":
@@ -20,15 +25,32 @@ def _retention_datetime(value):
         return None
 
 
-def _youtube_local_retention_eligible(records, anchor_at, now=None):
+def _youtube_retention_policy(records):
     records = list(records or [])
+    statuses = [str(record.get("status") or "").lower() for record in records]
+    known_statuses = _RETENTION_SUCCESS_STATUSES | _RETENTION_PARTIAL_FAILURE_STATUSES
+    if not records or any(status in _RETENTION_BLOCKED_STATUSES or status not in known_statuses for status in statuses):
+        return None
+    success_records = [record for record, status in zip(records, statuses) if status in _RETENTION_SUCCESS_STATUSES]
+    if not success_records:
+        return None
+    anchors = [_retention_datetime(record.get("published_at")) for record in success_records]
+    anchor = max((value for value in anchors if value), default=None)
+    if all(status in _RETENTION_SUCCESS_STATUSES for status in statuses):
+        return {"kind": "success", "anchor": anchor, "days": VIDEO_LOCAL_RETENTION_SUCCESS_DAYS}
+    if any(status in _RETENTION_PARTIAL_FAILURE_STATUSES for status in statuses):
+        return {"kind": "partial", "anchor": anchor, "days": VIDEO_LOCAL_RETENTION_DAYS}
+    return None
+
+
+def _youtube_local_retention_eligible(records, anchor_at, now=None):
+    policy = _youtube_retention_policy(records)
     anchor = _retention_datetime(anchor_at)
     current = _retention_datetime(now) if now else _retention_datetime_module.datetime.now(anchor.tzinfo if anchor else None)
     return bool(
-        records
+        policy
         and anchor
-        and all(str(record.get("status") or "") in {"confirmed", "reused"} for record in records)
-        and current >= anchor + _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
+        and current >= anchor + _retention_datetime_module.timedelta(days=policy["days"])
     )
 
 
@@ -41,11 +63,8 @@ def _refresh_youtube_video_retention(cursor, video_id, owner_user_id):
     ORDER BY published_at DESC, id DESC
     ''', (video_id, owner_user_id))
     records = [dict(row) for row in cursor.fetchall()]
-    if records and all(str(record.get("status") or "") in {"confirmed", "reused"} for record in records):
-        anchors = [record.get("published_at") for record in records if record.get("published_at")]
-        anchor = max(anchors) if anchors else None
-    else:
-        anchor = None
+    policy = _youtube_retention_policy(records)
+    anchor = policy["anchor"] if policy else None
     cursor.execute('''
     UPDATE youtube_videos
     SET retention_anchor_at = %s, updated_at = CURRENT_TIMESTAMP
@@ -171,12 +190,13 @@ def _purge_youtube_video_local_files(video_id, owner_user_id):
 
 def _youtube_local_cleanup_candidates(now=None, owner_user_id=None):
     current = _retention_datetime(now) if now else _retention_datetime_module.datetime.now()
-    cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
+    success_cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_SUCCESS_DAYS)
+    partial_cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
     owner_clause = "AND video.owner_user_id = %s" if owner_user_id is not None else ""
     query_params = []
     if owner_user_id is not None:
         query_params.append(owner_user_id)
-    query_params.append(cutoff.isoformat())
+    query_params.extend([success_cutoff.isoformat(), partial_cutoff.isoformat()])
     query_params.append(VIDEO_LOCAL_CLEANUP_BATCH_SIZE)
     with _db_connect() as conn:
         conn.row_factory = True
@@ -190,18 +210,51 @@ def _youtube_local_cleanup_candidates(now=None, owner_user_id=None):
               SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('confirmed', 'reused')
           )
           AND NOT EXISTS (
               SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
-                AND material.status NOT IN ('confirmed', 'reused')
+                AND COALESCE(NULLIF(material.status, ''), '__unknown__') NOT IN ('confirmed', 'reused', 'failed', 'timeout', 'cancelled')
           )
-          AND (
-              SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+          AND NOT EXISTS (
+              SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
-          ) <= %s
+                AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('queued', 'running', 'waiting_existing', 'uncertain')
+          )
+          AND (
+              (
+                  NOT EXISTS (
+                      SELECT 1 FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('failed', 'timeout', 'cancelled')
+                  )
+                  AND (
+                      SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('confirmed', 'reused')
+                  ) <= %s
+              )
+              OR
+              (
+                  EXISTS (
+                      SELECT 1 FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('failed', 'timeout', 'cancelled')
+                  )
+                  AND (
+                      SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('confirmed', 'reused')
+                  ) <= %s
+              )
+          )
           AND NOT EXISTS (
               SELECT 1 FROM scheduled_publish_tasks AS task
               WHERE task.video_id = video.video_id AND task.owner_user_id = video.owner_user_id
@@ -221,10 +274,11 @@ def _youtube_local_cleanup_candidates(now=None, owner_user_id=None):
 def _reconcile_youtube_purged_file_states(owner_user_id=None):
     """将文件已不存在但数据库仍为活动状态的成功发布线索移入历史。"""
     current = _retention_datetime_module.datetime.now()
-    cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
+    success_cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_SUCCESS_DAYS)
+    partial_cutoff = current - _retention_datetime_module.timedelta(days=VIDEO_LOCAL_RETENTION_DAYS)
     owner_clause = "AND video.owner_user_id = %s" if owner_user_id is not None else ""
     params = [owner_user_id] if owner_user_id is not None else []
-    params.append(cutoff.isoformat())
+    params.extend([success_cutoff.isoformat(), partial_cutoff.isoformat()])
     repaired = []
     with _db_connect() as conn:
         conn.row_factory = True
@@ -238,18 +292,51 @@ def _reconcile_youtube_purged_file_states(owner_user_id=None):
               SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('confirmed', 'reused')
           )
           AND NOT EXISTS (
               SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
-                AND material.status NOT IN ('confirmed', 'reused')
+                AND COALESCE(NULLIF(material.status, ''), '__unknown__') NOT IN ('confirmed', 'reused', 'failed', 'timeout', 'cancelled')
           )
-          AND (
-              SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+          AND NOT EXISTS (
+              SELECT 1 FROM published_youtube_materials AS material
               WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
                 AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
-          ) <= %s
+                AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('queued', 'running', 'waiting_existing', 'uncertain')
+          )
+          AND (
+              (
+                  NOT EXISTS (
+                      SELECT 1 FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('failed', 'timeout', 'cancelled')
+                  )
+                  AND (
+                      SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('confirmed', 'reused')
+                  ) <= %s
+              )
+              OR
+              (
+                  EXISTS (
+                      SELECT 1 FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('failed', 'timeout', 'cancelled')
+                  )
+                  AND (
+                      SELECT MAX(material.published_at) FROM published_youtube_materials AS material
+                      WHERE material.video_id = video.video_id AND material.owner_user_id = video.owner_user_id
+                        AND material.deleted_at IS NULL AND material.invalidated_at IS NULL
+                        AND COALESCE(NULLIF(material.status, ''), '__unknown__') IN ('confirmed', 'reused')
+                  ) <= %s
+              )
+          )
           AND NOT EXISTS (
               SELECT 1 FROM scheduled_publish_tasks AS task
               WHERE task.video_id = video.video_id AND task.owner_user_id = video.owner_user_id

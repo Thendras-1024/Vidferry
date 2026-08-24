@@ -3,24 +3,61 @@ from pathlib import Path
 from app.backend.runtime import create_backend_module
 
 
-def test_retention_requires_every_active_target_to_succeed_and_waits_seven_days():
+def test_retention_uses_three_days_for_all_successful_targets(monkeypatch):
     backend = create_backend_module("test_youtube_local_retention_backend")
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_SUCCESS_DAYS", 3)
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_DAYS", 7)
 
-    assert not backend._youtube_local_retention_eligible(
-        [{"status": "confirmed"}, {"status": "failed"}],
-        "2026-08-01T12:00:00",
-        "2026-08-09T11:59:59",
-    )
     assert not backend._youtube_local_retention_eligible(
         [{"status": "confirmed"}, {"status": "reused"}],
         "2026-08-01T12:00:00",
-        "2026-08-08T11:59:59",
+        "2026-08-04T11:59:59",
     )
     assert backend._youtube_local_retention_eligible(
         [{"status": "confirmed"}, {"status": "reused"}],
         "2026-08-01T12:00:00",
-        "2026-08-08T12:00:00",
+        "2026-08-04T12:00:00",
     )
+
+
+def test_retention_uses_seven_days_for_partial_success(monkeypatch):
+    backend = create_backend_module("test_youtube_local_retention_partial_backend")
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_SUCCESS_DAYS", 3)
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_DAYS", 7)
+
+    for status in ("failed", "timeout", "cancelled"):
+        records = [{"status": "confirmed"}, {"status": status}]
+        assert not backend._youtube_local_retention_eligible(records, "2026-08-01T12:00:00", "2026-08-04T12:00:00")
+        assert backend._youtube_local_retention_eligible(records, "2026-08-01T12:00:00", "2026-08-08T12:00:00")
+
+
+def test_retention_rejects_unresolved_or_unsuccessful_targets(monkeypatch):
+    backend = create_backend_module("test_youtube_local_retention_blocked_backend")
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_SUCCESS_DAYS", 3)
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_DAYS", 7)
+
+    for records in (
+        [{"status": "confirmed"}, {"status": "uncertain"}],
+        [{"status": "confirmed"}, {"status": "queued"}],
+        [{"status": "confirmed"}, {"status": "running"}],
+        [{"status": "failed"}, {"status": "cancelled"}],
+        [{"status": "confirmed"}, {"status": "unknown"}],
+    ):
+        assert not backend._youtube_local_retention_eligible(records, "2026-08-01T12:00:00", "2026-08-20T12:00:00")
+
+
+def test_retention_anchor_uses_latest_successful_publish_time(monkeypatch):
+    backend = create_backend_module("test_youtube_local_retention_anchor_backend")
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_SUCCESS_DAYS", 3)
+    monkeypatch.setattr(backend, "VIDEO_LOCAL_RETENTION_DAYS", 7)
+
+    policy = backend._youtube_retention_policy([
+        {"status": "confirmed", "published_at": "2026-08-01T12:00:00"},
+        {"status": "failed", "published_at": None},
+        {"status": "reused", "published_at": "2026-08-05T12:00:00"},
+    ])
+    assert policy["kind"] == "partial"
+    assert policy["anchor"].isoformat() == "2026-08-05T12:00:00"
 
 
 def test_retention_migration_keeps_history_and_scopes_success_to_account():
@@ -77,7 +114,7 @@ def test_local_cleanup_candidates_bind_owner_before_cutoff(monkeypatch):
         owner_user_id=42,
     )
 
-    assert connection.cursor_instance.params == [42, "2026-08-16T12:00:00", 50]
+    assert connection.cursor_instance.params == [42, "2026-08-20T12:00:00", "2026-08-16T12:00:00", 50]
 
 
 def test_youtube_summary_uses_the_same_storage_scope_as_the_list():
