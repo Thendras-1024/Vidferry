@@ -27,7 +27,7 @@ export const youtubeApi = {
   },
 
   backfillHistoricalTitles() {
-    return request.post('/admin/youtube/title-translations/backfill', {})
+    return request.post('/youtube/title-translations/backfill', {})
   },
 
   importVideo(data) {
