@@ -394,7 +394,7 @@
             <div class="published-meta">
               <span>{{ video.channel || '未知博主' }}</span>
               <span>{{ video.subscribers || '粉丝未知' }}</span>
-              <span>{{ video.publishedAt || '原发布时间未知' }}</span>
+              <span>{{ video.publishedAt ? formatBeijingTime(video.publishedAt) : '原发布时间未知' }}</span>
               <span>{{ video.duration || '-' }}</span>
             </div>
             <div class="published-tags">
@@ -409,7 +409,7 @@
                   <el-tag size="small" effect="plain">{{ record.platform }}</el-tag>
                   <span>{{ record.accountName || record.accountFile || '未记录账号' }}</span>
                 </div>
-                <span>{{ record.publishedAt || record.updatedAt || '-' }}</span>
+                <span>{{ formatBeijingTime(record.publishedAt || record.updatedAt) || '-' }}</span>
                 <div class="published-record-controls">
                   <el-button v-if="Number(record.platformType) === 4" type="primary" text size="small" @click="analyzePublishedRecord(video, record)">
                     <el-icon><DataAnalysis /></el-icon>
@@ -465,8 +465,8 @@
             <span>{{ record.platform }} · {{ record.accountName || record.accountFile || '未记录账号' }}</span>
           </div>
           <el-tag size="small" :type="publishStatusTagType(record.status)">{{ publishStatusLabel(record.status) }}</el-tag>
-          <span>{{ record.publishedAt || '-' }}</span>
-          <span>归档于 {{ record.deletedAt || record.updatedAt || '-' }}</span>
+          <span>{{ formatBeijingTime(record.publishedAt) || '-' }}</span>
+          <span>归档于 {{ formatBeijingTime(record.deletedAt || record.updatedAt) || '-' }}</span>
         </div>
       </div>
       <el-empty
@@ -667,6 +667,7 @@ import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
 import { accountApi } from '@/api/account'
 import { http } from '@/utils/request'
+import { formatBeijingTime } from '@/utils/time'
 import VideoGroupSelect from '@/components/VideoGroupSelect.vue'
 import PublishRetryDialog from '@/components/PublishRetryDialog.vue'
 
@@ -1415,7 +1416,7 @@ const publishStatusLabel = (status) => {
 }
 
 const publishStatusTagType = (status) => {
-  if (status === 'confirmed') return 'success'
+  if (['confirmed', 'reused'].includes(status)) return 'success'
   if (status === 'failed') return 'danger'
   if (['uncertain', 'partial', 'waiting_existing'].includes(status)) return 'warning'
   if (status === 'running') return 'warning'
@@ -1890,8 +1891,7 @@ const isAgentGuardStale = (tab) => {
 }
 
 const formatAgentGuardTime = (value) => {
-  const text = String(value || '').trim().replace('T', ' ')
-  return text ? text.replace(/\..*$/, '').slice(0, 19) : '-'
+  return formatBeijingTime(value) || '-'
 }
 
 const agentGuardIssues = (tab) => {
@@ -2197,8 +2197,8 @@ const confirmPublish = async (tab) => {
           platformType: target.platformType,
           platformName: target.platformName,
           accountName: target.accountName,
-          status: previous?.status === 'confirmed' ? 'confirmed' : (uncertainConflict ? 'uncertain' : 'failed'),
-          message: previous?.status === 'confirmed' ? previous.message : errorMessage
+          status: ['confirmed', 'reused'].includes(previous?.status) ? previous.status : (uncertainConflict ? 'uncertain' : 'failed'),
+          message: ['confirmed', 'reused'].includes(previous?.status) ? previous.message : errorMessage
         }
       })
     }

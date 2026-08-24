@@ -15,14 +15,6 @@ from patchright.async_api import async_playwright
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
 from uploader.base_video import BaseVideoUploader
-from uploader.tencent_uploader.publish_support import TencentPublishDiagnostics
-from uploader.tencent_uploader.publish_support import TencentPublishRecoveryRequired
-from uploader.tencent_uploader.publish_support import TENCENT_PUBLISH_RESULT_MARKER
-from uploader.tencent_uploader.publish_support import _safe_tencent_url
-from uploader.tencent_uploader.publish_support import _tencent_work_candidates
-from uploader.tencent_uploader.publish_support import format_tencent_publish_result
-from uploader.tencent_uploader.publish_support import submit_publish as _submit_publish
-from uploader.tencent_uploader.publish_support import wait_for_upload_complete as _wait_for_upload_complete
 from utils.base_social_media import set_init_script
 from utils.humanize import human_delay, jitter_seconds
 from utils.log import tencent_logger
@@ -33,10 +25,8 @@ TENCENT_MANAGE_URL = "https://channels.weixin.qq.com/platform/post/list"
 TENCENT_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 TENCENT_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
 TENCENT_UPLOAD_RETRY_LIMIT = int(os.environ.get("TENCENT_UPLOAD_RETRY_LIMIT", "1") or 1)
-TENCENT_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("TENCENT_UPLOAD_WAIT_TIMEOUT", "2700") or 2700)
-TENCENT_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("TENCENT_PUBLISH_CONFIRM_TIMEOUT", "600") or 600)
-TENCENT_COVER_GENERATION_STALL_TIMEOUT = int(os.environ.get("TENCENT_COVER_GENERATION_STALL_TIMEOUT", "90") or 90)
-TENCENT_POST_PUBLISH_OBSERVE_SECONDS = int(os.environ.get("TENCENT_POST_PUBLISH_OBSERVE_SECONDS", "3") or 3)
+TENCENT_UPLOAD_WAIT_TIMEOUT = int(os.environ.get("TENCENT_UPLOAD_WAIT_TIMEOUT", "1800") or 1800)
+TENCENT_PUBLISH_CONFIRM_TIMEOUT = int(os.environ.get("TENCENT_PUBLISH_CONFIRM_TIMEOUT", "300") or 300)
 
 
 class TencentCookieCheckError(RuntimeError):
@@ -51,7 +41,7 @@ class TencentPublishPermissionError(RuntimeError):
     """登录账号缺少目标视频号发布权限。"""
 
     def __init__(self):
-        super().__init__("VF-PUBLISH-PERMISSION-DENIED: 当前登录微信没有目标视频号的管理员或运营者权限，请使用已授权账号重新登录。")
+        super().__init__("当前登录微信没有目标视频号的管理员或运营者权限，请使用已授权账号重新登录。")
         self.user_message = str(self)
 
 
@@ -391,9 +381,12 @@ async def _wait_for_tencent_login(
 
             remaining = max(0.01, deadline - time.monotonic())
             try:
-                await asyncio.wait_for(url_changed_event.wait(), timeout=remaining)
+                await asyncio.wait_for(
+                    url_changed_event.wait(),
+                    timeout=min(poll_interval, remaining),
+                )
             except asyncio.TimeoutError:
-                break
+                pass
             url_changed_event.clear()
 
         return _build_login_result(False, "timeout", "等待视频号扫码登录超时", account_file, qrcode_info, page.url)
@@ -414,7 +407,6 @@ async def tencent_cookie_gen(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**_build_launch_kwargs(headless=headless))
         context = await browser.new_context()
-        context = await set_init_script(context)
         qrcode_path = None
         result = _build_login_result(False, "failed", "视频号登录失败", account_file)
         try:
@@ -581,18 +573,6 @@ class TencentBaseUploader(BaseVideoUploader):
         file_input = page.locator('input[type="file"]')
         await self.set_upload_files(file_input, file_path, "视频号", "视频")
 
-    async def wait_for_upload_page_ready(self) -> None:
-        await asyncio.sleep(10)
-
-    async def wait_for_upload_complete(self, page: Page) -> None:
-        await _wait_for_upload_complete(
-            self,
-            page,
-            timeout_seconds=TENCENT_UPLOAD_WAIT_TIMEOUT,
-            retry_limit=TENCENT_UPLOAD_RETRY_LIMIT,
-            cover_stall_seconds=TENCENT_COVER_GENERATION_STALL_TIMEOUT,
-        )
-
     async def set_short_title(self, page: Page, title: str, short_title: str | None = None) -> None:
         short_title_element = (
             page.get_by_text("短标题", exact=True)
@@ -664,14 +644,83 @@ class TencentBaseUploader(BaseVideoUploader):
             if await declare_button.count():
                 await declare_button.click()
 
+    async def wait_for_upload_page_ready(self) -> None:
+        await asyncio.sleep(10)
+
+    async def wait_for_upload_complete(self, page: Page) -> None:
+        upload_deadline = asyncio.get_running_loop().time() + TENCENT_UPLOAD_WAIT_TIMEOUT
+        retry_count = 0
+        while True:
+            if asyncio.get_running_loop().time() > upload_deadline:
+                raise RuntimeError(
+                    f"VF-PUBLISH-UPLOAD-TIMEOUT: 视频号上传等待超过 {TENCENT_UPLOAD_WAIT_TIMEOUT} 秒，"
+                    "页面仍未进入可发布状态，请检查网络、平台页面或重新发起发布。"
+                )
+            try:
+                publish_button = page.get_by_role("button", name="发表")
+                button_class = await publish_button.get_attribute("class")
+                if button_class and "weui-desktop-btn_disabled" not in button_class:
+                    tencent_logger.info(_msg("🥳", "视频上传完毕"))
+                    break
+
+                tencent_logger.info(_msg("🏃", "正在上传视频中..."))
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+
+                upload_failed = await page.locator("div.status-msg.error").count()
+                delete_button = await page.locator('div.media-status-content div.tag-inner:has-text("删除")').count()
+                if upload_failed and delete_button:
+                    if retry_count >= TENCENT_UPLOAD_RETRY_LIMIT:
+                        raise RuntimeError(
+                            f"VF-PUBLISH-UPLOAD-FAILED: 视频号上传失败，已停止自动重传。"
+                            f"当前自动重试上限为 {TENCENT_UPLOAD_RETRY_LIMIT} 次。"
+                        )
+                    tencent_logger.error(_msg("😵", "发现上传出错了，准备重试"))
+                    retry_count += 1
+                    await self.handle_upload_error(page)
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                tencent_logger.info(_msg("🏃", f"正在上传视频中，继续观察: {exc}"))
+                await asyncio.sleep(jitter_seconds(2, min_seconds=1.5, max_seconds=3.5))
+
     async def submit_publish(self, page: Page) -> None:
-        return await _submit_publish(
-            self,
-            page,
-            confirm_timeout=TENCENT_PUBLISH_CONFIRM_TIMEOUT,
-            observe_seconds=TENCENT_POST_PUBLISH_OBSERVE_SECONDS,
-            human_delay_fn=human_delay,
-        )
+        publish_deadline = asyncio.get_running_loop().time() + TENCENT_PUBLISH_CONFIRM_TIMEOUT
+        while True:
+            if asyncio.get_running_loop().time() > publish_deadline:
+                raise RuntimeError(
+                    f"VF-PUBLISH-CONFIRM-TIMEOUT: 视频号发布确认超过 {TENCENT_PUBLISH_CONFIRM_TIMEOUT} 秒，"
+                    "未确认跳转到发布列表。"
+                )
+            try:
+                if getattr(self, "is_draft", False):
+                    draft_button = page.locator('div.form-btns button:has-text("保存草稿")')
+                    if await draft_button.count():
+                        await draft_button.click()
+                    await page.wait_for_url("**/post/list**", timeout=5000)
+                    tencent_logger.success(_msg("🥳", "视频草稿保存成功"))
+                else:
+                    publish_button = page.locator('div.form-btns button:has-text("发表")')
+                    if await publish_button.count():
+                        await human_delay(1.5, 5)
+                        await publish_button.click()
+                    await page.wait_for_url(TENCENT_MANAGE_URL, timeout=5000)
+                    tencent_logger.success(_msg("🥳", "视频发布成功"))
+                break
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                current_url = page.url
+                if getattr(self, "is_draft", False):
+                    if "post/list" in current_url or "draft" in current_url:
+                        tencent_logger.success(_msg("🥳", "视频草稿保存成功"))
+                        break
+                else:
+                    if TENCENT_MANAGE_URL in current_url:
+                        tencent_logger.success(_msg("🥳", "视频发布成功"))
+                        break
+                tencent_logger.exception(f"  [-] Exception: {exc}")
+                tencent_logger.info(_msg("🏃", "视频正在发布中..."))
+                await asyncio.sleep(jitter_seconds(0.5, min_seconds=0.3, max_seconds=0.9))
 
 
 class TencentVideo(TencentBaseUploader):
@@ -786,10 +835,13 @@ class TencentVideo(TencentBaseUploader):
         await self.apply_collection(page)
         await self.apply_original_statement(page)
 
-    async def _upload_once(self, playwright: Playwright):
+    async def upload(self, playwright: Playwright) -> None:
+        tencent_logger.info(_msg("🧍", "小人先检查 cookie、视频文件和发布时间"))
+        await self.validate_upload_args()
+        tencent_logger.info(_msg("🥳", "上传前检查通过"))
+
         browser = await playwright.chromium.launch(**_build_launch_kwargs(headless=self.headless))
         context = await browser.new_context(storage_state=self.account_file)
-        context = await set_init_script(context)
 
         try:
             page = await context.new_page()
@@ -808,33 +860,17 @@ class TencentVideo(TencentBaseUploader):
                 await self.set_schedule_time_tencent(page, self.publish_date)
 
             await self.set_short_title(page, self.title, self.short_title)
-            publish_result = await self.submit_publish(page)
+            await self.submit_publish(page)
 
             await context.storage_state(path=self.account_file)
             tencent_logger.success(_msg("🥳", "cookie 更新完毕"))
-            return publish_result
         finally:
             await context.close()
             await browser.close()
 
-    async def upload(self, playwright: Playwright):
-        tencent_logger.info(_msg("🧍", "小人先检查 cookie、视频文件和发布时间"))
-        await self.validate_upload_args()
-        tencent_logger.info(_msg("🥳", "上传前检查通过"))
-        for attempt in range(2):
-            try:
-                return await self._upload_once(playwright)
-            except TencentPublishRecoveryRequired as exc:
-                if attempt:
-                    raise RuntimeError(f"VF-PUBLISH-PAGE-RECOVERY-FAILED: {exc}") from exc
-                tencent_logger.warning("视频号发布页面恢复 : reason = %s", exc)
-
     async def tencent_upload_video(self):
         async with async_playwright() as playwright:
-            result = await self.upload(playwright)
-        if result:
-            print(format_tencent_publish_result(result))
-        return result
+            await self.upload(playwright)
 
     async def main(self):
         await self.tencent_upload_video()

@@ -118,6 +118,7 @@ import { Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { materialApi } from '@/api/material'
 import { youtubeApi } from '@/api/youtube'
+import { formatBeijingTime } from '@/utils/time'
 
 const tasks = ref([])
 const total = ref(0)
@@ -150,7 +151,7 @@ const statusType = (status) => ({
   failed: 'danger', timeout: 'danger', unknown: 'warning', canceled: 'info', scheduled: 'primary'
 }[status] || 'info')
 
-const formatTime = (value) => value ? String(value).replace('T', ' ').slice(0, 16) : '-'
+const formatTime = (value) => formatBeijingTime(value, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) || '-'
 const formatDuration = (value) => Number(value || 0) > 0 ? `${(Number(value) / 1000).toFixed(1)} 秒` : '-'
 
 const workflowScheduledTask = (job) => {

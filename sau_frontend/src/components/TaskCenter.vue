@@ -45,7 +45,7 @@
                 <div class="task-item-actions">
                   <el-button text type="primary" size="small" @click="openDetail(item)">详情</el-button>
                   <el-button v-if="item.canRetry" text type="primary" size="small" @click="openRetryDialog(item)">重新发布</el-button>
-                  <el-button v-if="['failed', 'abnormal'].includes(item.status)" text type="danger" size="small" @click="acknowledge(item)">我知道了</el-button>
+                  <el-button v-if="item.canAcknowledge" text type="danger" size="small" @click="acknowledge(item)">我知道了</el-button>
                 </div>
               </article>
           </div>
@@ -65,6 +65,7 @@ import { List, Loading, RefreshRight } from '@element-plus/icons-vue'
 import { taskCenterApi } from '@/api/taskCenter'
 import TaskFlowDialog from './TaskFlowDialog.vue'
 import PublishRetryDialog from './PublishRetryDialog.vue'
+import { formatBeijingTime } from '@/utils/time'
 
 const router = useRouter()
 const detailVisible = ref(false)
@@ -78,9 +79,7 @@ const summary = ref({ activeCount: 0, waitingCount: 0, completedCount: 0, abnorm
 let pollTimer = null
 const formatTime = value => {
   if (!value) return '时间未知'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return formatBeijingTime(value, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 const progressStatus = status => ['failed', 'abnormal', 'partial', 'needs_verification'].includes(status) ? 'exception' : ['success', 'reused'].includes(status) ? 'success' : undefined

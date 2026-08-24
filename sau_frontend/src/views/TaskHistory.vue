@@ -77,6 +77,7 @@ import { taskCenterApi } from '@/api/taskCenter'
 import TaskFlowDialog from '@/components/TaskFlowDialog.vue'
 import PublishRetryDialog from '@/components/PublishRetryDialog.vue'
 import { useUserStore } from '@/stores/user'
+import { formatBeijingTime } from '@/utils/time'
 
 const route = useRoute()
 const router = useRouter()
@@ -93,7 +94,7 @@ const detail = ref(null)
 const retryDialogVisible = ref(false)
 const retryTask = ref(null)
 const filters = reactive({
-  keyword: String(route.query.keyword || ''), type: String(route.query.type || 'all'), status: String(route.query.status || 'active'),
+  keyword: String(route.query.keyword || ''), type: String(route.query.type || 'all'), status: String(route.query.status || 'all'),
   updatedRange: route.query.updatedFrom && route.query.updatedTo ? [route.query.updatedFrom, route.query.updatedTo] : [],
   owner: String(route.query.owner || 'all'), sort: String(route.query.sort || 'updated_desc'),
 })
@@ -109,8 +110,7 @@ const summaryItems = computed(() => [
 const tagType = status => ({ success: 'success', reused: 'info', partial: 'warning', needs_verification: 'warning', failed: 'danger', abnormal: 'danger', cancelled: 'info', waiting_confirmation: 'warning', waiting_publish: 'warning' }[status] || '')
 const progressType = status => ['failed', 'abnormal', 'partial', 'needs_verification'].includes(status) ? 'exception' : ['success', 'reused'].includes(status) ? 'success' : undefined
 const formatTime = value => {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value || '时间未知' : date.toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  return formatBeijingTime(value, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) || '时间未知'
 }
 const queryParams = () => {
   const query = { page: String(page.value) }
@@ -146,7 +146,7 @@ const loadTasks = async () => {
 const applyFilters = () => { page.value = 1; void loadTasks() }
 const applyStatus = status => { filters.status = status; applyFilters() }
 const resetFilters = () => {
-  Object.assign(filters, { keyword: '', type: 'all', status: 'active', updatedRange: [], owner: 'all', sort: 'updated_desc' })
+  Object.assign(filters, { keyword: '', type: 'all', status: 'all', updatedRange: [], owner: 'all', sort: 'updated_desc' })
   applyFilters()
 }
 const openDetail = async item => {

@@ -23,11 +23,36 @@ def _select_failed_publish_records(failed_records, target_record_ids=None):
     return selected_records
 
 
-def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_user_id=None):
+def _retry_publish_account(cursor, record, owner_user_id):
+    platform_type = int(record["platformType"] or 0)
+    account_id = record.get("accountId")
+    if account_id:
+        cursor.execute(
+            "SELECT * FROM user_info WHERE id = %s AND type = %s AND owner_user_id = %s",
+            (int(account_id), platform_type, owner_user_id),
+        )
+        account = cursor.fetchone()
+        if account:
+            return account
+    cursor.execute(
+        "SELECT * FROM user_info WHERE type = %s AND filePath = %s AND owner_user_id = %s",
+        (platform_type, record["accountFile"], owner_user_id),
+    )
+    return cursor.fetchone()
+
+
+def prepare_failed_publish_retry(
+    publish_task_id,
+    target_record_ids=None,
+    owner_user_id=None,
+    risk_override=None,
+):
     """校验失败目标并登记重发任务，供后台发布队列执行。"""
     task_id = str(publish_task_id or "").strip()
     if not task_id or task_id.startswith("legacy:"):
         raise ValueError("发布任务不存在或不支持重发")
+    if risk_override is not None and not isinstance(risk_override, dict):
+        raise ValueError("重发风险确认格式无效")
 
     owner_user_id = owner_user_id or _current_account_owner_id()
     init_database_tables()
@@ -85,11 +110,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_
         targets = []
         for record in failed_records:
             platform_type = int(record["platformType"] or 0)
-            cursor.execute(
-                "SELECT * FROM user_info WHERE type = %s AND filePath = %s AND owner_user_id = %s",
-                (platform_type, record["accountFile"], owner_user_id),
-            )
-            account = cursor.fetchone()
+            account = _retry_publish_account(cursor, record, owner_user_id)
             if not account or int(account["status"] or 0) != 1:
                 raise ValueError(f"{record['platform']} 原账号不存在或状态异常，无法重发")
             target = {
@@ -119,6 +140,7 @@ def prepare_failed_publish_retry(publish_task_id, target_record_ids=None, owner_
         "targets": targets,
         "retryOfTaskId": task_id,
         "retrySource": "failed_target",
+        "riskOverride": risk_override or {},
     }
     validate_prepublish_guard_or_raise(data, file_list, targets, materials, check_agent=False)
     retry_task_id = uuid.uuid4().hex

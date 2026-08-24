@@ -2,9 +2,10 @@
 
 import datetime
 import json
-_TASK_SUCCESS_RETENTION_HOURS = 12
+_TASK_SUCCESS_RETENTION_HOURS = 4
 _TASK_ACTIVE_STATUSES = {"queued", "running", "waiting_confirmation", "waiting_publish"}
 _TASK_TERMINAL_STATUSES = {"success", "reused", "partial", "needs_verification", "failed", "abnormal", "cancelled"}
+_TASK_ACKNOWLEDGE_STATUSES = {"partial", "needs_verification", "failed", "abnormal", "cancelled"}
 _TASK_RECOVERABLE_STAGES = {"comment_fetch", "comment_review", "comment_render", "subtitle", "highlight_render"}
 _TASK_STAGE_LABELS = {
     "workflow": "工作流", "download": "下载", "transcript": "转写", "analysis": "内容分析",
@@ -19,22 +20,21 @@ _TASK_PLATFORMS = (
     (5, "哔哩哔哩", "publish_to_bilibili", "bilibili_account"),
     (1, "小红书", "publish_to_xiaohongshu", "xiaohongshu_account"),
     (4, "快手", "publish_to_kuaishou", "kuaishou_account"),
-    (2, "腾讯视频", "publish_to_tencent", "tencent_account"),
+    (2, "视频号", "publish_to_tencent", "tencent_account"),
 )
 def _task_now():
-    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    return _beijing_datetime().replace(tzinfo=None)
 def _task_datetime(value):
     if not value:
         return None
     if isinstance(value, datetime.datetime):
-        return value.replace(tzinfo=None)
+        return _beijing_datetime(value).replace(tzinfo=None)
     try:
-        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
-    except (TypeError, ValueError):
+        return _beijing_datetime(value).replace(tzinfo=None)
+    except (AttributeError, TypeError, ValueError):
         return None
 def _task_iso(value):
-    parsed = _task_datetime(value)
-    return parsed.isoformat(timespec="seconds") if parsed else ""
+    return _to_beijing_iso(value) if value else ""
 def _task_json(value):
     if isinstance(value, dict):
         return value
@@ -165,13 +165,20 @@ def _task_node_state(event, job_status, subtitle_fallback=False):
         return "reused", event["message"], "已复用已有阶段结果"
     return status, event["message"], ""
 
-
+def _task_publish_edge_status(source_status, target_status, retry=False):
+    if target_status == "failed" or (source_status == "failed" and not retry):
+        return "failed"
+    if target_status in {"uncertain", "needs_verification", "cancelled", "warning"} or source_status == "warning":
+        return "warning"
+    if target_status in {"running", "queued", "waiting_existing", "waiting"} or source_status in {"running", "queued", "waiting_existing", "waiting"}: return "running"
+    if target_status == "reused" or source_status == "reused":
+        return "reused"
+    return "success" if target_status in {"success", "confirmed"} else "pending"
 def _task_publish_graph(job, events, material_rows):
     event_by_stage = {event["stage"]: event for event in events}
     lanes = [{"id": "publish", "label": "发布"}]
     nodes = []
     edges = []
-
     publish_event = event_by_stage.get("publish")
     status, message, fallback_reason = _task_node_state(publish_event, job.get("status"))
     parent = {
@@ -183,9 +190,12 @@ def _task_publish_graph(job, events, material_rows):
         "errorReason": message if status == "failed" else "", "inferred": not bool(publish_event), "synthetic": False,
     }
     nodes.append(parent)
+    publish_progress = job.get("publishProgress") or {}
+    attempts = list(publish_progress.get("attempts") or [])
+    initial_attempt = next((item for item in attempts if not item.get("isRetry")), {})
     dispatch_targets = {
         int(item.get("platform_type") or 0): item
-        for item in (job.get("publishProgress") or {}).get("targets") or []
+        for item in initial_attempt.get("targets") or publish_progress.get("targets") or []
         if str(item.get("platform_type") or "").strip()
     }
     for target in _task_targets(job, material_rows):
@@ -203,10 +213,27 @@ def _task_publish_graph(job, events, material_rows):
             "errorReason": str(record.get("message") or "") if target_status == "failed" else "",
             "inferred": not bool(record), "synthetic": True,
         })
-        edges.append({"from": "publish", "to": lane_id, "kind": "parallel", "status": "failed" if target_status == "failed" else "warning" if target_status in {"uncertain", "needs_verification", "cancelled"} else "running" if target_status in {"running", "queued", "waiting_existing"} else "reused" if target_status == "reused" else "success" if target_status in {"success", "confirmed"} else "pending"})
+        edges.append({"from": "publish", "to": lane_id, "kind": "parallel", "status": _task_publish_edge_status(status, target_status)})
+        previous_node_id = lane_id
+        for attempt in attempts:
+            if not attempt.get("isRetry"):
+                continue
+            retry_record = next((item for item in attempt.get("targets") or [] if int(item.get("platform_type") or 0) == target["type"]), None)
+            if not retry_record:
+                continue
+            sequence = int(attempt.get("sequence") or 0)
+            retry_status = _task_status(retry_record.get("status"))
+            retry_node_id = f"{lane_id}-retry-{sequence}"
+            nodes.append({
+                "id": retry_node_id, "stage": "publish", "label": f"{target['label']} 重试 {sequence}", "laneId": lane_id, "column": 1 + sequence, "status": retry_status, "statusLabel": _task_status_label(retry_status),
+                "message": str(retry_record.get("message") or "等待重试发布"), "startedAt": _task_iso(retry_record.get("started_at") or attempt.get("startedAt")), "endedAt": _task_iso(retry_record.get("finished_at") or attempt.get("finishedAt") or attempt.get("updatedAt")),
+                "durationSeconds": float(retry_record.get("duration_ms") or 0) / 1000, "dependencies": [previous_node_id], "parallelGroup": "publish-platforms", "platform": target["label"], "fallbackReason": "",
+                "errorReason": str(retry_record.get("message") or "") if retry_status == "failed" else "", "inferred": False, "synthetic": True,
+            })
+            edges.append({"from": previous_node_id, "to": retry_node_id, "kind": "retry", "label": "重试发布", "retry": True, "status": _task_publish_edge_status(target_status, retry_status, retry=True)})
+            previous_node_id = retry_node_id
+            target_status = retry_status
     return {"lanes": lanes, "nodes": nodes, "edges": edges, "inferred": True}
-
-
 def _task_graph(job, events, material_rows, subtitle_fallback=False, scope="full"):
     """按固定阶段规则补齐旧事件缺少的依赖元数据。"""
     if scope == "publish":
@@ -433,7 +460,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
                     continue
                 metadata = _task_json(row["metadata"])
                 title = str(metadata.get("sourceTitleZh") or "").strip()
-                if title:
+                if _is_valid_source_title_translation(title):
                     title_translation_map[key] = title
         material_map = {}
         if owner_video_pairs:
@@ -444,7 +471,7 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
                 material_map.setdefault(key, []).append(item)
         job_marks = ",".join("%s" for _ in ids)
         cursor.execute(
-            f"SELECT id, source_ref_id, status, message FROM publish_dispatch_jobs "
+            f"SELECT id, source_ref_id, status, message, created_at, started_at, finished_at, updated_at FROM publish_dispatch_jobs "
             f"WHERE source = 'workflow' AND source_ref_id IN ({job_marks}) "
             "ORDER BY source_ref_id, created_at DESC, id DESC",
             ids,
@@ -454,6 +481,19 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
         for dispatch in dispatch_rows:
             latest_dispatch_by_job.setdefault(str(dispatch.get("source_ref_id") or ""), dispatch)
         dispatch_ids = [item["id"] for item in latest_dispatch_by_job.values()]
+        retries_by_dispatch = {}
+        if dispatch_ids:
+            dispatch_marks = ",".join("%s" for _ in dispatch_ids)
+            cursor.execute(
+                f"SELECT id, source_ref_id, status, message, created_at, started_at, finished_at, updated_at FROM publish_dispatch_jobs "
+                f"WHERE source = 'retry' AND source_ref_id IN ({dispatch_marks}) "
+                "ORDER BY source_ref_id, created_at, id",
+                dispatch_ids,
+            )
+            for row in cursor.fetchall():
+                retry = _task_row(row)
+                retries_by_dispatch.setdefault(str(retry.get("source_ref_id") or ""), []).append(retry)
+        dispatch_ids = [*dispatch_ids, *(item["id"] for retries in retries_by_dispatch.values() for item in retries)]
         targets_by_dispatch = {}
         if dispatch_ids:
             dispatch_marks = ",".join("%s" for _ in dispatch_ids)
@@ -469,17 +509,22 @@ def _task_load(job_id=None, *, active_only=False, owner_user_id=None, terminal_s
             dispatch = latest_dispatch_by_job.get(str(job.get("id") or ""))
             if not dispatch:
                 continue
-            targets = targets_by_dispatch.get(str(dispatch["id"]), [])
-            progress = _publish_dispatch_progress(targets)
-            progress.update({
-                "publishTaskId": dispatch["id"],
-                "status": dispatch.get("status") or "pending",
-                "message": clean_display_text(dispatch.get("message")),
-                "updatedAt": _task_iso(dispatch.get("updated_at")),
-                "finishedAt": _task_iso(dispatch.get("finished_at")),
-                "targets": targets,
-            })
-            job["publishProgress"] = progress
+            attempts = [{
+                "publishTaskId": dispatch["id"], "isRetry": False, "sequence": 0,
+                "status": dispatch.get("status") or "pending", "message": clean_display_text(dispatch.get("message")),
+                "createdAt": _task_iso(dispatch.get("created_at")), "startedAt": _task_iso(dispatch.get("started_at")),
+                "finishedAt": _task_iso(dispatch.get("finished_at")), "updatedAt": _task_iso(dispatch.get("updated_at")),
+                "targets": targets_by_dispatch.get(str(dispatch["id"]), []),
+            }]
+            for sequence, retry in enumerate(retries_by_dispatch.get(str(dispatch["id"]), []), start=1):
+                attempts.append({
+                    "publishTaskId": retry["id"], "isRetry": True, "sequence": sequence,
+                    "status": retry.get("status") or "pending", "message": clean_display_text(retry.get("message")),
+                    "createdAt": _task_iso(retry.get("created_at")), "startedAt": _task_iso(retry.get("started_at")),
+                    "finishedAt": _task_iso(retry.get("finished_at")), "updatedAt": _task_iso(retry.get("updated_at")),
+                    "targets": targets_by_dispatch.get(str(retry["id"]), []),
+                })
+            job["publishProgress"] = _task_publish_progress_from_attempts(attempts)
         for job in jobs:
             key = (int(job["owner_user_id"]), str(job.get("video_id") or ""))
             job["_task_chinese_title"] = title_translation_map.get(key, "")

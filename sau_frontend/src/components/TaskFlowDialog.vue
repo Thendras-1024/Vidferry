@@ -22,7 +22,10 @@
     <div v-else-if="detail?.graph" class="task-flow-scroll">
       <div class="task-flow-canvas" :style="canvasStyle">
         <svg class="task-flow-edges" :width="canvasWidth" :height="canvasHeight" aria-hidden="true">
-          <path v-for="edge in detail.graph.edges" :key="`${edge.from}-${edge.to}`" :d="edgePath(edge)" :class="`edge-${edge.status}`" />
+          <g v-for="edge in detail.graph.edges" :key="`${edge.from}-${edge.to}`">
+            <path :d="edgePath(edge)" :class="`edge-${edge.status}`" />
+            <text v-if="edge.label" class="flow-edge-label" :x="edgeLabelPosition(edge).x" :y="edgeLabelPosition(edge).y">{{ edge.label }}</text>
+          </g>
         </svg>
         <div v-for="(lane, index) in detail.graph.lanes" :key="lane.id" class="flow-lane-label" :style="laneStyle(index)">{{ lane.label }}</div>
         <el-tooltip v-for="node in detail.graph.nodes" :key="node.id" placement="top" effect="light">
@@ -50,6 +53,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { backendTimeMs, formatBeijingTime } from '@/utils/time'
 
 const props = defineProps({ visible: Boolean, detail: { type: Object, default: null } })
 const emit = defineEmits(['update:visible'])
@@ -69,22 +73,28 @@ watch(() => props.detail, () => { selectedNode.value = null })
 const laneStyle = index => ({ top: `${32 + index * 86}px` })
 const nodeStyle = node => ({ left: `${100 + visualColumn(node) * 102}px`, top: `${10 + (laneIndexes.value[node.laneId] || 0) * 86}px` })
 const nodeById = id => (props.detail?.graph?.nodes || []).find(node => node.id === id)
-const edgePath = edge => {
+const edgeCoordinates = edge => {
   const from = nodeById(edge.from)
   const to = nodeById(edge.to)
-  if (!from || !to) return ''
+  if (!from || !to) return null
   const fromX = 100 + visualColumn(from) * 102 + 54
   const toX = 100 + visualColumn(to) * 102 + 34
   const fromY = 32 + (laneIndexes.value[from.laneId] || 0) * 86
   const toY = 32 + (laneIndexes.value[to.laneId] || 0) * 86
-  const bend = Math.max(32, Math.abs(toX - fromX) / 2)
-  return `M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}`
+  return { fromX, toX, fromY, toY, bend: Math.max(32, Math.abs(toX - fromX) / 2) }
+}
+const edgePath = edge => {
+  const coords = edgeCoordinates(edge)
+  return coords ? `M ${coords.fromX} ${coords.fromY} C ${coords.fromX + coords.bend} ${coords.fromY}, ${coords.toX - coords.bend} ${coords.toY}, ${coords.toX} ${coords.toY}` : ''
+}
+const edgeLabelPosition = edge => {
+  const coords = edgeCoordinates(edge)
+  return coords ? { x: (coords.fromX + coords.toX) / 2, y: (coords.fromY + coords.toY) / 2 - 7 } : { x: 0, y: 0 }
 }
 const tagType = status => ({ success: 'success', confirmed: 'success', reused: 'info', partial: 'warning', uncertain: 'warning', needs_verification: 'warning', waiting_existing: 'warning', cancelled: 'info', failed: 'danger', abnormal: 'danger', warning: 'warning', running: '', waiting: 'warning' }[status] || 'info')
 const formatTime = value => {
   if (!value) return '未记录'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  return formatBeijingTime(value, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) || '未记录'
 }
 const duration = seconds => `${Math.max(0, Math.round(Number(seconds) || 0))} 秒`
 const taskDurationText = seconds => {
@@ -93,8 +103,8 @@ const taskDurationText = seconds => {
 }
 const durationBetween = (startedAt, endedAt) => {
   if (!startedAt) return '—'
-  const started = new Date(startedAt).getTime()
-  const ended = new Date(endedAt || Date.now()).getTime()
+  const started = backendTimeMs(startedAt)
+  const ended = endedAt ? backendTimeMs(endedAt) : Date.now()
   return Number.isNaN(started) || Number.isNaN(ended) ? '—' : taskDurationText((ended - started) / 1000)
 }
 const nodeDuration = node => node.status === 'pending' || node.status === 'waiting' || !node.startedAt ? '—' : node.status === 'running' && !node.endedAt ? '进行中' : duration(node.durationSeconds)
@@ -113,7 +123,7 @@ const nodeDuration = node => node.status === 'pending' || node.status === 'waiti
 .task-flow-canvas { position: relative; min-width: 760px; background: repeating-linear-gradient(to bottom, transparent 0, transparent 85px, $border-extra-light 86px); }
 .task-flow-edges { position: absolute; inset: 0; overflow: visible; }
 .task-flow-edges path { fill: none; stroke-width: 2.5; }
-.edge-success { stroke: $success-color; }.edge-running { stroke: $primary-color; }.edge-warning { stroke: $warning-color; }.edge-failed { stroke: $danger-color; }.edge-pending { stroke: #c0c4cc; stroke-dasharray: 6 5; }
+.edge-success { stroke: $success-color; }.edge-running { stroke: $primary-color; }.edge-warning { stroke: $warning-color; }.edge-failed { stroke: $danger-color; }.edge-reused { stroke: #9aa5b1; }.edge-pending { stroke: #c0c4cc; stroke-dasharray: 6 5; }.flow-edge-label { fill: $text-secondary; font-size: 9px; font-weight: 600; paint-order: stroke; stroke: var(--vf-surface); stroke-width: 4px; stroke-linejoin: round; text-anchor: middle; }
 .flow-lane-label { position: absolute; left: 0; width: 90px; color: $text-secondary; font-size: 10px; font-weight: 600; text-align: right; }
 .flow-node { position: absolute; z-index: 1; display: flex; width: 88px; height: 68px; flex-direction: column; align-items: center; padding: 0; border: 0; background: transparent; color: $text-primary; cursor: pointer; text-align: center; }
 .flow-node:hover, .flow-node:focus-visible { outline: 0; }.flow-node:hover .flow-node-status, .flow-node:focus-visible .flow-node-status { outline: 3px solid rgba(64, 158, 255, 0.24); outline-offset: 2px; }

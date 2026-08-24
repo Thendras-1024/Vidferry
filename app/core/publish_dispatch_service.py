@@ -5,6 +5,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from conf import BASE_DIR as _PUBLISH_LIBRARY_BASE_DIR
+
 
 class PublishQueueFullError(RuntimeError):
     def __init__(self, scope="global"):
@@ -41,6 +43,19 @@ def _publish_dispatch_status(results):
 
 def _publish_dispatch_progress(targets):
     return publish_progress(targets)
+
+
+def _publish_material_lookup_values(file_path):
+    values = [str(file_path or "")]
+    try:
+        relative_path = Path(file_path).resolve().relative_to(
+            Path(_PUBLISH_LIBRARY_BASE_DIR / "videoFile").resolve()
+        ).as_posix()
+    except (TypeError, ValueError):
+        return values
+    if relative_path not in values:
+        values.append(relative_path)
+    return values
 
 
 def _publish_dispatch_message(results):
@@ -121,6 +136,7 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
         task["publishTaskId"] = job_id
     first_task = task_list[0]
     file_path = (first_task.get("fileList") or [""])[0]
+    material_lookup_values = _publish_material_lookup_values(file_path)
     init_database_tables()
     now = _now_iso()
     with _db_connect() as conn:
@@ -142,8 +158,8 @@ def enqueue_publish_tasks(tasks, *, source, source_ref_id="", owner_user_id=None
         if int(cursor.fetchone()["total"] or 0) >= owner_limit:
             raise PublishQueueFullError("owner")
         cursor.execute(
-            "SELECT * FROM file_records WHERE owner_user_id = %s AND (file_path = %s OR storage_key = %s)",
-            (owner_user_id, file_path, file_path),
+            "SELECT * FROM file_records WHERE owner_user_id = %s AND (file_path = ANY(%s) OR storage_key = ANY(%s))",
+            (owner_user_id, material_lookup_values, material_lookup_values),
         )
         material_row = cursor.fetchone()
         if not material_row:

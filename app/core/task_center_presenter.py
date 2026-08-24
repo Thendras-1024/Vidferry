@@ -12,6 +12,28 @@ def _task_publish_status(publish_progress, fallback):
     }.get(status, fallback)
 
 
+def _task_publish_progress_from_attempts(attempts):
+    attempts = [dict(item or {}) for item in attempts or []]
+    effective_by_platform = {}
+    for attempt in attempts:
+        for target in attempt.get("targets") or []:
+            platform_type = int(target.get("platform_type") or 0)
+            if platform_type:
+                effective_by_platform[platform_type] = target
+    targets = list(effective_by_platform.values())
+    progress = publish_progress(targets)
+    latest = attempts[-1] if attempts else {}
+    status = aggregate_publish_status(targets) if targets else _task_status(latest.get("status"))
+    progress.update({
+        "publishTaskId": str(latest.get("publishTaskId") or ""), "status": status,
+        "message": str(latest.get("message") or ""), "createdAt": latest.get("createdAt") or "",
+        "updatedAt": latest.get("updatedAt") or latest.get("finishedAt") or "",
+        "finishedAt": latest.get("finishedAt") or "", "targets": targets,
+        "attempts": attempts, "retried": any(item.get("isRetry") for item in attempts),
+    })
+    return progress
+
+
 def _task_publish_retry_data(job, materials):
     task_id = f"workflow:{job.get('id')}"
     records = [item for item in materials if str(item.get("publish_task_id") or "") == task_id]
@@ -57,11 +79,14 @@ def _task_item(job, events, materials, acknowledged_at=""):
             "waiting_publish": "发布排队中", "running": "发布中", "success": "发布完成", "reused": "发布完成",
             "partial": "部分发布完成", "needs_verification": "发布待核验", "failed": "发布失败", "cancelled": "发布已取消",
         }.get(task_status, "发布")
+        if publish_progress.get("retried") and task_status in {"success", "reused"}:
+            stage_label = "重试后完成"
         current_stage = f"{stage_label} {completed} / {total}" if total else stage_label
         message = str(publish_progress.get("message") or message)
         if total:
-            progress_value = max(progress_value, round(97 + (min(completed, total) / total) * 3, 1))
-    error_reason = str(job.get("error_reason") or job.get("error_detail") or (latest.get("message") if latest and latest["status"] in {"failed", "abnormal"} else ""))
+            successful = int(publish_progress.get("confirmed") or 0) + int(publish_progress.get("reused") or 0)
+            progress_value = round(min(successful, total) * 100 / total)
+    error_reason = "" if publish_progress.get("retried") and task_status in {"success", "reused"} else str(job.get("error_reason") or job.get("error_detail") or (latest.get("message") if latest and latest["status"] in {"failed", "abnormal"} else ""))
     if not error_reason and task_status in {"partial", "needs_verification", "failed", "abnormal"}:
         error_reason = message
     scope = "download" if download_only else "publish" if is_publish else "processing"
@@ -70,13 +95,14 @@ def _task_item(job, events, materials, acknowledged_at=""):
     return {
         "taskKey": task_key, "jobId": job.get("id"), "videoId": job.get("video_id") or "", "title": english_title,
         "englishTitle": english_title, "chineseTitle": chinese_title, "type": scope, "typeLabel": _task_type_label(scope, job, events), "scope": scope,
-        "status": task_status, "statusLabel": _task_status_label(task_status), "progress": progress_value,
+        "status": task_status, "statusLabel": "重试后完成" if publish_progress.get("retried") and task_status in {"success", "reused"} else _task_status_label(task_status), "progress": progress_value,
         "currentStage": current_stage, "currentStageKey": latest.get("stage") if latest else job.get("step") or "workflow",
         "message": message, "errorReason": error_reason,
         "warningSummary": warning_events[0].get("message") if warning_events else "", "hasWarning": bool(warning_events),
         "startedAt": _task_iso(job.get("started_at") or job.get("created_at")), "updatedAt": _task_iso(job.get("updated_at") or job.get("created_at")),
         "finishedAt": _task_iso(completion_at) if task_status in _TASK_TERMINAL_STATUSES else "", "expiresAt": _task_iso(expires_at),
         "acknowledged": bool(acknowledged_at), "acknowledgedAt": acknowledged_at,
+        "canAcknowledge": task_status in _TASK_ACKNOWLEDGE_STATUSES,
         "ownerUserId": job.get("owner_user_id"), "ownerDisplayName": job.get("_task_owner_display_name") or "",
         "publishProgress": publish_progress, **_task_publish_retry_data(job, materials),
     }

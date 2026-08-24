@@ -50,7 +50,13 @@ def retry_failed_publish(task_id):
         if payload is not None and not isinstance(payload, dict):
             raise ValueError("重发请求格式无效")
         target_record_ids = payload.get("targetRecordIds") if payload and "targetRecordIds" in payload else None
-        result = prepare_failed_publish_retry(task_id, target_record_ids, _current_account_owner_id())
+        risk_override = payload.get("riskOverride") if payload and "riskOverride" in payload else None
+        result = prepare_failed_publish_retry(
+            task_id,
+            target_record_ids,
+            _current_account_owner_id(),
+            risk_override,
+        )
         return jsonify({"code": 202, "msg": "失败平台已进入发布队列", "data": result}), 202
     except LookupError as exc:
         return jsonify({"code": 404, "msg": str(exc), "data": None}), 404
@@ -58,6 +64,8 @@ def retry_failed_publish(task_id):
         return jsonify({"code": 409, "msg": str(exc), "data": {"errorCode": exc.error_code, "errorType": exc.error_type, **exc.data}}), 409
     except PublishQueueFullError as exc:
         return jsonify({"code": 429, "msg": str(exc), "data": {"errorCode": exc.error_code}}), 429
+    except AgentGuardError as exc:
+        return jsonify({"code": exc.status_code, "msg": str(exc), "data": {"errorCode": exc.error_code, "guard": exc.result}}), exc.status_code
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc), "data": None}), 400
     except Exception as exc:
