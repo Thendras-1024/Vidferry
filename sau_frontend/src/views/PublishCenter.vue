@@ -1758,9 +1758,9 @@ const openRetryDialog = (task) => {
   retryDialogVisible.value = true
 }
 
-const refreshPublishRetryTasks = async () => {
+const refreshPublishRetryTasks = async (result = {}) => {
   await Promise.all([loadPublishRetryTasks(), loadPublishedVideos()])
-  appStore.invalidatePublishRecords()
+  appStore.invalidatePublishRecords(result.videoId)
 }
 
 // 取消发布

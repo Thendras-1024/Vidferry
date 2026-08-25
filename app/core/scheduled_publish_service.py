@@ -124,10 +124,10 @@ def create_scheduled_publish_task(data):
             platform_type = int(target["platformType"])
             cursor.execute('''
             SELECT 1 FROM published_youtube_materials
-            WHERE video_id = %s AND platform_type = %s AND deleted_at IS NULL
+            WHERE video_id = %s AND platform_type = %s AND owner_user_id = %s AND deleted_at IS NULL
               AND COALESCE(NULLIF(status, ''), 'confirmed') IN ('queued', 'running', 'confirmed', 'uncertain')
             LIMIT 1
-            ''', (video_id, platform_type))
+            ''', (video_id, platform_type, owner_user_id))
             if cursor.fetchone():
                 raise WorkflowConflictError(
                     f"该视频已发布、正在发布或已排期到{platform_name(platform_type)}，不能重复发布。",
@@ -138,9 +138,9 @@ def create_scheduled_publish_task(data):
         risk_override_json = json.dumps(data.get("riskOverride") or {}, ensure_ascii=False)
         cursor.execute('''
         INSERT INTO scheduled_publish_tasks (
-            id, video_id, material_id, file_path, scheduled_at, status, message, created_at, updated_at, risk_override
-        ) VALUES (%s, %s, %s, %s, %s, 'scheduled', '等待执行', %s, %s, %s)
-        ''', (task_id, video_id, material.get("id"), file_list[0], scheduled_at.strftime("%Y-%m-%d %H:%M:%S"), now, now, risk_override_json))
+            id, video_id, material_id, file_path, scheduled_at, status, message, created_at, updated_at, risk_override, owner_user_id
+        ) VALUES (%s, %s, %s, %s, %s, 'scheduled', '等待执行', %s, %s, %s, %s)
+        ''', (task_id, video_id, material.get("id"), file_list[0], scheduled_at.strftime("%Y-%m-%d %H:%M:%S"), now, now, risk_override_json, owner_user_id))
         for target, account in zip(targets, accounts):
             settings = {
                 "tags": target.get("tags") or [],

@@ -299,10 +299,10 @@ const openRetryDialog = (task) => {
   retryDialogVisible.value = true
 }
 
-const refreshPublishTasks = async () => {
+const refreshPublishTasks = async (result = {}) => {
   const response = await materialApi.getPublishTasks({ limit: 20 })
   appStore.setPublishTasks(response.data || [])
-  appStore.invalidatePublishRecords()
+  appStore.invalidatePublishRecords(result.videoId)
 }
 
 const fetchDashboardData = async () => {

@@ -89,9 +89,11 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { materialApi } from '@/api/material'
 import { formatBeijingTime } from '@/utils/time'
+import { useAppStore } from '@/stores/app'
 
 const props = defineProps({ modelValue: Boolean, task: { type: Object, default: null } })
 const emit = defineEmits(['update:modelValue', 'completed'])
+const appStore = useAppStore()
 const submitting = ref(false)
 const selectedTargetIds = ref([])
 const riskConfirmationVisible = ref(false)
@@ -129,10 +131,17 @@ const showRiskConfirmation = (error) => {
 }
 
 const completeRetry = (response) => {
+  const data = response?.data || {}
+  const videoId = String(data.videoId || props.task?.videoId || '').trim()
+  const publishTaskId = String(data.publishTaskId || '').trim()
+  if (publishTaskId && videoId) {
+    appStore.trackPublishTask({ publishTaskId, videoId })
+    appStore.invalidatePublishRecords(videoId)
+  }
   riskConfirmationVisible.value = false
   ElMessage.success(response.msg || '失败平台已重发')
   visible.value = false
-  emit('completed', response.data)
+  emit('completed', { ...data, videoId })
 }
 
 const submit = async () => {

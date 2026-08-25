@@ -321,11 +321,18 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
     existing_ids = set()
     if candidate_ids:
         init_youtube_video_table()
+        owner_user_id = _agent_current_user_id()
+        if owner_user_id is None:
+            raise PermissionError("Agent 检索缺少当前用户身份")
         placeholders = ",".join("%s" for _ in candidate_ids)
         with _db_connect(row_factory=True) as conn:
             cursor = conn.cursor()
-            cursor.execute(f"SELECT video_id FROM youtube_videos WHERE video_id IN ({placeholders})", candidate_ids)
+            cursor.execute(
+                f"SELECT video_id FROM youtube_videos WHERE owner_user_id = %s AND video_id IN ({placeholders})",
+                [owner_user_id, *candidate_ids],
+            )
             existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
+    excluded_existing_count = sum(1 for item in videos if str(item.get("id") or "") in existing_ids)
     # 搜索摘要足以先排除明显不满足条件的候选，避免对大量视频发详情请求，
     # 否则容易触发 YouTube 的 429 反爬限制。
     candidates = [item for item in videos if str(item.get("id") or "") not in existing_ids]
@@ -356,27 +363,6 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
             enriched_candidates = list(executor.map(_agent_enrich_candidate_metadata, detail_candidates))
     else:
         enriched_candidates = [_agent_enrich_candidate_metadata(item) for item in detail_candidates]
-        owner_user_id = _agent_current_user_id()
-        if owner_user_id is None:
-            raise PermissionError("Agent 检索缺少当前用户身份")
-        placeholders = ",".join("%s" for _ in candidate_ids)
-        with _db_connect(row_factory=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"SELECT video_id FROM youtube_videos WHERE owner_user_id = %s AND video_id IN ({placeholders})",
-                [owner_user_id, *candidate_ids],
-            )
-            existing_ids = {str(row["video_id"] or "") for row in cursor.fetchall()}
-    # yt-dlp 的搜索摘要通常没有订阅数和精确发布日期。先剔除已有线索，
-    # 再对有限候选取详情，避免为不会展示的视频建立大量额外请求。
-    candidates = [item for item in videos if str(item.get("id") or "") not in existing_ids]
-    detail_limit = min(len(candidates), max(6, min(requested * 2, 12)))
-    detail_candidates = candidates[:detail_limit]
-    if len(detail_candidates) > 1:
-        with _ThreadPoolExecutor(max_workers=min(3, len(detail_candidates)), thread_name_prefix="vidferry-agent-metadata") as executor:
-            enriched_candidates = list(executor.map(lambda item: _enrich_video_metadata(item, "agent-search", quick_metadata=True), detail_candidates))
-    else:
-        enriched_candidates = [_enrich_video_metadata(item, "agent-search", quick_metadata=True) for item in detail_candidates]
     cutoff = str(published_after or "").strip()
     def matches(item):
         views = int(item.get("viewCount") or 0)
@@ -398,14 +384,13 @@ def search_youtube_candidates(query, limit=None, published_after="", min_views=N
         key=lambda item: (int(item.get("metadataScore") or 0), int(item.get("viewCount") or 0)),
         reverse=True,
     )[:requested]
-    items = filtered[:requested]
     for item in items:
         item["shortCode"] = f"#{item.get('id') or ''}"
         item["description"] = str(item.get("description") or "")[:400]
     return {"query": query, "items": items, "filters": {
         "publishedAfter": cutoff, "minViews": min_views, "maxViews": max_views,
         "minDurationSeconds": min_duration_seconds, "maxDurationSeconds": max_duration_seconds,
-    }, "searched": len(videos), "excludedExisting": len(videos) - len(candidates)}
+    }, "searched": len(videos), "excludedExisting": excluded_existing_count}
 
 
 def inspect_youtube_url(url):

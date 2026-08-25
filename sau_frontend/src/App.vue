@@ -366,6 +366,7 @@ import {
 } from '@element-plus/icons-vue'
 import { accountApi } from '@/api/account'
 import { commonApi } from '@/api/common'
+import { materialApi } from '@/api/material'
 import { formatBeijingTime } from '@/utils/time'
 import { useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
@@ -399,9 +400,14 @@ applyTheme(themeMode.value)
 const ACCOUNT_CHECK_INTERVAL_MS = 3 * 60 * 1000
 const NOTIFICATION_SYNC_INTERVAL_MS = 10 * 1000
 const FEISHU_STATUS_POLL_INTERVAL_MS = 10 * 1000
+const PUBLISH_TASK_POLL_INTERVAL_MS = 3000
+const ACTIVE_PUBLISH_TASK_STATUSES = new Set(['queued', 'running', 'waiting_existing'])
+const TERMINAL_PUBLISH_TASK_STATUSES = new Set(['confirmed', 'reused', 'partial', 'failed', 'uncertain', 'cancelled'])
 let accountCheckTimer = null
 let notificationSyncTimer = null
 let feishuRobotStatusTimer = null
+let publishTaskTrackingTimer = null
+let publishTaskTrackingInFlight = false
 let authenticatedWorkspaceStarted = false
 const llmConfigWarning = ref('')
 const agentConfigWarning = ref('')
@@ -544,6 +550,40 @@ const toggleNotificationHistory = async () => {
 
 const refreshNotifications = () => notificationStore.refresh({ includeHistory: showNotificationHistory.value })
 
+const pollTrackedPublishTasks = async () => {
+  if (publishTaskTrackingInFlight || !userStore.isLoggedIn) return
+  const trackedTasks = appStore.trackedPublishTasks
+  if (!trackedTasks.length) return
+
+  publishTaskTrackingInFlight = true
+  try {
+    const results = await Promise.all(trackedTasks.map(async trackedTask => {
+      try {
+        const response = await materialApi.getPublishTask(trackedTask.publishTaskId)
+        return { trackedTask, response }
+      } catch (error) {
+        return { trackedTask, error }
+      }
+    }))
+    results.forEach(({ trackedTask, response, error }) => {
+      if (error) {
+        if (Number(error?.response?.status) === 404) {
+          appStore.untrackPublishTask(trackedTask.publishTaskId)
+        }
+        return
+      }
+      const status = String(response?.data?.status || '').trim()
+      if (ACTIVE_PUBLISH_TASK_STATUSES.has(status)) return
+      if (TERMINAL_PUBLISH_TASK_STATUSES.has(status)) {
+        appStore.untrackPublishTask(trackedTask.publishTaskId)
+        appStore.invalidatePublishRecords(trackedTask.videoId)
+      }
+    })
+  } finally {
+    publishTaskTrackingInFlight = false
+  }
+}
+
 const initializeAuthenticatedWorkspace = () => {
   if (authenticatedWorkspaceStarted || !userStore.isLoggedIn) return
   authenticatedWorkspaceStarted = true
@@ -577,6 +617,7 @@ onMounted(() => {
   window.addEventListener('vidferry:ask-agent', handleAskAgentEvent)
   mobileSidebarQuery.addEventListener('change', syncMobileSidebar)
   initializeAuthenticatedWorkspace()
+  publishTaskTrackingTimer = window.setInterval(pollTrackedPublishTasks, PUBLISH_TASK_POLL_INTERVAL_MS)
 })
 
 onBeforeUnmount(() => {
@@ -591,6 +632,10 @@ onBeforeUnmount(() => {
   if (feishuRobotStatusTimer) {
     window.clearInterval(feishuRobotStatusTimer)
     feishuRobotStatusTimer = null
+  }
+  if (publishTaskTrackingTimer) {
+    window.clearInterval(publishTaskTrackingTimer)
+    publishTaskTrackingTimer = null
   }
   window.removeEventListener('focus', refreshNotifications)
   window.removeEventListener('vidferry:ask-agent', handleAskAgentEvent)

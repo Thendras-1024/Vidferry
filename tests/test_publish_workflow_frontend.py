@@ -44,6 +44,32 @@ def test_publish_center_renders_delivery_states_and_refreshes_server_notificatio
     assert "'waiting_existing'" in source
 
 
+def test_retry_publish_tracks_the_specific_video_until_the_dispatch_task_is_terminal():
+    dialog = (ROOT / "sau_frontend/src/components/PublishRetryDialog.vue").read_text(encoding="utf-8")
+    store = (ROOT / "sau_frontend/src/stores/app.js").read_text(encoding="utf-8")
+    api = (ROOT / "sau_frontend/src/api/material.js").read_text(encoding="utf-8")
+    request = (ROOT / "sau_frontend/src/utils/request.js").read_text(encoding="utf-8")
+    app = (ROOT / "sau_frontend/src/App.vue").read_text(encoding="utf-8")
+    publish_center = (ROOT / "sau_frontend/src/views/PublishCenter.vue").read_text(encoding="utf-8")
+    dashboard = (ROOT / "sau_frontend/src/views/Dashboard.vue").read_text(encoding="utf-8")
+
+    assert "getPublishTask: (taskId)" in api
+    assert "silentError: true" in api
+    assert "get(url, params, config = {})" in request
+    assert "trackedPublishTasks = ref([])" in store
+    assert "const trackPublishTask" in store
+    assert "trackedPublishTasks.value = []" in store
+    assert "appStore.trackPublishTask({ publishTaskId, videoId })" in dialog
+    assert "appStore.invalidatePublishRecords(videoId)" in dialog
+    assert "materialApi.getPublishTask(trackedTask.publishTaskId)" in app
+    assert "ACTIVE_PUBLISH_TASK_STATUSES" in app
+    assert "TERMINAL_PUBLISH_TASK_STATUSES" in app
+    assert "Number(error?.response?.status) === 404" in app
+    assert "appStore.invalidatePublishRecords(trackedTask.videoId)" in app
+    assert "appStore.invalidatePublishRecords(result.videoId)" in publish_center
+    assert "appStore.invalidatePublishRecords(result.videoId)" in dashboard
+
+
 def test_publish_center_clears_stale_material_selection_after_publish_rejection():
     source = (ROOT / "sau_frontend/src/views/PublishCenter.vue").read_text(encoding="utf-8")
 

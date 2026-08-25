@@ -48,8 +48,9 @@ def short_video_project_detail(project_id):
 def short_video_project_search(project_id):
     try:
         get_short_video_project(project_id)
-        _set_project_status(project_id, "searching", "正在检索可复用的竖屏候选")
-        _submit_background_task("search", run_short_video_search, project_id, _owner_id(), owner_user_id=_owner_id())
+        owner_id = _owner_id()
+        _set_project_status(project_id, owner_id, "searching", "正在检索可复用的竖屏候选")
+        _submit_background_task("search", run_short_video_search, project_id, owner_id, owner_user_id=owner_id)
         return _short_video_response(get_short_video_project(project_id), 202, "accepted")
     except LookupError as exc:
         return _short_video_response(None, 404, str(exc))
@@ -72,8 +73,12 @@ def short_video_project_candidates_update(project_id):
 @app.route("/short-video/projects/<project_id>/candidates/<candidate_id>/review", methods=["POST"])
 def short_video_candidate_review(project_id, candidate_id):
     try:
-        _submit_background_task("analysis", run_short_video_candidate_review, project_id, candidate_id, _owner_id(), owner_user_id=_owner_id())
+        get_short_video_project(project_id)
+        owner_id = _owner_id()
+        _submit_background_task("analysis", run_short_video_candidate_review, project_id, candidate_id, owner_id, owner_user_id=owner_id)
         return _short_video_response(get_short_video_project(project_id), 202, "accepted")
+    except LookupError as exc:
+        return _short_video_response(None, 404, str(exc))
     except BackgroundQueueFullError as exc:
         return _short_video_queue_full_response(exc)
     except Exception:

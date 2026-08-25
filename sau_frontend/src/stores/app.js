@@ -18,6 +18,7 @@ export const useAppStore = defineStore('app', () => {
   const listCache = ref({})
   const publishRecordsRevision = ref(0)
   const lastChangedPublishedVideoId = ref('')
+  const trackedPublishTasks = ref([])
   
   // 设置账号管理页面已访问
   const setAccountManagementVisited = () => {
@@ -99,12 +100,29 @@ export const useAppStore = defineStore('app', () => {
     clearListCache()
   }
 
+  const trackPublishTask = ({ publishTaskId, videoId } = {}) => {
+    const taskId = String(publishTaskId || '').trim()
+    const sourceVideoId = String(videoId || '').trim()
+    if (!taskId || !sourceVideoId) return
+    trackedPublishTasks.value = [
+      ...trackedPublishTasks.value.filter(item => item.publishTaskId !== taskId),
+      { publishTaskId: taskId, videoId: sourceVideoId }
+    ]
+  }
+
+  const untrackPublishTask = (publishTaskId) => {
+    const taskId = String(publishTaskId || '').trim()
+    if (!taskId) return
+    trackedPublishTasks.value = trackedPublishTasks.value.filter(item => item.publishTaskId !== taskId)
+  }
+
   const resetUserWorkspace = () => {
     resetVisitStatus()
     isAccountRefreshing.value = false
     materials.value = []
     publishedMaterials.value = []
     publishTasks.value = []
+    trackedPublishTasks.value = []
     clearListCache()
     lastChangedPublishedVideoId.value = ''
     publishRecordsRevision.value += 1
@@ -124,6 +142,7 @@ export const useAppStore = defineStore('app', () => {
     publishTasks,
     publishRecordsRevision,
     lastChangedPublishedVideoId,
+    trackedPublishTasks,
     listCache,
     setAccountManagementVisited,
     setMaterialManagementVisited,
@@ -138,6 +157,8 @@ export const useAppStore = defineStore('app', () => {
     setListCache,
     clearListCache,
     invalidatePublishRecords,
+    trackPublishTask,
+    untrackPublishTask,
     resetUserWorkspace,
     setAccountRefreshing
   }

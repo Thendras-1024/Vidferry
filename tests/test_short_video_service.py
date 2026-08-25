@@ -64,3 +64,69 @@ def test_short_video_project_create_uses_named_rows_and_default_candidate_count(
     created = service["create_short_video_project"]({"topic": "搞笑宠物"})
     assert connection.row_factory is True
     assert created["targetCount"] == 10
+
+
+def test_short_video_async_writes_keep_project_ownership_contract():
+    source = Path("app/core/short_video_service.py").read_text(encoding="utf-8")
+
+    assert "SELECT * FROM short_video_projects WHERE id = %s AND owner_user_id = %s" in source
+    assert "def _set_project_status(project_id, owner_id, status, message, **updates):" in source
+    assert "WHERE id = %s AND owner_user_id = %s" in source
+    assert source.count("WHERE candidate.id = %s AND candidate.project_id = %s") == 2
+    assert "owner_user_id=owner_id" in source
+
+
+def test_short_video_api_passes_owner_to_status_updates():
+    source = Path("app/api/short_video.py").read_text(encoding="utf-8")
+
+    assert "_set_project_status(project_id, owner_id, \"searching\"" in source
+    review_section = source.split("def short_video_candidate_review", 1)[1].split("def short_video_candidate_asset", 1)[0]
+    assert "get_short_video_project(project_id)" in review_section
+
+
+def test_short_video_render_uses_submitted_owner_without_request_context(monkeypatch):
+    from app.backend.runtime import create_backend_module
+
+    backend = create_backend_module()
+    project = {"id": "project-a", "topic": "测试", "bgm_track_id": None}
+    candidates = [
+        {"id": "candidate-a", "project_id": "project-a", "source_url": "https://example.test/source-a", "clip_duration_seconds": 8},
+        {"id": "candidate-b", "project_id": "project-a", "source_url": "https://example.test/source-b", "clip_duration_seconds": 8},
+    ]
+    writes, material_owners, render_owners = [], [], []
+
+    class Cursor:
+        def execute(self, sql, params=()):
+            self.sql = sql
+            self.params = params
+
+        def fetchall(self):
+            return candidates if "short_video_candidates" in self.sql else []
+
+    class Connection:
+        row_factory = False
+
+        def cursor(self):
+            return Cursor()
+
+        def execute(self, sql, params=()):
+            writes.append((sql, params))
+
+    connection = Connection()
+
+    @contextmanager
+    def connect():
+        yield connection
+
+    monkeypatch.setattr(backend, "_ensure_tables", lambda: None)
+    monkeypatch.setattr(backend, "_db_connect", connect)
+    monkeypatch.setattr(backend, "_project", lambda _cursor, project_id, owner_id: project if (project_id, owner_id) == ("project-a", 22) else None)
+    monkeypatch.setattr(backend, "_render_concat", lambda _project, _candidates, _bgm, owner_id: render_owners.append(owner_id) or Path("output.mp4"))
+    monkeypatch.setattr(backend, "register_material", lambda _output, **kwargs: material_owners.append(kwargs["owner_user_id"]) or {"id": 99})
+
+    result = backend.run_short_video_render("project-a", 22)
+
+    assert result == {"projectId": "project-a", "status": "success", "materialId": 99}
+    assert render_owners == [22]
+    assert material_owners == [22]
+    assert all(params[-1] == 22 for _, params in writes)

@@ -44,9 +44,11 @@ def _ensure_tables():
 
 
 def _project(cursor, project_id, owner_id=None):
-    cursor.execute("SELECT * FROM short_video_projects WHERE id = %s", (project_id,))
+    if owner_id is None:
+        raise ValueError("短视频项目查询必须提供 owner")
+    cursor.execute("SELECT * FROM short_video_projects WHERE id = %s AND owner_user_id = %s", (project_id, owner_id))
     row = cursor.fetchone()
-    if not row or (owner_id is not None and int(row["owner_user_id"] or 0) != int(owner_id)):
+    if not row:
         raise LookupError("短视频项目不存在或无权访问")
     return dict(row)
 
@@ -205,7 +207,7 @@ def _search_candidates(project_id, owner_id):
                 (_uuid.uuid4().hex, project_id, item["source_video_id"], item["source_url"], item["title"], item["channel"],
                  item["license_type"], item["license_basis"], item["duration_seconds"], item["width"], item["height"], item["thumbnail"],
                  ordinal, min(8.0, item["duration_seconds"]), now, now))
-        cursor.execute("UPDATE short_video_projects SET status = 'reviewing', message = %s, updated_at = %s WHERE id = %s", (f"已筛选 {len(accepted)} 条候选", now, project_id))
+        cursor.execute("UPDATE short_video_projects SET status = 'reviewing', message = %s, updated_at = %s WHERE id = %s AND owner_user_id = %s", (f"已筛选 {len(accepted)} 条候选", now, project_id, owner_id))
     _logger.info("Short video search completed : projectId = %s | accepted = %s", project_id, len(accepted))
     return {"projectId": project_id, "status": "reviewing"}
 
@@ -220,22 +222,22 @@ def run_short_video_search(project_id, owner_id):
             candidate_ids = [row["id"] for row in cursor.fetchall()]
         for candidate_id in candidate_ids:
             run_short_video_candidate_review(project_id, candidate_id, owner_id)
-        _set_project_status(project_id, "reviewing", "自动初筛已完成，等待人工确认")
+        _set_project_status(project_id, owner_id, "reviewing", "自动初筛已完成，等待人工确认")
         return result
     except Exception as exc:
-        _set_project_status(project_id, "failed", "检索失败，请查看服务端日志")
+        _set_project_status(project_id, owner_id, "failed", "检索失败，请查看服务端日志")
         _logger.exception("Short video search failed : projectId = %s", project_id)
         raise
 
 
-def _set_project_status(project_id, status, message, **updates):
+def _set_project_status(project_id, owner_id, status, message, **updates):
     fields, values = ["status = %s", "message = %s", "updated_at = %s"], [status, message[:500], _now()]
     for column, value in updates.items():
         fields.append(f"{column} = %s")
         values.append(value)
-    values.append(project_id)
+    values.extend([project_id, owner_id])
     with _db_connect() as conn:
-        conn.execute(f"UPDATE short_video_projects SET {', '.join(fields)} WHERE id = %s", values)
+        conn.execute(f"UPDATE short_video_projects SET {', '.join(fields)} WHERE id = %s AND owner_user_id = %s", values)
 
 
 def _download_candidate_preview(candidate):
@@ -308,8 +310,11 @@ def run_short_video_candidate_review(project_id, candidate_id, owner_id):
         preview, frames, score, reason, review_status = None, [], 0, f"预览分析失败，已降级为文本初筛: {str(exc)[:240]}", "degraded"
         _logger.warning("Short video candidate review degraded : projectId = %s | candidateId = %s | reason = %s", project_id, candidate_id, str(exc)[:300])
     with _db_connect() as conn:
-        conn.execute('''UPDATE short_video_candidates SET preview_path = %s, keyframes = %s, analysis_score = %s, analysis_reason = %s, analysis_status = %s, updated_at = %s WHERE id = %s''',
-                     (str(preview) if preview else "", _json.dumps([{"timestamp": frame["timestamp"]} for frame in frames]), score, reason, review_status, _now(), candidate_id))
+        conn.execute('''UPDATE short_video_candidates AS candidate
+            SET preview_path = %s, keyframes = %s, analysis_score = %s, analysis_reason = %s, analysis_status = %s, updated_at = %s
+            WHERE candidate.id = %s AND candidate.project_id = %s
+              AND EXISTS (SELECT 1 FROM short_video_projects AS project WHERE project.id = candidate.project_id AND project.owner_user_id = %s)''',
+                     (str(preview) if preview else "", _json.dumps([{"timestamp": frame["timestamp"]} for frame in frames]), score, reason, review_status, _now(), candidate_id, project_id, owner_id))
     return {"projectId": project_id, "candidateId": candidate_id, "status": review_status}
 
 
@@ -345,7 +350,7 @@ def update_short_video_candidates(project_id, candidates):
         total = sum(max(1.0, float(entry.get("clipDurationSeconds") or 0)) for entry in candidates)
         if not 15 <= total <= 90:
             raise ValueError("选段总时长需在 15 至 90 秒之间")
-        cursor.execute("UPDATE short_video_projects SET status = 'ready', message = '候选素材已确认', updated_at = %s WHERE id = %s", (_now(), project_id))
+        cursor.execute("UPDATE short_video_projects SET status = 'ready', message = '候选素材已确认', updated_at = %s WHERE id = %s AND owner_user_id = %s", (_now(), project_id, _owner_id()))
     return get_short_video_project(project_id)
 
 
@@ -461,7 +466,7 @@ def _download_selected_candidate(candidate):
     return files[0]
 
 
-def _render_concat(project, candidates, bgm):
+def _render_concat(project, candidates, bgm, owner_id):
     project_dir = _OUTPUT_ROOT / project["id"]
     project_dir.mkdir(parents=True, exist_ok=True)
     normalized = []
@@ -470,7 +475,11 @@ def _render_concat(project, candidates, bgm):
         if not source.is_file():
             source = _download_selected_candidate(candidate)
             with _db_connect() as conn:
-                conn.execute("UPDATE short_video_candidates SET downloaded_file_path = %s, updated_at = %s WHERE id = %s", (str(source), _now(), candidate["id"]))
+                conn.execute('''UPDATE short_video_candidates AS candidate
+                    SET downloaded_file_path = %s, updated_at = %s
+                    WHERE candidate.id = %s AND candidate.project_id = %s
+                      AND EXISTS (SELECT 1 FROM short_video_projects AS project WHERE project.id = candidate.project_id AND project.owner_user_id = %s)''',
+                             (str(source), _now(), candidate["id"], candidate["project_id"], owner_id))
         normalized_file = project_dir / f"segment_{index:02d}.mp4"
         duration = float(candidate["clip_duration_seconds"])
         command = [_resolve_ffmpeg_command(), "-y", "-i", str(source)]
@@ -545,20 +554,20 @@ def run_short_video_render(project_id, owner_id):
             if not bgm_row:
                 raise ValueError("所选 BGM 不可用")
             bgm = dict(bgm_row)
-    _set_project_status(project_id, "rendering", "正在下载并合成短视频")
+    _set_project_status(project_id, owner_id, "rendering", "正在下载并合成短视频")
     try:
-        output = _render_concat(project, candidates, bgm)
+        output = _render_concat(project, candidates, bgm, owner_id)
         material = register_material(
             output,
-            owner_user_id=_owner_id(),
+            owner_user_id=owner_id,
             source_type="short_video_compilation",
             metadata={"projectId": project_id, "topic": project["topic"], "sourceUrls": [candidate["source_url"] for candidate in candidates]},
             copy_to_library=True,
         )
-        _set_project_status(project_id, "success", "短视频拼接完成", output_file_path=str(output), output_material_id=material["id"])
+        _set_project_status(project_id, owner_id, "success", "短视频拼接完成", output_file_path=str(output), output_material_id=material["id"])
         return {"projectId": project_id, "status": "success", "materialId": material["id"]}
     except Exception as exc:
-        _set_project_status(project_id, "failed", f"渲染失败: {str(exc)[:300]}")
+        _set_project_status(project_id, owner_id, "failed", f"渲染失败: {str(exc)[:300]}")
         _logger.exception("Short video render failed : projectId = %s", project_id)
         raise
 
@@ -570,12 +579,13 @@ def request_short_video_render(project_id, payload):
     if transition not in _VALID_TRANSITIONS:
         raise ValueError("转场类型无效")
     bgm_id = payload.get("bgmTrackId") or None
+    owner_id = _owner_id()
     with _db_connect() as conn:
         conn.row_factory = True
         cursor = conn.cursor()
-        _project(cursor, project_id, _owner_id())
-        cursor.execute("UPDATE short_video_projects SET transition_type = %s, bgm_track_id = %s, keep_original_audio = %s, status = 'queued', message = '合成任务已提交', updated_at = %s WHERE id = %s", (transition, bgm_id, int(bool(payload.get("keepOriginalAudio"))), _now(), project_id))
-    _submit_background_task("processing", run_short_video_render, project_id, _owner_id(), owner_user_id=_owner_id())
+        _project(cursor, project_id, owner_id)
+        cursor.execute("UPDATE short_video_projects SET transition_type = %s, bgm_track_id = %s, keep_original_audio = %s, status = 'queued', message = '合成任务已提交', updated_at = %s WHERE id = %s AND owner_user_id = %s", (transition, bgm_id, int(bool(payload.get("keepOriginalAudio"))), _now(), project_id, owner_id))
+    _submit_background_task("processing", run_short_video_render, project_id, owner_id, owner_user_id=owner_id)
     return get_short_video_project(project_id)
 
 
